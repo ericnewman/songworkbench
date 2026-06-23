@@ -127,19 +127,6 @@ private struct PlayerView: View {
             HStack(alignment: .top, spacing: 20) {
                 ScrollView {
                     VStack(spacing: 18) {
-                        Button("Export Audio...", systemImage: "square.and.arrow.up") {
-                            presentExportPanel()
-                        }
-                        .disabled(model.isExporting)
-                        .frame(maxWidth: .infinity)
-
-                        if model.isExporting {
-                            HStack {
-                                ProgressView(value: model.exportProgress)
-                                Button("Cancel") { model.cancelExport() }
-                            }
-                        }
-
                         waveformContent
                         AnalysisWorkspaceView(model: model)
                     }
@@ -216,16 +203,6 @@ private struct PlayerView: View {
         } else {
             ContentUnavailableView("Waveform Unavailable", systemImage: "waveform")
                 .frame(height: 120)
-        }
-    }
-
-    private func presentExportPanel() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.wav]
-        panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "\(song.title) - Practice.wav"
-        if panel.runModal() == .OK, let url = panel.url {
-            model.exportSelectedSong(to: url)
         }
     }
 

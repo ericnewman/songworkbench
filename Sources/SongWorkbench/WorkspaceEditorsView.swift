@@ -510,6 +510,7 @@ private struct ChordProEditor: View {
             }
         }
         .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func importDocument() {
@@ -749,6 +750,7 @@ private struct BassNoteChordProEditor: View {
             }
         }
         .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func exportDocument() {
