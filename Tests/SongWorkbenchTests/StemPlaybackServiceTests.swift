@@ -39,6 +39,39 @@ final class StemPlaybackServiceTests: XCTestCase {
         XCTAssertLessThan(service.currentTime, service.duration)
     }
 
+    func testMeterLevelUsesRootMeanSquareAcrossChannels() throws {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4)!
+        buffer.frameLength = 4
+        for channel in 0..<2 {
+            for frame in 0..<4 {
+                buffer.floatChannelData![channel][frame] = 0.5
+            }
+        }
+
+        XCTAssertEqual(StemPlaybackService.meterLevel(from: buffer), 0.5, accuracy: 0.001)
+    }
+
+    func testPlaybackPublishesStemLevelsAndResetsOnPause() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let service = StemPlaybackService()
+        try service.load(
+            try makeStemFiles(in: directory, sampleValue: 0.4), mixer: StemMixerModel())
+        service.play()
+        try await Task.sleep(for: .milliseconds(180))
+
+        XCTAssertGreaterThan(service.stemLevels[.vocals] ?? 0, 0.05)
+
+        service.pause()
+
+        XCTAssertEqual(service.stemLevels[.vocals] ?? 1, 0)
+        XCTAssertEqual(service.stemLevels[.drums] ?? 1, 0)
+    }
+
     func testFailedReloadClearsPreviouslyLoadedState() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -61,11 +94,11 @@ final class StemPlaybackServiceTests: XCTestCase {
         XCTAssertFalse(service.isPlaying)
     }
 
-    private func makeStemFiles(in directory: URL) throws -> StemFiles {
+    private func makeStemFiles(in directory: URL, sampleValue: Float = 0) throws -> StemFiles {
         var urls: [StemKind: URL] = [:]
         for kind in StemKind.allCases {
             let url = directory.appendingPathComponent("\(kind.rawValue).wav")
-            try writeSilence(to: url)
+            try writeWAV(to: url, sampleValue: sampleValue)
             urls[kind] = url
         }
         return StemFiles(
@@ -78,7 +111,7 @@ final class StemPlaybackServiceTests: XCTestCase {
         )
     }
 
-    private func writeSilence(to url: URL) throws {
+    private func writeWAV(to url: URL, sampleValue: Float) throws {
         let format = AVAudioFormat(
             standardFormatWithSampleRate: 44_100,
             channels: 2
@@ -86,6 +119,11 @@ final class StemPlaybackServiceTests: XCTestCase {
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44_100)!
         buffer.frameLength = 44_100
+        for channel in 0..<Int(format.channelCount) {
+            for frame in 0..<Int(buffer.frameLength) {
+                buffer.floatChannelData![channel][frame] = sampleValue
+            }
+        }
         try file.write(from: buffer)
     }
 }

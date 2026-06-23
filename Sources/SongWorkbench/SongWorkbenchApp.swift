@@ -8,6 +8,10 @@ struct SongWorkbenchApp: App {
         WindowGroup {
             ContentView(model: model)
                 .frame(minWidth: 1_100, minHeight: 650)
+                .background(Color.swCanvas.ignoresSafeArea())
+                .foregroundStyle(Color.swTextPrimary)
+                .tint(Color.swAccent)
+                .preferredColorScheme(.dark)
         }
         .commands {
             CommandGroup(replacing: .newItem) {

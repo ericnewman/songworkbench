@@ -129,6 +129,7 @@ final class AppModel: ObservableObject {
     private let analysisCache: AnalysisResultDiskCache
     private let stemMixExporter = StemMixExporter()
     private let chordProBuilder = ChordProDraftBuilder()
+    private let bassNoteChordProBuilder = BassNoteChordProDraftBuilder()
     private let modelPackageManager: ModelPackageManager
     private var settingsBySongID: [Song.ID: PracticeSettings] = [:]
     private var analysisBySongID: [Song.ID: SongAnalysisDocument] = [:]
@@ -256,6 +257,21 @@ final class AppModel: ObservableObject {
 
     var includedChordEventCount: Int {
         chordEvents.filter(isChordIncludedInChordPro).count
+    }
+
+    var bassNoteChordProSource: String {
+        guard selectedSong != nil || !lyricSegments.isEmpty || !chordEvents.isEmpty else {
+            return ""
+        }
+        return bassNoteChordProBuilder.build(
+            ChordProDraftInput(
+                title: selectedSong?.title ?? "Untitled",
+                tempo: estimatedBPM,
+                lyrics: lyricSegments,
+                chords: chordEvents,
+                confidenceThreshold: chordConfidenceThreshold
+            )
+        )
     }
 
     func isChordIncludedInChordPro(_ event: EditableChordEvent) -> Bool {
@@ -470,6 +486,7 @@ final class AppModel: ObservableObject {
     }
 
     func select(_ song: Song) {
+        resetSelectedSongProgressState()
         stemPlayback.unload()
         activePlaybackSource = .recording
         selectedSongID = song.id
@@ -481,15 +498,43 @@ final class AppModel: ObservableObject {
         scheduleSave()
     }
 
-    private func clearSelectedSongState() {
+    private func resetSelectedSongProgressState() {
         songAnalysisTask?.cancel()
+        songAnalysisTask = nil
+        isSongAnalysisRunning = false
+        songAnalysisProgress = nil
+
+        analysisControlTask?.cancel()
+        analysisControlTask = nil
+        analysisMonitorTask?.cancel()
+        analysisMonitorTask = nil
+        analysisJobSnapshot = nil
+
+        if let jobID = currentAnalysisJobID {
+            currentAnalysisJobID = nil
+            Task { [analysisJobs] in
+                await analysisJobs.cancel(jobID)
+                while let snapshot = await analysisJobs.snapshot(for: jobID),
+                    !snapshot.state.isTerminal
+                {
+                    try? await Task.sleep(for: .milliseconds(25))
+                }
+                await analysisJobs.discard(jobID)
+            }
+        }
+
         waveformTask?.cancel()
+        waveformTask = nil
+        waveform = nil
+        isLoadingWaveform = false
+    }
+
+    private func clearSelectedSongState() {
+        resetSelectedSongProgressState()
         playback.unload()
         stemPlayback.unload()
         activePlaybackSource = .recording
         selectedSongID = nil
-        waveform = nil
-        isLoadingWaveform = false
         loopRegion = nil
         lyricSegments = []
         chordEvents = []
@@ -656,6 +701,8 @@ final class AppModel: ObservableObject {
                 }
                 currentAnalysisJobID = jobID
                 monitorAnalysisJob(jobID)
+            } catch is CancellationError {
+                return
             } catch {
                 projectErrorMessage = "Could not start analysis: \(error.localizedDescription)"
             }
@@ -822,6 +869,16 @@ final class AppModel: ObservableObject {
             atomically: true,
             encoding: .utf8
         )
+    }
+
+    func exportBassNoteChordPro(to url: URL) throws {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { url.stopAccessingSecurityScopedResource() }
+        }
+        let source = bassNoteChordProSource
+        _ = try ChordProDocument(parsing: source)
+        try source.write(to: url, atomically: true, encoding: .utf8)
     }
 
     func restoreProjects() async {

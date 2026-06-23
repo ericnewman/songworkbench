@@ -733,6 +733,98 @@
   workspace Debug build passed; workspace Xcode tests passed 118 tests with 4
   environment-gated skips and 0 failures; `make verify` passed.
 
+# Song Analysis Layout and Progress
+
+- [x] Stop the Song Analysis card from wrapping control labels vertically in
+  the narrow left column.
+- [x] Replace the embedded analysis progress bar with a modal progress/cancel
+  window showing percent complete.
+- [x] Verify SwiftPM tests and Xcode workspace build.
+
+## Review
+
+- Hid the segmented picker's visible "Transcription" label so it no longer
+  wraps down the left edge of the card.
+- Widened the left utility column from a fixed 330 points to a 380...440 point
+  range.
+- Analysis now opens a modal sheet while running. The sheet shows current stage
+  text, a progress bar, percent complete, and a Cancel button; dismissal while
+  running triggers cancellation and the sheet closes automatically when the job
+  finishes.
+- Verification: `swift test --jobs 1` passed 118 tests with 4 environment-gated
+  skips and 0 failures; Xcode workspace Debug build passed.
+
+# Stem Mixer Tab Alignment
+
+- [x] Top-align the Stems tab content inside the workspace tab card.
+
+## Review
+
+- `StemMixerEditor` now fills the available tab area and aligns its controls to
+  the top instead of allowing TabView to center the intrinsic-height content.
+- Verification: `swift build --jobs 1` passed.
+
+# Stem Mixer VU Meters
+
+- [x] Publish per-stem live playback levels synchronized to playback position.
+- [x] Render visible animated level indicators in each stem row.
+- [x] Reset meters on pause, stop, unload, and playback completion.
+- [x] Verify focused playback tests and workspace build.
+
+## Review
+
+- `StemPlaybackService` now publishes RMS stem levels during playback, computed
+  from short windows of each loaded stem at the current playback time and scaled
+  by the active mixer volume.
+- Each stem row renders an animated green/yellow/orange/red meter and exposes
+  the current level as an accessibility value.
+- Meters reset to zero on pause, stop, unload, failed reload, and playback
+  completion.
+- Verification: focused `StemPlaybackServiceTests` passed 5 tests; full
+  `swift test --jobs 1` passed 120 tests with 4 environment-gated skips; Xcode
+  workspace Debug build passed; `git diff --check` passed.
+
+# Bass Note ChordPro Tab
+
+- [x] Generate bass-note-centric ChordPro from the current lyric and chord timeline.
+- [x] Prefer slash-bass notes over chord roots and honor the existing confidence threshold.
+- [x] Add a Bass Notes tab with selectable source text, app preview, and export.
+- [x] Verify focused builder tests, full SwiftPM tests, Xcode workspace build, and diff hygiene.
+
+## Review
+
+- Added `BassNoteChordProDraftBuilder`, sharing the existing ChordPro lyric
+  alignment/grid rendering and confidence-threshold filtering.
+- Bass labels use the slash-bass note when present, otherwise the chord root;
+  invalid chord labels are omitted from generated bass-note output.
+- Added a Bass Notes workspace tab with Source/App Preview modes, empty-state
+  guidance, explanatory provenance text, and `.cho` export.
+- Verification: focused `ChordProDraftBuilderTests` passed 6 tests; full
+  `swift test --jobs 1` passed 122 tests with 4 environment-gated skips; Xcode
+  workspace Debug build passed; `git diff --check` passed.
+
+# ChordPro Playback Highlighting
+
+- [x] Compute the active lyric word and active chord/bass label from playback time.
+- [x] Bold the active word and active chord label in rendered ChordPro previews.
+- [x] Support both standard ChordPro and Bass Notes preview modes.
+- [x] Verify focused highlight tests, full SwiftPM tests, Xcode workspace build, and diff hygiene.
+
+## Review
+
+- Added a timeline highlight context that maps the current recording or stem-mix
+  playback time to the active timed lyric segment, approximated active word, and
+  active chord or bass-note label.
+- Standard ChordPro App Preview bolds the active word and active chord label;
+  Bass Notes App Preview bolds the active word and derived bass note.
+- ChordPro preview views now observe both playback services directly so the
+  highlight updates during recording playback or Play Mix.
+- Imported/manual ChordPro without timed lyric/chord analysis data renders
+  normally because there is no reliable timeline mapping.
+- Verification: focused `ChordProPlaybackHighlightTests` passed 3 tests; full
+  `swift test --jobs 1` passed 125 tests with 4 environment-gated skips; Xcode
+  workspace Debug build passed; `git diff --check` passed.
+
 # Song List Deletion
 
 - [x] Add an obvious delete action for songs in the sidebar file list.
@@ -964,3 +1056,25 @@
   0 failures. Strict Swift format lint and `git diff --check` pass.
 - Existing persisted chord results were not overwritten during verification;
   rerun Harmony or Analyze Accompaniment to regenerate them.
+
+# Song Selection Progress Reset
+
+- [x] Reproduce stale progress when switching songs during analysis.
+- [x] Reset selected-song analysis, chord-analysis, and waveform progress before loading a newly selected song.
+- [x] Preserve explicit export progress because export jobs are user-started file operations.
+- [x] Verify focused regression, full SwiftPM suite, Xcode build, and diff hygiene.
+
+## Review
+
+- Root cause: `select(_:)` loaded the new song without clearing selected-song
+  analysis state, so the previous modal/progress state remained visible until a
+  later task update.
+- Selection now cancels and clears the selected-song analysis task, background
+  chord-analysis job snapshot, and waveform loading state before loading the
+  newly selected song. Explicit export progress is intentionally preserved.
+- Focused regression initially failed with stale `songAnalysisProgress`; after
+  the fix, `AppModelTests/testSelectingDifferentSongResetsSelectedSongProgress`
+  passed.
+- Verification: full `swift test --jobs 1` passed 126 tests with 4
+  environment-gated skips and 0 failures; Xcode workspace Debug build passed;
+  `make format-check` and `git diff --check` passed.

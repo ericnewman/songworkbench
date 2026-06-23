@@ -46,6 +46,31 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.recentSongs.first?.id, second.id)
     }
 
+    func testSelectingDifferentSongResetsSelectedSongProgress() async throws {
+        let firstURL = try makeSilentWAV()
+        let secondURL = try makeSilentWAV()
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [firstURL, secondURL])
+        try await Task.sleep(for: .milliseconds(120))
+        let first = try XCTUnwrap(model.songs.first { $0.url == firstURL })
+        let second = try XCTUnwrap(model.songs.first { $0.url == secondURL })
+
+        model.select(first)
+        model.analyzeSelectedSong()
+        XCTAssertTrue(model.isSongAnalysisRunning)
+        XCTAssertNotNil(model.songAnalysisProgress)
+
+        model.select(second)
+
+        XCTAssertFalse(model.isSongAnalysisRunning)
+        XCTAssertNil(model.songAnalysisProgress)
+        XCTAssertNil(model.analysisJobSnapshot)
+    }
+
     func testRemovingSelectedSongPreservesSourceFileSelectsNeighborAndPersists() async throws {
         let firstURL = try makeSilentWAV()
         let secondURL = try makeSilentWAV()

@@ -28,8 +28,14 @@ actor AnalysisResultDiskCache {
     }
 
     func key(for sourceData: Data, engine: AnalysisEngineVersion) -> AnalysisResultCacheKey {
+        key(forSourceHash: Self.sha256Hex(sourceData), engine: engine)
+    }
+
+    func key(forSourceHash sourceSHA256: String, engine: AnalysisEngineVersion)
+        -> AnalysisResultCacheKey
+    {
         AnalysisResultCacheKey(
-            sourceSHA256: Self.sha256Hex(sourceData),
+            sourceSHA256: sourceSHA256,
             engine: engine
         )
     }
@@ -39,7 +45,15 @@ actor AnalysisResultDiskCache {
         engine: AnalysisEngineVersion,
         as type: Value.Type = Value.self
     ) throws -> Value? {
-        let cacheKey = key(for: sourceData, engine: engine)
+        try value(forSourceHash: Self.sha256Hex(sourceData), engine: engine, as: type)
+    }
+
+    func value<Value: Codable & Sendable>(
+        forSourceHash sourceSHA256: String,
+        engine: AnalysisEngineVersion,
+        as type: Value.Type = Value.self
+    ) throws -> Value? {
+        let cacheKey = key(forSourceHash: sourceSHA256, engine: engine)
         let fileURL = fileURL(for: cacheKey)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
 
@@ -62,7 +76,15 @@ actor AnalysisResultDiskCache {
         for sourceData: Data,
         engine: AnalysisEngineVersion
     ) throws {
-        let cacheKey = key(for: sourceData, engine: engine)
+        try store(value, forSourceHash: Self.sha256Hex(sourceData), engine: engine)
+    }
+
+    func store<Value: Codable & Sendable>(
+        _ value: Value,
+        forSourceHash sourceSHA256: String,
+        engine: AnalysisEngineVersion
+    ) throws {
+        let cacheKey = key(forSourceHash: sourceSHA256, engine: engine)
         let envelope = Envelope(schemaVersion: schemaVersion, key: cacheKey, value: value)
         let data = try JSONEncoder().encode(envelope)
 

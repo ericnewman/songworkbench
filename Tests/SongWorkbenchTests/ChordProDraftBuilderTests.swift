@@ -99,4 +99,59 @@ final class ChordProDraftBuilderTests: XCTestCase {
 
         XCTAssertEqual(ChordProDraftBuilder().build(first), ChordProDraftBuilder().build(second))
     }
+
+    func testBassNoteBuildPrefersSlashBassThenChordRoot() {
+        let input = ChordProDraftInput(
+            title: "Bass Song",
+            tempo: 96,
+            lyrics: [TimedLyricSegment(start: 0, end: 6, text: "Walk the low line")],
+            chords: [
+                EditableChordEvent(time: 0, chord: "Cmaj7", confidence: 0.9),
+                EditableChordEvent(time: 2, chord: "G/B", confidence: 0.9),
+                EditableChordEvent(time: 4, chord: "F#m/A", confidence: 0.9),
+            ]
+        )
+
+        let document = BassNoteChordProDraftBuilder().build(input)
+
+        XCTAssertEqual(
+            document,
+            """
+            {title: Bass Song}
+            {tempo: 96}
+            {comment: Generated bass-note analysis draft - review required}
+
+            [C]Walk [B]the [A]low line
+            """ + "\n"
+        )
+    }
+
+    func testBassNoteBuildHonorsConfidenceThresholdAndOmitsInvalidChordNames() {
+        let input = ChordProDraftInput(
+            title: "Bass Grid",
+            tempo: nil,
+            lyrics: [],
+            chords: [
+                EditableChordEvent(time: 0, chord: "C/E", confidence: 0.79),
+                EditableChordEvent(time: 1, chord: "Bbmaj7/D", confidence: 0.8),
+                EditableChordEvent(time: 2, chord: "N.C.", confidence: 0.95),
+                EditableChordEvent(time: 3, chord: "F#", confidence: nil),
+            ],
+            confidenceThreshold: 0.8
+        )
+
+        let document = BassNoteChordProDraftBuilder().build(input)
+
+        XCTAssertEqual(
+            document,
+            """
+            {title: Bass Grid}
+            {comment: Generated bass-note analysis draft - review required}
+
+            {start_of_grid}
+            | D | F# |
+            {end_of_grid}
+            """ + "\n"
+        )
+    }
 }

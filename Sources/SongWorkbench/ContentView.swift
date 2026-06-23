@@ -10,15 +10,19 @@ struct ContentView: View {
             SongSidebar(model: model)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280)
         } detail: {
-            if let song = model.selectedSong {
-                PlayerView(song: song, model: model)
-            } else {
-                ContentUnavailableView(
-                    "No Song Selected",
-                    systemImage: "music.note.list",
-                    description: Text("Import an audio file to begin.")
-                )
+            Group {
+                if let song = model.selectedSong {
+                    PlayerView(song: song, model: model)
+                } else {
+                    ContentUnavailableView(
+                        "No Song Selected",
+                        systemImage: "music.note.list",
+                        description: Text("Import an audio file to begin.")
+                    )
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.swCanvas)
         }
         .fileImporter(
             isPresented: $model.isImporterPresented,
@@ -50,7 +54,7 @@ private struct SongSidebar: View {
                     }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.swCoral)
                 }
                 .contextMenu {
                     Button("Remove Song", systemImage: "trash", role: .destructive) {
@@ -108,12 +112,13 @@ private struct PlayerView: View {
         VStack(alignment: .center, spacing: 16) {
             VStack(spacing: 4) {
                 Text(song.title)
-                    .font(.title2)
+                    .font(.swDisplay(22, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                 Text(song.url.lastPathComponent)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.swMono(11))
+                    .foregroundStyle(Color.swTextSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -140,13 +145,13 @@ private struct PlayerView: View {
                     }
                     .padding(.trailing, 4)
                 }
-                .frame(width: 330)
+                .frame(minWidth: 380, idealWidth: 400, maxWidth: 440)
 
                 VStack(spacing: 12) {
                     WorkspaceEditorsView(model: model)
                     if let error = playback.errorMessage ?? model.projectErrorMessage {
                         Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Color.swCoral)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -164,7 +169,8 @@ private struct PlayerView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 8) {
                     Label("Waveform", systemImage: "waveform")
-                        .font(.headline)
+                        .font(.swDisplay(15, weight: .semibold))
+                        .foregroundStyle(Color.swTextPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
                     Spacer()
@@ -180,14 +186,14 @@ private struct PlayerView: View {
 
                 HStack(alignment: .center, spacing: 8) {
                     Text("Zoom")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.swDisplay(11))
+                        .foregroundStyle(Color.swTextSecondary)
                         .frame(width: 38, alignment: .leading)
                     Slider(value: $waveformZoom, in: 1...8, step: 0.5)
                         .frame(maxWidth: .infinity)
                     Text("\(waveformZoom, format: .number.precision(.fractionLength(1)))x")
-                        .font(.caption)
-                        .monospacedDigit()
+                        .font(.swMono(11))
+                        .foregroundStyle(Color.swTextSecondary)
                         .frame(width: 32, alignment: .trailing)
                 }
 
@@ -203,7 +209,7 @@ private struct PlayerView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(10)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+            .swSurfacePanel(cornerRadius: 12)
         } else if model.isLoadingWaveform {
             ProgressView("Generating waveform...")
                 .frame(height: 120)

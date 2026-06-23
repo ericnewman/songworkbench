@@ -9,6 +9,9 @@ final class StemPlaybackService: ObservableObject {
     @Published private(set) var isLoaded = false
     @Published private(set) var pitchSemitones = 0
     @Published private(set) var tempoRate = 1.0
+    @Published private(set) var stemLevels = Dictionary(
+        uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(0)) }
+    )
 
     private let engine = AVAudioEngine()
     private let stemMixerNode = AVAudioMixerNode()
@@ -17,6 +20,7 @@ final class StemPlaybackService: ObservableObject {
         uniqueKeysWithValues: StemKind.allCases.map { ($0, AVAudioPlayerNode()) }
     )
     private var files: [StemKind: AVAudioFile] = [:]
+    private var meterFiles: [StemKind: AVAudioFile] = [:]
     private var accessedURLs: [URL] = []
     private var generation = 0
     private var isScheduled = false
@@ -43,8 +47,10 @@ final class StemPlaybackService: ObservableObject {
 
     func load(_ stems: StemFiles, mixer: StemMixerModel) throws {
         unload()
-        for player in players.values {
-            engine.disconnectNodeOutput(player)
+        for kind in StemKind.allCases {
+            if let player = players[kind] {
+                engine.disconnectNodeOutput(player)
+            }
         }
 
         do {
@@ -54,6 +60,7 @@ final class StemPlaybackService: ObservableObject {
                     accessedURLs.append(url)
                 }
                 files[kind] = try AVAudioFile(forReading: url)
+                meterFiles[kind] = try AVAudioFile(forReading: url)
             }
             for kind in StemKind.allCases {
                 guard let player = players[kind], let file = files[kind] else { continue }
@@ -65,7 +72,9 @@ final class StemPlaybackService: ObservableObject {
             scheduleAll(from: 0)
             isLoaded = !files.isEmpty
         } catch {
+            resetStemLevels()
             files.removeAll()
+            meterFiles.removeAll()
             duration = 0
             referenceKind = nil
             releaseSecurityScopes()
@@ -111,6 +120,7 @@ final class StemPlaybackService: ObservableObject {
         }
         isPlaying = false
         stopTimer()
+        resetStemLevels()
     }
 
     func seek(to time: TimeInterval) {
@@ -150,6 +160,7 @@ final class StemPlaybackService: ObservableObject {
     func unload() {
         stop(resetPosition: true)
         files.removeAll()
+        meterFiles.removeAll()
         duration = 0
         referenceKind = nil
         isLoaded = false
@@ -165,6 +176,7 @@ final class StemPlaybackService: ObservableObject {
         isPlaying = false
         isScheduled = false
         stopTimer()
+        resetStemLevels()
         if resetPosition {
             currentTime = 0
             scheduledStartTime = 0
@@ -229,7 +241,7 @@ final class StemPlaybackService: ObservableObject {
         stopTimer()
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.updateCurrentTime()
+                self?.updatePlaybackMeters()
             }
         }
     }
@@ -245,10 +257,69 @@ final class StemPlaybackService: ObservableObject {
         isPlaying = false
         isScheduled = false
         stopTimer()
+        resetStemLevels()
     }
 
     private func duration(of file: AVAudioFile) -> TimeInterval {
         Double(file.length) / file.processingFormat.sampleRate
+    }
+
+    private func updatePlaybackMeters() {
+        updateCurrentTime()
+        guard isPlaying else {
+            resetStemLevels()
+            return
+        }
+        for kind in StemKind.allCases {
+            stemLevels[kind] = meterLevel(for: kind, at: currentTime)
+        }
+    }
+
+    private func meterLevel(for kind: StemKind, at time: TimeInterval) -> Float {
+        guard let file = meterFiles[kind], file.length > 0 else { return 0 }
+        let sampleRate = file.processingFormat.sampleRate
+        let startFrame = min(
+            max(AVAudioFramePosition(time * sampleRate), 0),
+            file.length - 1
+        )
+        let frameCount = min(AVAudioFrameCount(2_048), AVAudioFrameCount(file.length - startFrame))
+        guard
+            frameCount > 0,
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: file.processingFormat, frameCapacity: frameCount)
+        else { return 0 }
+
+        do {
+            file.framePosition = startFrame
+            try file.read(into: buffer, frameCount: frameCount)
+            return Self.meterLevel(from: buffer) * (players[kind]?.volume ?? 0)
+        } catch {
+            return 0
+        }
+    }
+
+    private func resetStemLevels() {
+        for kind in StemKind.allCases {
+            stemLevels[kind] = 0
+        }
+    }
+
+    static func meterLevel(from buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData else { return 0 }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        guard channelCount > 0, frameLength > 0 else { return 0 }
+
+        var sumOfSquares: Float = 0
+        for channel in 0..<channelCount {
+            let samples = channelData[channel]
+            for frame in 0..<frameLength {
+                let sample = samples[frame]
+                sumOfSquares += sample * sample
+            }
+        }
+        let meanSquare = sumOfSquares / Float(channelCount * frameLength)
+        return min(max(sqrt(meanSquare), 0), 1)
     }
 
     private func releaseSecurityScopes() {

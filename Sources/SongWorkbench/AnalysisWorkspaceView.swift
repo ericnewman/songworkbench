@@ -8,7 +8,10 @@ struct AnalysisWorkspaceView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Label("Song Analysis", systemImage: "waveform.badge.magnifyingglass")
-                    .font(.headline)
+                    .font(.swDisplay(15, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 Spacer()
                 ModelPackagesView(model: model)
             }
@@ -31,12 +34,14 @@ struct AnalysisWorkspaceView: View {
                     Text("Accuracy").tag(TranscriptionMode.accuracy)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .disabled(!model.selectedAnalysisStages.contains(.transcription))
             }
 
             HStack {
                 if model.isSongAnalysisRunning {
-                    Button("Cancel", role: .cancel) { model.cancelSongAnalysis() }
+                    Button("Analyzing Song...", systemImage: "sparkles") {}
+                        .disabled(true)
                 } else {
                     Button("Analyze Song", systemImage: "sparkles") {
                         beginAnalysis()
@@ -44,17 +49,7 @@ struct AnalysisWorkspaceView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.selectedAnalysisStages.isEmpty)
                 }
-                if let progress = model.songAnalysisProgress {
-                    ProgressView(value: progress.fractionCompleted)
-                        .accessibilityLabel("Song analysis progress")
-                        .accessibilityValue(progress.message)
-                    Text(progress.message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Spacer().frame(height: 16)
-                }
+                Spacer()
             }
 
             VStack(alignment: .leading, spacing: 9) {
@@ -64,7 +59,8 @@ struct AnalysisWorkspaceView: View {
             }
         }
         .padding()
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .swSurfacePanel(cornerRadius: 12)
         .alert("Replace Existing ChordPro?", isPresented: $showReplacementConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Replace", role: .destructive) {
@@ -75,6 +71,20 @@ struct AnalysisWorkspaceView: View {
                 "The current ChordPro was reviewed or imported manually. Replacement creates a new draft."
             )
         }
+        .sheet(isPresented: analysisProgressPresentation) {
+            AnalysisProgressSheet(model: model)
+        }
+    }
+
+    private var analysisProgressPresentation: Binding<Bool> {
+        Binding(
+            get: { model.isSongAnalysisRunning },
+            set: { isPresented in
+                if !isPresented, model.isSongAnalysisRunning {
+                    model.cancelSongAnalysis()
+                }
+            }
+        )
     }
 
     private func stageRow(_ stage: SongAnalysisStage) -> some View {
@@ -84,7 +94,8 @@ struct AnalysisWorkspaceView: View {
                 Label(stageTitle(stage), systemImage: stageSymbol(record?.state))
                 Spacer()
                 Text(stageStatus(record))
-                    .foregroundStyle(record?.state == .failed ? .red : .secondary)
+                    .foregroundStyle(
+                        record?.state == .failed ? Color.swCoral : Color.swTextSecondary)
                 if record?.state == .failed || record?.state == .stale {
                     Button("Retry") {
                         if stage == .chordPro && model.requiresChordProReplacementConfirmation {
@@ -98,8 +109,8 @@ struct AnalysisWorkspaceView: View {
                 }
             }
             Text(stageDetail(record))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.swMono(10))
+                .foregroundStyle(Color.swTextSecondary)
                 .lineLimit(1)
         }
     }
@@ -160,6 +171,59 @@ struct AnalysisWorkspaceView: View {
     }
 }
 
+private struct AnalysisProgressSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Label("Analyzing Song", systemImage: "sparkles")
+                    .font(.swDisplay(15, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
+                Spacer()
+                Text(percentComplete, format: .percent.precision(.fractionLength(0)))
+                    .font(.swMono(15, weight: .semibold))
+                    .foregroundStyle(Color.swMint)
+            }
+
+            if let progress = model.songAnalysisProgress {
+                ProgressView(value: progress.fractionCompleted) {
+                    Text(progress.message)
+                        .lineLimit(2)
+                }
+                .accessibilityLabel("Song analysis progress")
+                .accessibilityValue(progress.message)
+            } else {
+                ProgressView {
+                    Text("Preparing analysis")
+                }
+                .accessibilityLabel("Song analysis progress")
+                .accessibilityValue("Preparing analysis")
+            }
+
+            Divider()
+
+            HStack {
+                Text("This window closes when analysis finishes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    model.cancelSongAnalysis()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding()
+        .frame(width: 420)
+        .interactiveDismissDisabled(model.isSongAnalysisRunning)
+    }
+
+    private var percentComplete: Double {
+        model.songAnalysisProgress?.fractionCompleted ?? 0
+    }
+}
+
 private struct ModelPackagesView: View {
     @ObservedObject var model: AppModel
     @State private var isPresented = false
@@ -171,10 +235,11 @@ private struct ModelPackagesView: View {
         .popover(isPresented: $isPresented) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Analysis Models").font(.headline)
+                    Text("Analysis Models").font(.swDisplay(15, weight: .semibold))
                     Spacer()
                     Text(model.totalInstalledModelBytes, format: .byteCount(style: .file))
-                        .foregroundStyle(.secondary)
+                        .font(.swMono(12))
+                        .foregroundStyle(Color.swTextSecondary)
                 }
                 ForEach(ModelCatalog.all, id: \.id) { descriptor in
                     modelRow(descriptor)
@@ -227,12 +292,13 @@ private struct ModelPackagesView: View {
                 .disabled(model.modelInstallProgress[descriptor.id] != nil)
         case .installed(let package):
             Text(package.sizeBytes, format: .byteCount(style: .file))
-                .foregroundStyle(.secondary)
+                .font(.swMono(12))
+                .foregroundStyle(Color.swTextSecondary)
             Button("Verify") { model.verifyModelPackage(descriptor) }
             Button("Remove", role: .destructive) { model.removeModelPackage(descriptor) }
         case .invalid:
             Label("Invalid", systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
+                .foregroundStyle(Color.swCoral)
             Button("Verify") { model.verifyModelPackage(descriptor) }
             Button("Remove", role: .destructive) { model.removeModelPackage(descriptor) }
         }

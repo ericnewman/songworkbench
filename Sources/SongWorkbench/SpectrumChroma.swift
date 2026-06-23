@@ -8,7 +8,36 @@ struct MagnitudeSpectrum: Equatable, Sendable {
 }
 
 struct MagnitudeSpectrumAnalyzer: Sendable {
+    /// Builds a forward complex-real DFT for the given frame length. The transform depends only on
+    /// the frame length, so it can be created once and reused across frames of the same length.
+    static func makeTransform(frameLength: Int) throws -> vDSP.DiscreteFourierTransform<Float> {
+        try vDSP.DiscreteFourierTransform<Float>(
+            count: frameLength,
+            direction: .forward,
+            transformType: .complexReal,
+            ofType: Float.self
+        )
+    }
+
     func analyze(_ frame: AudioFrame, sampleRate: Double) throws -> MagnitudeSpectrum {
+        try validate(frame, sampleRate: sampleRate)
+        let transform = try Self.makeTransform(frameLength: frame.samples.count)
+        return compute(frame, sampleRate: sampleRate, transform: transform)
+    }
+
+    /// Reusable-transform variant. The caller is responsible for supplying a transform whose
+    /// `count` equals `frame.samples.count`. A single transform instance must NOT be shared across
+    /// threads concurrently; reuse it only within one serial chunk.
+    func analyze(
+        _ frame: AudioFrame,
+        sampleRate: Double,
+        transform: vDSP.DiscreteFourierTransform<Float>
+    ) throws -> MagnitudeSpectrum {
+        try validate(frame, sampleRate: sampleRate)
+        return compute(frame, sampleRate: sampleRate, transform: transform)
+    }
+
+    private func validate(_ frame: AudioFrame, sampleRate: Double) throws {
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw AudioAnalysisError.invalidSampleRate
         }
@@ -19,19 +48,21 @@ struct MagnitudeSpectrumAnalyzer: Sendable {
         guard frame.samples.count.isMultiple(of: 2) else {
             throw AudioAnalysisError.invalidFrameLength
         }
+    }
 
-        let transform = try vDSP.DiscreteFourierTransform<Float>(
-            count: frame.samples.count,
-            direction: .forward,
-            transformType: .complexReal,
-            ofType: Float.self
-        )
+    private func compute(
+        _ frame: AudioFrame,
+        sampleRate: Double,
+        transform: vDSP.DiscreteFourierTransform<Float>
+    ) -> MagnitudeSpectrum {
         let halfCount = frame.samples.count / 2
-        let inputReal = stride(from: 0, to: frame.samples.count, by: 2).map {
-            frame.samples[$0]
-        }
-        let inputImaginary = stride(from: 1, to: frame.samples.count, by: 2).map {
-            frame.samples[$0]
+        var inputReal = [Float](repeating: 0, count: halfCount)
+        var inputImaginary = [Float](repeating: 0, count: halfCount)
+        frame.samples.withUnsafeBufferPointer { samples in
+            for index in 0..<halfCount {
+                inputReal[index] = samples[2 * index]
+                inputImaginary[index] = samples[2 * index + 1]
+            }
         }
         let output = transform.transform(real: inputReal, imaginary: inputImaginary)
         var real = output.real

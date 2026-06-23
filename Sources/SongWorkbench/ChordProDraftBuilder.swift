@@ -10,13 +10,25 @@ struct ChordProDraftInput: Equatable, Sendable {
 
 struct ChordProDraftBuilder: Sendable {
     func build(_ input: ChordProDraftInput) -> String {
+        build(
+            input,
+            comment: "Generated analysis draft - review required",
+            chordLabel: \.chord
+        )
+    }
+
+    fileprivate func build(
+        _ input: ChordProDraftInput,
+        comment: String,
+        chordLabel: @Sendable (EditableChordEvent) -> String?
+    ) -> String {
         var lines = [
             "{title: \(directiveValue(input.title))}"
         ]
         if let tempo = input.tempo {
             lines.append("{tempo: \(formattedTempo(tempo))}")
         }
-        lines.append("{comment: Generated analysis draft - review required}")
+        lines.append("{comment: \(directiveValue(comment))}")
         lines.append("")
 
         let lyrics = input.lyrics.sorted {
@@ -24,13 +36,21 @@ struct ChordProDraftBuilder: Sendable {
             if $0.start == $1.start { return $0.end < $1.end }
             return $0.start < $1.start
         }
-        let chords = input.chords.filter {
-            $0.confidence.map { $0 >= input.confidenceThreshold } ?? true
+        let chords = input.chords.compactMap { event -> RenderableChordEvent? in
+            guard event.confidence.map({ $0 >= input.confidenceThreshold }) ?? true else {
+                return nil
+            }
+            guard let label = chordLabel(event), !label.isEmpty else { return nil }
+            return RenderableChordEvent(
+                time: event.time,
+                label: label,
+                confidence: event.confidence
+            )
         }.sorted {
-            if $0.time == $1.time, $0.chord == $1.chord {
+            if $0.time == $1.time, $0.label == $1.label {
                 return ($0.confidence ?? 1) > ($1.confidence ?? 1)
             }
-            if $0.time == $1.time { return $0.chord < $1.chord }
+            if $0.time == $1.time { return $0.label < $1.label }
             return $0.time < $1.time
         }
 
@@ -38,7 +58,7 @@ struct ChordProDraftBuilder: Sendable {
             lines.append("{start_of_grid}")
             for start in stride(from: 0, to: chords.count, by: 8) {
                 let row = chords[start..<min(start + 8, chords.count)]
-                    .map(\.chord)
+                    .map(\.label)
                     .joined(separator: " | ")
                 lines.append("| \(row) |")
             }
@@ -59,7 +79,7 @@ struct ChordProDraftBuilder: Sendable {
 
     private func render(
         segment: TimedLyricSegment,
-        chords: [EditableChordEvent]
+        chords: [RenderableChordEvent]
     ) -> String {
         guard !segment.text.isEmpty, !chords.isEmpty else { return segment.text }
         let characters = Array(segment.text)
@@ -75,7 +95,7 @@ struct ChordProDraftBuilder: Sendable {
                     let rightDistance = abs($1 - desired)
                     return leftDistance == rightDistance ? $0 < $1 : leftDistance < rightDistance
                 } ?? 0
-            chordsByOffset[offset, default: []].append(event.chord)
+            chordsByOffset[offset, default: []].append(event.label)
         }
 
         var output = ""
@@ -111,5 +131,43 @@ struct ChordProDraftBuilder: Sendable {
     private func formattedTempo(_ tempo: Double) -> String {
         tempo.rounded() == tempo ? String(Int(tempo)) : String(format: "%.1f", tempo)
     }
+}
 
+struct BassNoteChordProDraftBuilder: Sendable {
+    func build(_ input: ChordProDraftInput) -> String {
+        ChordProDraftBuilder().build(
+            input,
+            comment: "Generated bass-note analysis draft - review required"
+        ) { event in
+            Self.bassNoteLabel(from: event.chord)
+        }
+    }
+
+    static func bassNoteLabel(from chord: String) -> String? {
+        let trimmed = chord.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let components = trimmed.split(
+            separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+        if components.count == 2, let bass = parseNote(components[1]) {
+            return bass
+        }
+        return parseNote(components[0])
+    }
+
+    private static func parseNote(_ source: Substring) -> String? {
+        guard let first = source.first else { return nil }
+        let letter = String(first).uppercased()
+        guard ["A", "B", "C", "D", "E", "F", "G"].contains(letter) else { return nil }
+        let remainder = source.dropFirst()
+        if remainder.first == "#" || remainder.first == "b" {
+            return letter + String(remainder.first!)
+        }
+        return letter
+    }
+}
+
+private struct RenderableChordEvent: Equatable {
+    let time: TimeInterval
+    let label: String
+    let confidence: Float?
 }

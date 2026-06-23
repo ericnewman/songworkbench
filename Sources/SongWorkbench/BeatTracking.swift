@@ -39,19 +39,26 @@ struct BeatTracker: Sendable {
         var bestScore: Float = -.infinity
         var bestRawScore: Float = 0
         var totalScore: Float = 0
-        for lag in minimumLag...maximumLag {
-            let lhs = Array(envelope.dropLast(lag))
-            let rhs = Array(envelope.dropFirst(lag))
-            let score = max(vDSP.dot(lhs, rhs), 0)
-            totalScore += score
-            let bpm = 60 * envelopeRate / Double(lag)
-            let octaveDistance = log2(bpm / 105)
-            let pulsePreference = exp(-0.5 * pow(octaveDistance / 0.6, 2))
-            let weightedScore = score * Float(pulsePreference)
-            if weightedScore > bestScore {
-                bestScore = weightedScore
-                bestRawScore = score
-                bestLag = lag
+        let envelopeCount = envelope.count
+        envelope.withUnsafeBufferPointer { buffer in
+            let base = buffer.baseAddress!
+            for lag in minimumLag...maximumLag {
+                // Dot of envelope[0..<count-lag] with envelope[lag..<count] — same elements and
+                // order as the previous Array(dropLast)/Array(dropFirst) pair, no copies.
+                let pairCount = envelopeCount - lag
+                let lhs = UnsafeBufferPointer(start: base, count: pairCount)
+                let rhs = UnsafeBufferPointer(start: base + lag, count: pairCount)
+                let score = max(vDSP.dot(lhs, rhs), 0)
+                totalScore += score
+                let bpm = 60 * envelopeRate / Double(lag)
+                let octaveDistance = log2(bpm / 105)
+                let pulsePreference = exp(-0.5 * pow(octaveDistance / 0.6, 2))
+                let weightedScore = score * Float(pulsePreference)
+                if weightedScore > bestScore {
+                    bestScore = weightedScore
+                    bestRawScore = score
+                    bestLag = lag
+                }
             }
         }
 

@@ -32,7 +32,7 @@ struct WaveformView: View {
             path.move(to: CGPoint(x: x, y: centerY - height / 2))
             path.addLine(to: CGPoint(x: x, y: centerY + height / 2))
         }
-        context.stroke(path, with: .color(.accentColor.opacity(0.75)), lineWidth: max(step, 1))
+        context.stroke(path, with: .color(.swMint.opacity(0.85)), lineWidth: max(step, 1))
     }
 
     private func drawLoop(context: inout GraphicsContext, size: CGSize) {
@@ -40,8 +40,9 @@ struct WaveformView: View {
         let startX = size.width * loopRegion.start / envelope.duration
         let endX = size.width * loopRegion.end / envelope.duration
         let rect = CGRect(x: startX, y: 0, width: max(endX - startX, 1), height: size.height)
-        context.fill(Path(rect), with: .color(.orange.opacity(0.18)))
-        context.stroke(Path(rect), with: .color(.orange), lineWidth: 1.5)
+        // Actively-looped / analyzed segment: soft accent fill + accent border.
+        context.fill(Path(rect), with: .color(.swAccent.opacity(0.18)))
+        context.stroke(Path(rect), with: .color(.swAccent), lineWidth: 1.5)
     }
 
     private func drawPlayhead(context: inout GraphicsContext, size: CGSize) {
@@ -50,7 +51,8 @@ struct WaveformView: View {
         var path = Path()
         path.move(to: CGPoint(x: x, y: 0))
         path.addLine(to: CGPoint(x: x, y: size.height))
-        context.stroke(path, with: .color(.primary), lineWidth: 2)
+        // Playhead / active-analysis cursor.
+        context.stroke(path, with: .color(.swAccent), lineWidth: 2)
     }
 
     private func loopGesture(width: CGFloat) -> some Gesture {
