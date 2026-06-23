@@ -1,0 +1,226 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct ContentView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        NavigationSplitView {
+            SongSidebar(model: model)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 280)
+        } detail: {
+            if let song = model.selectedSong {
+                PlayerView(song: song, model: model)
+            } else {
+                ContentUnavailableView(
+                    "No Song Selected",
+                    systemImage: "music.note.list",
+                    description: Text("Import an audio file to begin.")
+                )
+            }
+        }
+        .fileImporter(
+            isPresented: $model.isImporterPresented,
+            allowedContentTypes: [.audio],
+            allowsMultipleSelection: true
+        ) { result in
+            model.handleSongImportResult(result)
+        }
+    }
+}
+
+private struct SongSidebar: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        List(selection: selection) {
+            ForEach(model.songs) { song in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(song.title)
+                            .lineLimit(1)
+                        Text(song.fileExtension)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Remove Song", systemImage: "trash") {
+                        model.removeSong(song)
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.red)
+                }
+                .contextMenu {
+                    Button("Remove Song", systemImage: "trash", role: .destructive) {
+                        model.removeSong(song)
+                    }
+                }
+                .tag(song.id)
+            }
+        }
+        .navigationTitle("Songs")
+        .toolbar {
+            Button("Remove Selected Song", systemImage: "trash") {
+                if let song = model.selectedSong {
+                    model.removeSong(song)
+                }
+            }
+            .disabled(model.selectedSong == nil)
+
+            Button("Import Songs", systemImage: "plus") {
+                model.isImporterPresented = true
+            }
+        }
+    }
+
+    private var selection: Binding<Song.ID?> {
+        Binding(
+            get: { model.selectedSongID },
+            set: { newID in
+                guard
+                    let newID,
+                    newID != model.selectedSongID,
+                    let song = model.songs.first(where: { $0.id == newID })
+                else { return }
+                model.select(song)
+            }
+        )
+    }
+}
+
+private struct PlayerView: View {
+    let song: Song
+    @ObservedObject var model: AppModel
+    @ObservedObject private var playback: AudioPlaybackService
+    @ObservedObject private var stemPlayback: StemPlaybackService
+    @State private var waveformZoom = 1.0
+
+    init(song: Song, model: AppModel) {
+        self.song = song
+        self.model = model
+        playback = model.playback
+        stemPlayback = model.stemPlayback
+    }
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 16) {
+            VStack(spacing: 4) {
+                Text(song.title)
+                    .font(.title2)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                Text(song.url.lastPathComponent)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity)
+
+            HStack(alignment: .top, spacing: 20) {
+                ScrollView {
+                    VStack(spacing: 18) {
+                        Button("Export Audio...", systemImage: "square.and.arrow.up") {
+                            presentExportPanel()
+                        }
+                        .disabled(model.isExporting)
+                        .frame(maxWidth: .infinity)
+
+                        if model.isExporting {
+                            HStack {
+                                ProgressView(value: model.exportProgress)
+                                Button("Cancel") { model.cancelExport() }
+                            }
+                        }
+
+                        waveformContent
+                        AnalysisWorkspaceView(model: model)
+                    }
+                    .padding(.trailing, 4)
+                }
+                .frame(width: 330)
+
+                VStack(spacing: 12) {
+                    WorkspaceEditorsView(model: model)
+                    if let error = playback.errorMessage ?? model.projectErrorMessage {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private var waveformContent: some View {
+        if let waveform = model.waveform {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    Label("Waveform", systemImage: "waveform")
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Spacer()
+                    Button {
+                        model.clearLoop()
+                    } label: {
+                        Label("Clear Loop", systemImage: "xmark.circle")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .controlSize(.small)
+                    .disabled(model.loopRegion == nil)
+                }
+
+                HStack(alignment: .center, spacing: 8) {
+                    Text("Zoom")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, alignment: .leading)
+                    Slider(value: $waveformZoom, in: 1...8, step: 0.5)
+                        .frame(maxWidth: .infinity)
+                    Text("\(waveformZoom, format: .number.precision(.fractionLength(1)))x")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .frame(width: 32, alignment: .trailing)
+                }
+
+                ScrollView(.horizontal) {
+                    WaveformView(
+                        envelope: waveform,
+                        currentTime: model.activePlaybackTime,
+                        loopRegion: $model.loopRegion
+                    )
+                    .frame(width: max(300, 300 * waveformZoom), height: 100)
+                }
+                .scrollIndicators(.visible)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(10)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        } else if model.isLoadingWaveform {
+            ProgressView("Generating waveform...")
+                .frame(height: 120)
+        } else {
+            ContentUnavailableView("Waveform Unavailable", systemImage: "waveform")
+                .frame(height: 120)
+        }
+    }
+
+    private func presentExportPanel() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.wav]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "\(song.title) - Practice.wav"
+        if panel.runModal() == .OK, let url = panel.url {
+            model.exportSelectedSong(to: url)
+        }
+    }
+
+}

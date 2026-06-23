@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -euo pipefail
+
+workspace="$(git rev-parse --show-toplevel)"
+cd "$workspace"
+
+git diff --cached --check
+python3 -m compileall -q scripts Benchmarks/Tools
+swift format lint --strict --recursive Sources Tests

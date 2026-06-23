@@ -1,0 +1,11 @@
+.build/
+.DS_Store
+.package.resolved
+__pycache__/
+*.py[cod]
+Derived/
+*.xcresult
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+**/.swiftpm/xcode/xcuserdata/

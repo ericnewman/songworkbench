@@ -1,0 +1,24 @@
+* text=auto
+
+*.swift text eol=lf diff=swift
+*.py text eol=lf
+*.sh text eol=lf
+Makefile text eol=lf
+*.md text eol=lf
+*.cho text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.csv text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+*.aiff binary
+*.flac binary
+*.m4a binary
+*.mp3 binary
+*.wav binary
+*.mlmodel binary
+*.mlmodelc binary
+*.mlpackage binary
+*.ggml binary
+*.gguf binary
