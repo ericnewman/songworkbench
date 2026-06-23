@@ -39,29 +39,35 @@ private struct SongSidebar: View {
 
     var body: some View {
         List(selection: selection) {
-            ForEach(model.songs) { song in
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(song.title)
-                            .lineLimit(1)
-                        Text(song.fileExtension)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            Section {
+                ForEach(model.songs) { song in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(song.title)
+                                .lineLimit(1)
+                            Text(song.fileExtension)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Remove Song", systemImage: "trash") {
+                            model.removeSong(song)
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(Color.swCoral)
                     }
-                    Spacer()
-                    Button("Remove Song", systemImage: "trash") {
-                        model.removeSong(song)
+                    .contextMenu {
+                        Button("Remove Song", systemImage: "trash", role: .destructive) {
+                            model.removeSong(song)
+                        }
                     }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Color.swCoral)
+                    .tag(song.id)
                 }
-                .contextMenu {
-                    Button("Remove Song", systemImage: "trash", role: .destructive) {
-                        model.removeSong(song)
-                    }
-                }
-                .tag(song.id)
+            } header: {
+                Text("Songs")
+                    .font(.swDisplay(12, weight: .semibold))
+                    .foregroundStyle(Color.swTextSecondary)
             }
         }
         .navigationTitle("Songs")
