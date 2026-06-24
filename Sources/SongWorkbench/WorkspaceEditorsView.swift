@@ -37,9 +37,9 @@ struct WorkspaceEditorsView: View {
                     .tabItem { Label("Lyrics", systemImage: "text.quote") }
                 ChordTimelineEditor(model: model)
                     .tabItem { Label("Chords", systemImage: "music.note") }
-                ChordProEditor(model: model)
+                ChordProTabEditor(model: model, config: .chordPro)
                     .tabItem { Label("ChordPro", systemImage: "doc.plaintext") }
-                BassNoteChordProEditor(model: model)
+                ChordProTabEditor(model: model, config: .bassNote)
                     .tabItem { Label("Bass Notes", systemImage: "music.note") }
                 StemMixerEditor(model: model)
                     .tabItem { Label("Stems", systemImage: "slider.horizontal.3") }
@@ -442,10 +442,76 @@ private struct ChordTimelineEditor: View {
     }
 }
 
-private struct ChordProEditor: View {
-    private enum Mode: String, CaseIterable {
-        case preview = "App Preview"
-        case edit = "Edit"
+/// Captures every static difference between the ChordPro tab and the Bass Notes tab so that
+/// a single `ChordProTabEditor` can render both. Model-dependent behavior (status text,
+/// preview source, export, empty state) is keyed off `kind` inside the editor; everything
+/// else is shared.
+private struct ChordProTabConfig: Sendable {
+    /// Identifies which tab this is; drives the model-dependent branches in the editor.
+    enum Kind: Sendable, Equatable {
+        case chordPro
+        case bassNote
+    }
+
+    /// The secondary segmented mode (App Preview is always first and the default).
+    enum SecondaryMode: Sendable {
+        /// Editable monospaced `TextEditor` bound to `model.chordProSource`.
+        case edit
+        /// Read-only monospaced source view of the generated text.
+        case source
+    }
+
+    let kind: Kind
+    let title: String
+    let pickerAccessibilityLabel: String
+    let secondaryModeLabel: String
+    let secondaryMode: SecondaryMode
+    let highlightStyle: ChordProPlaybackHighlightStyle
+    let exportFileName: String
+    /// Whether the transpose stepper is shown and fed into the preview/export.
+    let supportsTranspose: Bool
+    /// Whether the Import button is shown.
+    let supportsImport: Bool
+    /// Whether the Mark Reviewed button is shown.
+    let supportsMarkReviewed: Bool
+    /// Footer caption shown beneath the body, if any.
+    let footerNote: String?
+
+    static let chordPro = ChordProTabConfig(
+        kind: .chordPro,
+        title: "ChordPro",
+        pickerAccessibilityLabel: "ChordPro view",
+        secondaryModeLabel: "Edit",
+        secondaryMode: .edit,
+        highlightStyle: .chord,
+        exportFileName: "Song.cho",
+        supportsTranspose: true,
+        supportsImport: true,
+        supportsMarkReviewed: true,
+        footerNote: nil
+    )
+
+    static let bassNote = ChordProTabConfig(
+        kind: .bassNote,
+        title: "Bass Note ChordPro",
+        pickerAccessibilityLabel: "Bass note ChordPro view",
+        secondaryModeLabel: "Source",
+        secondaryMode: .source,
+        highlightStyle: .bassNote,
+        exportFileName: "Bass Notes.cho",
+        supportsTranspose: false,
+        supportsImport: false,
+        supportsMarkReviewed: false,
+        footerNote:
+            "Bass notes are derived from detected chords: slash-bass notes are used first, "
+            + "otherwise the chord root is used."
+    )
+}
+
+private struct ChordProTabEditor: View {
+    private enum Mode: Hashable {
+        case preview
+        case secondary
     }
 
     @ObservedObject var model: AppModel
@@ -455,8 +521,11 @@ private struct ChordProEditor: View {
     @State private var errorMessage: String?
     @State private var mode = Mode.preview
 
-    init(model: AppModel) {
+    private let config: ChordProTabConfig
+
+    init(model: AppModel, config: ChordProTabConfig) {
         self.model = model
+        self.config = config
         playback = model.playback
         stemPlayback = model.stemPlayback
     }
@@ -464,51 +533,73 @@ private struct ChordProEditor: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Text("ChordPro")
+                Text(config.title)
                     .font(.swDisplay(15, weight: .semibold))
                     .foregroundStyle(Color.swTextPrimary)
-                Text(model.chordProReviewState.rawValue.capitalized)
+                Text(statusBadge)
                     .font(.swDisplay(11))
                     .foregroundStyle(Color.swTextSecondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(Color.swSurface, in: Capsule())
-                Button("Import...", systemImage: "square.and.arrow.down") {
-                    importDocument()
-                }
-                Picker("ChordPro view", selection: $mode) {
-                    ForEach(Mode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
+                if config.supportsImport {
+                    Button("Import...", systemImage: "square.and.arrow.down") {
+                        importDocument()
                     }
+                }
+                Picker(config.pickerAccessibilityLabel, selection: $mode) {
+                    Text("App Preview").tag(Mode.preview)
+                    Text(config.secondaryModeLabel).tag(Mode.secondary)
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .frame(width: 190)
                 Spacer()
-                Button("Mark Reviewed", systemImage: "checkmark.seal") {
-                    model.markChordProReviewed()
+                if config.supportsMarkReviewed {
+                    Button("Mark Reviewed", systemImage: "checkmark.seal") {
+                        model.markChordProReviewed()
+                    }
+                    .disabled(
+                        model.chordProSource.isEmpty || model.chordProReviewState == .reviewed
+                    )
                 }
-                .disabled(model.chordProSource.isEmpty || model.chordProReviewState == .reviewed)
-                Stepper("Transpose: \(transpose)", value: $transpose, in: -12...12)
+                if config.supportsTranspose {
+                    Stepper("Transpose: \(transpose)", value: $transpose, in: -12...12)
+                }
                 Button("Export...", systemImage: "square.and.arrow.up") {
                     exportDocument()
                 }
-                .disabled(model.chordProSource.isEmpty)
+                .disabled(!isExportEnabled)
             }
-            Group {
-                switch mode {
-                case .edit:
-                    TextEditor(text: $model.chordProSource)
-                        .font(.system(.body, design: .monospaced))
-                        .border(.separator)
-                case .preview:
-                    ChordProAppPreview(
-                        source: model.chordProSource,
-                        transpose: transpose,
-                        highlightContext: highlightContext(style: .chord)
-                    )
+
+            if showsEmptyState {
+                ContentUnavailableView(
+                    "No Bass Notes",
+                    systemImage: "music.note",
+                    description: Text("Run Tempo & Chords or add chord events first.")
+                )
+            } else {
+                Group {
+                    switch mode {
+                    case .secondary:
+                        secondaryBody
+                    case .preview:
+                        ChordProAppPreview(
+                            source: previewSource,
+                            transpose: config.supportsTranspose ? transpose : 0,
+                            highlightContext: highlightContext(style: config.highlightStyle)
+                        )
+                    }
                 }
             }
+
+            if let footerNote = config.footerNote {
+                Text(footerNote)
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(Color.swCoral)
@@ -516,6 +607,59 @@ private struct ChordProEditor: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private var secondaryBody: some View {
+        switch config.secondaryMode {
+        case .edit:
+            TextEditor(text: $model.chordProSource)
+                .font(.system(.body, design: .monospaced))
+                .border(.separator)
+        case .source:
+            ScrollView([.horizontal, .vertical]) {
+                Text(previewSource)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(8)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+            .border(.separator)
+        }
+    }
+
+    private var statusBadge: String {
+        switch config.kind {
+        case .chordPro:
+            return model.chordProReviewState.rawValue.capitalized
+        case .bassNote:
+            return "Generated"
+        }
+    }
+
+    private var previewSource: String {
+        switch config.kind {
+        case .chordPro:
+            return model.chordProSource
+        case .bassNote:
+            return model.bassNoteChordProSource
+        }
+    }
+
+    private var isExportEnabled: Bool {
+        switch config.kind {
+        case .chordPro:
+            return !model.chordProSource.isEmpty
+        case .bassNote:
+            return !model.bassNoteChordProSource.isEmpty && !model.chordEvents.isEmpty
+        }
+    }
+
+    /// Bass Notes shows an empty state in place of the body when there are no chord events;
+    /// ChordPro lets `ChordProAppPreview` handle its own empty state.
+    private var showsEmptyState: Bool {
+        config.kind == .bassNote && model.chordEvents.isEmpty
     }
 
     private func importDocument() {
@@ -534,10 +678,15 @@ private struct ChordProEditor: View {
     private func exportDocument() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText]
-        panel.nameFieldStringValue = "Song.cho"
+        panel.nameFieldStringValue = config.exportFileName
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try model.exportChordPro(to: url, transposedBy: transpose)
+            switch config.kind {
+            case .chordPro:
+                try model.exportChordPro(to: url, transposedBy: transpose)
+            case .bassNote:
+                try model.exportBassNoteChordPro(to: url)
+            }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -666,126 +815,6 @@ private struct ChordProPreviewIndexedBlock {
     let offset: Int
     let block: ChordProPreviewBlock
     let lyricOrdinal: Int?
-}
-
-private struct BassNoteChordProEditor: View {
-    private enum Mode: String, CaseIterable {
-        case preview = "App Preview"
-        case source = "Source"
-    }
-
-    @ObservedObject var model: AppModel
-    @ObservedObject private var playback: AudioPlaybackService
-    @ObservedObject private var stemPlayback: StemPlaybackService
-    @State private var errorMessage: String?
-    @State private var mode = Mode.preview
-
-    init(model: AppModel) {
-        self.model = model
-        playback = model.playback
-        stemPlayback = model.stemPlayback
-    }
-
-    var body: some View {
-        let source = model.bassNoteChordProSource
-        VStack(spacing: 8) {
-            HStack {
-                Text("Bass Note ChordPro")
-                    .font(.swDisplay(15, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                Text("Generated")
-                    .font(.swDisplay(11))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color.swSurface, in: Capsule())
-                Picker("Bass note ChordPro view", selection: $mode) {
-                    ForEach(Mode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-                Spacer()
-                Button("Export...", systemImage: "square.and.arrow.up") {
-                    exportDocument()
-                }
-                .disabled(source.isEmpty || model.chordEvents.isEmpty)
-            }
-
-            if model.chordEvents.isEmpty {
-                ContentUnavailableView(
-                    "No Bass Notes",
-                    systemImage: "music.note",
-                    description: Text("Run Tempo & Chords or add chord events first.")
-                )
-            } else {
-                Group {
-                    switch mode {
-                    case .source:
-                        ScrollView([.horizontal, .vertical]) {
-                            Text(source)
-                                .font(.system(.body, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .topLeading)
-                                .padding(8)
-                        }
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .border(.separator)
-                    case .preview:
-                        ChordProAppPreview(
-                            source: source,
-                            highlightContext: highlightContext(style: .bassNote)
-                        )
-                    }
-                }
-            }
-
-            Text(
-                "Bass notes are derived from detected chords: slash-bass notes are used first, otherwise the chord root is used."
-            )
-            .font(.swDisplay(11))
-            .foregroundStyle(Color.swTextSecondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Color.swCoral)
-            }
-        }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private func exportDocument() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText]
-        panel.nameFieldStringValue = "Bass Notes.cho"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try model.exportBassNoteChordPro(to: url)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    private func highlightContext(
-        style: ChordProPlaybackHighlightStyle
-    ) -> ChordProPlaybackHighlightContext {
-        ChordProPlaybackHighlightContext(
-            currentTime: currentPlaybackTime,
-            lyricSegments: model.lyricSegments,
-            chordEvents: model.chordEvents,
-            confidenceThreshold: model.chordConfidenceThreshold,
-            style: style
-        )
-    }
-
-    private var currentPlaybackTime: TimeInterval {
-        model.activePlaybackSource == .stemMix ? stemPlayback.currentTime : playback.currentTime
-    }
 }
 
 private struct ChordProPreviewBlockView: View {

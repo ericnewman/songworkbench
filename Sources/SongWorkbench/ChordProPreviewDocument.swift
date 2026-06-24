@@ -45,18 +45,20 @@ struct ChordProLinePlaybackHighlight: Equatable, Sendable {
     let chordLabels: Set<String>
 }
 
-struct ChordProPlaybackHighlightContext: Equatable, Sendable {
-    private let activeLyricOrdinal: Int?
-    private let lineHighlight: ChordProLinePlaybackHighlight?
+/// Concentrates the per-frame playback-highlight derivation. Construct it once from the
+/// timed lyric/chord inputs (which it sorts and prepares up front) and then issue the
+/// separate queries below for whatever `currentTime` the playhead is at.
+struct ChordProHighlightDeriver: Sendable {
+    private let sortedLyrics: [TimedLyricSegment]
+    private let chordEvents: [EditableChordEvent]
+    private let confidenceThreshold: Float
 
     init(
-        currentTime: TimeInterval,
         lyricSegments: [TimedLyricSegment],
         chordEvents: [EditableChordEvent],
-        confidenceThreshold: Float,
-        style: ChordProPlaybackHighlightStyle
+        confidenceThreshold: Float
     ) {
-        let sortedLyrics =
+        sortedLyrics =
             lyricSegments
             .filter { !$0.text.isEmpty }
             .sorted {
@@ -64,44 +66,27 @@ struct ChordProPlaybackHighlightContext: Equatable, Sendable {
                 if $0.start == $1.start { return $0.end < $1.end }
                 return $0.start < $1.start
             }
-        guard
-            let lyricIndex = sortedLyrics.firstIndex(where: {
-                currentTime >= $0.start && currentTime < $0.end
-            })
-        else {
-            activeLyricOrdinal = nil
-            lineHighlight = nil
-            return
-        }
-
-        let lyric = sortedLyrics[lyricIndex]
-        activeLyricOrdinal = lyricIndex
-        lineHighlight = ChordProLinePlaybackHighlight(
-            wordRange: Self.activeWordRange(in: lyric, at: currentTime),
-            chordLabels: Self.activeChordLabels(
-                at: currentTime,
-                in: lyric,
-                chordEvents: chordEvents,
-                confidenceThreshold: confidenceThreshold,
-                style: style
-            )
-        )
+        self.chordEvents = chordEvents
+        self.confidenceThreshold = confidenceThreshold
     }
 
-    /// The ordinal of the currently active lyric line, or `nil` when nothing is playing.
-    /// Used to drive auto-scroll of the preview to the highlighted line.
-    var currentLyricOrdinal: Int? { activeLyricOrdinal }
-
-    func highlight(forLyricOrdinal ordinal: Int?) -> ChordProLinePlaybackHighlight? {
-        guard ordinal == activeLyricOrdinal else { return nil }
-        return lineHighlight
+    /// The ordinal (index into the sorted lyric segments) of the lyric active at
+    /// `currentTime`, where a lyric is active for `currentTime` in `[start, end)`.
+    func lyricOrdinal(at currentTime: TimeInterval) -> Int? {
+        sortedLyrics.firstIndex(where: {
+            currentTime >= $0.start && currentTime < $0.end
+        })
     }
 
-    private static func activeWordRange(
-        in lyric: TimedLyricSegment,
-        at currentTime: TimeInterval
-    ) -> Range<Int>? {
-        let ranges = wordRanges(in: lyric.text)
+    /// The character range of the word active at `currentTime` within the lyric at `ordinal`.
+    func wordRange(inLyricOrdinal ordinal: Int, at currentTime: TimeInterval) -> Range<Int>? {
+        guard sortedLyrics.indices.contains(ordinal) else { return nil }
+        return wordRange(in: sortedLyrics[ordinal], at: currentTime)
+    }
+
+    /// The character range of the word active at `currentTime` within `lyric`.
+    func wordRange(in lyric: TimedLyricSegment, at currentTime: TimeInterval) -> Range<Int>? {
+        let ranges = Self.wordRanges(in: lyric.text)
         guard !ranges.isEmpty else { return nil }
         let duration = max(lyric.end - lyric.start, 0.001)
         let relative = min(max((currentTime - lyric.start) / duration, 0), 0.999_999)
@@ -109,11 +94,20 @@ struct ChordProPlaybackHighlightContext: Equatable, Sendable {
         return ranges[index]
     }
 
-    private static func activeChordLabels(
+    /// The active chord labels at `currentTime` within the lyric at `ordinal`, rendered
+    /// per `style` (raw chord symbols vs. derived bass-note labels).
+    func activeChordLabels(
+        at currentTime: TimeInterval,
+        forLyricOrdinal ordinal: Int,
+        style: ChordProPlaybackHighlightStyle
+    ) -> Set<String> {
+        guard sortedLyrics.indices.contains(ordinal) else { return [] }
+        return activeChordLabels(at: currentTime, in: sortedLyrics[ordinal], style: style)
+    }
+
+    func activeChordLabels(
         at currentTime: TimeInterval,
         in lyric: TimedLyricSegment,
-        chordEvents: [EditableChordEvent],
-        confidenceThreshold: Float,
         style: ChordProPlaybackHighlightStyle
     ) -> Set<String> {
         let included =
@@ -155,6 +149,49 @@ struct ChordProPlaybackHighlightContext: Equatable, Sendable {
             ranges.append(wordStart..<characters.count)
         }
         return ranges
+    }
+}
+
+struct ChordProPlaybackHighlightContext: Equatable, Sendable {
+    private let activeLyricOrdinal: Int?
+    private let lineHighlight: ChordProLinePlaybackHighlight?
+
+    init(
+        currentTime: TimeInterval,
+        lyricSegments: [TimedLyricSegment],
+        chordEvents: [EditableChordEvent],
+        confidenceThreshold: Float,
+        style: ChordProPlaybackHighlightStyle
+    ) {
+        let deriver = ChordProHighlightDeriver(
+            lyricSegments: lyricSegments,
+            chordEvents: chordEvents,
+            confidenceThreshold: confidenceThreshold
+        )
+        guard let lyricIndex = deriver.lyricOrdinal(at: currentTime) else {
+            activeLyricOrdinal = nil
+            lineHighlight = nil
+            return
+        }
+
+        activeLyricOrdinal = lyricIndex
+        lineHighlight = ChordProLinePlaybackHighlight(
+            wordRange: deriver.wordRange(inLyricOrdinal: lyricIndex, at: currentTime),
+            chordLabels: deriver.activeChordLabels(
+                at: currentTime,
+                forLyricOrdinal: lyricIndex,
+                style: style
+            )
+        )
+    }
+
+    /// The ordinal of the currently active lyric line, or `nil` when nothing is playing.
+    /// Used to drive auto-scroll of the preview to the highlighted line.
+    var currentLyricOrdinal: Int? { activeLyricOrdinal }
+
+    func highlight(forLyricOrdinal ordinal: Int?) -> ChordProLinePlaybackHighlight? {
+        guard ordinal == activeLyricOrdinal else { return nil }
+        return lineHighlight
     }
 }
 
