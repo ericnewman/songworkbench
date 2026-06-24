@@ -65,6 +65,47 @@ final class ChordProHighlightDeriverTests: XCTestCase {
         XCTAssertEqual(sut.wordRange(in: segment, at: 2.2), 5..<8)
     }
 
+    func testWordRangeUsesRealWordTimesWhenPresent() {
+        // "Walk the low line" with real onsets at 0, 1.5, 3, 4.5.
+        let segment = TimedLyricSegment(
+            start: 0,
+            end: 6,
+            text: "Walk the low line",
+            words: [
+                TimedLyricWord(text: "Walk", start: 0, end: 1.0, characterRange: 0..<4),
+                TimedLyricWord(text: "the", start: 1.5, end: 2.0, characterRange: 5..<8),
+                TimedLyricWord(text: "low", start: 3.0, end: 3.5, characterRange: 9..<12),
+                TimedLyricWord(text: "line", start: 4.5, end: 5.0, characterRange: 13..<17),
+            ]
+        )
+        let sut = deriver(lyricSegments: [segment])
+
+        // Before the first word's start: nothing is active yet.
+        XCTAssertNil(sut.wordRange(in: segment, at: -0.1))
+        // Inside a word's [start, end): that word.
+        XCTAssertEqual(sut.wordRange(in: segment, at: 0.2), 0..<4)
+        XCTAssertEqual(sut.wordRange(in: segment, at: 1.7), 5..<8)
+        // In the gap after a word ends but before the next starts: most recent word holds.
+        XCTAssertEqual(sut.wordRange(in: segment, at: 2.5), 5..<8)
+        XCTAssertEqual(sut.wordRange(in: segment, at: 3.2), 9..<12)
+        // After the last word ends, it stays highlighted until the segment ends.
+        XCTAssertEqual(sut.wordRange(in: segment, at: 5.9), 13..<17)
+
+        // The ordinal-based overload agrees.
+        XCTAssertEqual(sut.wordRange(inLyricOrdinal: 0, at: 1.7), 5..<8)
+    }
+
+    func testWordRangeFallsBackToInterpolationWhenNoWordTimes() {
+        // No words: identical behavior to the legacy interpolation.
+        let segment = TimedLyricSegment(start: 0, end: 6, text: "Walk the low line")
+        let sut = deriver(lyricSegments: [segment])
+
+        XCTAssertEqual(sut.wordRange(in: segment, at: 0.5), 0..<4)
+        XCTAssertEqual(sut.wordRange(in: segment, at: 2.2), 5..<8)
+        XCTAssertEqual(sut.wordRange(in: segment, at: 4.0), 9..<12)
+        XCTAssertEqual(sut.wordRange(in: segment, at: 5.9), 13..<17)
+    }
+
     func testActiveChordLabelsFilterByConfidenceThreshold() {
         let sut = deriver(
             lyricSegments: [

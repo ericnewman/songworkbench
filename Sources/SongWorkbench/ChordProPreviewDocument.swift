@@ -92,13 +92,38 @@ struct ChordProHighlightDeriver: Sendable {
     }
 
     /// The character range of the word active at `currentTime` within `lyric`.
+    ///
+    /// When the segment carries real per-word timings, the active word is the one whose
+    /// `[start, end)` contains `currentTime`, else the most recent word with `start <=
+    /// currentTime` (so the final word stays lit until the segment ends), clamped to the
+    /// segment text length. Without word timings it falls back to even interpolation.
     func wordRange(in lyric: TimedLyricSegment, at currentTime: TimeInterval) -> Range<Int>? {
+        if !lyric.words.isEmpty {
+            return Self.wordRange(in: lyric.words, textLength: lyric.text.count, at: currentTime)
+        }
         let ranges = Self.wordRanges(in: lyric.text)
         guard !ranges.isEmpty else { return nil }
         let duration = max(lyric.end - lyric.start, 0.001)
         let relative = min(max((currentTime - lyric.start) / duration, 0), 0.999_999)
         let index = min(Int(relative * Double(ranges.count)), ranges.count - 1)
         return ranges[index]
+    }
+
+    private static func wordRange(
+        in words: [TimedLyricWord],
+        textLength: Int,
+        at currentTime: TimeInterval
+    ) -> Range<Int>? {
+        let active: TimedLyricWord?
+        if let containing = words.last(where: { $0.start <= currentTime && currentTime < $0.end }) {
+            active = containing
+        } else {
+            active = words.last(where: { $0.start <= currentTime })
+        }
+        guard let word = active else { return nil }
+        let lower = min(max(word.characterRange.lowerBound, 0), textLength)
+        let upper = min(max(word.characterRange.upperBound, lower), textLength)
+        return lower..<upper
     }
 
     /// The active chord labels at `currentTime` within the lyric at `ordinal`, rendered

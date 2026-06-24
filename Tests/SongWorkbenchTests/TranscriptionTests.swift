@@ -113,6 +113,76 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testGroupingPopulatesWordTimingsWithCharacterRangesIntoSegmentText() {
+        let tokens = [
+            token("  Hello  ", 0, 0.4),
+            token("world", 0.5, 0.9),
+            token("!", 0.9, 1),
+        ]
+
+        let grouped = TimedLyricSegmentGrouper.group(tokens: tokens)
+
+        XCTAssertEqual(grouped.count, 1)
+        let segment = grouped[0]
+        XCTAssertEqual(segment.text, "Hello world!")
+        XCTAssertEqual(segment.start, 0)
+        XCTAssertEqual(segment.end, 1)
+
+        // "Hello" is its own word; "world!" spans two tokens joined without a space.
+        XCTAssertEqual(segment.words.map(\.text), ["Hello", "world!"])
+        XCTAssertEqual(segment.words.map(\.start), [0, 0.5])
+        XCTAssertEqual(segment.words.map(\.end), [0.4, 1])
+
+        // Character ranges index back into segment.text to recover each word verbatim.
+        let characters = Array(segment.text)
+        for word in segment.words {
+            XCTAssertEqual(String(characters[word.characterRange]), word.text)
+        }
+        XCTAssertEqual(segment.words.map(\.characterRange), [0..<5, 6..<12])
+    }
+
+    func testGroupingWordTimesAreAscendingAndTakenFromTokens() {
+        let tokens = [
+            token("We're", 1.1, 1.4),
+            token("here", 1.5, 1.9),
+            token("now", 2.0, 2.4),
+        ]
+
+        let grouped = TimedLyricSegmentGrouper.group(tokens: tokens)
+        XCTAssertEqual(grouped.count, 1)
+        let words = grouped[0].words
+
+        XCTAssertEqual(words.map(\.text), ["We're", "here", "now"])
+        // "We're" is a single token (contraction is whole here), so onset == token onset.
+        XCTAssertEqual(words.map(\.start), [1.1, 1.5, 2.0])
+        XCTAssertEqual(words.map(\.end), [1.4, 1.9, 2.4])
+        // Ascending onsets.
+        XCTAssertEqual(words.map(\.start), words.map(\.start).sorted())
+    }
+
+    func testGroupingWordSpansMultipleTokensForAttachedContraction() {
+        // The contraction suffix arrives as its own token and attaches with no space.
+        let tokens = [
+            token("We", 0.0, 0.3),
+            token("'re", 0.3, 0.5),
+            token("home", 0.6, 1.0),
+        ]
+
+        let grouped = TimedLyricSegmentGrouper.group(tokens: tokens)
+        XCTAssertEqual(grouped.count, 1)
+        let segment = grouped[0]
+        XCTAssertEqual(segment.text, "We're home")
+
+        XCTAssertEqual(segment.words.map(\.text), ["We're", "home"])
+        // The merged word's onset is the first token's start; offset is the last token's end.
+        XCTAssertEqual(segment.words.map(\.start), [0.0, 0.6])
+        XCTAssertEqual(segment.words.map(\.end), [0.5, 1.0])
+        let characters = Array(segment.text)
+        for word in segment.words {
+            XCTAssertEqual(String(characters[word.characterRange]), word.text)
+        }
+    }
+
     func testEngineReceivesRequestScopedCancellation() async {
         let engine = RecordingTranscriptionEngine()
         let id = UUID()

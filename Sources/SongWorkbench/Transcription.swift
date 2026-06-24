@@ -191,16 +191,59 @@ enum TimedLyricSegmentGrouper {
         groups.append(current)
 
         return groups.map { tokens in
-            let text = renderedText(tokens.map(\.text))
+            let layout = renderedLayout(tokens.map(\.text))
+            let text = layout.text
             let start = tokens[0].startTime
             let end = tokens.map(\.endTime).max() ?? tokens[0].endTime
             return TimedLyricSegment(
                 id: stableID(text: text, start: start, end: end),
                 start: start,
                 end: end,
-                text: text
+                text: text,
+                words: words(from: tokens, layout: layout)
             )
         }
+    }
+
+    /// Aggregates the placed tokens into words (maximal runs of tokens joined WITHOUT a
+    /// separating space) and stamps each with the onset of its first token and the offset
+    /// of its last token. A token that opened a new word is one a space was inserted
+    /// before; attached punctuation/contraction/opening-bracket tokens (and the first
+    /// token) continue the current word.
+    private static func words(
+        from tokens: [TimedTranscriptionToken],
+        layout: RenderedLayout
+    ) -> [TimedLyricWord] {
+        let characters = Array(layout.text)
+        var words: [TimedLyricWord] = []
+        var wordStartTokenIndex = 0
+
+        func flush(throughTokenIndex endIndex: Int) {
+            let lower = layout.tokenRanges[wordStartTokenIndex].lowerBound
+            let upper = layout.tokenRanges[endIndex].upperBound
+            let range = lower..<upper
+            words.append(
+                TimedLyricWord(
+                    text: String(characters[range]),
+                    start: tokens[wordStartTokenIndex].startTime,
+                    end: tokens[endIndex].endTime,
+                    characterRange: range
+                )
+            )
+        }
+
+        for index in tokens.indices {
+            // `index == 0` always starts the first word; otherwise a token that a space
+            // preceded begins a new word, so close the previous one first.
+            if index > 0, layout.tokenStartsNewWord[index] {
+                flush(throughTokenIndex: index - 1)
+                wordStartTokenIndex = index
+            }
+        }
+        if !tokens.isEmpty {
+            flush(throughTokenIndex: tokens.count - 1)
+        }
+        return words
     }
 
     private static func normalized(_ text: String) -> String {
@@ -213,25 +256,49 @@ enum TimedLyricSegmentGrouper {
         return finalContentCharacter.map { ".!?".contains($0) } ?? false
     }
 
-    private static func renderedText(_ tokens: [String]) -> String {
+    /// The rendered segment text plus, per token, the half-open Character-index range it
+    /// occupies within that text and whether a separating space was inserted before it
+    /// (i.e. it begins a new word). Mirrors the spacing rules previously implemented in
+    /// `renderedText` so the produced `text` is byte-for-byte identical.
+    struct RenderedLayout {
+        var text: String
+        var tokenRanges: [Range<Int>]
+        var tokenStartsNewWord: [Bool]
+    }
+
+    private static func renderedLayout(_ tokens: [String]) -> RenderedLayout {
         let attachedPrefixes = CharacterSet(charactersIn: ",.;:!?%)]}")
         let attachedWords = ["'d", "'ll", "'m", "'re", "'s", "'t", "'ve"]
 
-        return tokens.reduce(into: "") { result, token in
+        var characters: [Character] = []
+        var tokenRanges: [Range<Int>] = []
+        var tokenStartsNewWord: [Bool] = []
+
+        for token in tokens {
             let startsWithAttachedPunctuation =
                 token.unicodeScalars.first
                 .map(attachedPrefixes.contains) ?? false
             let attachesToPrevious =
                 startsWithAttachedPunctuation
                 || attachedWords.contains(where: { token.lowercased().hasPrefix($0) })
-            let previousOpensGroup = result.last.map { "([{\"".contains($0) } ?? false
+            let previousOpensGroup = characters.last.map { "([{\"".contains($0) } ?? false
 
-            if result.isEmpty || attachesToPrevious || previousOpensGroup {
-                result += token
-            } else {
-                result += " " + token
+            let attaches = characters.isEmpty || attachesToPrevious || previousOpensGroup
+            if !attaches {
+                characters.append(" ")
             }
+            let lower = characters.count
+            characters.append(contentsOf: token)
+            tokenRanges.append(lower..<characters.count)
+            // A token starts a new word exactly when a separating space preceded it.
+            tokenStartsNewWord.append(!attaches)
         }
+
+        return RenderedLayout(
+            text: String(characters),
+            tokenRanges: tokenRanges,
+            tokenStartsNewWord: tokenStartsNewWord
+        )
     }
 
     private static func stableID(

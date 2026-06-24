@@ -1,10 +1,55 @@
 import Foundation
 
+/// One sung word within a `TimedLyricSegment`, preserving the transcription's per-word
+/// onset/offset so the highlight and bouncing ball can land on the word actually being
+/// sung. `characterRange` is the half-open Character-index range of the word within the
+/// owning segment's `text`.
+struct TimedLyricWord: Codable, Equatable, Sendable {
+    var text: String
+    var start: TimeInterval
+    var end: TimeInterval
+    var characterRange: Range<Int>
+}
+
 struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     var start: TimeInterval
     var end: TimeInterval
     var text: String
+    /// Per-word timings within `text`. Empty for documents saved before word timings
+    /// were preserved; callers fall back to interpolation in that case.
+    var words: [TimedLyricWord] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case start
+        case end
+        case text
+        case words
+    }
+
+    init(
+        id: UUID = UUID(),
+        start: TimeInterval,
+        end: TimeInterval,
+        text: String,
+        words: [TimedLyricWord] = []
+    ) {
+        self.id = id
+        self.start = start
+        self.end = end
+        self.text = text
+        self.words = words
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        start = try container.decode(TimeInterval.self, forKey: .start)
+        end = try container.decode(TimeInterval.self, forKey: .end)
+        text = try container.decode(String.self, forKey: .text)
+        words = try container.decodeIfPresent([TimedLyricWord].self, forKey: .words) ?? []
+    }
 }
 
 struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {

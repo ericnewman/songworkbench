@@ -69,6 +69,33 @@ final class BouncingBallTests: XCTestCase {
         XCTAssertTrue(BouncingBall.beats(in: 0, 2, beatTimes: [], bpm: -10).isEmpty)
     }
 
+    func testWordOnsetsProduceTapsAtEachWordStartWithWordCenterX() {
+        // Mirror the word-onset wiring: beatTimes = word starts, beatX = word centers.
+        // "Walk the low line" with character ranges and a monospaced character width.
+        let characterWidth: CGFloat = 9
+        let words = [
+            TimedLyricWord(text: "Walk", start: 0.0, end: 1.0, characterRange: 0..<4),
+            TimedLyricWord(text: "the", start: 1.5, end: 2.0, characterRange: 5..<8),
+            TimedLyricWord(text: "low", start: 3.0, end: 3.5, characterRange: 9..<12),
+            TimedLyricWord(text: "line", start: 4.5, end: 5.0, characterRange: 13..<17),
+        ]
+        let beatTimes = words.map(\.start)
+        let centers: [CGFloat] = words.map { word in
+            (CGFloat(word.characterRange.lowerBound) + CGFloat(word.characterRange.upperBound))
+                / 2 * characterWidth
+        }
+        let ball = BouncingBall(beatTimes: beatTimes, beatX: centers)
+
+        for (index, word) in words.enumerated() {
+            let position = ball.position(at: word.start)
+            XCTAssertNotNil(position)
+            // Tap (lift == 0) exactly at each word's onset.
+            XCTAssertEqual(Double(position?.lift ?? -1), 0, accuracy: 0.0001)
+            // And the tap lands on that word's character center.
+            XCTAssertEqual(position?.x ?? -1, centers[index], accuracy: 0.0001)
+        }
+    }
+
     func testSynthesizedBeatsDriveASmoothArc() {
         let beats = BouncingBall.beats(in: 0, 2, beatTimes: [], bpm: 120)
         let xs = beats.map { CGFloat($0 * 100) }
