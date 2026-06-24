@@ -36,6 +36,7 @@
 		431AE20F068AF2F086DFBB44 /* StemMixExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57FDEDC29A18294F1A074A7C /* StemMixExporter.swift */; };
 		43C96288F6BF47AC1F31750E /* SeparationCachingPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2916DC88D1E777F0EBD2B679 /* SeparationCachingPolicy.swift */; };
 		445ECFE01B868FEB2FDBA3CA /* OfflineAudioExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 025508D55BE4B501B7F672D7 /* OfflineAudioExporter.swift */; };
+		473B16BE1D772183BA033F28 /* BassLineAnalyzerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D582972859CEDF1E201BA0E6 /* BassLineAnalyzerTests.swift */; };
 		487A5027C9205C29ED1533F0 /* TranscriptionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61E85C8D7C0E1588472E900B /* TranscriptionTests.swift */; };
 		4989640A71B8BE65A6F6C5B5 /* AnalysisWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D63EFAA6B1C4DF0DC7F62D79 /* AnalysisWorkspaceView.swift */; };
 		4AE40E4650E9A5A581ED25C7 /* ChordProPreviewDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF5D9B9459DC7B199AF08848 /* ChordProPreviewDocument.swift */; };
@@ -70,6 +71,7 @@
 		A9A4E383B21925DE800CA42E /* SongImportPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E145971CB054928A52323E70 /* SongImportPolicyTests.swift */; };
 		B457037F04B498CF30A6196B /* BeatTrackingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFAA2DCA1E1D72145BB4338A /* BeatTrackingTests.swift */; };
 		B58178FB65625BD251B64E33 /* SongAnalysisDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FAC04CB7D275050CC0B852D /* SongAnalysisDocument.swift */; };
+		B7C72C06BEDD4172AAA3E2B3 /* BassLineAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = 456D32DB3E7F5B0D7B6B72C7 /* BassLineAnalysis.swift */; };
 		B826B21A7B84403145708BDE /* Transcription.swift in Sources */ = {isa = PBXBuildFile; fileRef = C988753BCB1FE231508B56F9 /* Transcription.swift */; };
 		BFA90FF5883F4176B46141AC /* ModelPackageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB957DDE6EA07222359DF406 /* ModelPackageManager.swift */; };
 		C02D89684C3926E8545DB6B1 /* TuistAssets+SongWorkbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CD45B48962AC3ADDBE6E9ED /* TuistAssets+SongWorkbench.swift */; };
@@ -154,6 +156,7 @@
 		3A980220D81309AA47143134 /* PitchShift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PitchShift.swift; sourceTree = "<group>"; };
 		410EF92DDFAA064966A7A67D /* AudioFraming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFraming.swift; sourceTree = "<group>"; };
 		42AEE5281DC0B1BEF614C478 /* ChordProTranspositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProTranspositionTests.swift; sourceTree = "<group>"; };
+		456D32DB3E7F5B0D7B6B72C7 /* BassLineAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BassLineAnalysis.swift; sourceTree = "<group>"; };
 		47ABEB97E666EF44EF47BFCF /* WhisperFramework */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WhisperFramework; path = Dependencies/WhisperFramework; sourceTree = "<group>"; };
 		49C72557949867ABB059D603 /* StemPlaybackService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemPlaybackService.swift; sourceTree = "<group>"; };
 		4A0D13DB20D2C9D500EB12FE /* ChordProDraftBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProDraftBuilder.swift; sourceTree = "<group>"; };
@@ -197,6 +200,7 @@
 		D1CA2253ED1AC608A441CE51 /* HarmonyAudioSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarmonyAudioSource.swift; sourceTree = "<group>"; };
 		D396DED1CBF9C01AFF44588A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D4C711D791808BFFAF1E3372 /* SongAnalysisPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongAnalysisPipeline.swift; sourceTree = "<group>"; };
+		D582972859CEDF1E201BA0E6 /* BassLineAnalyzerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BassLineAnalyzerTests.swift; sourceTree = "<group>"; };
 		D63EFAA6B1C4DF0DC7F62D79 /* AnalysisWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisWorkspaceView.swift; sourceTree = "<group>"; };
 		D82227F4D1105EF9B83EAA6F /* WhisperCPPTranscriptionEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperCPPTranscriptionEngineTests.swift; sourceTree = "<group>"; };
 		D909D5762770B55D225ACC91 /* AnalysisStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisStage.swift; sourceTree = "<group>"; };
@@ -288,6 +292,7 @@
 				410EF92DDFAA064966A7A67D /* AudioFraming.swift */,
 				6225003DB6CCB215666FA45F /* AudioPlaybackService.swift */,
 				EBE14311AB5CECBC3AE3D7B4 /* BackgroundJobCoordinator.swift */,
+				456D32DB3E7F5B0D7B6B72C7 /* BassLineAnalysis.swift */,
 				FAF0D950143B5B253B90EDA5 /* BassNote.swift */,
 				25BAD6AC10B9CFACB46DDDF1 /* BeatTracking.swift */,
 				13ACE737C45116476698E7F1 /* ChordClassification.swift */,
@@ -353,6 +358,7 @@
 				A6E88139F0249FEA595F0DDD /* AudioAnalysisTests.swift */,
 				8C2E935552A1885C1EFE5AD5 /* AudioPlaybackServiceTests.swift */,
 				304378578C403B49A8C81A69 /* BackgroundJobCoordinatorTests.swift */,
+				D582972859CEDF1E201BA0E6 /* BassLineAnalyzerTests.swift */,
 				FE9BFFB3D89233DDEE17F407 /* BassNoteTests.swift */,
 				CFAA2DCA1E1D72145BB4338A /* BeatTrackingTests.swift */,
 				8D662F3A35DD30742CEE6F7F /* BouncingBallTests.swift */,
@@ -551,6 +557,7 @@
 				173950EFFEC1C94D609B1AFE /* AudioFraming.swift in Sources */,
 				2EB7E79B665E8565E0930D57 /* AudioPlaybackService.swift in Sources */,
 				973AC640351C9600DF2F8BEF /* BackgroundJobCoordinator.swift in Sources */,
+				B7C72C06BEDD4172AAA3E2B3 /* BassLineAnalysis.swift in Sources */,
 				96577A098115DC83793C55B4 /* BassNote.swift in Sources */,
 				54B24FF88EBEDC0C65E91180 /* BeatTracking.swift in Sources */,
 				D546EF0EE813A63A091C29C0 /* ChordClassification.swift in Sources */,
@@ -600,6 +607,7 @@
 				A033E70855AB08AA746B6D2E /* AudioAnalysisTests.swift in Sources */,
 				F0A150C9E6BC9CEF57CFDFF4 /* AudioPlaybackServiceTests.swift in Sources */,
 				4D227E861E78FA2AC1A9F03C /* BackgroundJobCoordinatorTests.swift in Sources */,
+				473B16BE1D772183BA033F28 /* BassLineAnalyzerTests.swift in Sources */,
 				06FC1028FAFAEB5F0136A3A0 /* BassNoteTests.swift in Sources */,
 				B457037F04B498CF30A6196B /* BeatTrackingTests.swift in Sources */,
 				F7EADB756F1F4F61F0D7E2DD /* BouncingBallTests.swift in Sources */,

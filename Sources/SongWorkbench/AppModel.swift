@@ -42,6 +42,9 @@ final class AppModel: ObservableObject {
     @Published var beatTimes: [TimeInterval] = [] {
         didSet { persistSelectedAnalysis() }
     }
+    @Published var bassNotes: [BassNoteObservation] = [] {
+        didSet { persistSelectedAnalysis() }
+    }
     @Published var estimatedKey: MusicalKey? {
         didSet { persistSelectedAnalysis() }
     }
@@ -264,6 +267,28 @@ final class AppModel: ObservableObject {
     var bassNoteChordProSource: String {
         guard selectedSong != nil || !lyricSegments.isEmpty || !chordEvents.isEmpty else {
             return ""
+        }
+        if !bassNotes.isEmpty {
+            // Prefer the detected bass line: map each observation to a chord
+            // event carrying the pitch-class label of the played bass note.
+            let detectedEvents = bassNotes.map { observation in
+                EditableChordEvent(
+                    time: observation.timestamp,
+                    chord: BassNoteNaming.name(forMidiNote: observation.midiNote),
+                    confidence: observation.confidence
+                )
+            }
+            return chordProBuilder.build(
+                ChordProDraftInput(
+                    title: selectedSong?.title ?? "Untitled",
+                    tempo: estimatedBPM,
+                    lyrics: lyricSegments,
+                    chords: detectedEvents,
+                    confidenceThreshold: chordConfidenceThreshold
+                ),
+                comment: ChordProDraftBuilder.bassNoteDraftComment,
+                chordLabel: { $0.chord }
+            )
         }
         return chordProBuilder.build(
             ChordProDraftInput(
@@ -545,6 +570,7 @@ final class AppModel: ObservableObject {
         chordProSource = ""
         estimatedBPM = nil
         beatTimes = []
+        bassNotes = []
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
         stemFiles = nil
@@ -983,6 +1009,7 @@ final class AppModel: ObservableObject {
         chordProSource = analysis.chordProSource
         estimatedBPM = analysis.estimatedBPM
         beatTimes = analysis.beatTimes
+        bassNotes = analysis.bassNotes
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
         stemFiles = analysis.stems?.resolved()
@@ -1033,6 +1060,7 @@ final class AppModel: ObservableObject {
             chordProSource: chordProSource,
             estimatedBPM: estimatedBPM,
             beatTimes: beatTimes,
+            bassNotes: bassNotes,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
             stems: stemFiles.map(StoredStemFiles.init(files:)),

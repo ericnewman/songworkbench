@@ -27,6 +27,39 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    func testBassNoteSourcePrefersDetectedBassNotes() async throws {
+        let url = try makeSilentWAV()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        await model.restoreProjects()
+        model.importSongs(from: [url])
+        try await Task.sleep(for: .milliseconds(120))
+        let song = try XCTUnwrap(model.songs.first)
+        model.select(song)
+
+        // Chord roots imply an "A" bass; the detected bass line plays D2 (midi 38).
+        model.chordEvents = [EditableChordEvent(time: 0, chord: "Amaj7", confidence: 1)]
+        model.bassNotes = [
+            BassNoteObservation(timestamp: 0, midiNote: 38, confidence: 0.9)
+        ]
+
+        // No lyrics on a silent import, so chords render in a grid row
+        // (`| D |`) rather than inline (`[D]`); assert on the grid token.
+        let detectedSource = model.bassNoteChordProSource
+        XCTAssertTrue(
+            detectedSource.contains("| D |"),
+            "Expected the detected bass note D, got: \(detectedSource)"
+        )
+        XCTAssertFalse(
+            detectedSource.contains("| A |"),
+            "Detected bass line should replace the chord-root approximation"
+        )
+
+        // With no detected bass line, fall back to the chord-root bass.
+        model.bassNotes = []
+        XCTAssertTrue(model.bassNoteChordProSource.contains("| A |"))
+    }
+
     func testRecentSongsFollowSelectionOrder() async throws {
         let firstURL = try makeSilentWAV()
         let secondURL = try makeSilentWAV()

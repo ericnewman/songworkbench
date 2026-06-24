@@ -285,6 +285,25 @@ struct TranscriptionStage: AnalysisStageRunning {
 struct HarmonyStage: AnalysisStageRunning {
     let stage: SongAnalysisStage = .harmony
 
+    /// Detects the played bass line from the BASS stem. Constructed once;
+    /// stateless and `Sendable`.
+    private let bassLineAnalyzer = BassLineAnalyzer()
+
+    /// Runs bass-line detection over the separated BASS stem, if present and
+    /// readable. Purely additive to the harmony stage: returns `nil` (leaving
+    /// `bassNotes` unchanged) when there is no bass stem, and swallows any
+    /// failure so bass detection can never fail the harmony stage. Honors
+    /// cancellation.
+    private func detectBassNotes(_ context: AnalysisStageContext) -> [BassNoteObservation]? {
+        guard (try? Task.checkCancellation()) != nil else { return nil }
+        guard let bassURL = context.document.stems?.resolved().bass,
+            FileManager.default.isReadableFile(atPath: bassURL.path)
+        else {
+            return nil
+        }
+        return try? bassLineAnalyzer.analyze(url: bassURL)
+    }
+
     func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
         let harmonySource = try? HarmonyAudioSourceSelector().select(
             recordingURL: context.request.sourceURL,
@@ -339,11 +358,18 @@ struct HarmonyStage: AnalysisStageRunning {
             let estimatedKey: MusicalKey? =
                 result.estimatedKey ?? MusicalKeyEstimator().estimate(from: result.chords)
             let chords = ChordEventReducer().events(from: result)
+            // Additive: detect the played bass line from the BASS stem (runs
+            // whether or not the harmony chord result was a cache hit). A `nil`
+            // result (no stem / failure) leaves existing bassNotes untouched.
+            let detectedBassNotes = detectBassNotes(context)
             return AnalysisStageOutcome { document in
                 document.estimatedBPM = estimatedBPM
                 document.beatTimes = beatTimes
                 document.estimatedKey = estimatedKey
                 document.chords = chords
+                if let detectedBassNotes {
+                    document.bassNotes = detectedBassNotes
+                }
                 document.chordReviewState = .draft
                 document.stageRecords[.harmony] = record
             }
