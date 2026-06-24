@@ -76,12 +76,20 @@ struct ChordProDraftBuilder: Sendable {
         for (index, segment) in lyrics.enumerated() {
             let gapStart = index > 0 ? lyrics[index - 1].end : 0
             let gapBars = bars(from: gapStart, to: segment.start, input: input)
+            // Chords that play before this line (the intro before the first line,
+            // or an instrumental break between lines) are not attached to any
+            // lyric. Render them as a chord-only line so the chart starts on the
+            // first chord and shows what to play during instrumental sections.
+            let gapChords = chords.filter { $0.time >= gapStart && $0.time < segment.start }
             if gapBars >= 4 {
                 if index > 0 { lines.append("") }
                 let role = index == 0 ? "Intro" : "Instrumental"
                 lines.append(
                     "{comment: \(directiveValue("\(role) · \(barCount(gapBars)) bars"))}")
+                if !gapChords.isEmpty { lines.append(chordOnlyLine(gapChords)) }
                 lines.append("")
+            } else if !gapChords.isEmpty {
+                lines.append(chordOnlyLine(gapChords))
             } else if index > 0, segment.start - lyrics[index - 1].end > 1.5 {
                 lines.append("")
             }
@@ -164,6 +172,12 @@ struct ChordProDraftBuilder: Sendable {
 
     private func barCount(_ bars: Double) -> Int {
         max(4, Int(bars.rounded()))
+    }
+
+    /// A chord-only line (no lyric), e.g. `[C] [G] [Am]`, for intro and
+    /// instrumental-break chords that are not attached to any lyric.
+    private func chordOnlyLine(_ chords: [RenderableChordEvent]) -> String {
+        chords.map { "[\($0.label)]" }.joined(separator: " ")
     }
 }
 

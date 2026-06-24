@@ -35,6 +35,28 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertFalse(document.contains("{comment: Instrumental"), document)
     }
 
+    func testIntroChordsBeforeFirstLyricAreRendered() {
+        // Chords play during an 8s intro before the first vocal line; the chart
+        // should start on the first chord rather than the first lyric's chord.
+        let input = ChordProDraftInput(
+            title: "Intro Song",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 8, end: 10, text: "First words")
+            ],
+            chords: [
+                EditableChordEvent(time: 0, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 4, chord: "G", confidence: 0.9),
+                EditableChordEvent(time: 8, chord: "Am", confidence: 0.9),
+            ]
+        )
+        let document = ChordProDraftBuilder().build(input)
+        let body = document.split(separator: "\n")
+        // First non-directive line should be the intro chord line "[C] [G]".
+        let firstContent = body.first { !$0.hasPrefix("{") && !$0.isEmpty }
+        XCTAssertEqual(firstContent.map(String.init), "[C] [G]", document)
+    }
+
     func testBuildAlignsIncludedChordChangesToLyrics() {
         let input = ChordProDraftInput(
             title: "Test Song",
