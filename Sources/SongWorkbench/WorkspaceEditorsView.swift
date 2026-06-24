@@ -123,6 +123,50 @@ private struct PracticeTransportControls: View {
                 .disabled(activeDuration <= 0)
             }
 
+        }
+        .padding(.horizontal)
+        .onAppear { seekPosition = model.activePlaybackTime }
+        .onChange(of: playback.currentTime) { _, value in
+            updateSeekPosition(value, for: .recording)
+        }
+        .onChange(of: stemPlayback.currentTime) { _, value in
+            updateSeekPosition(value, for: .stemMix)
+        }
+        .onChange(of: model.activePlaybackSource) { _, _ in
+            if !isSeeking { seekPosition = model.activePlaybackTime }
+        }
+    }
+
+    private var activeDuration: TimeInterval {
+        model.activePlaybackSource == .stemMix ? stemPlayback.duration : playback.duration
+    }
+
+    private var sourceLabel: String {
+        model.activePlaybackSource == .stemMix ? "Stem Mix" : "Recording"
+    }
+
+    private func updateSeekPosition(_ value: TimeInterval, for source: PlaybackSource) {
+        guard !isSeeking, model.activePlaybackSource == source else { return }
+        seekPosition = value
+    }
+
+    private func formatTime(_ time: TimeInterval) -> String {
+        guard time.isFinite else { return "0:00" }
+        let totalSeconds = max(Int(time.rounded(.down)), 0)
+        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+}
+
+/// Pitch and Speed practice controls, shown as a card under the waveform.
+struct PitchSpeedCard: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Pitch & Speed", systemImage: "dial.medium")
+                .font(.swDisplay(15, weight: .semibold))
+                .foregroundStyle(Color.swTextPrimary)
+
             HStack(spacing: 12) {
                 adjustmentControl(
                     title: "Pitch",
@@ -158,17 +202,8 @@ private struct PracticeTransportControls: View {
                 .disabled(model.pitchSemitones == 0 && model.tempoRate == 1)
             }
         }
-        .padding(.horizontal)
-        .onAppear { seekPosition = model.activePlaybackTime }
-        .onChange(of: playback.currentTime) { _, value in
-            updateSeekPosition(value, for: .recording)
-        }
-        .onChange(of: stemPlayback.currentTime) { _, value in
-            updateSeekPosition(value, for: .stemMix)
-        }
-        .onChange(of: model.activePlaybackSource) { _, _ in
-            if !isSeeking { seekPosition = model.activePlaybackTime }
-        }
+        .padding(10)
+        .swSurfacePanel(cornerRadius: 12)
     }
 
     private func adjustmentControl<Content: View>(
@@ -193,14 +228,6 @@ private struct PracticeTransportControls: View {
         .swSurfacePanel(cornerRadius: 10)
     }
 
-    private var activeDuration: TimeInterval {
-        model.activePlaybackSource == .stemMix ? stemPlayback.duration : playback.duration
-    }
-
-    private var sourceLabel: String {
-        model.activePlaybackSource == .stemMix ? "Stem Mix" : "Recording"
-    }
-
     private var pitchLabel: String {
         guard let key = model.estimatedKey else {
             return model.pitchSemitones == 0
@@ -213,17 +240,6 @@ private struct PracticeTransportControls: View {
     private var semitoneLabel: String {
         model.pitchSemitones > 0
             ? "+\(model.pitchSemitones) semitones" : "\(model.pitchSemitones) semitones"
-    }
-
-    private func updateSeekPosition(_ value: TimeInterval, for source: PlaybackSource) {
-        guard !isSeeking, model.activePlaybackSource == source else { return }
-        seekPosition = value
-    }
-
-    private func formatTime(_ time: TimeInterval) -> String {
-        guard time.isFinite else { return "0:00" }
-        let totalSeconds = max(Int(time.rounded(.down)), 0)
-        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 }
 

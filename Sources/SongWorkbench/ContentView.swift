@@ -134,6 +134,7 @@ private struct PlayerView: View {
                 ScrollView {
                     VStack(spacing: 18) {
                         waveformContent
+                        PitchSpeedCard(model: model)
                         AnalysisWorkspaceView(model: model)
                     }
                     .padding(.trailing, 4)
