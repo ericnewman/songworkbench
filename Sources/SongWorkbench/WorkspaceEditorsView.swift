@@ -2,7 +2,63 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The workspace editor tabs, selected by a segmented control at the top of the
+/// window so the editor content fills the right column.
+enum EditorTab: String, CaseIterable, Identifiable {
+    case lyrics
+    case chords
+    case chordPro
+    case bassNotes
+    case stems
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .lyrics: "Lyrics"
+        case .chords: "Chords"
+        case .chordPro: "ChordPro"
+        case .bassNotes: "Bass Notes"
+        case .stems: "Stems"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .lyrics: "text.quote"
+        case .chords: "music.note"
+        case .chordPro: "doc.plaintext"
+        case .bassNotes: "music.note.list"
+        case .stems: "slider.horizontal.3"
+        }
+    }
+}
+
+/// Renders the editor for the currently selected tab. The tab selector lives at
+/// the top of the window (see `ContentView`); this view is just the content.
 struct WorkspaceEditorsView: View {
+    @ObservedObject var model: AppModel
+    let selectedEditor: EditorTab
+
+    var body: some View {
+        Group {
+            switch selectedEditor {
+            case .lyrics: TimedLyricsEditor(model: model)
+            case .chords: ChordTimelineEditor(model: model)
+            case .chordPro: ChordProTabEditor(model: model, config: .chordPro)
+            case .bassNotes: ChordProTabEditor(model: model, config: .bassNote)
+            case .stems: StemMixerEditor(model: model)
+            }
+        }
+        .padding(12)
+        .swSurfacePanel(cornerRadius: 12)
+        .frame(minHeight: 620, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// Transport card (left column, under the waveform): the source/mix badge plus
+/// large skip / play-pause buttons.
+struct PlaybackTransportCard: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var stemPlayback: StemPlaybackService
 
@@ -13,8 +69,13 @@ struct WorkspaceEditorsView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            PracticeTransportControls(model: model)
             HStack {
+                Text(sourceLabel)
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.swSurface, in: Capsule())
                 Spacer()
                 Button(
                     stemPlayback.isPlaying ? "Pause Mix" : "Play Mix",
@@ -30,28 +91,48 @@ struct WorkspaceEditorsView: View {
                 )
                 .swAccentHoverBorder(cornerRadius: 6)
             }
-            .padding(.horizontal)
-            Divider()
-            TabView {
-                TimedLyricsEditor(model: model)
-                    .tabItem { Label("Lyrics", systemImage: "text.quote") }
-                ChordTimelineEditor(model: model)
-                    .tabItem { Label("Chords", systemImage: "music.note") }
-                ChordProTabEditor(model: model, config: .chordPro)
-                    .tabItem { Label("ChordPro", systemImage: "doc.plaintext") }
-                ChordProTabEditor(model: model, config: .bassNote)
-                    .tabItem { Label("Bass Notes", systemImage: "music.note") }
-                StemMixerEditor(model: model)
-                    .tabItem { Label("Stems", systemImage: "slider.horizontal.3") }
+
+            HStack(spacing: 36) {
+                Button("Back 10 Seconds", systemImage: "gobackward.10") {
+                    model.skipActivePlayback(by: -10)
+                }
+                .labelStyle(.iconOnly)
+                .font(.system(size: 26))
+                .swAccentHoverBorder(cornerRadius: 8)
+
+                Button(
+                    model.isActivePlaybackPlaying ? "Pause" : "Play",
+                    systemImage: model.isActivePlaybackPlaying
+                        ? "pause.circle.fill" : "play.circle.fill"
+                ) {
+                    model.toggleActivePlayback()
+                }
+                .labelStyle(.iconOnly)
+                .font(.system(size: 52))
+                .disabled(model.selectedSong == nil)
+                .swAccentHoverBorder(cornerRadius: 28)
+
+                Button("Forward 10 Seconds", systemImage: "goforward.10") {
+                    model.skipActivePlayback(by: 10)
+                }
+                .labelStyle(.iconOnly)
+                .font(.system(size: 26))
+                .swAccentHoverBorder(cornerRadius: 8)
             }
         }
-        .padding(.top, 12)
+        .frame(maxWidth: .infinity)
+        .padding(12)
         .swSurfacePanel(cornerRadius: 12)
-        .frame(minHeight: 620, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var sourceLabel: String {
+        model.activePlaybackSource == .stemMix ? "Stem Mix" : "Recording"
     }
 }
 
-private struct PracticeTransportControls: View {
+/// Playback progress (seek) slider with elapsed/total time, shown inside the
+/// waveform card just below the waveform.
+struct PlaybackProgressSlider: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
@@ -65,66 +146,23 @@ private struct PracticeTransportControls: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 6) {
-                ZStack {
-                    Label("Playback", systemImage: "timeline.selection")
-                        .font(.swDisplay(13, weight: .medium))
-                        .foregroundStyle(Color.swTextSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    HStack(spacing: 22) {
-                        Button("Back 10 Seconds", systemImage: "gobackward.10") {
-                            model.skipActivePlayback(by: -10)
-                        }
-                        .labelStyle(.iconOnly)
-                        .swAccentHoverBorder(cornerRadius: 6)
-
-                        Button(
-                            model.isActivePlaybackPlaying ? "Pause" : "Play",
-                            systemImage: model.isActivePlaybackPlaying
-                                ? "pause.circle.fill" : "play.circle.fill"
-                        ) {
-                            model.toggleActivePlayback()
-                        }
-                        .labelStyle(.iconOnly)
-                        .font(.system(size: 34))
-                        .disabled(model.selectedSong == nil)
-                        .swAccentHoverBorder(cornerRadius: 18)
-
-                        Button("Forward 10 Seconds", systemImage: "goforward.10") {
-                            model.skipActivePlayback(by: 10)
-                        }
-                        .labelStyle(.iconOnly)
-                        .swAccentHoverBorder(cornerRadius: 6)
+        VStack(spacing: 4) {
+            Slider(
+                value: $seekPosition,
+                in: 0...max(activeDuration, 0.01),
+                onEditingChanged: { editing in
+                    isSeeking = editing
+                    if !editing {
+                        model.seekActivePlayback(to: seekPosition)
                     }
                 }
-                HStack {
-                    Text(sourceLabel)
-                        .font(.swDisplay(11))
-                        .foregroundStyle(Color.swTextSecondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Color.swSurface, in: Capsule())
-                    Spacer()
-                    Text("\(formatTime(seekPosition)) / \(formatTime(activeDuration))")
-                        .font(.swMono(11))
-                        .foregroundStyle(Color.swMint)
-                }
-                Slider(
-                    value: $seekPosition,
-                    in: 0...max(activeDuration, 0.01),
-                    onEditingChanged: { editing in
-                        isSeeking = editing
-                        if !editing {
-                            model.seekActivePlayback(to: seekPosition)
-                        }
-                    }
-                )
-                .disabled(activeDuration <= 0)
-            }
-
+            )
+            .disabled(activeDuration <= 0)
+            Text("\(formatTime(seekPosition)) / \(formatTime(activeDuration))")
+                .font(.swMono(11))
+                .foregroundStyle(Color.swMint)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.horizontal)
         .onAppear { seekPosition = model.activePlaybackTime }
         .onChange(of: playback.currentTime) { _, value in
             updateSeekPosition(value, for: .recording)
@@ -139,10 +177,6 @@ private struct PracticeTransportControls: View {
 
     private var activeDuration: TimeInterval {
         model.activePlaybackSource == .stemMix ? stemPlayback.duration : playback.duration
-    }
-
-    private var sourceLabel: String {
-        model.activePlaybackSource == .stemMix ? "Stem Mix" : "Recording"
     }
 
     private func updateSeekPosition(_ value: TimeInterval, for source: PlaybackSource) {

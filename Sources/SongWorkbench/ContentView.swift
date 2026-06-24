@@ -106,6 +106,7 @@ private struct PlayerView: View {
     @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
     @State private var waveformZoom = 1.0
+    @State private var selectedEditor: EditorTab = .lyrics
 
     init(song: Song, model: AppModel) {
         self.song = song
@@ -130,10 +131,20 @@ private struct PlayerView: View {
             }
             .frame(maxWidth: .infinity)
 
+            Picker("Editor", selection: $selectedEditor) {
+                ForEach(EditorTab.allCases) { tab in
+                    Label(tab.title, systemImage: tab.systemImage).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 680)
+
             HStack(alignment: .top, spacing: 20) {
                 ScrollView {
                     VStack(spacing: 18) {
                         waveformContent
+                        PlaybackTransportCard(model: model)
                         PitchSpeedCard(model: model)
                         AnalysisWorkspaceView(model: model)
                     }
@@ -142,7 +153,7 @@ private struct PlayerView: View {
                 .frame(minWidth: 380, idealWidth: 400, maxWidth: 440)
 
                 VStack(spacing: 12) {
-                    WorkspaceEditorsView(model: model)
+                    WorkspaceEditorsView(model: model, selectedEditor: selectedEditor)
                     if let error = playback.errorMessage ?? model.projectErrorMessage {
                         Label(error, systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(Color.swCoral)
@@ -201,6 +212,8 @@ private struct PlayerView: View {
                 }
                 .scrollIndicators(.visible)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+                PlaybackProgressSlider(model: model)
             }
             .padding(10)
             .swSurfacePanel(cornerRadius: 12)
