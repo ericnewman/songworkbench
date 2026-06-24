@@ -1138,55 +1138,16 @@ final class AppModel: ObservableObject {
     }
 
     private func makeProductionPipeline() async throws -> SongAnalysisPipeline {
-        let stemPackage = await installedPackage(for: ModelCatalog.htdemucs)
-        let stemEngine: (any StemSeparationEngine)?
-        if let stemPackage {
-            stemEngine = try await Task.detached(priority: .userInitiated) {
-                try ONNXSixStemSeparationEngine(modelURL: stemPackage.entryPointURL)
-            }.value
-        } else {
-            stemEngine = nil
-        }
-
-        let fastPackage = await installedPackage(for: ModelCatalog.parakeetFastDraft)
-        let fastEngine: (any TranscriptionEngine)? = fastPackage.map {
-            FluidAudioTranscriptionEngine(
-                modelDirectory: $0.entryPointURL,
-                modelSizeBytes: UInt64(max($0.sizeBytes, 0)),
-                profile: .fastDraft
-            )
-        }
-        let balancedEngine: (any TranscriptionEngine)? = fastPackage.map {
-            FluidAudioTranscriptionEngine(
-                modelDirectory: $0.entryPointURL,
-                modelSizeBytes: UInt64(max($0.sizeBytes, 0)),
-                profile: .balancedDraft
-            )
-        }
-        let accuracyPackage = await installedPackage(for: ModelCatalog.whisperAccuracy)
-        let accuracyEngine: (any TranscriptionEngine)? = accuracyPackage.map {
-            WhisperCPPTranscriptionEngine(
-                modelURL: $0.entryPointURL,
-                modelSizeBytes: UInt64(max($0.sizeBytes, 0))
-            )
-        }
-        return SongAnalysisPipeline(
-            stemEngine: stemEngine,
-            fastTranscriptionEngine: fastEngine,
-            balancedTranscriptionEngine: balancedEngine,
-            accuracyTranscriptionEngine: accuracyEngine,
+        let factory = SongAnalysisPipelineFactory(
+            modelPackageManager: modelPackageManager,
             harmonyEngine: audioAnalysisService,
             cache: analysisCache
         )
-    }
-
-    private func installedPackage(
-        for descriptor: ModelPackageDescriptor
-    ) async -> InstalledModelPackage? {
-        let status = await modelPackageManager.status(for: descriptor)
-        modelPackageStatuses[descriptor.id] = status
-        guard case .installed(let package) = status else { return nil }
-        return package
+        let assembly = try await factory.makePipeline()
+        for (id, status) in assembly.statuses {
+            modelPackageStatuses[id] = status
+        }
+        return assembly.pipeline
     }
 
     private func analysisOutputDirectory(for songID: Song.ID) -> URL {

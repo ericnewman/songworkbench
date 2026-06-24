@@ -31,6 +31,7 @@
 		2EB7E79B665E8565E0930D57 /* AudioPlaybackService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6225003DB6CCB215666FA45F /* AudioPlaybackService.swift */; };
 		2FF8C671F14BDFCF8DD01F60 /* StemMixerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADF3745325BA1DE987A3DC2 /* StemMixerModel.swift */; };
 		305C3CC57BE8517F0B111A0E /* SpectrumChroma.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35483485ECB48A6D79F4B23E /* SpectrumChroma.swift */; };
+		322AC42FFDD16C254C6B87EB /* SongAnalysisPipelineFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B1E3154C03FFCBB73533D0 /* SongAnalysisPipelineFactory.swift */; };
 		35B33B8F293092F897906B1D /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53035868D8A1AAE59D155A28 /* AboutView.swift */; };
 		3F8F9890248BAE24FE137B7D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0853549D608A9BDAEFDEFB4E /* Assets.xcassets */; };
 		431AE20F068AF2F086DFBB44 /* StemMixExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57FDEDC29A18294F1A074A7C /* StemMixExporter.swift */; };
@@ -174,6 +175,7 @@
 		6DE07B5D5348A49C0D43F589 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		6DE9E8BB9729552CE71AA98E /* StemMixerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemMixerTests.swift; sourceTree = "<group>"; };
 		6FC80BFCBF9441BB2E39601B /* SongWorkbenchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongWorkbenchApp.swift; sourceTree = "<group>"; };
+		77B1E3154C03FFCBB73533D0 /* SongAnalysisPipelineFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongAnalysisPipelineFactory.swift; sourceTree = "<group>"; };
 		7ADF3745325BA1DE987A3DC2 /* StemMixerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemMixerModel.swift; sourceTree = "<group>"; };
 		840EC782D1F91B658C1815E9 /* CoreMLStemSeparationEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLStemSeparationEngine.swift; sourceTree = "<group>"; };
 		84656EC8A66FEE2902A41EE6 /* StemSeparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemSeparationTests.swift; sourceTree = "<group>"; };
@@ -317,6 +319,7 @@
 				695D6BF5BD4A7BFCEAAD815A /* Song.swift */,
 				4FAC04CB7D275050CC0B852D /* SongAnalysisDocument.swift */,
 				D4C711D791808BFFAF1E3372 /* SongAnalysisPipeline.swift */,
+				77B1E3154C03FFCBB73533D0 /* SongAnalysisPipelineFactory.swift */,
 				6FC80BFCBF9441BB2E39601B /* SongWorkbenchApp.swift */,
 				35483485ECB48A6D79F4B23E /* SpectrumChroma.swift */,
 				7ADF3745325BA1DE987A3DC2 /* StemMixerModel.swift */,
@@ -582,6 +585,7 @@
 				D2D2ACDC9FA58F06B23A2B01 /* Song.swift in Sources */,
 				B58178FB65625BD251B64E33 /* SongAnalysisDocument.swift in Sources */,
 				F493E456D6AFBF7C75538365 /* SongAnalysisPipeline.swift in Sources */,
+				322AC42FFDD16C254C6B87EB /* SongAnalysisPipelineFactory.swift in Sources */,
 				016BCA00EAD2A091DCC66C21 /* SongWorkbenchApp.swift in Sources */,
 				305C3CC57BE8517F0B111A0E /* SpectrumChroma.swift in Sources */,
 				431AE20F068AF2F086DFBB44 /* StemMixExporter.swift in Sources */,
