@@ -437,6 +437,7 @@ struct SongAnalysisPipeline: Sendable {
         var record: AnalysisStageRecord
         var wasCancelled: Bool = false
         var estimatedBPM: Double??
+        var beatTimes: [TimeInterval]?
         var estimatedKey: MusicalKey??
         var chords: [EditableChordEvent]?
         var chordReviewState: AnalysisReviewState?
@@ -460,6 +461,7 @@ struct SongAnalysisPipeline: Sendable {
         to document: inout SongAnalysisDocument
     ) {
         if let estimatedBPM = outcome.estimatedBPM { document.estimatedBPM = estimatedBPM }
+        if let beatTimes = outcome.beatTimes { document.beatTimes = beatTimes }
         if let estimatedKey = outcome.estimatedKey { document.estimatedKey = estimatedKey }
         if let chords = outcome.chords { document.chords = chords }
         if let chordReviewState = outcome.chordReviewState {
@@ -613,6 +615,7 @@ struct SongAnalysisPipeline: Sendable {
             return HarmonyOutcome(
                 record: record,
                 estimatedBPM: .some(result.beat?.bpm),
+                beatTimes: result.beat?.beatTimes ?? [],
                 estimatedKey: .some(
                     result.estimatedKey ?? MusicalKeyEstimator().estimate(from: result.chords)),
                 chords: ChordEventReducer().events(from: result),

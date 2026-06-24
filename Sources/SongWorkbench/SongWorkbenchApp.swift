@@ -13,7 +13,15 @@ struct SongWorkbenchApp: App {
                 .tint(Color.swAccent)
                 .preferredColorScheme(.dark)
         }
+        Window("About \(AboutInfo.appName)", id: "about") {
+            AboutView()
+                .preferredColorScheme(.dark)
+        }
+        .windowResizability(.contentSize)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                AboutCommandButton()
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Import Songs...") {
                     model.isImporterPresented = true
@@ -57,6 +65,16 @@ struct SongWorkbenchApp: App {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct AboutCommandButton: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("About \(AboutInfo.appName)") {
+            openWindow(id: "about")
         }
     }
 }

@@ -39,6 +39,9 @@ final class AppModel: ObservableObject {
     @Published var estimatedBPM: Double? {
         didSet { persistSelectedAnalysis() }
     }
+    @Published var beatTimes: [TimeInterval] = [] {
+        didSet { persistSelectedAnalysis() }
+    }
     @Published var estimatedKey: MusicalKey? {
         didSet { persistSelectedAnalysis() }
     }
@@ -541,6 +544,7 @@ final class AppModel: ObservableObject {
         chordEvents = []
         chordProSource = ""
         estimatedBPM = nil
+        beatTimes = []
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
         stemFiles = nil
@@ -978,6 +982,7 @@ final class AppModel: ObservableObject {
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
         estimatedBPM = analysis.estimatedBPM
+        beatTimes = analysis.beatTimes
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
         stemFiles = analysis.stems?.resolved()
@@ -1027,6 +1032,7 @@ final class AppModel: ObservableObject {
             chords: chordEvents,
             chordProSource: chordProSource,
             estimatedBPM: estimatedBPM,
+            beatTimes: beatTimes,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
             stems: stemFiles.map(StoredStemFiles.init(files:)),
@@ -1215,6 +1221,7 @@ final class AppModel: ObservableObject {
         let events = ChordEventReducer().events(from: analysis)
         var document = analysisBySongID[songID] ?? SongAnalysisDocument()
         document.estimatedBPM = analysis.beat?.bpm
+        document.beatTimes = analysis.beat?.beatTimes ?? []
         document.estimatedKey = analysis.estimatedKey
         document.chords = events
         document.chordReviewState = .draft
@@ -1245,6 +1252,7 @@ final class AppModel: ObservableObject {
         analysisBySongID[songID] = document
         if selectedSongID == songID {
             estimatedBPM = document.estimatedBPM
+            beatTimes = document.beatTimes
             estimatedKey = document.estimatedKey
             chordEvents = document.chords
             analysisStageRecords = document.stageRecords

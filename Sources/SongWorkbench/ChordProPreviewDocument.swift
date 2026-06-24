@@ -78,6 +78,13 @@ struct ChordProHighlightDeriver: Sendable {
         })
     }
 
+    /// The sorted lyric segment at `ordinal`, or `nil` when out of range. Lets callers
+    /// recover the active segment's start/end/text to drive the beat-synced ball.
+    func segment(atOrdinal ordinal: Int) -> TimedLyricSegment? {
+        guard sortedLyrics.indices.contains(ordinal) else { return nil }
+        return sortedLyrics[ordinal]
+    }
+
     /// The character range of the word active at `currentTime` within the lyric at `ordinal`.
     func wordRange(inLyricOrdinal ordinal: Int, at currentTime: TimeInterval) -> Range<Int>? {
         guard sortedLyrics.indices.contains(ordinal) else { return nil }
@@ -150,6 +157,108 @@ struct ChordProHighlightDeriver: Sendable {
         }
         return ranges
     }
+}
+
+/// Pure, unit-tested geometry for the karaoke "bouncing ball" that taps the word
+/// coinciding with each beat at the beat moment, arcs up to an apex around mid-beat,
+/// then descends to tap the next beat's word. Construct it with the beat times that
+/// fall within (or just around) the active lyric segment plus the target x-position of
+/// the word each beat lands on; query `position(at:)` for the playhead's current time.
+struct BouncingBall: Sendable {
+    /// The ordered beat times the ball travels along (ascending).
+    let beatTimes: [TimeInterval]
+    /// The horizontal target (word center x) for the beat at the same index.
+    let beatX: [CGFloat]
+
+    /// Chooses the beats relevant to a lyric segment.
+    ///
+    /// If `beatTimes` has entries inside `[segmentStart, segmentEnd]`, those are used
+    /// (sorted, filtered to the range) plus, when present, the last beat at or before
+    /// `segmentStart` and the first beat at or after `segmentEnd` so the arc has
+    /// neighbors on both ends. When `beatTimes` is empty, beats are synthesized from
+    /// `bpm` (guarded to be non-nil and positive) at `segmentStart + k*beatDuration`
+    /// for `k = 0, 1, ...` while `<= segmentEnd`, plus one extra beat beyond the end.
+    static func beats(
+        in segmentStart: TimeInterval,
+        _ segmentEnd: TimeInterval,
+        beatTimes: [TimeInterval],
+        bpm: Double?
+    ) -> [TimeInterval] {
+        let sorted = beatTimes.sorted()
+        let within = sorted.filter { $0 >= segmentStart && $0 <= segmentEnd }
+        if !within.isEmpty {
+            var result = within
+            if let neighborBefore = sorted.last(where: { $0 < segmentStart }) {
+                result.insert(neighborBefore, at: 0)
+            }
+            if let neighborAfter = sorted.first(where: { $0 > segmentEnd }) {
+                result.append(neighborAfter)
+            }
+            return result
+        }
+
+        guard let bpm, bpm > 0 else { return [] }
+        let beatDuration = 60.0 / bpm
+        guard beatDuration > 0 else { return [] }
+        var result: [TimeInterval] = []
+        var k = 0
+        while true {
+            let time = segmentStart + Double(k) * beatDuration
+            if time <= segmentEnd {
+                result.append(time)
+                k += 1
+            } else {
+                // One extra beat beyond the end to give the final tap a neighbor.
+                result.append(time)
+                break
+            }
+        }
+        return result
+    }
+
+    /// The ball position at `currentTime`: the horizontal `x` and a normalized `lift`
+    /// in `0...1` (0 = tapping the word, 1 = apex). Returns `nil` before the first beat
+    /// or after the last beat.
+    func position(at currentTime: TimeInterval) -> (x: CGFloat, lift: CGFloat)? {
+        guard let first = beatTimes.first, let last = beatTimes.last else { return nil }
+        guard currentTime >= first, currentTime <= last else { return nil }
+
+        // prevBeat = last beat <= currentTime; nextBeat = first beat > currentTime.
+        var prevIndex = 0
+        for index in beatTimes.indices where beatTimes[index] <= currentTime {
+            prevIndex = index
+        }
+        let nextIndex: Int
+        if let found = beatTimes.indices.first(where: { beatTimes[$0] > currentTime }) {
+            nextIndex = found
+        } else {
+            nextIndex = prevIndex  // clamp to last
+        }
+
+        let prevBeat = beatTimes[prevIndex]
+        let nextBeat = beatTimes[nextIndex]
+        let xPrev = beatX[prevIndex]
+        let xNext = beatX[nextIndex]
+
+        let p = min(max((currentTime - prevBeat) / max(nextBeat - prevBeat, 0.0001), 0), 1)
+        let x = Self.lerp(xPrev, xNext, CGFloat(Self.smoothstep(p)))
+        let lift = Self.lift(forFraction: p)
+        return (x: x, lift: CGFloat(lift))
+    }
+
+    /// Slow rise, quick descent: 0 at beats (tap), 1 at mid-beat (apex).
+    static func lift(forFraction p: Double) -> Double {
+        if p < 0.5 {
+            return easeOut(p / 0.5)
+        } else {
+            return 1 - easeIn((p - 0.5) / 0.5)
+        }
+    }
+
+    static func smoothstep(_ p: Double) -> Double { p * p * (3 - 2 * p) }
+    static func easeOut(_ t: Double) -> Double { 1 - (1 - t) * (1 - t) }
+    static func easeIn(_ t: Double) -> Double { t * t }
+    static func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat { a + (b - a) * t }
 }
 
 struct ChordProPlaybackHighlightContext: Equatable, Sendable {

@@ -517,6 +517,7 @@ private struct ChordProTabEditor: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
+    @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
     @State private var transpose = 0
     @State private var errorMessage: String?
     @State private var mode = Mode.preview
@@ -554,6 +555,11 @@ private struct ChordProTabEditor: View {
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .frame(width: 190)
+                Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .help("Show a beat-synced bouncing ball over the current lyric line")
                 Spacer()
                 if config.supportsMarkReviewed {
                     Button("Mark Reviewed", systemImage: "checkmark.seal") {
@@ -587,7 +593,8 @@ private struct ChordProTabEditor: View {
                         ChordProAppPreview(
                             source: previewSource,
                             transpose: config.supportsTranspose ? transpose : 0,
-                            highlightContext: highlightContext(style: config.highlightStyle)
+                            highlightContext: highlightContext(style: config.highlightStyle),
+                            beatBall: beatBallInput
                         )
                     }
                 }
@@ -708,12 +715,52 @@ private struct ChordProTabEditor: View {
     private var currentPlaybackTime: TimeInterval {
         model.activePlaybackSource == .stemMix ? stemPlayback.currentTime : playback.currentTime
     }
+
+    /// Drives the karaoke bouncing ball over the active lyric line during playback.
+    /// `nil` whenever nothing is active or there is no beat data (neither explicit
+    /// beat times nor a usable BPM) to position the ball.
+    private var beatBallInput: BeatBallInput? {
+        guard bouncingBallEnabled else { return nil }
+        let deriver = ChordProHighlightDeriver(
+            lyricSegments: model.lyricSegments,
+            chordEvents: model.chordEvents,
+            confidenceThreshold: model.chordConfidenceThreshold
+        )
+        guard
+            let ordinal = deriver.lyricOrdinal(at: currentPlaybackTime),
+            let segment = deriver.segment(atOrdinal: ordinal)
+        else { return nil }
+
+        let bpm = model.estimatedBPM
+        let beatTimes = model.beatTimes
+        // Need either explicit beats or a usable BPM to synthesize them.
+        guard !beatTimes.isEmpty || (bpm.map { $0 > 0 } ?? false) else { return nil }
+
+        return BeatBallInput(
+            currentTime: currentPlaybackTime,
+            segment: segment,
+            bpm: bpm,
+            beatTimes: beatTimes,
+            ordinal: ordinal
+        )
+    }
+}
+
+/// Per-frame inputs the App Preview needs to draw the beat-synced bouncing ball over
+/// the active lyric line. `nil` upstream when nothing is active or no beat data exists.
+struct BeatBallInput: Equatable {
+    let currentTime: TimeInterval
+    let segment: TimedLyricSegment
+    let bpm: Double?
+    let beatTimes: [TimeInterval]
+    let ordinal: Int
 }
 
 private struct ChordProAppPreview: View {
     let source: String
     var transpose: Int = 0
     var highlightContext: ChordProPlaybackHighlightContext?
+    var beatBall: BeatBallInput?
 
     var body: some View {
         Group {
@@ -735,7 +782,8 @@ private struct ChordProAppPreview: View {
                                             block: item.block,
                                             highlight: highlightContext?.highlight(
                                                 forLyricOrdinal: item.lyricOrdinal
-                                            )
+                                            ),
+                                            beatBall: beatBallValue(for: item.lyricOrdinal)
                                         )
                                         .id(item.offset)
                                     }
@@ -809,6 +857,30 @@ private struct ChordProAppPreview: View {
     ) -> Int? {
         indexedBlocks(for: document).first { $0.lyricOrdinal == ordinal }?.offset
     }
+
+    /// Only the block matching the active ordinal carries the ball; others get nil.
+    private func beatBallValue(for lyricOrdinal: Int?) -> LineBeatBall? {
+        guard let beatBall, let lyricOrdinal, lyricOrdinal == beatBall.ordinal else {
+            return nil
+        }
+        return LineBeatBall(
+            currentTime: beatBall.currentTime,
+            segmentStart: beatBall.segment.start,
+            segmentEnd: beatBall.segment.end,
+            bpm: beatBall.bpm,
+            beatTimes: beatBall.beatTimes
+        )
+    }
+}
+
+/// The minimal, per-line slice of `BeatBallInput` the line view needs to position the
+/// ball relative to its OWN rendered lyric text.
+struct LineBeatBall: Equatable {
+    let currentTime: TimeInterval
+    let segmentStart: TimeInterval
+    let segmentEnd: TimeInterval
+    let bpm: Double?
+    let beatTimes: [TimeInterval]
 }
 
 private struct ChordProPreviewIndexedBlock {
@@ -820,6 +892,7 @@ private struct ChordProPreviewIndexedBlock {
 private struct ChordProPreviewBlockView: View {
     let block: ChordProPreviewBlock
     var highlight: ChordProLinePlaybackHighlight?
+    var beatBall: LineBeatBall?
 
     var body: some View {
         switch block {
@@ -844,7 +917,7 @@ private struct ChordProPreviewBlockView: View {
                 .font(.callout.italic())
                 .foregroundStyle(.secondary)
         case .lyric(let line):
-            ChordProPreviewLineView(line: line, highlight: highlight)
+            ChordProPreviewLineView(line: line, highlight: highlight, beatBall: beatBall)
         case .directive(let source):
             Text(source)
                 .font(.caption.monospaced())
@@ -859,32 +932,110 @@ private struct ChordProPreviewLineView: View {
         withAttributes: [.font: lyricFont]
     ).width
 
+    /// Extra top space reserved above the content so the bouncing ball (and its arc
+    /// apex) is never clipped. Content is shifted down by this amount, leaving the
+    /// existing lyric/chord layout visually unchanged.
+    private static let ballTopReserve: CGFloat = 22
+    /// Apex travel above the tap baseline.
+    private static let ballApexHeight: CGFloat = 18
+    private static let ballDiameter: CGFloat = 11
+
     let line: ChordProPreviewLine
     var highlight: ChordProLinePlaybackHighlight?
+    var beatBall: LineBeatBall?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            lyricText
-                .offset(y: line.chords.isEmpty ? 0 : 20)
+            ZStack(alignment: .topLeading) {
+                lyricText
+                    .offset(y: line.chords.isEmpty ? 0 : 20)
 
-            ForEach(Array(line.chords.enumerated()), id: \.offset) { _, chord in
-                Text(chord.name)
-                    .font(
-                        .system(
-                            size: 13,
-                            weight: chordWeight(for: chord),
-                            design: .monospaced
+                ForEach(Array(line.chords.enumerated()), id: \.offset) { _, chord in
+                    Text(chord.name)
+                        .font(
+                            .system(
+                                size: 13,
+                                weight: chordWeight(for: chord),
+                                design: .monospaced
+                            )
                         )
-                    )
-                    .foregroundStyle(.tint)
-                    .offset(x: CGFloat(chord.column) * Self.characterWidth)
+                        .foregroundStyle(.tint)
+                        .offset(x: CGFloat(chord.column) * Self.characterWidth)
+                }
+            }
+            .offset(y: Self.ballTopReserve)
+
+            if let ball = ballPosition {
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: Self.ballDiameter, height: Self.ballDiameter)
+                    .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
+                    .opacity(0.95)
+                    .position(x: ball.x, y: ball.y)
             }
         }
         .frame(
             width: CGFloat(max(1, lineWidth)) * Self.characterWidth,
-            height: line.chords.isEmpty ? 20 : 42,
+            height: (line.chords.isEmpty ? 20 : 42) + Self.ballTopReserve,
             alignment: .topLeading
         )
+    }
+
+    /// The ball's center in this line's coordinate space, or `nil` when no ball should
+    /// be drawn (no beat-ball value, no resolvable beats, or playhead outside the arc).
+    private var ballPosition: (x: CGFloat, y: CGFloat)? {
+        guard let beatBall else { return nil }
+        let words = wordCenters
+        guard !words.isEmpty else { return nil }
+
+        let beats = BouncingBall.beats(
+            in: beatBall.segmentStart,
+            beatBall.segmentEnd,
+            beatTimes: beatBall.beatTimes,
+            bpm: beatBall.bpm
+        )
+        guard !beats.isEmpty else { return nil }
+
+        let span = max(beatBall.segmentEnd - beatBall.segmentStart, 0.0001)
+        let xs: [CGFloat] = beats.map { beatTime in
+            let relative = min(max((beatTime - beatBall.segmentStart) / span, 0), 1)
+            let wordIndex = min(Int(relative * Double(words.count)), words.count - 1)
+            return words[wordIndex]
+        }
+
+        let ball = BouncingBall(beatTimes: beats, beatX: xs)
+        guard let position = ball.position(at: beatBall.currentTime) else { return nil }
+
+        // Tap baseline sits just above the content's top (which is shifted down by the
+        // reserve); apex rises `ballApexHeight` above that baseline.
+        let baseline = Self.ballTopReserve - 2
+        let y = baseline - position.lift * Self.ballApexHeight
+        return (x: position.x, y: y)
+    }
+
+    /// Center x of each whitespace-delimited word in this line's OWN lyric, using the
+    /// monospaced character width so it lines up with the rendered text.
+    private var wordCenters: [CGFloat] {
+        let characters = Array(line.lyric)
+        var centers: [CGFloat] = []
+        var start: Int?
+        func close(_ end: Int) {
+            if let wordStart = start {
+                let length = end - wordStart
+                let center = (CGFloat(wordStart) + CGFloat(length) / 2) * Self.characterWidth
+                centers.append(center)
+                start = nil
+            }
+        }
+        for index in characters.indices {
+            if characters[index].isWhitespace {
+                close(index)
+            } else if start == nil {
+                start = index
+            }
+        }
+        close(characters.count)
+        return centers
     }
 
     private var lineWidth: Int {

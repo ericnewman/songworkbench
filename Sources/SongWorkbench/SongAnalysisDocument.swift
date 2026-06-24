@@ -74,6 +74,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var chords: [EditableChordEvent] = []
     var chordProSource = ""
     var estimatedBPM: Double?
+    var beatTimes: [TimeInterval] = []
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
     var stems: StoredStemFiles?
@@ -89,6 +90,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case chords
         case chordProSource
         case estimatedBPM
+        case beatTimes
         case estimatedKey
         case chordConfidenceThreshold
         case stems
@@ -105,6 +107,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         chords: [EditableChordEvent] = [],
         chordProSource: String = "",
         estimatedBPM: Double? = nil,
+        beatTimes: [TimeInterval] = [],
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
         stems: StoredStemFiles? = nil,
@@ -119,6 +122,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.chords = chords
         self.chordProSource = chordProSource
         self.estimatedBPM = estimatedBPM
+        self.beatTimes = beatTimes
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
         self.stems = stems
@@ -138,6 +142,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         chords = try container.decodeIfPresent([EditableChordEvent].self, forKey: .chords) ?? []
         chordProSource = try container.decodeIfPresent(String.self, forKey: .chordProSource) ?? ""
         estimatedBPM = try container.decodeIfPresent(Double.self, forKey: .estimatedBPM)
+        beatTimes = try container.decodeIfPresent([TimeInterval].self, forKey: .beatTimes) ?? []
         estimatedKey =
             try container.decodeIfPresent(MusicalKey.self, forKey: .estimatedKey)
             ?? MusicalKeyEstimator().estimate(from: chords)
