@@ -27,6 +27,7 @@
 		2AB7EA06FF660C355574FAEA /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DE07B5D5348A49C0D43F589 /* AppModel.swift */; };
 		2B00D58A17ED03F98BBDEF16 /* ModelArtifactManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B336227700B12BD7E687C9CE /* ModelArtifactManagerTests.swift */; };
 		2D7A1EAD22DFDE4D95E7BEA8 /* ChordEventReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27E5C7CFBA91AB79E2B4AB6 /* ChordEventReducer.swift */; };
+		2DEB50EFC87BE2BC8A781DC4 /* AnalysisStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D909D5762770B55D225ACC91 /* AnalysisStage.swift */; };
 		2EB7E79B665E8565E0930D57 /* AudioPlaybackService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6225003DB6CCB215666FA45F /* AudioPlaybackService.swift */; };
 		2FF8C671F14BDFCF8DD01F60 /* StemMixerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADF3745325BA1DE987A3DC2 /* StemMixerModel.swift */; };
 		305C3CC57BE8517F0B111A0E /* SpectrumChroma.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35483485ECB48A6D79F4B23E /* SpectrumChroma.swift */; };
@@ -198,6 +199,7 @@
 		D4C711D791808BFFAF1E3372 /* SongAnalysisPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongAnalysisPipeline.swift; sourceTree = "<group>"; };
 		D63EFAA6B1C4DF0DC7F62D79 /* AnalysisWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisWorkspaceView.swift; sourceTree = "<group>"; };
 		D82227F4D1105EF9B83EAA6F /* WhisperCPPTranscriptionEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperCPPTranscriptionEngineTests.swift; sourceTree = "<group>"; };
+		D909D5762770B55D225ACC91 /* AnalysisStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisStage.swift; sourceTree = "<group>"; };
 		DC2EB36D63720244D48FAE96 /* StemPlaybackServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemPlaybackServiceTests.swift; sourceTree = "<group>"; };
 		DDB8AF7721517CC7F3CD1800 /* FluidAudioTranscriptionEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FluidAudioTranscriptionEngineTests.swift; sourceTree = "<group>"; };
 		DF5D9B9459DC7B199AF08848 /* ChordProPreviewDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProPreviewDocument.swift; sourceTree = "<group>"; };
@@ -279,6 +281,7 @@
 			children = (
 				53035868D8A1AAE59D155A28 /* AboutView.swift */,
 				388D4F25815DB01149F46F54 /* AnalysisResultDiskCache.swift */,
+				D909D5762770B55D225ACC91 /* AnalysisStage.swift */,
 				D63EFAA6B1C4DF0DC7F62D79 /* AnalysisWorkspaceView.swift */,
 				6DE07B5D5348A49C0D43F589 /* AppModel.swift */,
 				0FA1A6AEFFBC10C04E93A31E /* AudioFileAnalysisService.swift */,
@@ -541,6 +544,7 @@
 				557C385015AA57AE281A1281 /* TuistBundle+SongWorkbench.swift in Sources */,
 				35B33B8F293092F897906B1D /* AboutView.swift in Sources */,
 				E8754F7564A4A99C1CA8D969 /* AnalysisResultDiskCache.swift in Sources */,
+				2DEB50EFC87BE2BC8A781DC4 /* AnalysisStage.swift in Sources */,
 				4989640A71B8BE65A6F6C5B5 /* AnalysisWorkspaceView.swift in Sources */,
 				2AB7EA06FF660C355574FAEA /* AppModel.swift in Sources */,
 				938FAF1FAEDDF0867F099934 /* AudioFileAnalysisService.swift in Sources */,

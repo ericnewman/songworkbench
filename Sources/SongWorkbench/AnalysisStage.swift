@@ -1,0 +1,421 @@
+import Foundation
+
+/// The result of running a single analysis stage through its adapter.
+///
+/// `apply` performs that stage's document mutations — setting any produced
+/// fields and writing the stage record. Outcomes are built so that a
+/// failed/cancelled stage's `apply` writes ONLY its stage record (a `.failed`
+/// or `.cancelled` record) and touches nothing else, preserving any results a
+/// prior stage already wrote into the document.
+struct AnalysisStageOutcome: Sendable {
+    let wasCancelled: Bool
+    let apply: @Sendable (inout SongAnalysisDocument) -> Void
+
+    init(
+        wasCancelled: Bool = false,
+        apply: @escaping @Sendable (inout SongAnalysisDocument) -> Void
+    ) {
+        self.wasCancelled = wasCancelled
+        self.apply = apply
+    }
+}
+
+/// Everything a stage adapter needs, captured per-invocation. The pipeline
+/// rebuilds this for each stage so later stages see earlier stages' results
+/// (e.g. transcription/harmony see separation's stems through `document`).
+///
+/// `digest` is a `@Sendable` closure rather than the pipeline's `DigestMemo`:
+/// the memo is a non-`Sendable` reference type and must never be shared into
+/// the concurrent transcription+harmony tasks. For the concurrent branch the
+/// pipeline derives this closure from a precomputed snapshot of digests; for
+/// sequential stages it may be backed by the memo (used on a single task).
+struct AnalysisStageContext: Sendable {
+    let request: SongAnalysisPipelineRequest
+    let document: SongAnalysisDocument
+    let sourceDigest: String
+    let digest: @Sendable (URL) -> String?
+    let cache: AnalysisResultDiskCache?
+    let stemEngine: (any StemSeparationEngine)?
+    let transcriptionEngineFactory: TranscriptionEngineFactory
+    let harmonyEngine: any SongHarmonyAnalyzing
+    let chordProBuilder: ChordProDraftBuilder
+    let chordProReplacementPolicy: ChordProReplacementPolicy
+    let stageProgress: @Sendable (Double, String) -> Void
+}
+
+/// Uniform interface every stage adapter conforms to. The pipeline owns
+/// ordering, concurrency, and cancellation; each adapter owns the per-stage
+/// knowledge (engine selection, cache keys, provenance, document mutations).
+protocol AnalysisStageRunning: Sendable {
+    var stage: SongAnalysisStage { get }
+    func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome
+}
+
+// MARK: - Shared record construction
+
+/// Per-stage record/provenance construction extracted from the pipeline so the
+/// per-stage knowledge lives in the stage. The produced records, keys, and
+/// provenance remain byte-identical to the pre-refactor pipeline.
+enum AnalysisStageRecordFactory {
+    static func cancelledRecord() -> AnalysisStageRecord {
+        AnalysisStageRecord(
+            state: .cancelled,
+            provenance: nil,
+            confidence: nil,
+            errorMessage: nil
+        )
+    }
+
+    static func failedRecord(_ error: Error) -> AnalysisStageRecord {
+        AnalysisStageRecord(
+            state: .failed,
+            provenance: nil,
+            confidence: nil,
+            errorMessage: error.localizedDescription
+        )
+    }
+
+    static func successfulRecord(
+        sourceDigest: String,
+        sourceKind: AnalysisSourceKind,
+        engine: AnalysisEngineVersion,
+        modelIdentifier: String?,
+        modelVersion: String?,
+        configurationIdentifier: String,
+        confidence: AnalysisConfidenceSummary?,
+        loadedFromCache: Bool = false
+    ) -> AnalysisStageRecord {
+        AnalysisStageRecord(
+            state: .succeeded,
+            provenance: AnalysisProvenance(
+                sourceDigest: sourceDigest,
+                sourceKind: sourceKind,
+                engineIdentifier: engine.identifier,
+                engineVersion: engine.version,
+                modelIdentifier: modelIdentifier,
+                modelVersion: modelVersion,
+                configurationIdentifier: configurationIdentifier,
+                resultSchemaVersion: SongAnalysisDocument.currentSchemaVersion,
+                completedAt: Date(),
+                loadedFromCache: loadedFromCache
+            ),
+            confidence: confidence,
+            errorMessage: nil
+        )
+    }
+
+    static func confidenceSummary(_ values: [Float]) -> AnalysisConfidenceSummary? {
+        guard !values.isEmpty else { return nil }
+        return AnalysisConfidenceSummary(
+            average: values.reduce(0, +) / Float(values.count),
+            lowConfidenceCount: values.filter { $0 < 0.5 }.count,
+            totalCount: values.count
+        )
+    }
+}
+
+// MARK: - Separation
+
+struct SeparationStage: AnalysisStageRunning {
+    let stage: SongAnalysisStage = .separation
+
+    func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
+        do {
+            let document = context.document
+            let sourceDigest = context.sourceDigest
+
+            // Cache hit: reuse the existing record, marking it loaded-from-cache,
+            // and mutate nothing else.
+            if let stemEngine = context.stemEngine,
+                SeparationCachingPolicy(currentEngine: stemEngine.metadata).isCacheHit(
+                    record: document.stageRecords[.separation],
+                    sourceDigest: sourceDigest,
+                    storedStems: document.stems
+                ),
+                let existingRecord = document.stageRecords[.separation]
+            {
+                var cachedRecord = existingRecord
+                if var provenance = cachedRecord.provenance {
+                    provenance.loadedFromCache = true
+                    cachedRecord.provenance = provenance
+                }
+                let loadedRecord = cachedRecord
+                context.stageProgress(1, "loadedFromCache")
+                return AnalysisStageOutcome { document in
+                    document.stageRecords[.separation] = loadedRecord
+                }
+            }
+
+            guard let stemEngine = context.stemEngine else {
+                throw SongAnalysisPipelineError.missingStemEngine
+            }
+            let stageProgress = context.stageProgress
+            let result = try await stemEngine.separate(
+                request: StemSeparationRequest(
+                    inputURL: context.request.sourceURL,
+                    outputDirectory: context.request.outputDirectory
+                )
+            ) { value in
+                stageProgress(value.fractionCompleted, value.phase.rawValue)
+            }
+            let stems = StoredStemFiles(files: result.stems)
+            let record = AnalysisStageRecordFactory.successfulRecord(
+                sourceDigest: sourceDigest,
+                sourceKind: .recording,
+                engine: AnalysisEngineVersion(
+                    identifier: stemEngine.metadata.engineIdentifier,
+                    version: stemEngine.metadata.engineVersion
+                ),
+                modelIdentifier: stemEngine.metadata.modelIdentifier,
+                modelVersion: stemEngine.metadata.modelVersion,
+                configurationIdentifier: "six-stem-44.1k-stereo",
+                confidence: nil
+            )
+            return AnalysisStageOutcome { document in
+                document.stems = stems
+                document.stageRecords[.separation] = record
+            }
+        } catch is CancellationError {
+            return AnalysisStageOutcome(wasCancelled: true) { document in
+                document.stageRecords[.separation] = AnalysisStageRecordFactory.cancelledRecord()
+            }
+        } catch {
+            let record = AnalysisStageRecordFactory.failedRecord(error)
+            return AnalysisStageOutcome { document in
+                document.stageRecords[.separation] = record
+            }
+        }
+    }
+}
+
+// MARK: - Transcription
+
+struct TranscriptionStage: AnalysisStageRunning {
+    let stage: SongAnalysisStage = .transcription
+
+    func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
+        let request = context.request
+        let audioURL = context.document.stems?.resolved().vocals ?? request.sourceURL
+        let hasStems = context.document.stems != nil
+        let audioDigest = context.digest(audioURL) ?? context.sourceDigest
+        let stageProgress = context.stageProgress
+
+        do {
+            let engine = context.transcriptionEngineFactory.engine(for: request.transcriptionMode)
+            guard let engine else {
+                throw SongAnalysisPipelineError.missingTranscriptionEngine(
+                    request.transcriptionMode)
+            }
+            let sourceKind: AnalysisSourceKind = hasStems ? .vocalsStem : .recording
+            let cacheEngine = AnalysisEngineVersion(
+                identifier: [
+                    "transcription",
+                    engine.metadata.engineName,
+                    engine.metadata.modelName,
+                    request.transcriptionMode.rawValue,
+                    sourceKind.rawValue,
+                ].joined(separator: "|"),
+                version: [
+                    engine.metadata.engineVersion,
+                    engine.metadata.modelVersion ?? "unknown",
+                    "schema-\(SongAnalysisDocument.currentSchemaVersion)",
+                ].joined(separator: "|")
+            )
+            let result: TranscriptionResult
+            let loadedFromCache: Bool
+            if let cached: TranscriptionResult = try await context.cache?.value(
+                forSourceHash: audioDigest,
+                engine: cacheEngine
+            ) {
+                result = cached
+                loadedFromCache = true
+                stageProgress(1, "loadedFromCache")
+            } else {
+                let requestID = UUID()
+                do {
+                    result = try await engine.transcribe(
+                        request: TranscriptionRequest(id: requestID, audioURL: audioURL)
+                    ) { value in
+                        stageProgress(value.fractionCompleted, value.phase.rawValue)
+                    }
+                } catch is CancellationError {
+                    await engine.cancel(requestID: requestID)
+                    throw CancellationError()
+                }
+                try await context.cache?.store(
+                    result, forSourceHash: audioDigest, engine: cacheEngine)
+                loadedFromCache = false
+            }
+            try Task.checkCancellation()
+            let confidences = result.segments.flatMap(\.tokens).compactMap(\.confidence)
+            let record = AnalysisStageRecordFactory.successfulRecord(
+                sourceDigest: audioDigest,
+                sourceKind: sourceKind,
+                engine: AnalysisEngineVersion(
+                    identifier: result.engine.engineName,
+                    version: result.engine.engineVersion
+                ),
+                modelIdentifier: result.engine.modelName,
+                modelVersion: result.engine.modelVersion,
+                configurationIdentifier: request.transcriptionMode.rawValue,
+                confidence: AnalysisStageRecordFactory.confidenceSummary(confidences),
+                loadedFromCache: loadedFromCache
+            )
+            let lyrics = TimedLyricSegmentGrouper.group(result: result)
+            return AnalysisStageOutcome { document in
+                document.lyrics = lyrics
+                document.lyricReviewState = .draft
+                document.stageRecords[.transcription] = record
+            }
+        } catch is CancellationError {
+            return AnalysisStageOutcome(wasCancelled: true) { document in
+                document.stageRecords[.transcription] = AnalysisStageRecordFactory.cancelledRecord()
+            }
+        } catch {
+            let record = AnalysisStageRecordFactory.failedRecord(error)
+            return AnalysisStageOutcome { document in
+                document.stageRecords[.transcription] = record
+            }
+        }
+    }
+}
+
+// MARK: - Harmony
+
+struct HarmonyStage: AnalysisStageRunning {
+    let stage: SongAnalysisStage = .harmony
+
+    func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
+        let harmonySource = try? HarmonyAudioSourceSelector().select(
+            recordingURL: context.request.sourceURL,
+            stems: context.document.stems?.resolved(),
+            allowsRecordingFallback: true
+        )
+        let harmonySourceDigest: String? = harmonySource.flatMap { context.digest($0.url) }
+        let sourceDigest = context.sourceDigest
+        let harmonyEngine = context.harmonyEngine
+        let cache = context.cache
+        let stageProgress = context.stageProgress
+
+        do {
+            guard let source = harmonySource, let sourceHash = harmonySourceDigest else {
+                throw HarmonyAudioSourceError.missingAccompanimentStem
+            }
+            let cacheEngine = AnalysisEngineVersion(
+                identifier: harmonyEngine.metadata.identifier
+                    + "|\(source.configurationIdentifier)",
+                version:
+                    harmonyEngine.metadata.version
+                    + "|schema-\(SongAnalysisDocument.currentSchemaVersion)"
+            )
+            let result: SongAudioAnalysis
+            let loadedFromCache: Bool
+            if let cached: SongAudioAnalysis = try await cache?.value(
+                forSourceHash: sourceHash,
+                engine: cacheEngine
+            ) {
+                result = cached
+                loadedFromCache = true
+            } else {
+                result = try await harmonyEngine.analyze(url: source.url)
+                try await cache?.store(result, forSourceHash: sourceHash, engine: cacheEngine)
+                loadedFromCache = false
+            }
+            try Task.checkCancellation()
+            stageProgress(1, "completed")
+            let record = AnalysisStageRecordFactory.successfulRecord(
+                sourceDigest: sourceDigest,
+                sourceKind: source.kind,
+                engine: harmonyEngine.metadata,
+                modelIdentifier: nil,
+                modelVersion: nil,
+                configurationIdentifier: source.configurationIdentifier,
+                confidence: AnalysisStageRecordFactory.confidenceSummary(
+                    result.chords.map(\.confidence)),
+                loadedFromCache: loadedFromCache
+            )
+            let estimatedBPM: Double? = result.beat?.bpm
+            let beatTimes = result.beat?.beatTimes ?? []
+            let estimatedKey: MusicalKey? =
+                result.estimatedKey ?? MusicalKeyEstimator().estimate(from: result.chords)
+            let chords = ChordEventReducer().events(from: result)
+            return AnalysisStageOutcome { document in
+                document.estimatedBPM = estimatedBPM
+                document.beatTimes = beatTimes
+                document.estimatedKey = estimatedKey
+                document.chords = chords
+                document.chordReviewState = .draft
+                document.stageRecords[.harmony] = record
+            }
+        } catch is CancellationError {
+            return AnalysisStageOutcome(wasCancelled: true) { document in
+                document.stageRecords[.harmony] = AnalysisStageRecordFactory.cancelledRecord()
+            }
+        } catch {
+            let record = AnalysisStageRecordFactory.failedRecord(error)
+            return AnalysisStageOutcome { document in
+                document.stageRecords[.harmony] = record
+            }
+        }
+    }
+}
+
+// MARK: - ChordPro
+
+struct ChordProStage: AnalysisStageRunning {
+    let stage: SongAnalysisStage = .chordPro
+
+    func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
+        let document = context.document
+        let request = context.request
+        let sourceDigest = context.sourceDigest
+
+        do {
+            let existingWasGenerated =
+                document.stageRecords[.chordPro]?.state == .succeeded
+                && document.stageRecords[.chordPro]?.provenance?.engineIdentifier
+                    == "chordpro-draft-builder"
+            let hasProtectedContent =
+                !document.chordProSource.isEmpty
+                && (document.chordProReviewState == .reviewed || !existingWasGenerated)
+            guard
+                !hasProtectedContent
+                    || request.chordProReplacementPolicy == .replaceExisting
+            else {
+                throw SongAnalysisPipelineError.chordProReplacementRequiresConfirmation
+            }
+            let chordProSource = context.chordProBuilder.build(
+                ChordProDraftInput(
+                    title: request.title,
+                    tempo: document.estimatedBPM,
+                    lyrics: document.lyrics,
+                    chords: document.chords,
+                    confidenceThreshold: document.chordConfidenceThreshold
+                ))
+            let record = AnalysisStageRecordFactory.successfulRecord(
+                sourceDigest: sourceDigest,
+                sourceKind: .recording,
+                engine: AnalysisEngineVersion(identifier: "chordpro-draft-builder", version: "2"),
+                modelIdentifier: nil,
+                modelVersion: nil,
+                configurationIdentifier:
+                    "confidence-\(Int((document.chordConfidenceThreshold * 100).rounded()))",
+                confidence: nil
+            )
+            return AnalysisStageOutcome { document in
+                document.chordProSource = chordProSource
+                document.chordProReviewState = .draft
+                document.stageRecords[.chordPro] = record
+            }
+        } catch is CancellationError {
+            return AnalysisStageOutcome(wasCancelled: true) { document in
+                document.stageRecords[.chordPro] = AnalysisStageRecordFactory.cancelledRecord()
+            }
+        } catch {
+            let record = AnalysisStageRecordFactory.failedRecord(error)
+            return AnalysisStageOutcome { document in
+                document.stageRecords[.chordPro] = record
+            }
+        }
+    }
+}
