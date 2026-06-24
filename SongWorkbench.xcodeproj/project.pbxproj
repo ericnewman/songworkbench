@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		016BCA00EAD2A091DCC66C21 /* SongWorkbenchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FC80BFCBF9441BB2E39601B /* SongWorkbenchApp.swift */; };
 		02F253098309176C532EBBD3 /* StemPlaybackServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC2EB36D63720244D48FAE96 /* StemPlaybackServiceTests.swift */; };
+		06FC1028FAFAEB5F0136A3A0 /* BassNoteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE9BFFB3D89233DDEE17F407 /* BassNoteTests.swift */; };
 		074187EDCB53200A31EEE4C6 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 635970BAB1ED7E639D3AEC37 /* Theme.swift */; };
 		09954D3F71227C8662AD2AE0 /* WaveformAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25FC3370C918BBC053FADB81 /* WaveformAnalyzer.swift */; };
 		0A9BC81CF2FD86533D735382 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5EE3986D26B33A2D552E0272 /* AppIntents.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
@@ -54,6 +55,7 @@
 		91D3B1212E11D216093FA811 /* MusicalKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80FCA9932C8811CF3868ECE /* MusicalKeyTests.swift */; };
 		938FAF1FAEDDF0867F099934 /* AudioFileAnalysisService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FA1A6AEFFBC10C04E93A31E /* AudioFileAnalysisService.swift */; };
 		9450B927F9056CCC9F287076 /* ModelPackageManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF78F21E970E1A35C487341 /* ModelPackageManagerTests.swift */; };
+		96577A098115DC83793C55B4 /* BassNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAF0D950143B5B253B90EDA5 /* BassNote.swift */; };
 		96B85214F7BF87B5C57B8FFE /* ChordProParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE9E6908871F1267E8568DC8 /* ChordProParsingTests.swift */; };
 		973AC640351C9600DF2F8BEF /* BackgroundJobCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBE14311AB5CECBC3AE3D7B4 /* BackgroundJobCoordinator.swift */; };
 		997EC8648F0E46E236AD1C9B /* WhisperCPPTranscriptionEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D82227F4D1105EF9B83EAA6F /* WhisperCPPTranscriptionEngineTests.swift */; };
@@ -202,7 +204,9 @@
 		F6D193BCED7D13C5B4850166 /* HarmonyAudioSourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarmonyAudioSourceTests.swift; sourceTree = "<group>"; };
 		F75074DAB6C18528264BE0FC /* PitchShiftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PitchShiftTests.swift; sourceTree = "<group>"; };
 		FAE8CEDACC4B8D8C9D3341CF /* PracticeProject.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeProject.swift; sourceTree = "<group>"; };
+		FAF0D950143B5B253B90EDA5 /* BassNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BassNote.swift; sourceTree = "<group>"; };
 		FB7B3CA1E8B9893B5D910D4A /* WhisperCPPTranscriptionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperCPPTranscriptionEngine.swift; sourceTree = "<group>"; };
+		FE9BFFB3D89233DDEE17F407 /* BassNoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BassNoteTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -272,6 +276,7 @@
 				410EF92DDFAA064966A7A67D /* AudioFraming.swift */,
 				6225003DB6CCB215666FA45F /* AudioPlaybackService.swift */,
 				EBE14311AB5CECBC3AE3D7B4 /* BackgroundJobCoordinator.swift */,
+				FAF0D950143B5B253B90EDA5 /* BassNote.swift */,
 				25BAD6AC10B9CFACB46DDDF1 /* BeatTracking.swift */,
 				13ACE737C45116476698E7F1 /* ChordClassification.swift */,
 				B27E5C7CFBA91AB79E2B4AB6 /* ChordEventReducer.swift */,
@@ -336,6 +341,7 @@
 				A6E88139F0249FEA595F0DDD /* AudioAnalysisTests.swift */,
 				8C2E935552A1885C1EFE5AD5 /* AudioPlaybackServiceTests.swift */,
 				304378578C403B49A8C81A69 /* BackgroundJobCoordinatorTests.swift */,
+				FE9BFFB3D89233DDEE17F407 /* BassNoteTests.swift */,
 				CFAA2DCA1E1D72145BB4338A /* BeatTrackingTests.swift */,
 				E3DD52461ED15BBBA66D4B26 /* ChordProDraftBuilderTests.swift */,
 				CE9E6908871F1267E8568DC8 /* ChordProParsingTests.swift */,
@@ -528,6 +534,7 @@
 				173950EFFEC1C94D609B1AFE /* AudioFraming.swift in Sources */,
 				2EB7E79B665E8565E0930D57 /* AudioPlaybackService.swift in Sources */,
 				973AC640351C9600DF2F8BEF /* BackgroundJobCoordinator.swift in Sources */,
+				96577A098115DC83793C55B4 /* BassNote.swift in Sources */,
 				54B24FF88EBEDC0C65E91180 /* BeatTracking.swift in Sources */,
 				D546EF0EE813A63A091C29C0 /* ChordClassification.swift in Sources */,
 				2D7A1EAD22DFDE4D95E7BEA8 /* ChordEventReducer.swift in Sources */,
@@ -576,6 +583,7 @@
 				A033E70855AB08AA746B6D2E /* AudioAnalysisTests.swift in Sources */,
 				F0A150C9E6BC9CEF57CFDFF4 /* AudioPlaybackServiceTests.swift in Sources */,
 				4D227E861E78FA2AC1A9F03C /* BackgroundJobCoordinatorTests.swift in Sources */,
+				06FC1028FAFAEB5F0136A3A0 /* BassNoteTests.swift in Sources */,
 				B457037F04B498CF30A6196B /* BeatTrackingTests.swift in Sources */,
 				8A21E06B72C2A43EAB6E21BB /* ChordProDraftBuilderTests.swift in Sources */,
 				96B85214F7BF87B5C57B8FFE /* ChordProParsingTests.swift in Sources */,

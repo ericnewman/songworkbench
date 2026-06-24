@@ -133,7 +133,7 @@ struct ChordProPlaybackHighlightContext: Equatable, Sendable {
         case .chord:
             return [active.chord]
         case .bassNote:
-            return BassNoteChordProDraftBuilder.bassNoteLabel(from: active.chord).map { [$0] } ?? []
+            return BassNote(chordSymbol: active.chord).map { [$0.label] } ?? []
         }
     }
 

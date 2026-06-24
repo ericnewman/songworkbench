@@ -112,7 +112,11 @@ final class ChordProDraftBuilderTests: XCTestCase {
             ]
         )
 
-        let document = BassNoteChordProDraftBuilder().build(input)
+        let document = ChordProDraftBuilder().build(
+            input,
+            comment: ChordProDraftBuilder.bassNoteDraftComment,
+            chordLabel: { BassNote(chordSymbol: $0.chord)?.label }
+        )
 
         XCTAssertEqual(
             document,
@@ -140,7 +144,11 @@ final class ChordProDraftBuilderTests: XCTestCase {
             confidenceThreshold: 0.8
         )
 
-        let document = BassNoteChordProDraftBuilder().build(input)
+        let document = ChordProDraftBuilder().build(
+            input,
+            comment: ChordProDraftBuilder.bassNoteDraftComment,
+            chordLabel: { BassNote(chordSymbol: $0.chord)?.label }
+        )
 
         XCTAssertEqual(
             document,

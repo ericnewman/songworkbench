@@ -9,6 +9,9 @@ struct ChordProDraftInput: Equatable, Sendable {
 }
 
 struct ChordProDraftBuilder: Sendable {
+    /// Comment header used for the bass-note draft variant.
+    static let bassNoteDraftComment = "Generated bass-note analysis draft - review required"
+
     func build(_ input: ChordProDraftInput) -> String {
         build(
             input,
@@ -17,7 +20,10 @@ struct ChordProDraftBuilder: Sendable {
         )
     }
 
-    fileprivate func build(
+    /// Renders a ChordPro draft, mapping each chord event to a label via
+    /// `chordLabel` (return `nil` to omit an event). The bass-note draft passes
+    /// `{ BassNote(chordSymbol: $0.chord)?.label }` and `bassNoteDraftComment`.
+    func build(
         _ input: ChordProDraftInput,
         comment: String,
         chordLabel: @Sendable (EditableChordEvent) -> String?
@@ -130,39 +136,6 @@ struct ChordProDraftBuilder: Sendable {
 
     private func formattedTempo(_ tempo: Double) -> String {
         tempo.rounded() == tempo ? String(Int(tempo)) : String(format: "%.1f", tempo)
-    }
-}
-
-struct BassNoteChordProDraftBuilder: Sendable {
-    func build(_ input: ChordProDraftInput) -> String {
-        ChordProDraftBuilder().build(
-            input,
-            comment: "Generated bass-note analysis draft - review required"
-        ) { event in
-            Self.bassNoteLabel(from: event.chord)
-        }
-    }
-
-    static func bassNoteLabel(from chord: String) -> String? {
-        let trimmed = chord.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let components = trimmed.split(
-            separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
-        if components.count == 2, let bass = parseNote(components[1]) {
-            return bass
-        }
-        return parseNote(components[0])
-    }
-
-    private static func parseNote(_ source: Substring) -> String? {
-        guard let first = source.first else { return nil }
-        let letter = String(first).uppercased()
-        guard ["A", "B", "C", "D", "E", "F", "G"].contains(letter) else { return nil }
-        let remainder = source.dropFirst()
-        if remainder.first == "#" || remainder.first == "b" {
-            return letter + String(remainder.first!)
-        }
-        return letter
     }
 }
 

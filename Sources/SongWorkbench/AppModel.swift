@@ -129,7 +129,6 @@ final class AppModel: ObservableObject {
     private let analysisCache: AnalysisResultDiskCache
     private let stemMixExporter = StemMixExporter()
     private let chordProBuilder = ChordProDraftBuilder()
-    private let bassNoteChordProBuilder = BassNoteChordProDraftBuilder()
     private let modelPackageManager: ModelPackageManager
     private var settingsBySongID: [Song.ID: PracticeSettings] = [:]
     private var analysisBySongID: [Song.ID: SongAnalysisDocument] = [:]
@@ -263,14 +262,16 @@ final class AppModel: ObservableObject {
         guard selectedSong != nil || !lyricSegments.isEmpty || !chordEvents.isEmpty else {
             return ""
         }
-        return bassNoteChordProBuilder.build(
+        return chordProBuilder.build(
             ChordProDraftInput(
                 title: selectedSong?.title ?? "Untitled",
                 tempo: estimatedBPM,
                 lyrics: lyricSegments,
                 chords: chordEvents,
                 confidenceThreshold: chordConfidenceThreshold
-            )
+            ),
+            comment: ChordProDraftBuilder.bassNoteDraftComment,
+            chordLabel: { BassNote(chordSymbol: $0.chord)?.label }
         )
     }
 
