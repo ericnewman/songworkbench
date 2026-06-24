@@ -28,6 +28,8 @@ extension Color {
     static let swCoral = Color(hex: 0xFF6B6B)
     /// Data highlight: waveform peaks / data values.
     static let swMint = Color(hex: 0x51CF66)
+    /// Active-playback highlight: the currently sung/played lyric words.
+    static let swAmber = Color(hex: 0xFFC107)
     /// Primary text.
     static let swTextPrimary = Color(hex: 0xE9ECEF)
     /// Secondary / muted text.

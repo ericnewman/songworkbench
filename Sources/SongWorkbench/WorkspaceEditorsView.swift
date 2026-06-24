@@ -878,6 +878,7 @@ private struct ChordProPreviewLineView: View {
                         design: .monospaced
                     )
                 )
+                .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
         }
         return output
     }
