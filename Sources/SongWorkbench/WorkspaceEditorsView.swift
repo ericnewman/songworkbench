@@ -23,6 +23,11 @@ struct WorkspaceEditorsView: View {
                     model.toggleStemPlayback()
                 }
                 .disabled(!stemPlayback.isLoaded)
+                .help(
+                    stemPlayback.isLoaded
+                        ? "Play or pause the separated stem mix"
+                        : "Run Stems separation to enable mix playback"
+                )
                 .swAccentHoverBorder(cornerRadius: 6)
             }
             .padding(.horizontal)
