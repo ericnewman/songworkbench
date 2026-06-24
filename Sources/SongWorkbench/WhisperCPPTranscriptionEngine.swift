@@ -70,7 +70,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 name: "MIT",
                 url: URL(string: "https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE")
             ),
-            engineVersion: "3"
+            engineVersion: "4"
         )
         self.runtime = runtime ?? WhisperCPPRuntime(modelURL: modelURL, useGPU: useGPU)
     }
@@ -111,12 +111,9 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
             task.cancel()
         }
         try Task.checkCancellation()
-        let filteredTranscript = WhisperCPPRepetitionFilter.filter(rawTranscript)
-        let transcript =
-            Self.shouldUseFilteredTranscript(
-                filteredTranscript,
-                insteadOf: rawTranscript
-            ) ? filteredTranscript : rawTranscript
+        // The repetition filter now drops only the runaway-loop region and keeps
+        // any distinct content after it, so it is always safe to apply directly.
+        let transcript = WhisperCPPRepetitionFilter.filter(rawTranscript)
         progress(
             TranscriptionProgress(
                 phase: .finalizing,
@@ -163,23 +160,6 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
         activeRequests[requestID]?.task.cancel()
     }
 
-    private nonisolated static func shouldUseFilteredTranscript(
-        _ filteredTranscript: WhisperCPPTranscript,
-        insteadOf rawTranscript: WhisperCPPTranscript
-    ) -> Bool {
-        guard filteredTranscript != rawTranscript else { return true }
-        let rawEndTime = max(
-            rawTranscript.duration,
-            rawTranscript.segments.map(\.end).max() ?? 0,
-            rawTranscript.segments.flatMap(\.tokens).map(\.end).max() ?? 0
-        )
-        guard rawEndTime > 0 else { return false }
-        let filteredEndTime = max(
-            filteredTranscript.segments.map(\.end).max() ?? 0,
-            filteredTranscript.segments.flatMap(\.tokens).map(\.end).max() ?? 0
-        )
-        return filteredEndTime / rawEndTime >= 0.5
-    }
 }
 
 private actor WhisperCPPRuntime: WhisperCPPTranscribing {
@@ -200,7 +180,15 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
         let context = try loadedContext()
         let samples = try AudioConverter().resampleAudioFile(audioURL)
         try Task.checkCancellation()
-        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        // Beam search + non-speech-token suppression markedly reduce the
+        // hallucination/repetition loops Whisper falls into on sung vocals, where
+        // greedy decoding repeats a phrase indefinitely. The default entropy /
+        // logprob / no-speech thresholds (and temperature fallback) stay enabled.
+        var params = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
+        params.beam_search.beam_size = 5
+        params.greedy.best_of = 5
+        params.suppress_blank = true
+        params.suppress_nst = true
         params.print_realtime = false
         params.print_progress = false
         params.print_timestamps = false
@@ -306,11 +294,11 @@ enum WhisperCPPRepetitionFilter {
         let orderedTokens = transcript.segments.flatMap(\.tokens).sorted {
             $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start
         }
+
+        // Build the full normalized-word stream (skipping punctuation/blank tokens),
+        // keeping a map back to the source token index for each normalized word.
         var normalizedTokens: [String] = []
         var sourceIndices: [Int] = []
-        var occurrences: [String: [TimeInterval]] = [:]
-        var cutoffTime: TimeInterval?
-
         for (sourceIndex, token) in orderedTokens.enumerated() {
             let normalized = token.text
                 .lowercased()
@@ -319,23 +307,50 @@ enum WhisperCPPRepetitionFilter {
             guard !normalized.isEmpty else { continue }
             normalizedTokens.append(normalized)
             sourceIndices.append(sourceIndex)
-            guard normalizedTokens.count >= phraseLength else { continue }
-            let start = normalizedTokens.count - phraseLength
-            let phrase = normalizedTokens[start...].joined(separator: " ")
+        }
+        guard normalizedTokens.count >= phraseLength else { return transcript }
+
+        // First over-repeated phrase: the point where a length-`phraseLength` phrase
+        // recurs more than `maximumOccurrences` times within `horizon` seconds.
+        var occurrences: [String: [TimeInterval]] = [:]
+        var cutoffTime: TimeInterval?
+        var offendingPhrase: String?
+        for end in (phraseLength - 1)..<normalizedTokens.count {
+            let start = end - (phraseLength - 1)
+            let phrase = normalizedTokens[start...end].joined(separator: " ")
+            let tokenStart = orderedTokens[sourceIndices[end]].start
             var times = occurrences[phrase, default: []]
-            times.append(token.start)
-            times.removeAll { token.start - $0 > horizon }
+            times.append(tokenStart)
+            times.removeAll { tokenStart - $0 > horizon }
             occurrences[phrase] = times
             if times.count > maximumOccurrences {
                 cutoffTime = orderedTokens[sourceIndices[start]].start
+                offendingPhrase = phrase
                 break
             }
         }
 
-        guard let cutoffTime else { return transcript }
+        guard let cutoffTime, let offendingPhrase else { return transcript }
+
+        // Find where the runaway repetition of the offending phrase ends, so that
+        // distinct content AFTER the loop is preserved rather than truncated. We
+        // drop only the loop region [cutoffTime, resumeTime); the first
+        // `maximumOccurrences` copies (before cutoff) and any later distinct
+        // content (at/after resume) are kept.
+        var resumeTime = cutoffTime
+        for end in (phraseLength - 1)..<normalizedTokens.count {
+            let start = end - (phraseLength - 1)
+            if normalizedTokens[start...end].joined(separator: " ") == offendingPhrase {
+                resumeTime = max(resumeTime, orderedTokens[sourceIndices[end]].end)
+            }
+        }
+
+        let keep: (WhisperCPPTranscriptToken) -> Bool = {
+            $0.start < cutoffTime || $0.start >= resumeTime
+        }
         let filteredSegments: [WhisperCPPTranscriptSegment] = transcript.segments.compactMap {
             segment -> WhisperCPPTranscriptSegment? in
-            let tokens = segment.tokens.filter { $0.start < cutoffTime }
+            let tokens = segment.tokens.filter(keep)
             guard !tokens.isEmpty else { return nil }
             return WhisperCPPTranscriptSegment(
                 text: tokens.map(\.text).joined(),

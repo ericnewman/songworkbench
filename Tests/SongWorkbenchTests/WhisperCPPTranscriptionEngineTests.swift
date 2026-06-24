@@ -178,7 +178,53 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
 
         XCTAssertTrue(result.text.contains("bridge still matters"))
         XCTAssertEqual(result.segments.flatMap(\.tokens).last?.text, "matters")
-        XCTAssertEqual(result.engine.engineVersion, "3")
+        XCTAssertEqual(result.engine.engineVersion, "4")
+    }
+
+    func testAccuracyEngineCollapsesRunawayRepetitionLoop() async throws {
+        // A whole-song hallucination loop (no distinct content after it) must
+        // collapse to a few copies, not be restored in full.
+        let phrase = [" I'm", " gonna", " have", " some", " fun", " on", " the", " ball"]
+        let tokens = (0..<12).flatMap { repetition in
+            phrase.enumerated().map { offset, text in
+                let start = Double(repetition * phrase.count + offset) * 0.3
+                return WhisperCPPTranscriptToken(
+                    text: text,
+                    start: start,
+                    end: start + 0.25,
+                    confidence: 0.7
+                )
+            }
+        }
+        let runtime = StubWhisperRuntime(
+            transcript: WhisperCPPTranscript(
+                text: tokens.map(\.text).joined(),
+                duration: 60,
+                languageCode: "en",
+                segments: [
+                    WhisperCPPTranscriptSegment(
+                        text: tokens.map(\.text).joined(),
+                        start: 0,
+                        end: 60,
+                        tokens: tokens
+                    )
+                ]
+            )
+        )
+        let engine = WhisperCPPTranscriptionEngine(
+            modelURL: URL(fileURLWithPath: "/models/ggml-large-v3-turbo-q5_0.bin"),
+            modelSizeBytes: 574_041_195,
+            runtime: runtime
+        )
+
+        let result = try await engine.transcribe(
+            request: TranscriptionRequest(audioURL: URL(fileURLWithPath: "/audio/song.wav"))
+        ) { _ in }
+
+        let occurrences =
+            result.text.components(separatedBy: "I'm gonna have some fun on the ball").count - 1
+        XCTAssertGreaterThanOrEqual(occurrences, 1)
+        XCTAssertLessThanOrEqual(occurrences, 4)
     }
 }
 
