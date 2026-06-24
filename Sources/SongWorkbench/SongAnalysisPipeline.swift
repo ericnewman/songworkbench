@@ -73,14 +73,52 @@ struct SongAnalysisPipelineResult: Equatable, Sendable {
     let wasCancelled: Bool
 }
 
+/// Concentrates the transcription mode→engine mapping behind a single value so
+/// the pipeline (and any other caller) selects an engine by mode without
+/// repeating the `switch`.
+struct TranscriptionEngineFactory: Sendable {
+    var fast: (any TranscriptionEngine)?
+    var balanced: (any TranscriptionEngine)?
+    var accuracy: (any TranscriptionEngine)?
+
+    func engine(for mode: TranscriptionMode) -> (any TranscriptionEngine)? {
+        switch mode {
+        case .fastDraft:
+            fast
+        case .balancedDraft:
+            balanced
+        case .accuracy:
+            accuracy
+        }
+    }
+
+    func availableModes() -> Set<TranscriptionMode> {
+        var modes: Set<TranscriptionMode> = []
+        if fast != nil { modes.insert(.fastDraft) }
+        if balanced != nil { modes.insert(.balancedDraft) }
+        if accuracy != nil { modes.insert(.accuracy) }
+        return modes
+    }
+}
+
 struct SongAnalysisPipeline: Sendable {
     private let stemEngine: (any StemSeparationEngine)?
-    private let fastTranscriptionEngine: (any TranscriptionEngine)?
-    private let balancedTranscriptionEngine: (any TranscriptionEngine)?
-    private let accuracyTranscriptionEngine: (any TranscriptionEngine)?
+    private let transcriptionEngineFactory: TranscriptionEngineFactory
     private let harmonyEngine: any SongHarmonyAnalyzing
     private let cache: AnalysisResultDiskCache?
     private let chordProBuilder = ChordProDraftBuilder()
+
+    init(
+        stemEngine: (any StemSeparationEngine)?,
+        transcriptionEngineFactory: TranscriptionEngineFactory,
+        harmonyEngine: any SongHarmonyAnalyzing,
+        cache: AnalysisResultDiskCache? = nil
+    ) {
+        self.stemEngine = stemEngine
+        self.transcriptionEngineFactory = transcriptionEngineFactory
+        self.harmonyEngine = harmonyEngine
+        self.cache = cache
+    }
 
     init(
         stemEngine: (any StemSeparationEngine)?,
@@ -90,12 +128,16 @@ struct SongAnalysisPipeline: Sendable {
         harmonyEngine: any SongHarmonyAnalyzing,
         cache: AnalysisResultDiskCache? = nil
     ) {
-        self.stemEngine = stemEngine
-        self.fastTranscriptionEngine = fastTranscriptionEngine
-        self.balancedTranscriptionEngine = balancedTranscriptionEngine
-        self.accuracyTranscriptionEngine = accuracyTranscriptionEngine
-        self.harmonyEngine = harmonyEngine
-        self.cache = cache
+        self.init(
+            stemEngine: stemEngine,
+            transcriptionEngineFactory: TranscriptionEngineFactory(
+                fast: fastTranscriptionEngine,
+                balanced: balancedTranscriptionEngine,
+                accuracy: accuracyTranscriptionEngine
+            ),
+            harmonyEngine: harmonyEngine,
+            cache: cache
+        )
     }
 
     func run(
@@ -481,15 +523,7 @@ struct SongAnalysisPipeline: Sendable {
         stageProgress: @escaping @Sendable (Double, String) -> Void
     ) async -> TranscriptionOutcome {
         do {
-            let engine: (any TranscriptionEngine)? =
-                switch request.transcriptionMode {
-                case .fastDraft:
-                    fastTranscriptionEngine
-                case .balancedDraft:
-                    balancedTranscriptionEngine
-                case .accuracy:
-                    accuracyTranscriptionEngine
-                }
+            let engine = transcriptionEngineFactory.engine(for: request.transcriptionMode)
             guard let engine else {
                 throw SongAnalysisPipelineError.missingTranscriptionEngine(
                     request.transcriptionMode)
