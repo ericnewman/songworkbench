@@ -16,10 +16,28 @@ struct PracticeSettings: Codable, Equatable, Sendable {
     var pitchSemitones = 0
     var tempoRate = 1.0
     var loopRegion: LoopRegion?
+    /// Chord-chart transposition in semitones (shared by the ChordPro-style
+    /// screens). Independent of audio pitch.
+    var chordProTranspose = 0
 
     mutating func normalize() {
         pitchSemitones = PitchShift.normalized(pitchSemitones)
         tempoRate = min(max(tempoRate, 0.5), 1.5)
+        chordProTranspose = min(max(chordProTranspose, -12), 12)
+    }
+}
+
+extension PracticeSettings {
+    // Custom decoding so projects saved before `chordProTranspose` existed still
+    // load (the field defaults to 0). The memberwise/Encodable members stay
+    // synthesized because this initializer lives in an extension.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        pitchSemitones = try container.decodeIfPresent(Int.self, forKey: .pitchSemitones) ?? 0
+        tempoRate = try container.decodeIfPresent(Double.self, forKey: .tempoRate) ?? 1.0
+        loopRegion = try container.decodeIfPresent(LoopRegion.self, forKey: .loopRegion)
+        chordProTranspose =
+            try container.decodeIfPresent(Int.self, forKey: .chordProTranspose) ?? 0
     }
 }
 

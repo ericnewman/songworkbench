@@ -122,6 +122,16 @@ final class AppModel: ObservableObject {
             persistSelectedSettings()
         }
     }
+    @Published var chordProTranspose = 0 {
+        didSet {
+            let normalized = min(max(chordProTranspose, -12), 12)
+            if normalized != chordProTranspose {
+                chordProTranspose = normalized
+                return
+            }
+            persistSelectedSettings()
+        }
+    }
     @Published var isImporterPresented = false
 
     let playback = AudioPlaybackService()
@@ -990,6 +1000,7 @@ final class AppModel: ObservableObject {
         pitchSemitones = settings.pitchSemitones
         tempoRate = settings.tempoRate
         loopRegion = settings.loopRegion?.clamped(to: playback.duration)
+        chordProTranspose = settings.chordProTranspose
         isApplyingSettings = false
         playback.setPitch(semitones: pitchSemitones)
         playback.setTempo(rate: tempoRate)
@@ -1003,7 +1014,8 @@ final class AppModel: ObservableObject {
         settingsBySongID[selectedSongID] = PracticeSettings(
             pitchSemitones: pitchSemitones,
             tempoRate: tempoRate,
-            loopRegion: loopRegion
+            loopRegion: loopRegion,
+            chordProTranspose: chordProTranspose
         )
         scheduleSave()
     }

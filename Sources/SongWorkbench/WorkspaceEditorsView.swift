@@ -515,7 +515,7 @@ private struct ChordProTabConfig: Sendable {
         secondaryMode: .source,
         highlightStyle: .bassNote,
         exportFileName: "Bass Notes.cho",
-        supportsTranspose: false,
+        supportsTranspose: true,
         supportsImport: false,
         supportsMarkReviewed: false,
         footerNote:
@@ -534,7 +534,6 @@ private struct ChordProTabEditor: View {
     @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
-    @State private var transpose = 0
     @State private var errorMessage: String?
     @State private var mode = Mode.preview
 
@@ -586,7 +585,9 @@ private struct ChordProTabEditor: View {
                     )
                 }
                 if config.supportsTranspose {
-                    Stepper("Transpose: \(transpose)", value: $transpose, in: -12...12)
+                    Stepper(
+                        "Transpose: \(model.chordProTranspose)",
+                        value: $model.chordProTranspose, in: -12...12)
                 }
                 Button("Export...", systemImage: "square.and.arrow.up") {
                     exportDocument()
@@ -608,7 +609,7 @@ private struct ChordProTabEditor: View {
                     case .preview:
                         ChordProAppPreview(
                             source: previewSource,
-                            transpose: config.supportsTranspose ? transpose : 0,
+                            transpose: config.supportsTranspose ? model.chordProTranspose : 0,
                             highlightContext: highlightContext(style: config.highlightStyle),
                             beatBall: beatBallInput
                         )
@@ -706,7 +707,7 @@ private struct ChordProTabEditor: View {
         do {
             switch config.kind {
             case .chordPro:
-                try model.exportChordPro(to: url, transposedBy: transpose)
+                try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
             case .bassNote:
                 try model.exportBassNoteChordPro(to: url)
             }
