@@ -116,15 +116,24 @@ struct TimedLyricGroupingConfiguration: Equatable, Sendable {
     let maximumGap: TimeInterval
     let maximumDuration: TimeInterval
     let maximumTokens: Int
+    /// Start a new line at a word whose first letter is uppercase (the way the
+    /// transcriber capitalizes the first word of each line/sentence) when at least
+    /// this much silence precedes it. The gap requirement keeps mid-line capitals
+    /// such as "I" or proper nouns from breaking a line. The `maximumGap` /
+    /// `maximumDuration` / `maximumTokens` bounds are generous safety nets so that
+    /// line breaks are driven primarily by capitalization and sentence punctuation.
+    let capitalizedLineStartGap: TimeInterval
 
     init(
-        maximumGap: TimeInterval = 1.25,
-        maximumDuration: TimeInterval = 8,
-        maximumTokens: Int = 16
+        maximumGap: TimeInterval = 3,
+        maximumDuration: TimeInterval = 15,
+        maximumTokens: Int = 32,
+        capitalizedLineStartGap: TimeInterval = 0.2
     ) {
         self.maximumGap = max(maximumGap, 0)
         self.maximumDuration = max(maximumDuration, 0)
         self.maximumTokens = max(maximumTokens, 1)
+        self.capitalizedLineStartGap = max(capitalizedLineStartGap, 0)
     }
 }
 
@@ -177,7 +186,11 @@ enum TimedLyricSegmentGrouper {
             if let first = current.first, let previous = current.last {
                 let gap = token.startTime - previous.endTime
                 let duration = token.endTime - first.startTime
+                let capitalizedLineStart =
+                    beginsCapitalizedWord(token.text)
+                    && gap >= configuration.capitalizedLineStartGap
                 if isSentenceEnding(previous.text)
+                    || capitalizedLineStart
                     || gap > configuration.maximumGap
                     || duration > configuration.maximumDuration
                     || current.count >= configuration.maximumTokens
@@ -248,6 +261,15 @@ enum TimedLyricSegmentGrouper {
 
     private static func normalized(_ text: String) -> String {
         text.split(whereSeparator: \Character.isWhitespace).joined(separator: " ")
+    }
+
+    /// Whether the token begins a new word started with an uppercase letter — the
+    /// transcriber's signal for the first word of a line/sentence. Attached
+    /// punctuation and contraction tokens (",", "'re", ...) start lowercase and so
+    /// are excluded, as are mid-word continuations.
+    private static func beginsCapitalizedWord(_ text: String) -> Bool {
+        guard let first = text.unicodeScalars.first else { return false }
+        return CharacterSet.uppercaseLetters.contains(first)
     }
 
     private static func isSentenceEnding(_ text: String) -> Bool {

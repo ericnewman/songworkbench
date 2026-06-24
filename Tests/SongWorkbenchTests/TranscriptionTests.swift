@@ -57,6 +57,36 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(grouped, TimedLyricSegmentGrouper.group(tokens: tokens))
     }
 
+    func testGroupingStartsNewLineAtCapitalizedWordAfterGap() {
+        // "Down" is capitalized and follows a 0.6s gap, so it starts a new line;
+        // the lowercase continuation stays on its line.
+        let tokens = [
+            token("I", 0.0, 0.2),
+            token("walk", 0.3, 0.6),
+            token("alone", 0.6, 1.0),
+            token("Down", 1.6, 1.9),
+            token("the", 2.0, 2.1),
+            token("road", 2.2, 2.6),
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("I walk alone", 0.0, 1.0), ("Down the road", 1.6, 2.6)]
+        )
+    }
+
+    func testGroupingKeepsMidLineCapitalizedWordWithoutGap() {
+        // Capitalized "I" mid-phrase (no real gap before it) must not break the line.
+        let tokens = [
+            token("Here", 0.0, 0.3),
+            token("I", 0.35, 0.5),
+            token("am", 0.55, 0.8),
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("Here I am", 0.0, 0.8)]
+        )
+    }
+
     func testGroupingSplitsAtGapDurationAndTokenLimits() {
         let configuration = TimedLyricGroupingConfiguration(
             maximumGap: 1,
