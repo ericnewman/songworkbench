@@ -303,7 +303,16 @@ final class SongAnalysisPipelineTests: XCTestCase {
 
         XCTAssertTrue(result.wasCancelled)
         XCTAssertEqual(result.document.stageRecords[.transcription]?.state, .cancelled)
-        XCTAssertNil(result.document.stageRecords[.harmony])
+        // Harmony runs concurrently with transcription, so cancelling the run may
+        // interrupt it before or after it finishes the (instant) stub work. Either
+        // way it must NOT publish a succeeded result; an absent or cancelled record
+        // both satisfy "later stages are stopped". Asserting strictly `nil` made
+        // this test flaky under CI timing.
+        let harmonyState = result.document.stageRecords[.harmony]?.state
+        XCTAssertTrue(
+            harmonyState == nil || harmonyState == .cancelled,
+            "Harmony must not succeed when the run is cancelled (was \(String(describing: harmonyState)))"
+        )
         let cancelCount = await transcription.cancelCount()
         XCTAssertEqual(cancelCount, 1)
     }
