@@ -1001,32 +1001,22 @@ private struct ChordProPreviewLineView: View {
     /// be drawn (no beat-ball value, no resolvable beats, or playhead outside the arc).
     private var ballPosition: (x: CGFloat, y: CGFloat)? {
         guard let beatBall else { return nil }
+        // The ball pulses on the detected beats (BPM-synthesized when no beat
+        // times are available); at each beat it sits over the word being sung
+        // then — from real word timings when present, else an interpolated
+        // position — and arcs to the next beat's word.
+        guard !beatBall.words.isEmpty || !wordCenters.isEmpty else { return nil }
 
-        let ball: BouncingBall
-        if let wordBall = wordOnsetBall(for: beatBall) {
-            // Real word onsets: tap each word at its sung onset, arc to the next.
-            ball = wordBall
-        } else {
-            // Fallback: beat-driven taps with interpolated word x-positions.
-            let words = wordCenters
-            guard !words.isEmpty else { return nil }
+        let beats = BouncingBall.beats(
+            in: beatBall.segmentStart,
+            beatBall.segmentEnd,
+            beatTimes: beatBall.beatTimes,
+            bpm: beatBall.bpm
+        )
+        guard !beats.isEmpty else { return nil }
 
-            let beats = BouncingBall.beats(
-                in: beatBall.segmentStart,
-                beatBall.segmentEnd,
-                beatTimes: beatBall.beatTimes,
-                bpm: beatBall.bpm
-            )
-            guard !beats.isEmpty else { return nil }
-
-            let span = max(beatBall.segmentEnd - beatBall.segmentStart, 0.0001)
-            let xs: [CGFloat] = beats.map { beatTime in
-                let relative = min(max((beatTime - beatBall.segmentStart) / span, 0), 1)
-                let wordIndex = min(Int(relative * Double(words.count)), words.count - 1)
-                return words[wordIndex]
-            }
-            ball = BouncingBall(beatTimes: beats, beatX: xs)
-        }
+        let xs: [CGFloat] = beats.map { wordCenterX(at: $0, beatBall: beatBall) }
+        let ball = BouncingBall(beatTimes: beats, beatX: xs)
         guard let position = ball.position(at: beatBall.currentTime) else { return nil }
 
         // Tap baseline sits just above the content's top (which is shifted down by the
@@ -1036,21 +1026,29 @@ private struct ChordProPreviewLineView: View {
         return (x: position.x, y: y)
     }
 
-    /// A bouncing ball whose taps land on each real word onset, with the x of every tap
-    /// at the center of that word's characters within the shared lyric text (which aligns
-    /// character-for-character with `line.lyric`). `nil` when the segment has no word
-    /// timings, so the caller falls back to beat-driven positioning.
-    private func wordOnsetBall(for beatBall: LineBeatBall) -> BouncingBall? {
-        guard !beatBall.words.isEmpty else { return nil }
+    /// The x the ball should sit over for a beat at `beatTime`: the center of the word
+    /// being sung at that moment (from real word timings, aligned character-for-character
+    /// with `line.lyric`) when available, otherwise an interpolated position across the
+    /// line so the ball still tracks the lyric.
+    private func wordCenterX(at beatTime: TimeInterval, beatBall: LineBeatBall) -> CGFloat {
         let characterCount = line.lyric.count
-        let beatTimes = beatBall.words.map(\.start)
-        let xs: [CGFloat] = beatBall.words.map { word in
-            let lower = min(max(word.characterRange.lowerBound, 0), characterCount)
-            let upper = min(max(word.characterRange.upperBound, lower), characterCount)
-            let center = (CGFloat(lower) + CGFloat(upper)) / 2
-            return center * Self.characterWidth
+        if !beatBall.words.isEmpty {
+            let active =
+                beatBall.words.last(where: { $0.start <= beatTime && beatTime < $0.end })
+                ?? beatBall.words.last(where: { $0.start <= beatTime })
+                ?? beatBall.words.first
+            if let word = active {
+                let lower = min(max(word.characterRange.lowerBound, 0), characterCount)
+                let upper = min(max(word.characterRange.upperBound, lower), characterCount)
+                return (CGFloat(lower) + CGFloat(upper)) / 2 * Self.characterWidth
+            }
         }
-        return BouncingBall(beatTimes: beatTimes, beatX: xs)
+        let centers = wordCenters
+        guard !centers.isEmpty else { return 0 }
+        let span = max(beatBall.segmentEnd - beatBall.segmentStart, 0.0001)
+        let relative = min(max((beatTime - beatBall.segmentStart) / span, 0), 1)
+        let index = min(Int(relative * Double(centers.count)), centers.count - 1)
+        return centers[index]
     }
 
     /// Center x of each whitespace-delimited word in this line's OWN lyric, using the
