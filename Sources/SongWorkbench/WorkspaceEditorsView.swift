@@ -503,8 +503,8 @@ private struct ChordProTabConfig: Sendable {
         supportsImport: false,
         supportsMarkReviewed: false,
         footerNote:
-            "Bass notes are derived from detected chords: slash-bass notes are used first, "
-            + "otherwise the chord root is used."
+            "Bass notes are detected from the separated bass stem when available; "
+            + "otherwise they fall back to chord roots (slash-bass first, else the chord root)."
     )
 }
 
