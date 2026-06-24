@@ -33,6 +33,22 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
         XCTAssertFalse(result.text.contains("[_TT_]"))
     }
 
+    func testSubwordPiecesAggregateIntoWholeWords() {
+        // Whisper emits sub-word pieces; only word-start pieces carry a leading space.
+        let pieces = [
+            WhisperCPPTranscriptToken(text: " Str", start: 0.0, end: 0.2, confidence: 0.9),
+            WhisperCPPTranscriptToken(text: "angers", start: 0.2, end: 0.5, confidence: 0.8),
+            WhisperCPPTranscriptToken(text: " turn", start: 0.6, end: 0.9, confidence: 0.95),
+            WhisperCPPTranscriptToken(text: ".", start: 0.9, end: 0.95, confidence: 0.7),
+        ]
+        let words = WhisperCPPWordGrouper.words(from: pieces)
+        XCTAssertEqual(words.map(\.text), ["Strangers", "turn."])
+        XCTAssertEqual(words[0].start, 0.0)
+        XCTAssertEqual(words[0].end, 0.5)
+        XCTAssertEqual(words[1].start, 0.6)
+        XCTAssertEqual(words[1].end, 0.95)
+    }
+
     func testSpecialAndTimestampTokenIDsAreExcluded() {
         XCTAssertTrue(WhisperCPPTokenFilter.isText(tokenID: 100, endOfTextTokenID: 50_000))
         XCTAssertFalse(WhisperCPPTokenFilter.isText(tokenID: 50_000, endOfTextTokenID: 50_000))
@@ -178,7 +194,7 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
 
         XCTAssertTrue(result.text.contains("bridge still matters"))
         XCTAssertEqual(result.segments.flatMap(\.tokens).last?.text, "matters")
-        XCTAssertEqual(result.engine.engineVersion, "4")
+        XCTAssertEqual(result.engine.engineVersion, "5")
     }
 
     func testAccuracyEngineCollapsesRunawayRepetitionLoop() async throws {

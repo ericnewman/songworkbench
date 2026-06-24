@@ -70,7 +70,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 name: "MIT",
                 url: URL(string: "https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE")
             ),
-            engineVersion: "4"
+            engineVersion: "5"
         )
         self.runtime = runtime ?? WhisperCPPRuntime(modelURL: modelURL, useGPU: useGPU)
     }
@@ -123,14 +123,15 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
             ))
 
         let segments = transcript.segments.map { segment in
-            let tokens = segment.tokens.compactMap { token -> TimedTranscriptionToken? in
-                let text = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return nil }
-                return TimedTranscriptionToken(
-                    text: text,
-                    startTime: token.start,
-                    endTime: max(token.end, token.start),
-                    confidence: token.confidence
+            // whisper.cpp emits sub-word pieces (e.g. "Str" + "angers"); aggregate
+            // them into whole words by the leading-space convention so downstream
+            // rendering does not insert spaces inside words.
+            let tokens = WhisperCPPWordGrouper.words(from: segment.tokens).map { word in
+                TimedTranscriptionToken(
+                    text: word.text,
+                    startTime: word.start,
+                    endTime: max(word.end, word.start),
+                    confidence: word.confidence
                 )
             }
             let confidence: Float? =
@@ -280,6 +281,50 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
 enum WhisperCPPTokenFilter {
     static func isText(tokenID: whisper_token, endOfTextTokenID: whisper_token) -> Bool {
         tokenID >= 0 && tokenID < endOfTextTokenID
+    }
+}
+
+/// Aggregates whisper.cpp sub-word pieces into whole words. A piece whose text
+/// begins with whitespace starts a new word (the whisper/BPE convention);
+/// pieces without a leading space (sub-word continuations and trailing
+/// punctuation) attach to the current word. Each word spans from its first
+/// piece's start to its last piece's end, with averaged confidence.
+enum WhisperCPPWordGrouper {
+    static func words(from pieces: [WhisperCPPTranscriptToken]) -> [WhisperCPPTranscriptToken] {
+        var words: [WhisperCPPTranscriptToken] = []
+        var text = ""
+        var start: TimeInterval = 0
+        var end: TimeInterval = 0
+        var confidenceTotal: Float = 0
+        var pieceCount = 0
+
+        func flush() {
+            guard !text.isEmpty, pieceCount > 0 else { return }
+            words.append(
+                WhisperCPPTranscriptToken(
+                    text: text,
+                    start: start,
+                    end: end,
+                    confidence: confidenceTotal / Float(pieceCount)
+                ))
+            text = ""
+            confidenceTotal = 0
+            pieceCount = 0
+        }
+
+        for piece in pieces {
+            let startsWord = piece.text.first?.isWhitespace == true
+            let pieceText = piece.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !pieceText.isEmpty else { continue }
+            if startsWord { flush() }
+            if text.isEmpty { start = piece.start }
+            text += pieceText
+            end = max(piece.end, piece.start)
+            confidenceTotal += piece.confidence
+            pieceCount += 1
+        }
+        flush()
+        return words
     }
 }
 
