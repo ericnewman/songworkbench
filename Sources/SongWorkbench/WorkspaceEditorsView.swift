@@ -712,8 +712,20 @@ private struct ChordProTabEditor: View {
         )
     }
 
+    /// Lead applied to the highlight/ball clock while playing, to compensate for
+    /// the gap between the reported playhead and what the listener actually hears
+    /// (audio output + time-pitch processing latency, and transcription timestamp
+    /// bias). Without it the highlight trails the sung word by ~0.5s. Tunable.
+    private static let highlightLeadSeconds: TimeInterval = 0.45
+
+    /// Playback position that drives the lyric highlight and bouncing ball. While
+    /// playing it leads by `highlightLeadSeconds` so the highlight lands on the
+    /// word being heard; paused, it reflects the exact playhead position.
     private var currentPlaybackTime: TimeInterval {
-        model.activePlaybackSource == .stemMix ? stemPlayback.currentTime : playback.currentTime
+        let base =
+            model.activePlaybackSource == .stemMix
+            ? stemPlayback.currentTime : playback.currentTime
+        return model.isActivePlaybackPlaying ? base + Self.highlightLeadSeconds : base
     }
 
     /// Drives the karaoke bouncing ball over the active lyric line during playback.
