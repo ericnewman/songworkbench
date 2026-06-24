@@ -69,60 +69,82 @@ struct PlaybackTransportCard: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
-                Text(sourceLabel)
-                    .font(.swDisplay(11))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color.swSurface, in: Capsule())
-                Spacer()
-                Button(
-                    stemPlayback.isPlaying ? "Pause Mix" : "Play Mix",
-                    systemImage: stemPlayback.isPlaying ? "pause.fill" : "play.fill"
-                ) {
-                    model.toggleStemPlayback()
-                }
-                .disabled(!stemPlayback.isLoaded)
-                .help(
-                    stemPlayback.isLoaded
-                        ? "Play or pause the separated stem mix"
-                        : "Run Stems separation to enable mix playback"
-                )
-                .swAccentHoverBorder(cornerRadius: 6)
-            }
+            Text(sourceLabel)
+                .font(.swDisplay(11))
+                .foregroundStyle(Color.swTextSecondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.swSurface, in: Capsule())
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 36) {
+            HStack(spacing: 24) {
                 Button("Back 10 Seconds", systemImage: "gobackward.10") {
                     model.skipActivePlayback(by: -10)
                 }
                 .labelStyle(.iconOnly)
-                .font(.system(size: 26))
+                .font(.system(size: 24))
                 .swAccentHoverBorder(cornerRadius: 8)
 
-                Button(
-                    model.isActivePlaybackPlaying ? "Pause" : "Play",
-                    systemImage: model.isActivePlaybackPlaying
-                        ? "pause.circle.fill" : "play.circle.fill"
+                playButton(
+                    title: model.isActivePlaybackPlaying ? "Pause Song" : "Play Song",
+                    disabled: model.selectedSong == nil,
+                    isPlaying: model.isActivePlaybackPlaying,
+                    help: "Play or pause the original recording"
                 ) {
                     model.toggleActivePlayback()
                 }
-                .labelStyle(.iconOnly)
-                .font(.system(size: 52))
-                .disabled(model.selectedSong == nil)
-                .swAccentHoverBorder(cornerRadius: 28)
+
+                playButton(
+                    title: stemPlayback.isPlaying ? "Pause Stem Mix" : "Play Stem Mix",
+                    disabled: !stemPlayback.isLoaded,
+                    isPlaying: stemPlayback.isPlaying,
+                    help: stemPlayback.isLoaded
+                        ? "Play or pause the separated stem mix"
+                        : "Run Stems separation to enable mix playback"
+                ) {
+                    model.toggleStemPlayback()
+                }
 
                 Button("Forward 10 Seconds", systemImage: "goforward.10") {
                     model.skipActivePlayback(by: 10)
                 }
                 .labelStyle(.iconOnly)
-                .font(.system(size: 26))
+                .font(.system(size: 24))
                 .swAccentHoverBorder(cornerRadius: 8)
             }
         }
         .frame(maxWidth: .infinity)
         .padding(12)
         .swSurfacePanel(cornerRadius: 12)
+    }
+
+    /// A large play/pause button with a caption naming the track it controls.
+    @ViewBuilder
+    private func playButton(
+        title: String,
+        disabled: Bool,
+        isPlaying: Bool,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack(spacing: 5) {
+            Button(title, systemImage: isPlaying ? "pause.circle.fill" : "play.circle.fill") {
+                action()
+            }
+            .labelStyle(.iconOnly)
+            .font(.system(size: 46))
+            .disabled(disabled)
+            .swAccentHoverBorder(cornerRadius: 24)
+
+            Text(title)
+                .font(.swDisplay(10))
+                .foregroundStyle(
+                    disabled ? Color.swTextSecondary.opacity(0.5) : Color.swTextSecondary
+                )
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .help(help)
     }
 
     private var sourceLabel: String {
