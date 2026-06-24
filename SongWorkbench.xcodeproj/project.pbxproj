@@ -51,6 +51,7 @@
 		62ED7DA6E86EFE8759B5499C /* StemSeparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84656EC8A66FEE2902A41EE6 /* StemSeparationTests.swift */; };
 		6DA2600B01A7D50487BF2AB6 /* StemSeparation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B7B749E7E1F5CB21D36B750 /* StemSeparation.swift */; };
 		6F696CC54185209E704FECE9 /* PitchShift.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A980220D81309AA47143134 /* PitchShift.swift */; };
+		77A733CC726B6BDC1CE83356 /* BassLineDiagnosticTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5BA833B407B9281B77873CC /* BassLineDiagnosticTests.swift */; };
 		796B5DD669A24FC2D58F70B6 /* WhisperFramework in Frameworks */ = {isa = PBXBuildFile; productRef = A5F0ABE9453A746C369A6802 /* WhisperFramework */; };
 		843F568C33EE86141BA91C1D /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D396DED1CBF9C01AFF44588A /* ContentView.swift */; };
 		87716148DC9D9C311E68B6EF /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BE336612727AC129F0E2E95 /* ModelCatalog.swift */; };
@@ -195,6 +196,7 @@
 		BC8FA281501B6E8EC642BF0D /* FluidAudioTranscriptionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FluidAudioTranscriptionEngine.swift; sourceTree = "<group>"; };
 		C14A801FE16F612929E7CA59 /* CoreMLStemSeparationEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLStemSeparationEngineTests.swift; sourceTree = "<group>"; };
 		C17BEAFFD79310A70EE044CF /* MusicalKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicalKey.swift; sourceTree = "<group>"; };
+		C5BA833B407B9281B77873CC /* BassLineDiagnosticTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BassLineDiagnosticTests.swift; sourceTree = "<group>"; };
 		C988753BCB1FE231508B56F9 /* Transcription.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transcription.swift; sourceTree = "<group>"; };
 		CB957DDE6EA07222359DF406 /* ModelPackageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPackageManager.swift; sourceTree = "<group>"; };
 		CE9E6908871F1267E8568DC8 /* ChordProParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProParsingTests.swift; sourceTree = "<group>"; };
@@ -365,6 +367,7 @@
 				8C2E935552A1885C1EFE5AD5 /* AudioPlaybackServiceTests.swift */,
 				304378578C403B49A8C81A69 /* BackgroundJobCoordinatorTests.swift */,
 				D582972859CEDF1E201BA0E6 /* BassLineAnalyzerTests.swift */,
+				C5BA833B407B9281B77873CC /* BassLineDiagnosticTests.swift */,
 				FE9BFFB3D89233DDEE17F407 /* BassNoteTests.swift */,
 				CFAA2DCA1E1D72145BB4338A /* BeatTrackingTests.swift */,
 				8D662F3A35DD30742CEE6F7F /* BouncingBallTests.swift */,
@@ -616,6 +619,7 @@
 				F0A150C9E6BC9CEF57CFDFF4 /* AudioPlaybackServiceTests.swift in Sources */,
 				4D227E861E78FA2AC1A9F03C /* BackgroundJobCoordinatorTests.swift in Sources */,
 				473B16BE1D772183BA033F28 /* BassLineAnalyzerTests.swift in Sources */,
+				77A733CC726B6BDC1CE83356 /* BassLineDiagnosticTests.swift in Sources */,
 				06FC1028FAFAEB5F0136A3A0 /* BassNoteTests.swift in Sources */,
 				B457037F04B498CF30A6196B /* BeatTrackingTests.swift in Sources */,
 				F7EADB756F1F4F61F0D7E2DD /* BouncingBallTests.swift in Sources */,

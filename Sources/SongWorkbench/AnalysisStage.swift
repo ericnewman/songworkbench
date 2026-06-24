@@ -296,12 +296,18 @@ struct HarmonyStage: AnalysisStageRunning {
     /// cancellation.
     private func detectBassNotes(_ context: AnalysisStageContext) -> [BassNoteObservation]? {
         guard (try? Task.checkCancellation()) != nil else { return nil }
+        // Resolve the bass stem and analyze it. The analyzer opens the file with
+        // security-scoped access itself, so we must NOT pre-gate on
+        // `isReadableFile` here — that returns false for a security-scoped
+        // bookmark URL whose access hasn't been started, which silently skipped
+        // detection. A nil/empty result leaves existing bassNotes untouched.
         guard let bassURL = context.document.stems?.resolved().bass,
-            FileManager.default.isReadableFile(atPath: bassURL.path)
+            let notes = try? bassLineAnalyzer.analyze(url: bassURL),
+            !notes.isEmpty
         else {
             return nil
         }
-        return try? bassLineAnalyzer.analyze(url: bassURL)
+        return notes
     }
 
     func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
