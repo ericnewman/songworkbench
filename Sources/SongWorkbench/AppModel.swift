@@ -1003,29 +1003,20 @@ final class AppModel: ObservableObject {
         isApplyingAnalysis = false
     }
 
+    private var separationCachingPolicy: SeparationCachingPolicy {
+        SeparationCachingPolicy(currentEngine: ONNXSixStemSeparationEngine.cpuMetadata)
+    }
+
     private func isCurrentSeparation(record: AnalysisStageRecord?) -> Bool {
-        guard
-            record?.state == .succeeded,
-            let provenance = record?.provenance
-        else { return false }
-        return provenance.engineIdentifier
-            == ONNXSixStemSeparationEngine.cpuMetadata.engineIdentifier
-            && provenance.engineVersion == ONNXSixStemSeparationEngine.cpuMetadata.engineVersion
-            && provenance.modelIdentifier == ONNXSixStemSeparationEngine.cpuMetadata.modelIdentifier
+        separationCachingPolicy.isCurrentEngine(record)
     }
 
     private func shouldMarkSeparationStale(record: AnalysisStageRecord?) -> Bool {
-        guard let record else { return true }
-        return record.state != .stale && !isCurrentSeparation(record: record)
+        separationCachingPolicy.shouldMarkStale(record)
     }
 
     private func staleSeparationRecord(from record: AnalysisStageRecord?) -> AnalysisStageRecord {
-        AnalysisStageRecord(
-            state: .stale,
-            provenance: record?.provenance,
-            confidence: record?.confidence,
-            errorMessage: "Saved stems were created by an older separator. Rerun Stems."
-        )
+        separationCachingPolicy.markStale(record)
     }
 
     private func persistSelectedAnalysis() {

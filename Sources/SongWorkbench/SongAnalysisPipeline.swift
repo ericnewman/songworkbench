@@ -382,18 +382,13 @@ struct SongAnalysisPipeline: Sendable {
         document: inout SongAnalysisDocument,
         stageProgress: @escaping @Sendable (Double, String) -> Void
     ) async throws {
-        if let storedStems = document.stems,
-            let existingRecord = document.stageRecords[.separation],
-            existingRecord.state == .succeeded,
-            existingRecord.provenance?.sourceDigest == sourceDigest,
-            existingRecord.provenance?.engineIdentifier == stemEngine?.metadata.engineIdentifier,
-            existingRecord.provenance?.engineVersion == stemEngine?.metadata.engineVersion,
-            existingRecord.provenance?.modelIdentifier == stemEngine?.metadata.modelIdentifier,
-            storedStems.resolved().isSixSource,
-            storedStems.resolved().availableKinds.allSatisfy({ kind in
-                guard let url = storedStems.resolved()[kind] else { return false }
-                return FileManager.default.fileExists(atPath: url.path)
-            })
+        if let stemEngine,
+            SeparationCachingPolicy(currentEngine: stemEngine.metadata).isCacheHit(
+                record: document.stageRecords[.separation],
+                sourceDigest: sourceDigest,
+                storedStems: document.stems
+            ),
+            let existingRecord = document.stageRecords[.separation]
         {
             var cachedRecord = existingRecord
             if var provenance = cachedRecord.provenance {
