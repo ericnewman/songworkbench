@@ -27,6 +27,22 @@ final class ChordProHighlightDeriverTests: XCTestCase {
         XCTAssertEqual(sut.lyricOrdinal(at: 5), 1)
     }
 
+    func testUpcomingLyricOrdinalFindsNextLineDuringGap() {
+        let sut = deriver(
+            lyricSegments: [
+                TimedLyricSegment(start: 0, end: 4, text: "First line"),
+                TimedLyricSegment(start: 12, end: 16, text: "Second line"),
+            ]
+        )
+
+        // In the gap between the two lines, the upcoming line is the second one.
+        XCTAssertEqual(sut.upcomingLyricOrdinal(at: 7), 1)
+        // Before the first line begins, the upcoming line is the first one.
+        XCTAssertEqual(sut.upcomingLyricOrdinal(at: -1), 0)
+        // After the last line there is no upcoming line.
+        XCTAssertNil(sut.upcomingLyricOrdinal(at: 20))
+    }
+
     func testLyricOrdinalIsNilOutsideAnySegment() {
         let sut = deriver(
             lyricSegments: [

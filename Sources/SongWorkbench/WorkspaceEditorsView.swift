@@ -804,6 +804,10 @@ private struct ChordProTabEditor: View {
     /// Drives the karaoke bouncing ball over the active lyric line during playback.
     /// `nil` whenever nothing is active or there is no beat data (neither explicit
     /// beat times nor a usable BPM) to position the ball.
+    /// Gaps shorter than this don't get a waiting ball — only noticeable instrumental
+    /// stretches (intros, breaks) park the ball at the upcoming line.
+    private static let waitingBallMinimumGap: TimeInterval = 2
+
     private var beatBallInput: BeatBallInput? {
         guard bouncingBallEnabled else { return nil }
         let deriver = ChordProHighlightDeriver(
@@ -811,22 +815,48 @@ private struct ChordProTabEditor: View {
             chordEvents: model.chordEvents,
             confidenceThreshold: model.chordConfidenceThreshold
         )
-        guard
-            let ordinal = deriver.lyricOrdinal(at: currentPlaybackTime),
-            let segment = deriver.segment(atOrdinal: ordinal)
-        else { return nil }
 
         let bpm = model.estimatedBPM
         let beatTimes = model.beatTimes
         // Need either explicit beats or a usable BPM to synthesize them.
         guard !beatTimes.isEmpty || (bpm.map { $0 > 0 } ?? false) else { return nil }
+        let now = currentPlaybackTime
+
+        // A lyric is active: bounce over its words.
+        if let ordinal = deriver.lyricOrdinal(at: now),
+            let segment = deriver.segment(atOrdinal: ordinal)
+        {
+            return BeatBallInput(
+                currentTime: now,
+                ordinal: ordinal,
+                windowStart: segment.start,
+                windowEnd: segment.end,
+                words: segment.words,
+                bpm: bpm,
+                beatTimes: beatTimes,
+                isWaiting: false
+            )
+        }
+
+        // No active lyric: if we're in a long enough instrumental gap before an
+        // upcoming line, park a waiting ball at the start of that line.
+        guard
+            let upcoming = deriver.upcomingLyricOrdinal(at: now),
+            let upSegment = deriver.segment(atOrdinal: upcoming)
+        else { return nil }
+        let gapStart = deriver.segment(atOrdinal: upcoming - 1)?.end ?? 0
+        guard now >= gapStart, upSegment.start - gapStart >= Self.waitingBallMinimumGap
+        else { return nil }
 
         return BeatBallInput(
-            currentTime: currentPlaybackTime,
-            segment: segment,
+            currentTime: now,
+            ordinal: upcoming,
+            windowStart: gapStart,
+            windowEnd: upSegment.start,
+            words: [],
             bpm: bpm,
             beatTimes: beatTimes,
-            ordinal: ordinal
+            isWaiting: true
         )
     }
 }
@@ -835,10 +865,17 @@ private struct ChordProTabEditor: View {
 /// the active lyric line. `nil` upstream when nothing is active or no beat data exists.
 struct BeatBallInput: Equatable {
     let currentTime: TimeInterval
-    let segment: TimedLyricSegment
+    let ordinal: Int
+    /// Time window the ball bounces across: the active lyric's span, or the
+    /// instrumental gap before the upcoming line when `isWaiting`.
+    let windowStart: TimeInterval
+    let windowEnd: TimeInterval
+    let words: [TimedLyricWord]
     let bpm: Double?
     let beatTimes: [TimeInterval]
-    let ordinal: Int
+    /// When true the ball pulses in place at the left of the upcoming line instead of
+    /// tracking words across an active line.
+    let isWaiting: Bool
 }
 
 private struct ChordProAppPreview: View {
@@ -883,6 +920,19 @@ private struct ChordProAppPreview: View {
                             .background(Color(nsColor: .textBackgroundColor))
                             .border(.separator)
                             .onChange(of: highlightContext?.currentLyricOrdinal) { _, ordinal in
+                                guard
+                                    let ordinal,
+                                    let offset = blockOffset(
+                                        forLyricOrdinal: ordinal, in: document
+                                    )
+                                else { return }
+                                withAnimation {
+                                    scrollProxy.scrollTo(offset, anchor: .center)
+                                }
+                            }
+                            // While waiting through an instrumental gap, bring the
+                            // upcoming line (where the ball is parked) into view.
+                            .onChange(of: waitingOrdinal) { _, ordinal in
                                 guard
                                     let ordinal,
                                     let offset = blockOffset(
@@ -943,6 +993,12 @@ private struct ChordProAppPreview: View {
         indexedBlocks(for: document).first { $0.lyricOrdinal == ordinal }?.offset
     }
 
+    /// The upcoming line the ball is parked at while waiting, used to drive auto-scroll.
+    private var waitingOrdinal: Int? {
+        guard let beatBall, beatBall.isWaiting else { return nil }
+        return beatBall.ordinal
+    }
+
     /// Only the block matching the active ordinal carries the ball; others get nil.
     private func beatBallValue(for lyricOrdinal: Int?) -> LineBeatBall? {
         guard let beatBall, let lyricOrdinal, lyricOrdinal == beatBall.ordinal else {
@@ -950,11 +1006,12 @@ private struct ChordProAppPreview: View {
         }
         return LineBeatBall(
             currentTime: beatBall.currentTime,
-            segmentStart: beatBall.segment.start,
-            segmentEnd: beatBall.segment.end,
+            segmentStart: beatBall.windowStart,
+            segmentEnd: beatBall.windowEnd,
             bpm: beatBall.bpm,
             beatTimes: beatBall.beatTimes,
-            words: beatBall.segment.words
+            words: beatBall.words,
+            isWaiting: beatBall.isWaiting
         )
     }
 }
@@ -970,6 +1027,9 @@ struct LineBeatBall: Equatable {
     /// Real per-word timings within the active segment, when available. Empty falls back
     /// to beat-driven positioning with interpolated word x-positions.
     var words: [TimedLyricWord] = []
+    /// When true the ball pulses in place at the left of the line (waiting for the next
+    /// lyric during an instrumental gap) rather than tracking words.
+    var isWaiting = false
 }
 
 private struct ChordProPreviewIndexedBlock {
@@ -1077,8 +1137,10 @@ private struct ChordProPreviewLineView: View {
         // The ball pulses on the detected beats (BPM-synthesized when no beat
         // times are available); at each beat it sits over the word being sung
         // then — from real word timings when present, else an interpolated
-        // position — and arcs to the next beat's word.
-        guard !beatBall.words.isEmpty || !wordCenters.isEmpty else { return nil }
+        // position — and arcs to the next beat's word. While waiting through an
+        // instrumental gap it pulses in place at the left of the upcoming line.
+        guard beatBall.isWaiting || !beatBall.words.isEmpty || !wordCenters.isEmpty
+        else { return nil }
 
         let beats = BouncingBall.beats(
             in: beatBall.segmentStart,
@@ -1088,7 +1150,10 @@ private struct ChordProPreviewLineView: View {
         )
         guard !beats.isEmpty else { return nil }
 
-        let xs: [CGFloat] = beats.map { wordCenterX(at: $0, beatBall: beatBall) }
+        let xs: [CGFloat] =
+            beatBall.isWaiting
+            ? beats.map { _ in Self.characterWidth / 2 }
+            : beats.map { wordCenterX(at: $0, beatBall: beatBall) }
         let ball = BouncingBall(beatTimes: beats, beatX: xs)
         guard let position = ball.position(at: beatBall.currentTime) else { return nil }
 

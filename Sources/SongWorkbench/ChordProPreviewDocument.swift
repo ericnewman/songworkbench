@@ -78,6 +78,13 @@ struct ChordProHighlightDeriver: Sendable {
         })
     }
 
+    /// The ordinal of the next lyric beginning strictly after `currentTime` — used,
+    /// when no lyric is currently active, to park the waiting ball at the start of the
+    /// upcoming line during an instrumental gap.
+    func upcomingLyricOrdinal(at currentTime: TimeInterval) -> Int? {
+        sortedLyrics.firstIndex(where: { currentTime < $0.start })
+    }
+
     /// The sorted lyric segment at `ordinal`, or `nil` when out of range. Lets callers
     /// recover the active segment's start/end/text to drive the beat-synced ball.
     func segment(atOrdinal ordinal: Int) -> TimedLyricSegment? {
