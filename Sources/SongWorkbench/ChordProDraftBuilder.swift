@@ -6,6 +6,8 @@ struct ChordProDraftInput: Equatable, Sendable {
     let lyrics: [TimedLyricSegment]
     let chords: [EditableChordEvent]
     var confidenceThreshold: Float = 0.5
+    /// Detected beat times, used to measure instrumental gaps in bars (4/4).
+    var beatTimes: [TimeInterval] = []
 }
 
 struct ChordProDraftBuilder: Sendable {
@@ -72,7 +74,15 @@ struct ChordProDraftBuilder: Sendable {
         }
 
         for (index, segment) in lyrics.enumerated() {
-            if index > 0, segment.start - lyrics[index - 1].end > 1.5 {
+            let gapStart = index > 0 ? lyrics[index - 1].end : 0
+            let gapBars = bars(from: gapStart, to: segment.start, input: input)
+            if gapBars >= 4 {
+                if index > 0 { lines.append("") }
+                let role = index == 0 ? "Intro" : "Instrumental"
+                lines.append(
+                    "{comment: \(directiveValue("\(role) · \(barCount(gapBars)) bars"))}")
+                lines.append("")
+            } else if index > 0, segment.start - lyrics[index - 1].end > 1.5 {
                 lines.append("")
             }
             let segmentChords = chords.filter {
@@ -136,6 +146,24 @@ struct ChordProDraftBuilder: Sendable {
 
     private func formattedTempo(_ tempo: Double) -> String {
         tempo.rounded() == tempo ? String(Int(tempo)) : String(format: "%.1f", tempo)
+    }
+
+    /// Length of the gap `[start, end)` in 4/4 bars: counts detected beats in the
+    /// gap when available (most accurate), otherwise derives from `tempo`, else 0.
+    private func bars(from start: TimeInterval, to end: TimeInterval, input: ChordProDraftInput)
+        -> Double
+    {
+        guard end > start else { return 0 }
+        let beats = input.beatTimes.filter { $0 > start && $0 < end }.count
+        if beats > 0 { return Double(beats) / 4.0 }
+        if let tempo = input.tempo, tempo > 0 {
+            return (end - start) / (4.0 * 60.0 / tempo)
+        }
+        return 0
+    }
+
+    private func barCount(_ bars: Double) -> Int {
+        max(4, Int(bars.rounded()))
     }
 }
 

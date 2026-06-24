@@ -301,7 +301,8 @@ final class AppModel: ObservableObject {
                     tempo: estimatedBPM,
                     lyrics: lyricSegments,
                     chords: detectedEvents,
-                    confidenceThreshold: chordConfidenceThreshold
+                    confidenceThreshold: chordConfidenceThreshold,
+                    beatTimes: beatTimes
                 ),
                 comment: ChordProDraftBuilder.bassNoteDraftComment,
                 chordLabel: { $0.chord }
@@ -313,7 +314,8 @@ final class AppModel: ObservableObject {
                 tempo: estimatedBPM,
                 lyrics: lyricSegments,
                 chords: chordEvents,
-                confidenceThreshold: chordConfidenceThreshold
+                confidenceThreshold: chordConfidenceThreshold,
+                beatTimes: beatTimes
             ),
             comment: ChordProDraftBuilder.bassNoteDraftComment,
             chordLabel: { BassNote(chordSymbol: $0.chord)?.label }
@@ -1119,7 +1121,8 @@ final class AppModel: ObservableObject {
                 tempo: estimatedBPM,
                 lyrics: lyricSegments,
                 chords: chordEvents,
-                confidenceThreshold: chordConfidenceThreshold
+                confidenceThreshold: chordConfidenceThreshold,
+                beatTimes: beatTimes
             ))
         if var record = analysisStageRecords[.chordPro], var provenance = record.provenance {
             provenance.configurationIdentifier = chordProConfigurationIdentifier

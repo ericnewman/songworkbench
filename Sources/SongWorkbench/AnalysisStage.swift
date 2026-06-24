@@ -422,7 +422,8 @@ struct ChordProStage: AnalysisStageRunning {
                     tempo: document.estimatedBPM,
                     lyrics: document.lyrics,
                     chords: document.chords,
-                    confidenceThreshold: document.chordConfidenceThreshold
+                    confidenceThreshold: document.chordConfidenceThreshold,
+                    beatTimes: document.beatTimes
                 ))
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,

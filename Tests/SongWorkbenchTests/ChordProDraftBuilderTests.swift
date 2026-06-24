@@ -3,6 +3,38 @@ import XCTest
 @testable import SongWorkbench
 
 final class ChordProDraftBuilderTests: XCTestCase {
+    func testInterludeCommentMarksLongInstrumentalGapUsingBeats() {
+        // Beats every 0.5s (120 BPM). The gap [2, 12] holds ~19 beats ≈ 4.75 bars.
+        let beats = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        let input = ChordProDraftInput(
+            title: "Gap Song",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "First line"),
+                TimedLyricSegment(start: 12, end: 14, text: "Second line"),
+            ],
+            chords: [],
+            beatTimes: beats
+        )
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(document.contains("{comment: Instrumental"), document)
+    }
+
+    func testShortGapDoesNotInsertInterludeComment() {
+        let input = ChordProDraftInput(
+            title: "Tight Song",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "First line"),
+                TimedLyricSegment(start: 2.5, end: 4, text: "Second line"),
+            ],
+            chords: [],
+            beatTimes: stride(from: 0.0, through: 4.0, by: 0.5).map { $0 }
+        )
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertFalse(document.contains("{comment: Instrumental"), document)
+    }
+
     func testBuildAlignsIncludedChordChangesToLyrics() {
         let input = ChordProDraftInput(
             title: "Test Song",
