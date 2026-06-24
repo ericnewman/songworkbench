@@ -144,7 +144,7 @@ final class AppModel: ObservableObject {
     private var exportTask: Task<Void, Never>?
     private var analysisControlTask: Task<Void, Never>?
     private var analysisMonitorTask: Task<Void, Never>?
-    private var songAnalysisTask: Task<Void, Never>?
+    private let analysisCoordinator: SongAnalysisCoordinator
     private var modelInstallTasks: [String: Task<Void, Never>] = [:]
     private var currentAnalysisJobID: BackgroundJobID?
     private var currentExportID: UUID?
@@ -181,6 +181,13 @@ final class AppModel: ObservableObject {
             .appendingPathComponent("SongWorkbench", isDirectory: true)
             .appendingPathComponent("Analysis", isDirectory: true)
         analysisCache = AnalysisResultDiskCache(directoryURL: cacheDirectory)
+        analysisCoordinator = SongAnalysisCoordinator(
+            pipelineFactory: SongAnalysisPipelineFactory(
+                modelPackageManager: modelPackageManager,
+                harmonyEngine: audioAnalysisService,
+                cache: analysisCache
+            )
+        )
         Task { await restoreProjects() }
         Task { await refreshModelPackageStatuses() }
     }
@@ -205,7 +212,7 @@ final class AppModel: ObservableObject {
         exportTask?.cancel()
         analysisControlTask?.cancel()
         analysisMonitorTask?.cancel()
-        songAnalysisTask?.cancel()
+        analysisCoordinator.cancel()
         for task in modelInstallTasks.values { task.cancel() }
     }
 
@@ -404,11 +411,9 @@ final class AppModel: ObservableObject {
 
     func analyzeSelectedSong(replaceExistingChordPro: Bool = false) {
         guard let song = selectedSong, !selectedAnalysisStages.isEmpty else { return }
-        songAnalysisTask?.cancel()
         let songID = song.id
         let existingDocument = analysisBySongID[songID] ?? SongAnalysisDocument()
         let stages = selectedAnalysisStages
-        let mode = transcriptionMode
         isSongAnalysisRunning = true
         songAnalysisProgress = SongAnalysisPipelineProgress(
             stage: nil,
@@ -417,46 +422,48 @@ final class AppModel: ObservableObject {
             stageFraction: 0,
             message: "Preparing analysis"
         )
-        songAnalysisTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let pipeline = try await makeProductionPipeline()
-                let outputDirectory = analysisOutputDirectory(for: songID)
-                let result = try await pipeline.run(
-                    SongAnalysisPipelineRequest(
-                        sourceURL: song.url,
-                        outputDirectory: outputDirectory,
-                        title: song.title,
-                        stages: stages,
-                        transcriptionMode: mode,
-                        existingDocument: existingDocument,
-                        chordProReplacementPolicy: replaceExistingChordPro
-                            ? .replaceExisting : .preserveExisting
-                    )
-                ) { value in
-                    Task { @MainActor [weak self] in
-                        guard self?.isSongAnalysisRunning == true else { return }
-                        self?.songAnalysisProgress = value
+        let request = SongAnalysisPipelineRequest(
+            sourceURL: song.url,
+            outputDirectory: analysisOutputDirectory(for: songID),
+            title: song.title,
+            stages: stages,
+            transcriptionMode: transcriptionMode,
+            existingDocument: existingDocument,
+            chordProReplacementPolicy: replaceExistingChordPro
+                ? .replaceExisting : .preserveExisting
+        )
+        analysisCoordinator.run(
+            request: request,
+            onStatuses: { [weak self] statuses in
+                for (id, status) in statuses { self?.modelPackageStatuses[id] = status }
+            },
+            onProgress: { [weak self] value in
+                guard self?.isSongAnalysisRunning == true else { return }
+                self?.songAnalysisProgress = value
+            },
+            onFinish: { [weak self] outcome in
+                guard let self else { return }
+                switch outcome {
+                case .success(let result):
+                    analysisBySongID[songID] = result.document
+                    if selectedSongID == songID {
+                        applyAnalysis(result.document)
+                    } else {
+                        scheduleSave()
+                    }
+                    isSongAnalysisRunning = false
+                    if !result.wasCancelled {
+                        projectErrorMessage = nil
+                    }
+                case .failure(let error):
+                    isSongAnalysisRunning = false
+                    if !(error is CancellationError) {
+                        projectErrorMessage =
+                            "Could not analyze song: \(error.localizedDescription)"
                     }
                 }
-                analysisBySongID[songID] = result.document
-                if selectedSongID == songID {
-                    applyAnalysis(result.document)
-                } else {
-                    scheduleSave()
-                }
-                isSongAnalysisRunning = false
-                if !result.wasCancelled {
-                    projectErrorMessage = nil
-                }
-            } catch is CancellationError {
-                isSongAnalysisRunning = false
-            } catch {
-                isSongAnalysisRunning = false
-                projectErrorMessage = "Could not analyze song: \(error.localizedDescription)"
             }
-            songAnalysisTask = nil
-        }
+        )
     }
 
     func retryAnalysisStage(_ stage: SongAnalysisStage) {
@@ -465,7 +472,7 @@ final class AppModel: ObservableObject {
     }
 
     func cancelSongAnalysis() {
-        songAnalysisTask?.cancel()
+        analysisCoordinator.cancel()
     }
 
     func importSongs(from urls: [URL]) {
@@ -528,8 +535,7 @@ final class AppModel: ObservableObject {
     }
 
     private func resetSelectedSongProgressState() {
-        songAnalysisTask?.cancel()
-        songAnalysisTask = nil
+        analysisCoordinator.cancel()
         isSongAnalysisRunning = false
         songAnalysisProgress = nil
 
@@ -1135,19 +1141,6 @@ final class AppModel: ObservableObject {
                 for: descriptor
             )
         }
-    }
-
-    private func makeProductionPipeline() async throws -> SongAnalysisPipeline {
-        let factory = SongAnalysisPipelineFactory(
-            modelPackageManager: modelPackageManager,
-            harmonyEngine: audioAnalysisService,
-            cache: analysisCache
-        )
-        let assembly = try await factory.makePipeline()
-        for (id, status) in assembly.statuses {
-            modelPackageStatuses[id] = status
-        }
-        return assembly.pipeline
     }
 
     private func analysisOutputDirectory(for songID: Song.ID) -> URL {
