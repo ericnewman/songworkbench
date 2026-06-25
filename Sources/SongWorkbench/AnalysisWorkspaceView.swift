@@ -3,6 +3,7 @@ import SwiftUI
 struct AnalysisWorkspaceView: View {
     @ObservedObject var model: AppModel
     @State private var showReplacementConfirmation = false
+    @State private var showReferenceLyrics = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -35,6 +36,15 @@ struct AnalysisWorkspaceView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.selectedSong == nil)
                 }
+                Button("Reference Lyrics", systemImage: "text.alignleft") {
+                    showReferenceLyrics = true
+                }
+                .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+                if !model.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(Color.swMint)
+                        .help("Lyrics are aligned to your reference text")
+                }
                 Spacer()
             }
 
@@ -59,6 +69,9 @@ struct AnalysisWorkspaceView: View {
         }
         .sheet(isPresented: analysisProgressPresentation) {
             AnalysisProgressSheet(model: model)
+        }
+        .sheet(isPresented: $showReferenceLyrics) {
+            ReferenceLyricsSheet(model: model)
         }
     }
 
@@ -138,6 +151,49 @@ struct AnalysisWorkspaceView: View {
         guard let provenance = record?.provenance else { return "" }
         let completion = provenance.completedAt.formatted(date: .abbreviated, time: .shortened)
         return "\(provenance.engineIdentifier) \(provenance.engineVersion) • \(completion)"
+    }
+}
+
+private struct ReferenceLyricsSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Reference Lyrics", systemImage: "text.alignleft")
+                .font(.swDisplay(15, weight: .semibold))
+                .foregroundStyle(Color.swTextPrimary)
+            Text(
+                "Paste the song's real lyrics, one line per line. These exact words and line breaks "
+                    + "are aligned to the audio using the detected timings — the most accurate "
+                    + "lyrics when you know them. Leave empty to use the raw transcription."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            TextEditor(text: $draft)
+                .font(.swMono(12))
+                .frame(minHeight: 300)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.3)))
+            HStack {
+                Button("Clear", role: .destructive) { draft = "" }
+                    .disabled(draft.isEmpty)
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Align to Audio") {
+                    model.referenceLyrics = draft
+                    model.applyReferenceLyrics()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(draft == model.referenceLyrics || model.selectedSong == nil)
+            }
+        }
+        .padding()
+        .frame(width: 520)
+        .onAppear { draft = model.referenceLyrics }
     }
 }
 

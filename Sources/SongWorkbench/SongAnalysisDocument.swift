@@ -116,6 +116,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
+    /// User-provided reference lyrics. When non-empty, the transcription stage aligns these exact
+    /// words/lines to the ASR word timings instead of using the raw ASR text (see
+    /// `ReferenceLyricAligner`).
+    var referenceLyrics = ""
     var chords: [EditableChordEvent] = []
     var chordProSource = ""
     var estimatedBPM: Double?
@@ -133,6 +137,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case lyrics
+        case referenceLyrics
         case chords
         case chordProSource
         case estimatedBPM
@@ -151,6 +156,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     init(
         schemaVersion: Int = currentSchemaVersion,
         lyrics: [TimedLyricSegment] = [],
+        referenceLyrics: String = "",
         chords: [EditableChordEvent] = [],
         chordProSource: String = "",
         estimatedBPM: Double? = nil,
@@ -167,6 +173,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     ) {
         self.schemaVersion = schemaVersion
         self.lyrics = lyrics
+        self.referenceLyrics = referenceLyrics
         self.chords = chords
         self.chordProSource = chordProSource
         self.estimatedBPM = estimatedBPM
@@ -188,6 +195,8 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
             ?? Self.currentSchemaVersion
         lyrics = try container.decodeIfPresent([TimedLyricSegment].self, forKey: .lyrics) ?? []
+        referenceLyrics =
+            try container.decodeIfPresent(String.self, forKey: .referenceLyrics) ?? ""
         chords = try container.decodeIfPresent([EditableChordEvent].self, forKey: .chords) ?? []
         chordProSource = try container.decodeIfPresent(String.self, forKey: .chordProSource) ?? ""
         estimatedBPM = try container.decodeIfPresent(Double.self, forKey: .estimatedBPM)

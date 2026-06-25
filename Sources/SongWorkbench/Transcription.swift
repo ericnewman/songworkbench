@@ -462,6 +462,179 @@ enum TimedLyricSegmentGrouper {
     }
 }
 
+/// Aligns user-provided reference lyrics to the ASR word timings. The reference supplies the
+/// exact words and the line breaks (from its newlines); the ASR supplies only the timing. Each
+/// reference word borrows the onset/offset of the ASR word it aligns to (Needleman–Wunsch over
+/// normalized text); reference words the ASR missed are interpolated between their timed
+/// neighbours. This sidesteps every ASR transcription error and grouping heuristic when the real
+/// lyrics are known — by far the most accurate path for a song the user can supply lyrics for.
+enum ReferenceLyricAligner {
+    /// Returns aligned lyric lines, or the ASR segments unchanged when alignment isn't possible
+    /// (no reference words, or no ASR word timings to anchor to).
+    static func align(
+        referenceText: String,
+        asrSegments: [TimedLyricSegment]
+    ) -> [TimedLyricSegment] {
+        let asrWords = asrSegments.flatMap(\.words)
+            .filter { !core($0.text).isEmpty }
+            .sorted { $0.start != $1.start ? $0.start < $1.start : $0.end < $1.end }
+        let asrCores = asrWords.map { core($0.text) }
+
+        // Parse the reference into lines (its newlines are the line breaks) and per-line words,
+        // keeping each word's exact text + character range within its line.
+        let rawLines = referenceText.replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
+        var lineTexts: [String] = []
+        var refWords: [(line: Int, text: String, range: Range<Int>, core: String)] = []
+        for raw in rawLines {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            let lineIndex = lineTexts.count
+            lineTexts.append(line)
+            for (text, range) in wordsWithRanges(in: line) {
+                let c = core(text)
+                guard !c.isEmpty else { continue }
+                refWords.append((lineIndex, text, range, c))
+            }
+        }
+        guard !refWords.isEmpty, !asrWords.isEmpty else { return asrSegments }
+
+        // Align reference → ASR. alignedASRIndex[k] is the ASR word index anchoring reference word
+        // k, or nil if the reference word has no ASR counterpart (interpolated below).
+        let alignedASRIndex = alignReferenceToASR(reference: refWords.map(\.core), other: asrCores)
+        var starts = [TimeInterval?](repeating: nil, count: refWords.count)
+        var ends = [TimeInterval?](repeating: nil, count: refWords.count)
+        for (k, idx) in alignedASRIndex.enumerated() {
+            if let idx {
+                starts[k] = asrWords[idx].start
+                ends[k] = asrWords[idx].end
+            }
+        }
+        let timings = interpolatedTimings(
+            starts: starts, ends: ends,
+            songStart: asrWords.first!.start, songEnd: asrWords.last!.end)
+
+        // Group the timed reference words back into their lines.
+        var lineWords: [[TimedLyricWord]] = Array(repeating: [], count: lineTexts.count)
+        for (k, word) in refWords.enumerated() {
+            lineWords[word.line].append(
+                TimedLyricWord(
+                    text: word.text, start: timings[k].start, end: timings[k].end,
+                    characterRange: word.range))
+        }
+        return lineTexts.enumerated().compactMap { lineIndex, text in
+            let words = lineWords[lineIndex]
+            guard let first = words.first, let last = words.last else { return nil }
+            return TimedLyricSegment(
+                start: first.start, end: max(last.end, first.start), text: text, words: words)
+        }
+    }
+
+    private static func core(_ text: String) -> String {
+        String(
+            text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+                .map(Character.init))
+    }
+
+    /// Splits a line into whitespace-separated tokens, returning each token's text and its
+    /// half-open Character-index range within the line.
+    private static func wordsWithRanges(in line: String) -> [(text: String, range: Range<Int>)] {
+        let characters = Array(line)
+        var result: [(String, Range<Int>)] = []
+        var index = 0
+        while index < characters.count {
+            while index < characters.count, characters[index].isWhitespace { index += 1 }
+            guard index < characters.count else { break }
+            let start = index
+            while index < characters.count, !characters[index].isWhitespace { index += 1 }
+            result.append((String(characters[start..<index]), start..<index))
+        }
+        return result
+    }
+
+    /// Fills nil timings by linear interpolation: runs of un-anchored words between two anchors
+    /// share that span evenly; leading/trailing runs extrapolate to the song bounds. The result is
+    /// monotonic non-decreasing.
+    private static func interpolatedTimings(
+        starts: [TimeInterval?],
+        ends: [TimeInterval?],
+        songStart: TimeInterval,
+        songEnd: TimeInterval
+    ) -> [(start: TimeInterval, end: TimeInterval)] {
+        let count = starts.count
+        var result = [(start: TimeInterval, end: TimeInterval)](
+            repeating: (songStart, songStart), count: count)
+        var index = 0
+        while index < count {
+            if let s = starts[index], let e = ends[index] {
+                result[index] = (s, max(e, s))
+                index += 1
+                continue
+            }
+            // A run [index, runEnd) of un-anchored words. Bound it by the previous anchor's end and
+            // the next anchor's start.
+            var runEnd = index
+            while runEnd < count, starts[runEnd] == nil { runEnd += 1 }
+            let lower = index > 0 ? result[index - 1].end : songStart
+            let upper = runEnd < count ? (starts[runEnd] ?? songEnd) : songEnd
+            let span = max(upper - lower, 0)
+            let step = span / Double(runEnd - index + 1)
+            for offset in 0..<(runEnd - index) {
+                let wordStart = lower + step * Double(offset)
+                let wordEnd = lower + step * Double(offset + 1)
+                result[index + offset] = (wordStart, wordEnd)
+            }
+            index = runEnd
+        }
+        return result
+    }
+
+    /// Needleman–Wunsch alignment of `reference` onto `other`, returning for each reference index
+    /// the diagonally-aligned `other` index (a positional anchor, match or near-match) or nil when
+    /// the reference word aligns to a gap.
+    private static func alignReferenceToASR(reference: [String], other: [String]) -> [Int?] {
+        let n = reference.count
+        let m = other.count
+        let gap = -1
+        let mismatch = -1
+        let match = 2
+        var scores = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        for i in 0...n { scores[i][0] = i * gap }
+        for j in 0...m { scores[0][j] = j * gap }
+        if n > 0, m > 0 {
+            for i in 1...n {
+                for j in 1...m {
+                    let cost = reference[i - 1] == other[j - 1] ? match : mismatch
+                    scores[i][j] = Swift.max(
+                        scores[i - 1][j - 1] + cost, scores[i - 1][j] + gap, scores[i][j - 1] + gap)
+                }
+            }
+        }
+        var anchors = [Int?](repeating: nil, count: n)
+        var i = n
+        var j = m
+        while i > 0 || j > 0 {
+            if i > 0, j > 0 {
+                let cost = reference[i - 1] == other[j - 1] ? match : mismatch
+                if scores[i][j] == scores[i - 1][j - 1] + cost {
+                    // Anchor only on an exact match; a diagonal mismatch is a substitution with no
+                    // trustworthy timing, so leave it nil to interpolate.
+                    if reference[i - 1] == other[j - 1] { anchors[i - 1] = j - 1 }
+                    i -= 1
+                    j -= 1
+                    continue
+                }
+            }
+            if i > 0, scores[i][j] == scores[i - 1][j] + gap {
+                i -= 1
+                continue
+            }
+            j -= 1
+        }
+        return anchors
+    }
+}
+
 /// Repairs garbled words in REPEATED song lines (choruses) using cross-line consensus.
 ///
 /// Transcribers mishear the same chorus differently on each pass — "flip flops" becomes

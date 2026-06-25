@@ -257,6 +257,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // re-groups from the cached raw transcription) without changing the raw
                     // transcription cache key, so no re-transcription is needed.
                     version: result.engine.engineVersion + "|grouping-7-segment-lines"
+                        + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
                 modelIdentifier: result.engine.modelName,
                 modelVersion: result.engine.modelVersion,
@@ -275,9 +276,16 @@ struct TranscriptionStage: AnalysisStageRunning {
             // Respect the transcriber's segment boundaries as line breaks: Whisper segments per
             // sung line (with ~zero word gaps), so without this its lines run on; Parakeet emits a
             // single segment, so this is a no-op and its lines still come from the grouping rules.
-            let lyrics = TimedLyricSegmentGrouper.group(
+            let groupedLyrics = TimedLyricSegmentGrouper.group(
                 tokens: gatedTokens,
                 lineStartOnsets: TimedLyricSegmentGrouper.lineStartOnsets(of: result.segments))
+            // When the user supplied reference lyrics, align their exact words/lines to the ASR
+            // word timings (most accurate path); otherwise use the ASR-grouped lines.
+            let reference = context.document.referenceLyrics
+            let lyrics =
+                reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? groupedLyrics
+                : ReferenceLyricAligner.align(referenceText: reference, asrSegments: groupedLyrics)
             return AnalysisStageOutcome { document in
                 document.lyrics = lyrics
                 document.lyricReviewState = .draft
@@ -294,6 +302,19 @@ struct TranscriptionStage: AnalysisStageRunning {
             }
         }
     }
+}
+
+/// A stable, deterministic tag for the reference lyrics so that changing them invalidates the
+/// transcription stage record (forcing a re-group + re-align from the cached raw transcription,
+/// with no re-transcription). Empty reference → empty tag (no behavior change). FNV-1a over UTF-8.
+private func referenceLyricsVersionTag(_ referenceLyrics: String) -> String {
+    let trimmed = referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    var hash: UInt64 = 1_469_598_103_934_665_603
+    for byte in trimmed.utf8 {
+        hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+    }
+    return "|ref-" + String(hash, radix: 36)
 }
 
 // MARK: - Harmony

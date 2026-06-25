@@ -376,6 +376,72 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    // MARK: - Reference lyric alignment
+
+    func testReferenceAlignerBorrowsASRTimingsAndUsesReferenceLineBreaks() {
+        // ASR produced one run-on line (one word mis-heard); the reference has the correct words
+        // and two lines. Output uses the reference words/lines with ASR timings.
+        let asr = [
+            lyricSegment([
+                lyricWord("grass", 19.0, 20.0), lyricWord("betwen", 20.1, 20.9),
+                lyricWord("my", 20.9, 21.1), lyricWord("toes", 21.2, 21.8),
+                lyricWord("smoke", 23.0, 23.6), lyricWord("curls", 23.6, 24.2),
+            ])
+        ]
+        let lines = ReferenceLyricAligner.align(
+            referenceText: "Grass between my toes\nSmoke curls", asrSegments: asr)
+
+        XCTAssertEqual(lines.map(\.text), ["Grass between my toes", "Smoke curls"])
+        XCTAssertEqual(lines[0].words.map(\.text), ["Grass", "between", "my", "toes"])
+        XCTAssertEqual(lines[0].start, 19.0, accuracy: 0.001)  // borrowed from ASR "grass"
+        XCTAssertEqual(lines[1].words[0].start, 23.0, accuracy: 0.001)  // "Smoke" -> ASR "smoke"
+    }
+
+    func testReferenceAlignerInterpolatesWordsTheASRMissed() {
+        // ASR only timed "grass" and "toes"; the reference's "between my" are interpolated between.
+        let asr = [lyricSegment([lyricWord("grass", 19.0, 20.0), lyricWord("toes", 22.0, 22.6)])]
+        let lines = ReferenceLyricAligner.align(
+            referenceText: "Grass between my toes", asrSegments: asr)
+
+        let words = lines[0].words
+        XCTAssertEqual(words.map(\.text), ["Grass", "between", "my", "toes"])
+        XCTAssertEqual(words[0].start, 19.0, accuracy: 0.001)
+        XCTAssertEqual(words[3].start, 22.0, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(words[1].start, 20.0)  // interpolated inside the gap
+        XCTAssertLessThanOrEqual(words[2].end, 22.0001)
+        XCTAssertLessThanOrEqual(words[1].start, words[2].start)  // monotonic
+    }
+
+    func testReferenceAlignerComputesCharacterRangesAndKeepsPunctuation() {
+        let asr = [lyricSegment([lyricWord("hello", 0, 1), lyricWord("world", 1, 2)])]
+        let lines = ReferenceLyricAligner.align(
+            referenceText: "Hello, world!", asrSegments: asr)
+
+        XCTAssertEqual(lines[0].text, "Hello, world!")
+        XCTAssertEqual(lines[0].words[0].characterRange, 0..<6)  // "Hello,"
+        XCTAssertEqual(lines[0].words[1].characterRange, 7..<13)  // "world!"
+    }
+
+    func testReferenceAlignerReturnsASRWhenReferenceBlank() {
+        let asr = [lyricSegment([lyricWord("hi", 0, 1)])]
+        XCTAssertEqual(
+            ReferenceLyricAligner.align(referenceText: "  \n\n ", asrSegments: asr), asr)
+    }
+
+    private func lyricWord(_ text: String, _ start: TimeInterval, _ end: TimeInterval)
+        -> TimedLyricWord
+    {
+        TimedLyricWord(text: text, start: start, end: end, characterRange: 0..<0)
+    }
+
+    private func lyricSegment(_ words: [TimedLyricWord]) -> TimedLyricSegment {
+        TimedLyricSegment(
+            start: words.first?.start ?? 0,
+            end: words.last?.end ?? 0,
+            text: words.map(\.text).joined(separator: " "),
+            words: words)
+    }
+
     private func token(
         _ text: String,
         _ startTime: TimeInterval,

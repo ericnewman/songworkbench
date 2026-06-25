@@ -24,6 +24,14 @@ final class AppModel: ObservableObject {
             persistSelectedAnalysis()
         }
     }
+    /// User-provided reference lyrics. Persisted; the next analysis aligns these exact words/lines
+    /// to the ASR timings. Call `applyReferenceLyrics()` to re-run alignment from the cached audio.
+    @Published var referenceLyrics = "" {
+        didSet {
+            guard !isApplyingAnalysis, referenceLyrics != oldValue else { return }
+            persistSelectedAnalysis()
+        }
+    }
     @Published var chordEvents: [EditableChordEvent] = [] {
         didSet {
             if !isApplyingAnalysis { chordReviewState = .draft }
@@ -435,6 +443,19 @@ final class AppModel: ObservableObject {
             for: song,
             stages: Set(SongAnalysisStage.allCases),
             replaceExistingChordPro: replaceExistingChordPro
+        )
+    }
+
+    /// Re-aligns the lyrics to the audio from the current `referenceLyrics` by re-running the
+    /// transcription stage (re-groups + aligns from the cached raw transcription — no
+    /// re-transcription) and rebuilding the ChordPro chart. With empty reference lyrics this
+    /// reverts to the raw ASR lines.
+    func applyReferenceLyrics() {
+        guard let song = selectedSong else { return }
+        runAnalysis(
+            for: song,
+            stages: [.transcription, .chordPro],
+            replaceExistingChordPro: true
         )
     }
 
@@ -1099,6 +1120,7 @@ final class AppModel: ObservableObject {
         let regroupedLyrics = TimedLyricSegmentGrouper.regroup(analysis.lyrics)
         let lyricsRegrouped = regroupedLyrics != analysis.lyrics
         lyricSegments = regroupedLyrics
+        referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
         estimatedBPM = analysis.estimatedBPM
@@ -1159,6 +1181,7 @@ final class AppModel: ObservableObject {
         guard !isApplyingAnalysis, let selectedSongID else { return }
         analysisBySongID[selectedSongID] = SongAnalysisDocument(
             lyrics: lyricSegments,
+            referenceLyrics: referenceLyrics,
             chords: chordEvents,
             chordProSource: chordProSource,
             estimatedBPM: estimatedBPM,
