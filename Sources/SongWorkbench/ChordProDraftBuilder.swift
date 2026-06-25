@@ -86,10 +86,12 @@ struct ChordProDraftBuilder: Sendable {
                 let role = index == 0 ? "Intro" : "Instrumental"
                 lines.append(
                     "{comment: \(directiveValue("\(role) · \(barCount(gapBars)) bars"))}")
-                if !gapChords.isEmpty { lines.append(chordOnlyLine(gapChords)) }
+                if !gapChords.isEmpty {
+                    lines.append(chordOnlyLine(gapChords, start: gapStart, end: segment.start))
+                }
                 lines.append("")
             } else if !gapChords.isEmpty {
-                lines.append(chordOnlyLine(gapChords))
+                lines.append(chordOnlyLine(gapChords, start: gapStart, end: segment.start))
             } else if index > 0, segment.start - lyrics[index - 1].end > 1.5 {
                 lines.append("")
             }
@@ -174,10 +176,48 @@ struct ChordProDraftBuilder: Sendable {
         max(4, Int(bars.rounded()))
     }
 
-    /// A chord-only line (no lyric), e.g. `[C] [G] [Am]`, for intro and
-    /// instrumental-break chords that are not attached to any lyric.
-    private func chordOnlyLine(_ chords: [RenderableChordEvent]) -> String {
-        chords.map { "[\($0.label)]" }.joined(separator: " ")
+    /// A chord-only line (no lyric) for intro and instrumental-break chords.
+    /// Spacing follows event timing so longer rests remain visible in the chart.
+    ///
+    /// The preview renders each chord at `column × characterWidth`, where `column`
+    /// is the count of literal spaces preceding it. A chord label occupies
+    /// `label.count` columns, so the gap to the next chord must clear the previous
+    /// label plus at least one blank column — otherwise multi-character symbols
+    /// (e.g. "C#", "D#") overlap the next chord and render as "C#A".
+    private func chordOnlyLine(
+        _ chords: [RenderableChordEvent],
+        start: TimeInterval,
+        end: TimeInterval
+    ) -> String {
+        guard !chords.isEmpty else { return "" }
+        let sorted = chords.sorted {
+            if $0.time == $1.time { return $0.label < $1.label }
+            return $0.time < $1.time
+        }
+        guard sorted.count > 1 else { return "[\(sorted[0].label)]" }
+
+        let duration = max(end - start, sorted.last!.time - start, 0.001)
+        let columnsPerSecond = max(
+            1.0,
+            min(2.0, Double(max(1, Int(duration.rounded()))) / duration)
+        )
+        let minimumGap = 1
+        var output = "[\(sorted[0].label)]"
+        var previousTime = max(start, sorted[0].time)
+        var previousLabel = sorted[0].label
+        for chord in sorted.dropFirst() {
+            let delta = max(0, chord.time - previousTime)
+            let timedSpaces = Int((delta * columnsPerSecond).rounded())
+            // Reserve the previous label's width so chords never visually collide,
+            // while still honoring a wider rhythmic gap when the timing calls for it.
+            let spaces = max(previousLabel.count + minimumGap, timedSpaces)
+            output += String(repeating: " ", count: spaces)
+            output += "[\(chord.label)]"
+            previousTime = chord.time
+            previousLabel = chord.label
+        }
+
+        return output
     }
 }
 

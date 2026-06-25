@@ -52,9 +52,57 @@ final class ChordProDraftBuilderTests: XCTestCase {
         )
         let document = ChordProDraftBuilder().build(input)
         let body = document.split(separator: "\n")
-        // First non-directive line should be the intro chord line "[C] [G]".
+        // First non-directive line should be the intro chord line with timing preserved.
         let firstContent = body.first { !$0.hasPrefix("{") && !$0.isEmpty }
-        XCTAssertEqual(firstContent.map(String.init), "[C] [G]", document)
+        XCTAssertEqual(firstContent.map(String.init), "[C]    [G]", document)
+    }
+
+    func testInstrumentalChordOnlyLineUsesRhythmicSpacing() {
+        let input = ChordProDraftInput(
+            title: "Instrumental Break",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "First line"),
+                TimedLyricSegment(start: 10, end: 12, text: "Second line"),
+            ],
+            chords: [
+                EditableChordEvent(time: 2, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 3, chord: "F", confidence: 0.9),
+                EditableChordEvent(time: 6, chord: "G", confidence: 0.9),
+                EditableChordEvent(time: 9, chord: "C", confidence: 0.9),
+            ]
+        )
+
+        let document = ChordProDraftBuilder().build(input)
+
+        XCTAssertTrue(document.contains("[C]  [F]   [G]   [C]"), document)
+        XCTAssertFalse(document.contains("[C] [F] [G] [C]"), document)
+    }
+
+    func testChordOnlyLineReservesMultiCharLabelWidth() {
+        // Adjacent multi-character chords (C#, D#, G#) must not collide: the gap
+        // between two chords has to clear the previous label plus a blank column,
+        // otherwise the preview renders them as "C#A".
+        let input = ChordProDraftInput(
+            title: "Sharp Intro",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 8, end: 10, text: "First words")
+            ],
+            chords: [
+                EditableChordEvent(time: 0, chord: "C#", confidence: 0.9),
+                EditableChordEvent(time: 0.1, chord: "A", confidence: 0.9),
+                EditableChordEvent(time: 0.2, chord: "G#", confidence: 0.9),
+            ]
+        )
+        let document = ChordProDraftBuilder().build(input)
+        let chordLine =
+            document
+            .split(separator: "\n")
+            .first { !$0.hasPrefix("{") && !$0.isEmpty }
+            .map(String.init)
+        // "C#" (2 chars) + 1 min gap = 3 spaces before "A"; "A" (1 char) + 1 = 2 before "G#".
+        XCTAssertEqual(chordLine, "[C#]   [A]  [G#]", document)
     }
 
     func testBuildAlignsIncludedChordChangesToLyrics() {
