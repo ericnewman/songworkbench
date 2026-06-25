@@ -66,6 +66,8 @@ struct ChordClassifier: Sendable {
 
 struct ChordAnalysisPipeline: Sendable {
     let configuration: AudioAnalysisConfiguration
+    /// Root-weight passed to the classifier; tunable for trial-and-error comparisons.
+    var rootWeight: Float = ChordClassifier().rootWeight
 
     func analyze(samples: [Float]) throws -> [ChordObservation] {
         let framer = MonoSampleFramer(configuration: configuration)
@@ -75,7 +77,7 @@ struct ChordAnalysisPipeline: Sendable {
 
         let spectrumAnalyzer = MagnitudeSpectrumAnalyzer()
         let chromaAnalyzer = ChromaAnalyzer()
-        let classifier = ChordClassifier()
+        let classifier = ChordClassifier(rootWeight: rootWeight)
         let sampleRate = configuration.sampleRate
 
         // Partition the frame indices into N contiguous chunks. Each chunk builds exactly ONE DFT

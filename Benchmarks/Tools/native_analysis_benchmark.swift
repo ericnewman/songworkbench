@@ -29,26 +29,37 @@ struct NativeAnalysisBenchmark {
             }
         }
 
-        let start = ContinuousClock.now
         let beat = BeatTracker().analyze(samples: samples, sampleRate: format.sampleRate)
         let configuration = try AudioAnalysisConfiguration(
             sampleRate: format.sampleRate,
             frameLength: 8_192,
             hopLength: 4_096
         )
-        let observations = try ChordAnalysisPipeline(configuration: configuration).analyze(samples: samples)
-        let elapsed = start.duration(to: .now)
-
-        print("elapsed_seconds=\(Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)")
         print("bpm=\(beat?.bpm ?? 0)")
         print("beat_count=\(beat?.beatTimes.count ?? 0)")
-        print("chord_observations=\(observations.count)")
+
         let rootNames = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
         func name(_ observation: ChordObservation) -> String {
             rootNames[observation.chord.root.rawValue]
                 + (observation.chord.quality == .minor ? "m" : "")
         }
-        if let beat {
+
+        // Trial-and-error sweep: print the chord timeline for several root weightings so a
+        // known progression (e.g. the intro Eb Ab Cm Ab) can be compared across variants.
+        let rootWeights: [Float] = [1.0, 1.3, 1.6, 2.0]
+        for rootWeight in rootWeights {
+            let start = ContinuousClock.now
+            let observations = try ChordAnalysisPipeline(
+                configuration: configuration, rootWeight: rootWeight
+            ).analyze(samples: samples)
+            let elapsed = start.duration(to: .now)
+            let seconds =
+                Double(elapsed.components.seconds)
+                + Double(elapsed.components.attoseconds) / 1e18
+            print(
+                "--- rootWeight=\(rootWeight) observations=\(observations.count) "
+                    + "elapsed_seconds=\(seconds) ---")
+            guard let beat else { continue }
             var previous: String?
             for index in stride(from: 0, to: beat.beatTimes.count - 1, by: 4) {
                 let endIndex = min(index + 4, beat.beatTimes.count - 1)
