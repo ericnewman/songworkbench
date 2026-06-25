@@ -335,11 +335,12 @@ enum TimedLyricSegmentGrouper {
     }
 
     /// Merges a one-word continuation line back into the previous line. The duration/token
-    /// safety caps can strand a single trailing lowercase word — e.g. "…being here with" |
-    /// "you." — onto its own line. A lowercase word contiguous with the previous line (small
-    /// gap, no sentence break between) is a continuation, not a new line, so it rejoins even if
-    /// that nudges the line slightly past a safety cap. Capitalized one-word lines are legitimate
-    /// line starts and are left untouched.
+    /// safety caps (or a long sung pause) can strand a single trailing lowercase word — e.g.
+    /// "…being here with" | "you.", or "It's a party going" | "on." — onto its own line. It
+    /// rejoins when it is either (a) contiguous with the previous line, or (b) a short function
+    /// word ("on", "you", "the", …) that is essentially never a real one-word lyric line, even
+    /// across a larger pause. Capitalized one-word lines are legitimate line starts and are left
+    /// untouched.
     private static func mergedTrailingOrphans(
         _ groups: [[TimedTranscriptionToken]],
         configuration: TimedLyricGroupingConfiguration
@@ -350,16 +351,36 @@ enum TimedLyricSegmentGrouper {
                 let orphan = group.first,
                 !beginsCapitalizedWord(orphan.text),
                 let previousLast = result.last?.last,
-                !isSentenceEnding(previousLast.text),
-                orphan.startTime - previousLast.endTime <= configuration.maximumGap
+                !isSentenceEnding(previousLast.text)
             {
-                result[result.count - 1].append(contentsOf: group)
-            } else {
-                result.append(group)
+                let gap = orphan.startTime - previousLast.endTime
+                let contiguous = gap <= configuration.maximumGap
+                let functionWordInSameSection =
+                    isFunctionWord(orphan.text) && gap <= configuration.maximumDuration
+                if contiguous || functionWordInSameSection {
+                    result[result.count - 1].append(contentsOf: group)
+                    continue
+                }
             }
+            result.append(group)
         }
         return result
     }
+
+    /// Short grammatical function words that are essentially never a real one-word lyric line, so
+    /// a lone one is a mis-split continuation of the previous line. Deliberately excludes
+    /// interjections (oh, yeah, hey, no, woah) which CAN legitimately stand alone as a sung line.
+    private static func isFunctionWord(_ text: String) -> Bool {
+        let core = String(text.lowercased().unicodeScalars.filter(CharacterSet.letters.contains))
+        return functionWords.contains(core)
+    }
+
+    private static let functionWords: Set<String> = [
+        "a", "an", "the", "and", "or", "but", "nor", "on", "in", "of", "to", "it", "is", "are",
+        "am", "be", "as", "at", "by", "up", "so", "if", "for", "with", "my", "your", "our",
+        "his", "her", "their", "its", "we", "you", "he", "she", "they", "me", "him", "them",
+        "us", "that", "this", "than", "then", "from", "into", "out", "was", "were",
+    ]
 
     private static func normalized(_ text: String) -> String {
         text.split(whereSeparator: \Character.isWhitespace).joined(separator: " ")

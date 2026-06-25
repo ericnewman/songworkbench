@@ -243,6 +243,34 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testGroupingMergesFunctionWordOrphanAcrossALongPause() {
+        // "It's a party going" then a ~10s sung pause, then a lone "on." — a function word that is
+        // never a real one-word line, so it rejoins its line even across the large gap.
+        let tokens = [
+            token("It's", 50.0, 50.3),
+            token("a", 50.3, 50.5),
+            token("party", 50.5, 50.9),
+            token("going", 50.9, 51.0),
+            token("on.", 60.8, 61.0),  // 9.8s gap, function word
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("It's a party going on.", 50.0, 61.0)]
+        )
+    }
+
+    func testGroupingKeepsNonFunctionWordOrphanAfterALargeGapSeparate() {
+        // A real one-word line that is NOT a function word stays separate across a big gap.
+        let tokens = [
+            token("Dance", 0.0, 0.5),  // capitalized line
+            token("alone", 10.0, 10.6),  // lowercase, but not a function word; big gap
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("Dance", 0.0, 0.5), ("alone", 10.0, 10.6)]
+        )
+    }
+
     func testGroupingKeepsACapitalizedOneWordLineSeparate() {
         // The anti-orphan merge must not swallow a legitimate capitalized one-word line.
         let tokens = [
