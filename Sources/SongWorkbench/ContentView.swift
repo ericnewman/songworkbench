@@ -180,6 +180,15 @@ private struct PlayerView: View {
                         .minimumScaleFactor(0.85)
                     Spacer()
                     Button {
+                        model.playLoopRegion()
+                    } label: {
+                        Label("Play Loop", systemImage: "repeat")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .controlSize(.small)
+                    .disabled(!model.canPlayLoop)
+                    .help("Play the selected loop region (repeats until stopped)")
+                    Button {
                         model.clearLoop()
                     } label: {
                         Label("Clear Loop", systemImage: "xmark.circle")
@@ -202,15 +211,20 @@ private struct PlayerView: View {
                         .frame(width: 32, alignment: .trailing)
                 }
 
-                ScrollView(.horizontal) {
-                    WaveformView(
-                        envelope: waveform,
-                        currentTime: model.activePlaybackTime,
-                        loopRegion: $model.loopRegion
-                    )
-                    .frame(width: max(300, 300 * waveformZoom), height: 100)
+                GeometryReader { geo in
+                    ScrollView(.horizontal) {
+                        WaveformView(
+                            envelope: waveform,
+                            currentTime: model.activePlaybackTime,
+                            loopRegion: $model.loopRegion
+                        )
+                        // Fill the card at 1x; widen (and scroll) as zoom increases.
+                        .frame(
+                            width: max(geo.size.width, geo.size.width * waveformZoom), height: 100)
+                    }
+                    .scrollIndicators(.visible)
                 }
-                .scrollIndicators(.visible)
+                .frame(height: 100)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 PlaybackProgressSlider(model: model)

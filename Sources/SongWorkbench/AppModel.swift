@@ -644,6 +644,19 @@ final class AppModel: ObservableObject {
         loopRegion = nil
     }
 
+    /// Whether a loop region is set and can be played.
+    var canPlayLoop: Bool { loopRegion != nil }
+
+    /// Starts playback at the loop region's start; playback then loops within the region
+    /// (the playback service seeks back to the start when it reaches the end).
+    func playLoopRegion() {
+        guard let loopRegion else { return }
+        seekActivePlayback(to: loopRegion.start)
+        if !isActivePlaybackPlaying {
+            toggleActivePlayback()
+        }
+    }
+
     func exportSelectedSong(to destinationURL: URL) {
         guard let song = selectedSong else { return }
         exportTask?.cancel()
