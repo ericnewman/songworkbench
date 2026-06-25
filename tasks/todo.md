@@ -19,3 +19,17 @@ line breaks; ASR gives the timing.
 ## Notes
 - Reuse Needleman-Wunsch from the (unwired) RepeatedLyricCorrector if present.
 - Reference newlines = line breaks (sidesteps all ASR grouping heuristics).
+
+## Review (done 2026-06-25)
+- ReferenceLyricAligner built + unit-tested (4 tests: timing borrow, interpolation,
+  char ranges/punctuation, blank-reference passthrough). All pass.
+- document.referenceLyrics persisted; transcription stage aligns when present and
+  folds a stable FNV hash of it into the stage version (edit -> re-align from cached
+  raw, no re-transcription).
+- AppModel.referenceLyrics + applyReferenceLyrics(); Reference Lyrics sheet UI with
+  green checkmark when active.
+- VERIFIED on Flip Flops: a corrected 9-line reference produced exact words
+  ("Like"/"brews" overriding ASR "Laugh"/"bruise") and reference line breaks, timed
+  from ASR; stage version showed |ref-<hash>. Reverted test injection; song clean.
+- Note: paste the FULL lyrics incl. repeats — repeated short references align to a
+  single ASR occurrence, leaving gaps (expected).
