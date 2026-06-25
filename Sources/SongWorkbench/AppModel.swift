@@ -1042,9 +1042,13 @@ final class AppModel: ObservableObject {
         chordReviewState = analysis.chordReviewState
         chordProReviewState = analysis.chordProReviewState
         analysisStageRecords = analysis.stageRecords
-        // When migration changed the lines, rebuild the generated chart so it matches
-        // (skipped for user-reviewed charts). Still suppressed by `isApplyingAnalysis`.
-        if lyricsRegrouped { rebuildGeneratedChordProDraft() }
+        // Rebuild the generated chart from the current builder so existing songs pick up
+        // chart improvements (intro/instrumental chords, interlude markers, spacing) and
+        // any re-grouped lines. Self-guards: only non-reviewed "chordpro-draft-builder"
+        // charts are touched, and it's idempotent once a chart is current.
+        let chordProBeforeRebuild = chordProSource
+        rebuildGeneratedChordProDraft()
+        let chordProRebuilt = chordProSource != chordProBeforeRebuild
         if let stemFiles, isCurrentSeparation(record: analysisStageRecords[.separation]) {
             try? stemPlayback.load(stemFiles, mixer: stemMixer)
             stemPlayback.setPitch(semitones: pitchSemitones)
@@ -1061,8 +1065,8 @@ final class AppModel: ObservableObject {
             }
         }
         isApplyingAnalysis = false
-        // Persist the migrated lyrics/chart so the re-grouping happens once per song.
-        if lyricsRegrouped { persistSelectedAnalysis() }
+        // Persist once when the load migrated the lyrics or refreshed the generated chart.
+        if lyricsRegrouped || chordProRebuilt { persistSelectedAnalysis() }
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {
