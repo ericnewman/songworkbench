@@ -1392,9 +1392,12 @@ private struct StemMixerEditor: View {
                     .font(.callout)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                ForEach(StemKind.allCases, id: \.self) { kind in
-                    stemRow(kind)
+                HStack(alignment: .bottom, spacing: 8) {
+                    ForEach(StemKind.allCases, id: \.self) { kind in
+                        ChannelStrip(kind: kind, model: model, stemPlayback: stemPlayback)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if let errorMessage {
@@ -1404,55 +1407,6 @@ private struct StemMixerEditor: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private func stemRow(_ kind: StemKind) -> some View {
-        let state = model.stemMixer[kind]
-        let isAvailable = model.stemFiles?[kind] != nil
-        return HStack {
-            Text(kind.rawValue.capitalized)
-                .font(.swDisplay(13))
-                .foregroundStyle(Color.swTextPrimary)
-                .frame(width: 70, alignment: .leading)
-            StemLevelMeter(level: stemPlayback.stemLevels[kind] ?? 0)
-                .frame(width: 92, height: 10)
-                .accessibilityLabel("\(kind.rawValue.capitalized) level")
-                .accessibilityValue(
-                    Text(
-                        stemPlayback.stemLevels[kind] ?? 0,
-                        format: .percent.precision(.fractionLength(0))
-                    )
-                )
-            Slider(
-                value: Binding(
-                    get: { Double(model.stemMixer[kind].gain) },
-                    set: { model.setStemGain(Float($0), for: kind) }
-                ),
-                in: 0...Double(StemMixState.maximumGain)
-            )
-            Text(state.gain, format: .percent.precision(.fractionLength(0)))
-                .font(.swMono(12))
-                .foregroundStyle(Color.swTextSecondary)
-                .frame(width: 45, alignment: .trailing)
-            Toggle(
-                "Mute",
-                isOn: Binding(
-                    get: { model.stemMixer[kind].isMuted },
-                    set: { model.setStemMuted($0, for: kind) }
-                )
-            )
-            .toggleStyle(.button)
-            Toggle(
-                "Solo",
-                isOn: Binding(
-                    get: { model.stemMixer[kind].isSoloed },
-                    set: { model.setStemSoloed($0, for: kind) }
-                )
-            )
-            .toggleStyle(.button)
-        }
-        .disabled(!isAvailable)
-        .opacity(isAvailable ? 1 : 0.45)
     }
 
     private func loadStemFolder() {
@@ -1478,36 +1432,155 @@ private struct StemMixerEditor: View {
     }
 }
 
-private struct StemLevelMeter: View {
-    let level: Float
+/// One mixing-desk channel: a vertical fader beside a segmented VU meter (both filling the
+/// pane height, lowest level at the bottom), Mute/Solo, and a scribble-strip label below.
+private struct ChannelStrip: View {
+    let kind: StemKind
+    @ObservedObject var model: AppModel
+    @ObservedObject var stemPlayback: StemPlaybackService
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
+        let state = model.stemMixer[kind]
+        let isAvailable = model.stemFiles?[kind] != nil
+        return VStack(spacing: 6) {
+            Text(state.gain, format: .percent.precision(.fractionLength(0)))
+                .font(.swMono(10))
+                .foregroundStyle(Color.swTextSecondary)
+
+            HStack(spacing: 5) {
+                VerticalFader(
+                    value: Binding(
+                        get: { Double(model.stemMixer[kind].gain) },
+                        set: { model.setStemGain(Float($0), for: kind) }
+                    ),
+                    range: 0...Double(StemMixState.maximumGain)
+                )
+                SegmentedLevelMeter(level: stemPlayback.stemLevels[kind] ?? 0)
+            }
+            .frame(maxHeight: .infinity)
+
+            HStack(spacing: 4) {
+                channelToggle("M", isOn: state.isMuted, tint: Color.swCoral) {
+                    model.setStemMuted($0, for: kind)
+                }
+                channelToggle("S", isOn: state.isSoloed, tint: Color.swAccent) {
+                    model.setStemSoloed($0, for: kind)
+                }
+            }
+
+            ScribbleStrip(text: kind.rawValue.capitalized)
+        }
+        .frame(maxWidth: 70)
+        .disabled(!isAvailable)
+        .opacity(isAvailable ? 1 : 0.4)
+    }
+
+    private func channelToggle(
+        _ label: String, isOn: Bool, tint: Color, set: @escaping (Bool) -> Void
+    ) -> some View {
+        Button {
+            set(!isOn)
+        } label: {
+            Text(label)
+                .font(.swMono(11, weight: .bold))
+                .frame(width: 26, height: 20)
+                .foregroundStyle(isOn ? Color.black : Color.swTextSecondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isOn ? tint : Color.swSurface)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A vertical fader (lowest value at the bottom) driven by a drag gesture.
+private struct VerticalFader: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    private let thumbHeight: CGFloat = 14
+    private let trackWidth: CGFloat = 5
+
+    var body: some View {
+        GeometryReader { geo in
+            let height = geo.size.height
+            let span = range.upperBound - range.lowerBound
+            let fraction = span > 0 ? CGFloat((value - range.lowerBound) / span) : 0
+            let travel = max(height - thumbHeight, 1)
+            ZStack(alignment: .bottom) {
+                Capsule().fill(Color.black.opacity(0.32)).frame(width: trackWidth)
+                Capsule()
+                    .fill(Color.swAccent.opacity(0.75))
+                    .frame(width: trackWidth, height: thumbHeight / 2 + fraction * travel)
                 RoundedRectangle(cornerRadius: 3)
-                    .fill(.black.opacity(0.22))
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(meterGradient)
-                    .frame(width: proxy.size.width * CGFloat(clampedLevel))
-                    .animation(.linear(duration: 0.08), value: clampedLevel)
+                    .fill(Color.swTextPrimary)
+                    .frame(width: 26, height: thumbHeight)
+                    .shadow(color: .black.opacity(0.4), radius: 1.5, y: 1)
+                    .offset(y: -fraction * travel)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0).onChanged { drag in
+                    let clampedY = min(max(drag.location.y, 0), height)
+                    let upward = 1 - Double(clampedY / height)
+                    value = range.lowerBound + min(max(upward, 0), 1) * span
+                }
+            )
+        }
+        .frame(width: 30)
+    }
+}
+
+/// A vertical segmented VU meter: segments light from the bottom up (green → amber → red).
+private struct SegmentedLevelMeter: View {
+    let level: Float
+    private let segmentCount = 16
+
+    var body: some View {
+        let clamped = min(max(level, 0), 1)
+        return VStack(spacing: 2) {
+            ForEach(0..<segmentCount, id: \.self) { row in
+                let fromBottom = segmentCount - 1 - row
+                let threshold = Float(fromBottom) / Float(segmentCount)
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(clamped > threshold ? color(fromBottom) : Color.white.opacity(0.06))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: 3)
-                .stroke(.secondary.opacity(0.35), lineWidth: 0.5)
-        }
+        .frame(width: 14)
+        .padding(2)
+        .background(RoundedRectangle(cornerRadius: 3).fill(Color.black.opacity(0.3)))
+        .animation(.linear(duration: 0.08), value: clamped)
     }
 
-    private var clampedLevel: Float {
-        min(max(level, 0), 1)
+    private func color(_ fromBottom: Int) -> Color {
+        let fraction = Float(fromBottom) / Float(segmentCount)
+        if fraction > 0.85 { return .swCoral }
+        if fraction > 0.6 { return .yellow }
+        return .swMint
     }
+}
 
-    private var meterGradient: LinearGradient {
-        // Mint = healthy data level; coral reserved for the clipping (hot) end.
-        LinearGradient(
-            colors: [.swMint, .swMint, .swMint, .swCoral],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
+/// A console "scribble strip" label — channel name on a strip of cream tape.
+private struct ScribbleStrip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(Color.black.opacity(0.82))
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color(red: 0.94, green: 0.92, blue: 0.82))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 2).stroke(Color.black.opacity(0.2), lineWidth: 0.5)
+            )
     }
 }
