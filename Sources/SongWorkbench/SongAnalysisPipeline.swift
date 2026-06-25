@@ -19,8 +19,8 @@ protocol SongHarmonyAnalyzing: Sendable {
 
 extension AudioFileAnalysisService: SongHarmonyAnalyzing {
     nonisolated var metadata: AnalysisEngineVersion {
-        // v5: bass-informed re-rooting only when a bass note is actually near the chord.
-        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "5")
+        // v6: peak-normalized bass detection (recovers quiet bass for bass-informed roots).
+        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "6")
     }
 }
 

@@ -41,8 +41,13 @@ struct BassLineAnalyzer: Sendable {
     private let minimumFrequency: Double = 41
     /// Highest bass fundamental searched (G4).
     private let maximumFrequency: Double = 392
-    /// Frames below this RMS are treated as silence.
-    private let silenceThreshold: Float = 0.005
+    /// Frames below this RMS (after peak normalization) are treated as silence.
+    private let silenceThreshold: Float = 0.003
+    /// Quiet bass stems are scaled up so their peak reaches this before detection, so a
+    /// low separation level doesn't sink real bass below the silence floor. Detection stays
+    /// volume-independent (the clarity metric is already energy-normalized); true silence
+    /// stays silent and the clarity gate still rejects amplified noise.
+    private let detectionTargetPeak: Float = 0.7
     /// Frames whose best normalized autocorrelation peak is below this are
     /// treated as unvoiced (no clear pitch).
     private let clarityThreshold: Float = 0.5
@@ -62,7 +67,8 @@ struct BassLineAnalyzer: Sendable {
     func analyze(samples: [Float], sampleRate: Double) -> [BassNoteObservation] {
         guard sampleRate > 0, !samples.isEmpty else { return [] }
 
-        let (decimated, decimatedRate) = decimate(samples: samples, sampleRate: sampleRate)
+        let leveled = peakNormalized(samples)
+        let (decimated, decimatedRate) = decimate(samples: leveled, sampleRate: sampleRate)
         guard decimated.count >= frameLength else { return [] }
 
         let minimumLag = max(Int((decimatedRate / maximumFrequency).rounded(.down)), 1)
@@ -122,6 +128,19 @@ struct BassLineAnalyzer: Sendable {
     private func rootMeanSquare(_ frame: [Float]) -> Float {
         guard !frame.isEmpty else { return 0 }
         return vDSP.rootMeanSquare(frame)
+    }
+
+    /// Scales the whole signal up so its peak reaches `detectionTargetPeak`, lifting quiet
+    /// bass above the silence floor. Only boosts (never attenuates) so already-loud stems
+    /// are untouched; a fully silent signal is returned unchanged.
+    private func peakNormalized(_ samples: [Float]) -> [Float] {
+        var peak: Float = 0
+        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
+        guard peak > 0, peak < detectionTargetPeak else { return samples }
+        var gain = detectionTargetPeak / peak
+        var output = [Float](repeating: 0, count: samples.count)
+        vDSP_vsmul(samples, 1, &gain, &output, 1, vDSP_Length(samples.count))
+        return output
     }
 
     /// Normalized autocorrelation peak over the bass lag range. Returns the

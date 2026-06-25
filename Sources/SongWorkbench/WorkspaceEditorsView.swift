@@ -1428,7 +1428,7 @@ private struct StemMixerEditor: View {
                     get: { Double(model.stemMixer[kind].gain) },
                     set: { model.setStemGain(Float($0), for: kind) }
                 ),
-                in: 0...1
+                in: 0...Double(StemMixState.maximumGain)
             )
             Text(state.gain, format: .percent.precision(.fractionLength(0)))
                 .font(.swMono(12))

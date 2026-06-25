@@ -1,12 +1,16 @@
 import Foundation
 
 struct StemMixState: Codable, Equatable, Sendable {
+    /// Upper bound for a stem's gain. Above unity so quiet stems (e.g. a low bass stem) can
+    /// be boosted; 2.0 ≈ +6 dB of headroom.
+    static let maximumGain: Float = 2
+
     var gain: Float
     var isMuted: Bool
     var isSoloed: Bool
 
     init(gain: Float = 1, isMuted: Bool = false, isSoloed: Bool = false) {
-        self.gain = min(max(gain, 0), 1)
+        self.gain = min(max(gain, 0), Self.maximumGain)
         self.isMuted = isMuted
         self.isSoloed = isSoloed
     }
@@ -24,7 +28,7 @@ struct StemMixerModel: Codable, Equatable, Sendable {
     }
 
     mutating func setGain(_ gain: Float, for kind: StemKind) {
-        update(kind) { $0.gain = min(max(gain, 0), 1) }
+        update(kind) { $0.gain = min(max(gain, 0), StemMixState.maximumGain) }
     }
 
     mutating func setMuted(_ isMuted: Bool, for kind: StemKind) {

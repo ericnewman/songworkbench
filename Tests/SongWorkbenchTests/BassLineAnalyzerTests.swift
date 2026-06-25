@@ -34,6 +34,16 @@ final class BassLineAnalyzerTests: XCTestCase {
         XCTAssertEqual(note?.midiNote ?? 0, 40, accuracy: 1)  // E2
     }
 
+    func testDetectsVeryQuietToneViaPeakNormalization() {
+        // A very low-amplitude bass tone (a quiet separated stem) would fall under the
+        // silence floor without normalization; after peak normalization it's detected.
+        let note = BassLineAnalyzer().analyze(
+            samples: sine(frequency: 110, duration: 1.5, amplitude: 0.002),
+            sampleRate: sampleRate
+        ).first
+        XCTAssertEqual(note?.midiNote ?? 0, 45, accuracy: 1)  // A2
+    }
+
     func testSilenceProducesNoObservations() {
         let silence = [Float](repeating: 0, count: Int(sampleRate * 1.5))
         let observations = BassLineAnalyzer().analyze(
