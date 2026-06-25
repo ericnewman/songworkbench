@@ -256,7 +256,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // Grouping-version suffix: changes the stage record (so re-analysis
                     // re-groups from the cached raw transcription) without changing the raw
                     // transcription cache key, so no re-transcription is needed.
-                    version: result.engine.engineVersion + "|grouping-3-gate-consensus"
+                    version: result.engine.engineVersion + "|grouping-4-gate"
                 ),
                 modelIdentifier: result.engine.modelName,
                 modelVersion: result.engine.modelVersion,
@@ -264,13 +264,15 @@ struct TranscriptionStage: AnalysisStageRunning {
                 confidence: AnalysisStageRecordFactory.confidenceSummary(confidences),
                 loadedFromCache: loadedFromCache
             )
-            // Drop stray low-confidence words isolated in silence (so instrumental gaps
-            // survive and become Intro/Instrumental/Outro sections), group into lines, then
-            // fix garbled words in repeated lines via cross-line consensus.
+            // Drop stray low-confidence words isolated in silence so instrumental gaps
+            // survive and become Intro/Instrumental/Outro sections, then group into lines.
+            // (The consensus RepeatedLyricCorrector is intentionally NOT applied here: on
+            // real songs a majority mis-hearing — e.g. "flip flops" heard as "slip flops" in
+            // 2 of 3 choruses — makes consensus propagate the wrong word. It stays available
+            // for an opt-in path once a dictionary/language signal can pick the real word.)
             let gatedTokens = TranscriptionSilenceGate.filtered(
                 result.segments.flatMap(\.tokens))
-            let lyrics = RepeatedLyricCorrector().corrected(
-                TimedLyricSegmentGrouper.group(tokens: gatedTokens))
+            let lyrics = TimedLyricSegmentGrouper.group(tokens: gatedTokens)
             return AnalysisStageOutcome { document in
                 document.lyrics = lyrics
                 document.lyricReviewState = .draft
