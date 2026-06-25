@@ -848,6 +848,17 @@ private struct ChordProTabEditor: View {
         guard now >= gapStart, upSegment.start - gapStart >= Self.waitingBallMinimumGap
         else { return nil }
 
+        // Chords playing during the gap (same filter the chart's chord-only line uses),
+        // so the ball can bounce across them instead of just parking at the next line.
+        let gapChordTimes =
+            model.chordEvents
+            .filter { event in
+                event.time >= gapStart && event.time < upSegment.start
+                    && (event.confidence.map { $0 >= model.chordConfidenceThreshold } ?? true)
+            }
+            .map(\.time)
+            .sorted()
+
         return BeatBallInput(
             currentTime: now,
             ordinal: upcoming,
@@ -856,7 +867,8 @@ private struct ChordProTabEditor: View {
             words: [],
             bpm: bpm,
             beatTimes: beatTimes,
-            isWaiting: true
+            isWaiting: true,
+            chordTimes: gapChordTimes
         )
     }
 }
@@ -876,6 +888,9 @@ struct BeatBallInput: Equatable {
     /// When true the ball pulses in place at the left of the upcoming line instead of
     /// tracking words across an active line.
     let isWaiting: Bool
+    /// Chord onset times within the gap (when `isWaiting`), used to bounce the ball
+    /// across the gap's chord-only line in sync with the chords.
+    var chordTimes: [TimeInterval] = []
 }
 
 private struct ChordProAppPreview: View {
@@ -905,7 +920,7 @@ private struct ChordProAppPreview: View {
                                             highlight: highlightContext?.highlight(
                                                 forLyricOrdinal: item.lyricOrdinal
                                             ),
-                                            beatBall: beatBallValue(for: item.lyricOrdinal)
+                                            beatBall: beatBallValue(for: item, in: document)
                                         )
                                         .id(item.offset)
                                     }
@@ -972,7 +987,10 @@ private struct ChordProAppPreview: View {
         var lyricOrdinal = 0
         return document.blocks.enumerated().map { offset, block in
             let ordinal: Int?
-            if case .lyric(let line) = block, !line.lyric.isEmpty {
+            // Only lines with real (non-whitespace) lyric text are lyric lines; chord-only
+            // lines (intro/instrumental/outro) carry whitespace lyric and must not consume
+            // an ordinal, or highlight/ball alignment shifts off the real lyrics.
+            if case .lyric(let line) = block, line.lyric.contains(where: { !$0.isWhitespace }) {
                 ordinal = lyricOrdinal
                 lyricOrdinal += 1
             } else {
@@ -999,19 +1017,75 @@ private struct ChordProAppPreview: View {
         return beatBall.ordinal
     }
 
-    /// Only the block matching the active ordinal carries the ball; others get nil.
-    private func beatBallValue(for lyricOrdinal: Int?) -> LineBeatBall? {
-        guard let beatBall, let lyricOrdinal, lyricOrdinal == beatBall.ordinal else {
+    /// The offset of the chord-only line (intro/instrumental) immediately preceding the
+    /// given lyric line, if one exists — the line the waiting ball should bounce across.
+    private func chordOnlyLineOffset(
+        beforeLyricOrdinal ordinal: Int,
+        in document: ChordProPreviewDocument
+    ) -> Int? {
+        let items = indexedBlocks(for: document)
+        guard let lyricIndex = items.firstIndex(where: { $0.lyricOrdinal == ordinal }) else {
             return nil
         }
+        var index = lyricIndex - 1
+        while index >= 0 {
+            let item = items[index]
+            guard case .lyric(let line) = item.block else {
+                index -= 1
+                continue  // skip directives like {comment: Intro}
+            }
+            let hasText = line.lyric.contains(where: { !$0.isWhitespace })
+            if !line.chords.isEmpty, !hasText { return item.offset }  // chord-only line
+            if hasText { return nil }  // reached a real lyric line first
+            index -= 1  // blank separator line
+        }
+        return nil
+    }
+
+    /// Resolves the ball for a given block: the active lyric carries a word-tracking ball;
+    /// during an instrumental gap the ball bounces across the gap's chord-only line (synced
+    /// to the chords) or, if there is none, parks at the upcoming lyric line.
+    private func beatBallValue(
+        for item: ChordProPreviewIndexedBlock,
+        in document: ChordProPreviewDocument
+    ) -> LineBeatBall? {
+        guard let beatBall else { return nil }
+
+        if beatBall.isWaiting {
+            let chordOffset = chordOnlyLineOffset(
+                beforeLyricOrdinal: beatBall.ordinal, in: document)
+            if let chordOffset, !beatBall.chordTimes.isEmpty, item.offset == chordOffset {
+                return LineBeatBall(
+                    currentTime: beatBall.currentTime,
+                    segmentStart: beatBall.windowStart,
+                    segmentEnd: beatBall.windowEnd,
+                    bpm: beatBall.bpm,
+                    beatTimes: beatBall.beatTimes,
+                    chordTimes: beatBall.chordTimes
+                )
+            }
+            // No chord-only line to track: park at the upcoming lyric line.
+            if chordOffset == nil, item.lyricOrdinal == beatBall.ordinal {
+                return LineBeatBall(
+                    currentTime: beatBall.currentTime,
+                    segmentStart: beatBall.windowStart,
+                    segmentEnd: beatBall.windowEnd,
+                    bpm: beatBall.bpm,
+                    beatTimes: beatBall.beatTimes,
+                    isWaiting: true
+                )
+            }
+            return nil
+        }
+
+        guard item.lyricOrdinal == beatBall.ordinal else { return nil }
         return LineBeatBall(
             currentTime: beatBall.currentTime,
             segmentStart: beatBall.windowStart,
             segmentEnd: beatBall.windowEnd,
             bpm: beatBall.bpm,
             beatTimes: beatBall.beatTimes,
-            words: beatBall.words,
-            isWaiting: beatBall.isWaiting
+            words: beatBall.words
         )
     }
 }
@@ -1030,6 +1104,9 @@ struct LineBeatBall: Equatable {
     /// When true the ball pulses in place at the left of the line (waiting for the next
     /// lyric during an instrumental gap) rather than tracking words.
     var isWaiting = false
+    /// Chord onset times for a chord-only line; when present the ball bounces across the
+    /// line's chords (paired in order) in sync with these times.
+    var chordTimes: [TimeInterval] = []
 }
 
 private struct ChordProPreviewIndexedBlock {
@@ -1139,7 +1216,8 @@ private struct ChordProPreviewLineView: View {
         // then — from real word timings when present, else an interpolated
         // position — and arcs to the next beat's word. While waiting through an
         // instrumental gap it pulses in place at the left of the upcoming line.
-        guard beatBall.isWaiting || !beatBall.words.isEmpty || !wordCenters.isEmpty
+        let tracksChords = !beatBall.chordTimes.isEmpty && !line.chords.isEmpty
+        guard tracksChords || beatBall.isWaiting || !beatBall.words.isEmpty || !wordCenters.isEmpty
         else { return nil }
 
         let beats = BouncingBall.beats(
@@ -1150,10 +1228,14 @@ private struct ChordProPreviewLineView: View {
         )
         guard !beats.isEmpty else { return nil }
 
-        let xs: [CGFloat] =
-            beatBall.isWaiting
-            ? beats.map { _ in Self.characterWidth / 2 }
-            : beats.map { wordCenterX(at: $0, beatBall: beatBall) }
+        let xs: [CGFloat]
+        if tracksChords {
+            xs = beats.map { chordCenterX(at: $0, beatBall: beatBall) }
+        } else if beatBall.isWaiting {
+            xs = beats.map { _ in Self.characterWidth / 2 }
+        } else {
+            xs = beats.map { wordCenterX(at: $0, beatBall: beatBall) }
+        }
         let ball = BouncingBall(beatTimes: beats, beatX: xs)
         guard let position = ball.position(at: beatBall.currentTime) else { return nil }
 
@@ -1187,6 +1269,27 @@ private struct ChordProPreviewLineView: View {
         let relative = min(max((beatTime - beatBall.segmentStart) / span, 0), 1)
         let index = min(Int(relative * Double(centers.count)), centers.count - 1)
         return centers[index]
+    }
+
+    /// The x the ball should sit over for a beat at `beatTime` on a chord-only line: the
+    /// center of the chord sounding then. `chordTimes` pairs in order with `line.chords`;
+    /// on a count mismatch it interpolates across the chords by time.
+    private func chordCenterX(at beatTime: TimeInterval, beatBall: LineBeatBall) -> CGFloat {
+        let chords = line.chords
+        guard !chords.isEmpty else { return Self.characterWidth / 2 }
+        let times = beatBall.chordTimes
+        let index: Int
+        if times.count == chords.count {
+            var active = 0
+            for i in times.indices where times[i] <= beatTime { active = i }
+            index = active
+        } else {
+            let span = max(beatBall.segmentEnd - beatBall.segmentStart, 0.0001)
+            let relative = min(max((beatTime - beatBall.segmentStart) / span, 0), 1)
+            index = min(Int(relative * Double(chords.count)), chords.count - 1)
+        }
+        let chord = chords[index]
+        return (CGFloat(chord.column) + CGFloat(chord.name.count) / 2) * Self.characterWidth
     }
 
     /// Center x of each whitespace-delimited word in this line's OWN lyric, using the
