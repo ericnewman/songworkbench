@@ -253,7 +253,10 @@ struct TranscriptionStage: AnalysisStageRunning {
                 sourceKind: sourceKind,
                 engine: AnalysisEngineVersion(
                     identifier: result.engine.engineName,
-                    version: result.engine.engineVersion
+                    // Grouping-version suffix: changes the stage record (so re-analysis
+                    // re-groups from the cached raw transcription) without changing the raw
+                    // transcription cache key, so no re-transcription is needed.
+                    version: result.engine.engineVersion + "|grouping-2"
                 ),
                 modelIdentifier: result.engine.modelName,
                 modelVersion: result.engine.modelVersion,
