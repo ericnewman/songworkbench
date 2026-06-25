@@ -475,7 +475,7 @@ struct ChordProStage: AnalysisStageRunning {
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: .recording,
-                engine: AnalysisEngineVersion(identifier: "chordpro-draft-builder", version: "2"),
+                engine: AnalysisEngineVersion(identifier: "chordpro-draft-builder", version: "3"),
                 modelIdentifier: nil,
                 modelVersion: nil,
                 configurationIdentifier:

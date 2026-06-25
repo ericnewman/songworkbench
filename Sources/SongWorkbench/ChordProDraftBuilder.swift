@@ -44,6 +44,14 @@ struct ChordProDraftBuilder: Sendable {
             if $0.start == $1.start { return $0.end < $1.end }
             return $0.start < $1.start
         }
+        // Vocal section labels (Verse N / Chorus), keyed by each section's first-line start time.
+        // Only label when there's real structure (≥2 sections) — a single-section clip needs none.
+        let vocalSections = SongStructureAnalyzer().vocalSections(for: lyrics)
+        let sectionLabelByStart =
+            vocalSections.count >= 2
+            ? Dictionary(
+                vocalSections.map { ($0.start, $0.label) }, uniquingKeysWith: { first, _ in first })
+            : [:]
         let chords = input.chords.compactMap { event -> RenderableChordEvent? in
             guard event.confidence.map({ $0 >= input.confidenceThreshold }) ?? true else {
                 return nil
@@ -93,6 +101,9 @@ struct ChordProDraftBuilder: Sendable {
                 lines.append(chordOnlyLine(gapChords, start: gapStart, end: segment.start))
             } else if index > 0, segment.start - lyrics[index - 1].end > 1.5 {
                 lines.append("")
+            }
+            if let sectionLabel = sectionLabelByStart[segment.start] {
+                lines.append("{comment: \(directiveValue(sectionLabel))}")
             }
             let segmentChords = chords.filter {
                 $0.time >= segment.start && $0.time < segment.end
@@ -255,4 +266,78 @@ private struct RenderableChordEvent: Equatable {
     let time: TimeInterval
     let label: String
     let confidence: Float?
+}
+
+/// Infers a song's vocal section structure (verses and choruses) from its lyric lines, using the
+/// standard-pop heuristic that choruses recur near-verbatim. A line is part of a CHORUS when its
+/// words closely match another line elsewhere in the song; runs of same-type lines (split also at
+/// large instrumental gaps) become sections, with verses numbered in order. Intro / instrumental /
+/// outro labels are left to the ChordPro builder's gap handling; this names the sung sections.
+struct SongStructureAnalyzer: Sendable {
+    /// Word-set Jaccard at or above which two lines are "the same" line (i.e. a repeated chorus).
+    var chorusSimilarity: Double = 0.7
+    /// A gap (seconds) between consecutive lyric lines at/above which a new section starts.
+    var sectionGap: TimeInterval = 4
+
+    enum SectionKind: Equatable, Sendable {
+        case verse
+        case chorus
+    }
+
+    struct VocalSection: Equatable, Sendable {
+        var kind: SectionKind
+        var start: TimeInterval
+        var label: String
+    }
+
+    func vocalSections(for lyrics: [TimedLyricSegment]) -> [VocalSection] {
+        let lines = lyrics.filter { !wordSet($0.text).isEmpty }.sorted { $0.start < $1.start }
+        guard !lines.isEmpty else { return [] }
+
+        let words = lines.map { wordSet($0.text) }
+        var isChorus = [Bool](repeating: false, count: lines.count)
+        for i in lines.indices {
+            for j in lines.indices where i != j {
+                if jaccard(words[i], words[j]) >= chorusSimilarity {
+                    isChorus[i] = true
+                    break
+                }
+            }
+        }
+
+        var sections: [VocalSection] = []
+        var blockStart = 0
+        func flush(_ start: Int) {
+            sections.append(
+                VocalSection(
+                    kind: isChorus[start] ? .chorus : .verse,
+                    start: lines[start].start,
+                    label: isChorus[start] ? "Chorus" : "Verse"))
+        }
+        for i in 1..<lines.count {
+            let gap = lines[i].start - lines[i - 1].end
+            if gap >= sectionGap || isChorus[i] != isChorus[blockStart] {
+                flush(blockStart)
+                blockStart = i
+            }
+        }
+        flush(blockStart)
+
+        var verseNumber = 0
+        for index in sections.indices where sections[index].kind == .verse {
+            verseNumber += 1
+            sections[index].label = "Verse \(verseNumber)"
+        }
+        return sections
+    }
+
+    private func wordSet(_ text: String) -> Set<String> {
+        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    }
+
+    private func jaccard(_ a: Set<String>, _ b: Set<String>) -> Double {
+        let union = a.union(b).count
+        guard union > 0 else { return 0 }
+        return Double(a.intersection(b).count) / Double(union)
+    }
 }

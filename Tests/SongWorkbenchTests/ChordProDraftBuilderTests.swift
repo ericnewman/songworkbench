@@ -20,6 +20,45 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertTrue(document.contains("{comment: Instrumental"), document)
     }
 
+    func testStructureAnalyzerLabelsRepeatedSectionsAsChorus() {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
+            TimedLyricSegment(start: 2, end: 4, text: "With little jeans in my hand"),
+            TimedLyricSegment(start: 4, end: 6, text: "It's a party going on"),
+            TimedLyricSegment(start: 6, end: 8, text: "Shout it loud till the dawn"),
+            TimedLyricSegment(start: 20, end: 22, text: "Drinks start a flowing now"),
+            TimedLyricSegment(start: 22, end: 24, text: "Strangers turn into friends"),
+            TimedLyricSegment(start: 24, end: 26, text: "It's a party going on"),
+            TimedLyricSegment(start: 26, end: 28, text: "Shout it loud till the dawn"),
+        ]
+        let sections = SongStructureAnalyzer().vocalSections(for: lyrics)
+        XCTAssertEqual(sections.map(\.label), ["Verse 1", "Chorus", "Verse 2", "Chorus"])
+        XCTAssertEqual(sections.map(\.kind), [.verse, .chorus, .verse, .chorus])
+    }
+
+    func testChordProLabelsVersesAndChoruses() {
+        let input = ChordProDraftInput(
+            title: "Party",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
+                TimedLyricSegment(start: 2, end: 4, text: "With little jeans in my hand"),
+                TimedLyricSegment(start: 4, end: 6, text: "It's a party going on"),
+                TimedLyricSegment(start: 6, end: 8, text: "Shout it loud till the dawn"),
+                TimedLyricSegment(start: 20, end: 22, text: "Drinks start a flowing now"),
+                TimedLyricSegment(start: 22, end: 24, text: "Strangers turn into friends"),
+                TimedLyricSegment(start: 24, end: 26, text: "It's a party going on"),
+                TimedLyricSegment(start: 26, end: 28, text: "Shout it loud till the dawn"),
+            ],
+            chords: [],
+            beatTimes: []
+        )
+        let doc = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(doc.contains("{comment: Verse 1}"), doc)
+        XCTAssertTrue(doc.contains("{comment: Chorus}"), doc)
+        XCTAssertTrue(doc.contains("{comment: Verse 2}"), doc)
+    }
+
     func testShortGapDoesNotInsertInterludeComment() {
         let input = ChordProDraftInput(
             title: "Tight Song",
