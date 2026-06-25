@@ -62,6 +62,13 @@ struct SongWorkbenchApp: App {
                 .keyboardShortcut("0", modifiers: [.command])
             }
 
+            CommandMenu("Analysis") {
+                Button("Re-analyze All Songs") {
+                    model.reanalyzeAllSongs()
+                }
+                .disabled(model.isSongAnalysisRunning || model.songs.isEmpty)
+            }
+
             CommandMenu("Recent Songs") {
                 if model.songs.isEmpty {
                     Text("No Recent Songs")

@@ -423,9 +423,45 @@ final class AppModel: ObservableObject {
 
     func analyzeSelectedSong(replaceExistingChordPro: Bool = false) {
         guard let song = selectedSong, !selectedAnalysisStages.isEmpty else { return }
+        runAnalysis(
+            for: song,
+            stages: selectedAnalysisStages,
+            replaceExistingChordPro: replaceExistingChordPro
+        )
+    }
+
+    /// Re-runs analysis for every song that already has an analysis, sequentially, re-running
+    /// each song's existing stages (caching skips unchanged stages). Used to roll out
+    /// analysis improvements (e.g. chord detection) across the whole library.
+    func reanalyzeAllSongs() {
+        guard !isSongAnalysisRunning else { return }
+        let queue = songs.filter { analysisBySongID[$0.id]?.stageRecords.isEmpty == false }
+        reanalyzeNext(in: queue)
+    }
+
+    private func reanalyzeNext(in queue: [Song]) {
+        guard let song = queue.first else { return }
+        let existing = analysisBySongID[song.id] ?? SongAnalysisDocument()
+        let stages =
+            existing.stageRecords.isEmpty
+            ? selectedAnalysisStages : Set(existing.stageRecords.keys)
+        runAnalysis(for: song, stages: stages) { [weak self] in
+            self?.reanalyzeNext(in: Array(queue.dropFirst()))
+        }
+    }
+
+    private func runAnalysis(
+        for song: Song,
+        stages: Set<SongAnalysisStage>,
+        replaceExistingChordPro: Bool = false,
+        completion: (() -> Void)? = nil
+    ) {
+        guard !stages.isEmpty else {
+            completion?()
+            return
+        }
         let songID = song.id
         let existingDocument = analysisBySongID[songID] ?? SongAnalysisDocument()
-        let stages = selectedAnalysisStages
         isSongAnalysisRunning = true
         songAnalysisProgress = SongAnalysisPipelineProgress(
             stage: nil,
@@ -474,6 +510,7 @@ final class AppModel: ObservableObject {
                             "Could not analyze song: \(error.localizedDescription)"
                     }
                 }
+                completion?()
             }
         )
     }
