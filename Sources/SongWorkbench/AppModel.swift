@@ -497,9 +497,11 @@ final class AppModel: ObservableObject {
                     analysisBySongID[songID] = result.document
                     if selectedSongID == songID {
                         applyAnalysis(result.document)
-                    } else {
-                        scheduleSave()
                     }
+                    // Always persist the freshly computed analysis (applyAnalysis only
+                    // persists when it detects a migration change, which a fresh result
+                    // often isn't).
+                    scheduleSave()
                     isSongAnalysisRunning = false
                     cancelled = result.wasCancelled
                     if !result.wasCancelled {
