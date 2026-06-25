@@ -37,3 +37,13 @@
 - After moving or renaming an Xcode/Tuist workspace, validate both the
   `.xcodeproj` and `.xcworkspace` entry points. Workspace SwiftPM lockfiles may
   be symlinks with absolute paths back to the previous location.
+
+## 2026-06-25 — Don't delete low-confidence transcribed words as "hallucinations"
+**Mistake:** Treated "Grass" (conf 0.045, span 0.0–20.0) as a Whisper hallucination and made the
+silence gate DROP it. It is the real first word of the song — Whisper only mis-timed it (padding
+the first word after the instrumental intro across the whole 20s gap).
+**Rule:** Low confidence + an implausibly long span signals a TIMING error, not a fake word.
+Re-time/normalize suspicious tokens (de-pad: trim the span) rather than delete them. Only drop a
+token that is genuinely isolated in silence AND short AND low-confidence. Verify against the actual
+lyric before calling anything a hallucination. Deleting persisted content is destructive — the word
+is then gone from storage and only re-analysis from the raw cache can restore it.
