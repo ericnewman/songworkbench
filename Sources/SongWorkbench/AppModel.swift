@@ -80,7 +80,16 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published private(set) var analysisJobSnapshot: BackgroundJobSnapshot?
-    @Published var transcriptionMode = TranscriptionMode.fastDraft
+    static let transcriptionModeDefaultsKey = "transcriptionMode"
+    @Published var transcriptionMode: TranscriptionMode =
+        UserDefaults.standard.string(forKey: AppModel.transcriptionModeDefaultsKey)
+        .flatMap(TranscriptionMode.init(rawValue:)) ?? .fastDraft
+    {
+        didSet {
+            UserDefaults.standard.set(
+                transcriptionMode.rawValue, forKey: AppModel.transcriptionModeDefaultsKey)
+        }
+    }
     @Published private(set) var songAnalysisProgress: SongAnalysisPipelineProgress?
     @Published private(set) var isSongAnalysisRunning = false
     @Published private(set) var activePlaybackSource = PlaybackSource.recording
