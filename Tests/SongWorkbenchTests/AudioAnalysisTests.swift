@@ -125,6 +125,15 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(cWithEBass.map(\.chord), ["C"])
     }
 
+    func testBassInformedRefinerLeavesChordUnchangedWhenNoBassIsNear() {
+        // A quiet intro: bass notes only appear much later. The early chord must keep its
+        // chroma classification rather than be re-rooted from a distant, unrelated bass note.
+        let events = [EditableChordEvent(time: 1.0, chord: "Eb", confidence: 0.8)]
+        let bass = [BassNoteObservation(timestamp: 13.0, midiNote: 48, confidence: 0.9)]  // C
+        let refined = BassInformedChordRefiner().refine(events, bassNotes: bass)
+        XCTAssertEqual(refined.map(\.chord), ["Eb"])
+    }
+
     func testPipelineClassifiesSyntheticAMinorChord() throws {
         let sampleRate = 8_192.0
         let configuration = try AudioAnalysisConfiguration(

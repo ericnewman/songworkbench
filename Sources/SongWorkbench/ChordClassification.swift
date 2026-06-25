@@ -182,13 +182,18 @@ struct BassInformedChordRefiner: Sendable {
         }
     }
 
-    /// The bass pitch class sounding at `time`: the last onset at or before it, else the
-    /// first available.
+    /// The bass pitch class sounding at `time`: the most recent onset within a short window
+    /// ending just after it. Returns `nil` when no bass note is near (e.g. a quiet intro
+    /// with no detected bass), so chords there are left to the chroma classifier rather than
+    /// re-rooted from a distant, unrelated bass note.
     private func bassPitchClass(at time: TimeInterval, in sortedBass: [BassNoteObservation])
         -> Int?
     {
-        let chosen = sortedBass.last { $0.timestamp <= time + 0.1 } ?? sortedBass.first
-        guard let chosen else { return nil }
+        guard
+            let chosen = sortedBass.last(where: {
+                $0.timestamp >= time - 4 && $0.timestamp <= time + 0.1
+            })
+        else { return nil }
         return ((chosen.midiNote % 12) + 12) % 12
     }
 
