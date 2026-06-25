@@ -476,13 +476,15 @@ final class AppModel: ObservableObject {
         lyricSegments.map(\.text).joined(separator: "\n")
     }
 
-    /// Re-runs analysis for every song that already has an analysis, sequentially, re-running
-    /// each song's existing stages (caching skips unchanged stages). Used to roll out
-    /// analysis improvements (e.g. chord detection) across the whole library.
+    /// Re-analyzes EVERY song in the library, sequentially. Each song runs all stages, but the
+    /// disk cache makes this cheap where possible: already-separated songs skip the slow stem
+    /// separation (cache hit), and transcription/harmony re-run from their cached raw results to
+    /// pick up grouping/chord improvements. Songs never analyzed before get a full first-time
+    /// analysis (including separation). Each song keeps its own transcription mode (a song analyzed
+    /// in Accuracy is re-analyzed in Accuracy); never-analyzed songs use the current mode.
     func reanalyzeAllSongs() {
         guard !isSongAnalysisRunning else { return }
-        let queue = songs.filter { analysisBySongID[$0.id]?.stageRecords.isEmpty == false }
-        reanalyzeNext(in: queue, total: queue.count)
+        reanalyzeNext(in: songs, total: songs.count)
     }
 
     private func reanalyzeNext(in queue: [Song], total: Int) {
@@ -492,10 +494,15 @@ final class AppModel: ObservableObject {
         }
         reanalyzeAllStatus = ReanalyzeAllStatus(
             index: total - queue.count + 1, total: total, title: song.title)
-        // Only re-run the chord + chart stages: the harmony stage reuses each song's
-        // existing stems (or falls back to the full mix), so we avoid re-running slow stem
-        // separation across the whole library. Stop the chain if a run is cancelled.
-        runAnalysis(for: song, stages: [.harmony, .chordPro]) { [weak self] cancelled in
+        let storedModeRaw =
+            analysisBySongID[song.id]?
+            .stageRecords[.transcription]?.provenance?.configurationIdentifier
+        let storedMode = storedModeRaw.flatMap(TranscriptionMode.init(rawValue:))
+        runAnalysis(
+            for: song,
+            stages: Set(SongAnalysisStage.allCases),
+            modeOverride: storedMode
+        ) { [weak self] cancelled in
             guard let self, !cancelled else {
                 self?.reanalyzeAllStatus = nil
                 return
@@ -508,6 +515,7 @@ final class AppModel: ObservableObject {
         for song: Song,
         stages: Set<SongAnalysisStage>,
         replaceExistingChordPro: Bool = false,
+        modeOverride: TranscriptionMode? = nil,
         completion: ((_ cancelled: Bool) -> Void)? = nil
     ) {
         guard !stages.isEmpty else {
@@ -529,7 +537,7 @@ final class AppModel: ObservableObject {
             outputDirectory: analysisOutputDirectory(for: songID),
             title: song.title,
             stages: stages,
-            transcriptionMode: transcriptionMode,
+            transcriptionMode: modeOverride ?? transcriptionMode,
             existingDocument: existingDocument,
             chordProReplacementPolicy: replaceExistingChordPro
                 ? .replaceExisting : .preserveExisting
