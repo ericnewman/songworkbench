@@ -3,6 +3,8 @@ import Foundation
 protocol ProjectStore: Sendable {
     func load() async throws -> ProjectLibraryDocument
     func save(_ document: ProjectLibraryDocument) async throws
+    /// Synchronous save for app termination, when there's no time to await the actor.
+    func saveBlocking(_ document: ProjectLibraryDocument) throws
 }
 
 actor JSONProjectStore: ProjectStore {
@@ -31,13 +33,10 @@ actor JSONProjectStore: ProjectStore {
     }
 
     private let fileURL: URL
-    private let encoder: JSONEncoder
     private let decoder = JSONDecoder()
 
     init(fileURL: URL) {
         self.fileURL = fileURL
-        encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
     func load() throws -> ProjectLibraryDocument {
@@ -56,6 +55,18 @@ actor JSONProjectStore: ProjectStore {
     }
 
     func save(_ document: ProjectLibraryDocument) throws {
+        try writeDocument(document)
+    }
+
+    /// Nonisolated so it can run synchronously from a termination handler. Uses only the
+    /// immutable `fileURL` plus a local encoder, so it's safe outside the actor.
+    nonisolated func saveBlocking(_ document: ProjectLibraryDocument) throws {
+        try writeDocument(document)
+    }
+
+    private nonisolated func writeDocument(_ document: ProjectLibraryDocument) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true

@@ -12,6 +12,12 @@ struct SongWorkbenchApp: App {
                 .foregroundStyle(Color.swTextPrimary)
                 .tint(Color.swAccent)
                 .preferredColorScheme(.dark)
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: NSApplication.willTerminateNotification)
+                ) { _ in
+                    model.flushPendingSave()
+                }
         }
         Window("About \(AboutInfo.appName)", id: "about") {
             AboutView()

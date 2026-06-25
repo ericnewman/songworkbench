@@ -1119,6 +1119,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Flushes any pending debounced save synchronously. Called on app termination so a
+    /// just-changed setting (e.g. transpose) isn't lost before the debounce fires.
+    func flushPendingSave() {
+        guard hasRestoredProjects else { return }
+        saveTask?.cancel()
+        try? store.saveBlocking(makeDocument())
+    }
+
     private func rebuildGeneratedChordProDraft() {
         guard
             let song = selectedSong,

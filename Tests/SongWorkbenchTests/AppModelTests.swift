@@ -413,6 +413,8 @@ private actor DelayedProjectStore: ProjectStore {
         savedDocuments.append(document)
     }
 
+    nonisolated func saveBlocking(_ document: ProjectLibraryDocument) throws {}
+
     func lastSavedDocument() -> ProjectLibraryDocument? {
         savedDocuments.last
     }
