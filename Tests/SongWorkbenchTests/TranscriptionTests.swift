@@ -88,6 +88,34 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(TimedLyricSegmentGrouper.regroup(stored), stored)
     }
 
+    func testRepeatedLyricCorrectorFixesGarbledWordFromCleanRepeats() {
+        func line(_ text: String, at start: Double) -> TimedLyricSegment {
+            var tokens: [TimedTranscriptionToken] = []
+            var time = start
+            for word in text.split(separator: " ") {
+                tokens.append(token(String(word), time, time + 0.3))
+                time += 0.4
+            }
+            return TimedLyricSegmentGrouper.group(tokens: tokens)[0]
+        }
+        let segments = [
+            line("flip flops and barbecue", at: 0),
+            line("flip flops and barbecue", at: 10),
+            line("slip flops and barbecue", at: 20),  // "slip" is the garbled outlier
+        ]
+        let corrected = RepeatedLyricCorrector().corrected(segments)
+        XCTAssertEqual(
+            corrected.map(\.text),
+            [
+                "flip flops and barbecue",
+                "flip flops and barbecue",
+                "flip flops and barbecue",  // recovered from the clean repeats
+            ]
+        )
+        // Word timings are preserved for the corrected line.
+        XCTAssertEqual(corrected[2].words.map(\.text), ["flip", "flops", "and", "barbecue"])
+    }
+
     func testGroupingDoesNotOrphanASingleCapitalizedWord() {
         // "Charcoal" then "Crackle" (both capitalized, sung together with a small gap) must
         // stay on one line rather than orphaning "Charcoal" onto its own line.
