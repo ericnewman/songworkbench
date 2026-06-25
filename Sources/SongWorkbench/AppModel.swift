@@ -441,12 +441,12 @@ final class AppModel: ObservableObject {
 
     private func reanalyzeNext(in queue: [Song]) {
         guard let song = queue.first else { return }
-        let existing = analysisBySongID[song.id] ?? SongAnalysisDocument()
-        let stages =
-            existing.stageRecords.isEmpty
-            ? selectedAnalysisStages : Set(existing.stageRecords.keys)
-        runAnalysis(for: song, stages: stages) { [weak self] in
-            self?.reanalyzeNext(in: Array(queue.dropFirst()))
+        // Only re-run the chord + chart stages: the harmony stage reuses each song's
+        // existing stems (or falls back to the full mix), so we avoid re-running slow stem
+        // separation across the whole library. Stop the chain if a run is cancelled.
+        runAnalysis(for: song, stages: [.harmony, .chordPro]) { [weak self] cancelled in
+            guard let self, !cancelled else { return }
+            reanalyzeNext(in: Array(queue.dropFirst()))
         }
     }
 
@@ -454,10 +454,10 @@ final class AppModel: ObservableObject {
         for song: Song,
         stages: Set<SongAnalysisStage>,
         replaceExistingChordPro: Bool = false,
-        completion: (() -> Void)? = nil
+        completion: ((_ cancelled: Bool) -> Void)? = nil
     ) {
         guard !stages.isEmpty else {
-            completion?()
+            completion?(false)
             return
         }
         let songID = song.id
@@ -491,6 +491,7 @@ final class AppModel: ObservableObject {
             },
             onFinish: { [weak self] outcome in
                 guard let self else { return }
+                var cancelled = false
                 switch outcome {
                 case .success(let result):
                     analysisBySongID[songID] = result.document
@@ -500,17 +501,19 @@ final class AppModel: ObservableObject {
                         scheduleSave()
                     }
                     isSongAnalysisRunning = false
+                    cancelled = result.wasCancelled
                     if !result.wasCancelled {
                         projectErrorMessage = nil
                     }
                 case .failure(let error):
                     isSongAnalysisRunning = false
+                    cancelled = error is CancellationError
                     if !(error is CancellationError) {
                         projectErrorMessage =
                             "Could not analyze song: \(error.localizedDescription)"
                     }
                 }
-                completion?()
+                completion?(cancelled)
             }
         )
     }
