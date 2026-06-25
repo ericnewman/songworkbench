@@ -77,6 +77,27 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertGreaterThan(minorObservation.confidence, 0.9)
     }
 
+    func testRootWeightingDisambiguatesAbMajorFromCMinor() {
+        // Ab major (Ab-C-Eb) and C minor (C-Eb-G) share C and Eb. With the Ab bass
+        // present plus some G bleed, equal-weight templates pick C minor; weighting the
+        // root recovers Ab major.
+        var values = Array(repeating: Float.zero, count: PitchClass.allCases.count)
+        values[PitchClass.gSharp.rawValue] = 0.95  // Ab
+        values[PitchClass.c.rawValue] = 0.7
+        values[PitchClass.dSharp.rawValue] = 0.95  // Eb
+        values[PitchClass.g.rawValue] = 1.0
+        let chroma = ChromaVector(timestamp: 0, values: values)
+
+        XCTAssertEqual(
+            ChordClassifier(rootWeight: 1).classify(chroma).chord,
+            Chord(root: .c, quality: .minor)
+        )
+        XCTAssertEqual(
+            ChordClassifier(rootWeight: 1.6).classify(chroma).chord,
+            Chord(root: .gSharp, quality: .major)
+        )
+    }
+
     func testPipelineClassifiesSyntheticAMinorChord() throws {
         let sampleRate = 8_192.0
         let configuration = try AudioAnalysisConfiguration(

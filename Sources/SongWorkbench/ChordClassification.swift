@@ -18,6 +18,12 @@ struct ChordObservation: Codable, Equatable, Sendable {
 }
 
 struct ChordClassifier: Sendable {
+    /// Template weight given to the chord root (third and fifth are 1). Weighting the
+    /// root biases classification toward the chord whose root carries the most chroma
+    /// energy — the bass/root note — which disambiguates triads that share two notes
+    /// (e.g. Ab major vs C minor). Tunable for trial-and-error detection comparisons.
+    var rootWeight: Float = 1.6
+
     func classify(_ chroma: ChromaVector) -> ChordObservation {
         var bestChord = Chord(root: .c, quality: .major)
         var bestScore = Float.zero
@@ -45,7 +51,7 @@ struct ChordClassifier: Sendable {
     private func template(root: PitchClass, quality: ChordQuality) -> [Float] {
         var values = Array(repeating: Float.zero, count: PitchClass.allCases.count)
         let third = quality == .major ? 4 : 3
-        values[root.rawValue] = 1
+        values[root.rawValue] = rootWeight
         values[(root.rawValue + third) % values.count] = 1
         values[(root.rawValue + 7) % values.count] = 1
         return values
