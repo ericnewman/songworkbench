@@ -16,27 +16,13 @@ struct AnalysisWorkspaceView: View {
                 ModelPackagesView(model: model)
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible())],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    ForEach(SongAnalysisStage.allCases, id: \.self) { stage in
-                        Toggle(stageTitle(stage), isOn: stageBinding(stage))
-                            .toggleStyle(.checkbox)
-                            .fixedSize()
-                    }
-                }
-                Picker("Transcription", selection: $model.transcriptionMode) {
-                    Text("Fast Draft").tag(TranscriptionMode.fastDraft)
-                    Text("Balanced Draft").tag(TranscriptionMode.balancedDraft)
-                    Text("Accuracy").tag(TranscriptionMode.accuracy)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .disabled(!model.selectedAnalysisStages.contains(.transcription))
+            Picker("Transcription", selection: $model.transcriptionMode) {
+                Text("Fast Draft").tag(TranscriptionMode.fastDraft)
+                Text("Balanced Draft").tag(TranscriptionMode.balancedDraft)
+                Text("Accuracy").tag(TranscriptionMode.accuracy)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
 
             HStack {
                 if model.isSongAnalysisRunning {
@@ -47,7 +33,7 @@ struct AnalysisWorkspaceView: View {
                         beginAnalysis()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.selectedAnalysisStages.isEmpty)
+                    .disabled(model.selectedSong == nil)
                 }
                 Spacer()
             }
@@ -99,7 +85,6 @@ struct AnalysisWorkspaceView: View {
                 if record?.state == .failed || record?.state == .stale {
                     Button("Retry") {
                         if stage == .chordPro && model.requiresChordProReplacementConfirmation {
-                            model.selectedAnalysisStages = [.chordPro]
                             showReplacementConfirmation = true
                         } else {
                             model.retryAnalysisStage(stage)
@@ -116,26 +101,11 @@ struct AnalysisWorkspaceView: View {
     }
 
     private func beginAnalysis() {
-        if model.selectedAnalysisStages.contains(.chordPro)
-            && model.requiresChordProReplacementConfirmation
-        {
+        if model.requiresChordProReplacementConfirmation {
             showReplacementConfirmation = true
         } else {
             model.analyzeSelectedSong()
         }
-    }
-
-    private func stageBinding(_ stage: SongAnalysisStage) -> Binding<Bool> {
-        Binding(
-            get: { model.selectedAnalysisStages.contains(stage) },
-            set: { selected in
-                if selected {
-                    model.selectedAnalysisStages.insert(stage)
-                } else {
-                    model.selectedAnalysisStages.remove(stage)
-                }
-            }
-        )
     }
 
     private func stageTitle(_ stage: SongAnalysisStage) -> String {

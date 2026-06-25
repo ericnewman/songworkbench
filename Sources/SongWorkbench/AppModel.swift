@@ -80,7 +80,6 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published private(set) var analysisJobSnapshot: BackgroundJobSnapshot?
-    @Published var selectedAnalysisStages = Set(SongAnalysisStage.allCases)
     @Published var transcriptionMode = TranscriptionMode.fastDraft
     @Published private(set) var songAnalysisProgress: SongAnalysisPipelineProgress?
     @Published private(set) var isSongAnalysisRunning = false
@@ -422,10 +421,10 @@ final class AppModel: ObservableObject {
     }
 
     func analyzeSelectedSong(replaceExistingChordPro: Bool = false) {
-        guard let song = selectedSong, !selectedAnalysisStages.isEmpty else { return }
+        guard let song = selectedSong else { return }
         runAnalysis(
             for: song,
-            stages: selectedAnalysisStages,
+            stages: Set(SongAnalysisStage.allCases),
             replaceExistingChordPro: replaceExistingChordPro
         )
     }
@@ -521,8 +520,8 @@ final class AppModel: ObservableObject {
     }
 
     func retryAnalysisStage(_ stage: SongAnalysisStage) {
-        selectedAnalysisStages = [stage]
-        analyzeSelectedSong()
+        guard let song = selectedSong else { return }
+        runAnalysis(for: song, stages: [stage])
     }
 
     func cancelSongAnalysis() {
