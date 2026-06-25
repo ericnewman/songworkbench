@@ -157,18 +157,14 @@ enum TimedLyricSegmentGrouper {
         _ segments: [TimedLyricSegment],
         configuration: TimedLyricGroupingConfiguration = .init()
     ) -> [TimedLyricSegment] {
-        let tokens = segments.flatMap { segment -> [TimedTranscriptionToken] in
-            guard !segment.words.isEmpty else {
-                return [
-                    TimedTranscriptionToken(
-                        text: segment.text,
-                        startTime: segment.start,
-                        endTime: segment.end,
-                        confidence: nil
-                    )
-                ]
-            }
-            return segment.words.map {
+        // Re-grouping re-splits lines from per-word timings. Without word-level data on
+        // every segment we can't find sub-line boundaries, and collapsing each line to a
+        // single atomic token would merge or mangle lines — so leave the lyrics untouched.
+        guard !segments.isEmpty, segments.allSatisfy({ !$0.words.isEmpty }) else {
+            return segments
+        }
+        let tokens = segments.flatMap { segment in
+            segment.words.map {
                 TimedTranscriptionToken(
                     text: $0.text, startTime: $0.start, endTime: $0.end, confidence: nil)
             }

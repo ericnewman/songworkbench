@@ -78,6 +78,16 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testRegroupLeavesLyricsWithoutWordTimingsUntouched() {
+        // Older analyses store segments without per-word data; re-grouping must not
+        // collapse them into atomic tokens or merge lines.
+        let stored = [
+            TimedLyricSegment(start: 0, end: 4, text: "No plans no problem"),
+            TimedLyricSegment(start: 4, end: 8, text: "just good friends and a beer"),
+        ]
+        XCTAssertEqual(TimedLyricSegmentGrouper.regroup(stored), stored)
+    }
+
     func testGroupingStartsNewLineAtCapitalizedWordAfterGap() {
         // "Down" is capitalized and follows a 0.6s gap, so it starts a new line;
         // the lowercase continuation stays on its line.
