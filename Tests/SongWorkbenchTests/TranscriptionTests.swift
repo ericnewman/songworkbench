@@ -207,6 +207,25 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testGroupViaResultBreaksWhisperStyleZeroGapSegments() {
+        // End-to-end through group(result:): two zero-gap Whisper-style segments must become two
+        // lines (exercises lineStartOnsets(of:) derivation + the de-pad path).
+        let seg1 = TimedTranscriptionSegment(
+            text: "Grass between toes", startTime: 0, endTime: 1.5,
+            tokens: [token("Grass", 0, 0.5), token("between", 0.5, 1.0), token("toes", 1.0, 1.5)],
+            confidence: 0.9)
+        let seg2 = TimedTranscriptionSegment(
+            text: "Smoke curls up", startTime: 1.5, endTime: 3.0,
+            tokens: [token("Smoke", 1.5, 2.0), token("curls", 2.0, 2.5), token("up", 2.5, 3.0)],
+            confidence: 0.9)
+        let result = makeResult(segments: [seg1, seg2])
+
+        assertSegments(
+            TimedLyricSegmentGrouper.group(result: result),
+            equal: [("Grass between toes", 0, 1.5), ("Smoke curls up", 1.5, 3.0)]
+        )
+    }
+
     func testGroupingMergesLowercaseTrailingOrphanIntoItsLine() {
         // A line pushed just over the duration cap strands its last lowercase word ("you.")
         // onto its own line; it must rejoin the line it continues.

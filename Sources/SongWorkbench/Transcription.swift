@@ -195,7 +195,14 @@ enum TimedLyricSegmentGrouper {
                     text: $0.text, startTime: $0.start, endTime: $0.end, confidence: nil)
             }
         }
-        return group(tokens: tokens, configuration: configuration)
+        // Preserve the existing line boundaries: each stored line's first-word onset is a
+        // line-start signal. Without this, re-grouping a Whisper-derived analysis (whose lines
+        // came from segment boundaries, not gaps) would collapse the zero-gap words back into
+        // run-on lines. The within-line gap/capitalization rules still apply on top, so old
+        // over-merged lyrics are still re-split.
+        let lineStartOnsets = Set(segments.compactMap { $0.words.first?.start })
+        return group(
+            tokens: tokens, configuration: configuration, lineStartOnsets: lineStartOnsets)
     }
 
     static func group(
