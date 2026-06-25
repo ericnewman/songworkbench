@@ -100,6 +100,15 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var songAnalysisProgress: SongAnalysisPipelineProgress?
     @Published private(set) var isSongAnalysisRunning = false
+    /// While "Re-analyze All Songs" runs, the song currently being processed and its position in
+    /// the queue, so the progress UI can show "Re-analyzing 3 of 25: <title>". Nil otherwise.
+    @Published private(set) var reanalyzeAllStatus: ReanalyzeAllStatus?
+
+    struct ReanalyzeAllStatus: Equatable {
+        var index: Int
+        var total: Int
+        var title: String
+    }
     @Published private(set) var activePlaybackSource = PlaybackSource.recording
     @Published private(set) var modelPackageStatuses: [String: ModelPackageStatus] = [:]
     @Published private(set) var modelInstallProgress: [String: Double] = [:]
@@ -473,17 +482,25 @@ final class AppModel: ObservableObject {
     func reanalyzeAllSongs() {
         guard !isSongAnalysisRunning else { return }
         let queue = songs.filter { analysisBySongID[$0.id]?.stageRecords.isEmpty == false }
-        reanalyzeNext(in: queue)
+        reanalyzeNext(in: queue, total: queue.count)
     }
 
-    private func reanalyzeNext(in queue: [Song]) {
-        guard let song = queue.first else { return }
+    private func reanalyzeNext(in queue: [Song], total: Int) {
+        guard let song = queue.first else {
+            reanalyzeAllStatus = nil
+            return
+        }
+        reanalyzeAllStatus = ReanalyzeAllStatus(
+            index: total - queue.count + 1, total: total, title: song.title)
         // Only re-run the chord + chart stages: the harmony stage reuses each song's
         // existing stems (or falls back to the full mix), so we avoid re-running slow stem
         // separation across the whole library. Stop the chain if a run is cancelled.
         runAnalysis(for: song, stages: [.harmony, .chordPro]) { [weak self] cancelled in
-            guard let self, !cancelled else { return }
-            reanalyzeNext(in: Array(queue.dropFirst()))
+            guard let self, !cancelled else {
+                self?.reanalyzeAllStatus = nil
+                return
+            }
+            reanalyzeNext(in: Array(queue.dropFirst()), total: total)
         }
     }
 

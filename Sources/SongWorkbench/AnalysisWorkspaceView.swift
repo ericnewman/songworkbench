@@ -77,7 +77,9 @@ struct AnalysisWorkspaceView: View {
 
     private var analysisProgressPresentation: Binding<Bool> {
         Binding(
-            get: { model.isSongAnalysisRunning },
+            // Stay presented across the whole "Re-analyze All" run, not just each song, so the
+            // sheet doesn't flicker between songs as isSongAnalysisRunning toggles.
+            get: { model.isSongAnalysisRunning || model.reanalyzeAllStatus != nil },
             set: { isPresented in
                 if !isPresented, model.isSongAnalysisRunning {
                     model.cancelSongAnalysis()
@@ -213,13 +215,24 @@ private struct AnalysisProgressSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Label("Analyzing Song", systemImage: "sparkles")
-                    .font(.swDisplay(15, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
+                Label(
+                    model.reanalyzeAllStatus == nil ? "Analyzing Song" : "Re-analyzing Library",
+                    systemImage: "sparkles"
+                )
+                .font(.swDisplay(15, weight: .semibold))
+                .foregroundStyle(Color.swTextPrimary)
                 Spacer()
                 Text(percentComplete, format: .percent.precision(.fractionLength(0)))
                     .font(.swMono(15, weight: .semibold))
                     .foregroundStyle(Color.swMint)
+            }
+
+            if let bulk = model.reanalyzeAllStatus {
+                Text("Song \(bulk.index) of \(bulk.total): \(bulk.title)")
+                    .font(.swDisplay(13, weight: .medium))
+                    .foregroundStyle(Color.swTextPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
 
             if let progress = model.songAnalysisProgress {

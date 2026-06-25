@@ -278,7 +278,10 @@ enum TimedLyricSegmentGrouper {
         }
         groups.append(current)
 
-        return mergedTrailingOrphans(groups, configuration: configuration).map { tokens in
+        let merged = mergedTrailingOrphans(
+            mergedLeadingOrphans(groups, configuration: configuration),
+            configuration: configuration)
+        return merged.map { tokens in
             let layout = renderedLayout(tokens.map(\.text))
             let text = layout.text
             let start = tokens[0].startTime
@@ -332,6 +335,42 @@ enum TimedLyricSegmentGrouper {
             flush(throughTokenIndex: tokens.count - 1)
         }
         return words
+    }
+
+    /// Merges a lone CAPITALIZED word forward into the next line when that line begins with a
+    /// LOWERCASE word — i.e. the transcriber split a single sentence after its first word, leaving
+    /// it stranded (e.g. "Friday" | "night is coming", where Whisper put "Friday" ~9s before the
+    /// rest). The lowercase next-line start is the tell that it's a continuation, not a real line.
+    /// Bounded by `maximumDuration` so it never spans a whole instrumental section. (All-lowercase
+    /// streams — e.g. the cap tests — are untouched, since the lone word must be capitalized.)
+    private static func mergedLeadingOrphans(
+        _ groups: [[TimedTranscriptionToken]],
+        configuration: TimedLyricGroupingConfiguration
+    ) -> [[TimedTranscriptionToken]] {
+        var result: [[TimedTranscriptionToken]] = []
+        var index = 0
+        while index < groups.count {
+            let group = groups[index]
+            if group.count == 1,
+                let lone = group.first,
+                beginsCapitalizedWord(lone.text),
+                !isSentenceEnding(lone.text),
+                index + 1 < groups.count,
+                // Only fold into a genuine multi-word continuation (e.g. "night is coming"); a lone
+                // word before another lone word is two real short lines, not a split sentence.
+                groups[index + 1].count >= 2,
+                let nextFirst = groups[index + 1].first,
+                !beginsCapitalizedWord(nextFirst.text),
+                nextFirst.startTime - lone.endTime <= configuration.maximumDuration
+            {
+                result.append(group + groups[index + 1])
+                index += 2
+                continue
+            }
+            result.append(group)
+            index += 1
+        }
+        return result
     }
 
     /// Merges a one-word continuation line back into the previous line. The duration/token

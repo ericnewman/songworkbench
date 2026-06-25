@@ -314,9 +314,13 @@ private struct TimedLyricsEditor: View {
                     model.markLyricsReviewed()
                 }
                 .disabled(model.lyricSegments.isEmpty || model.lyricReviewState == .reviewed)
-                Button("Add at Playhead", systemImage: "plus") {
+                Button("Add Line", systemImage: "plus") {
                     model.addLyricSegment()
                 }
+                .help(
+                    "Inserts an empty lyric line at the current playback time (the playhead in the "
+                        + "waveform above). Play or scrub to the moment, click Add Line, then type "
+                        + "the words. You can also edit the start/end times directly.")
             }
             List {
                 ForEach($model.lyricSegments) { $segment in
@@ -344,7 +348,9 @@ private struct TimedLyricsEditor: View {
                     ContentUnavailableView(
                         "No Timed Lyrics",
                         systemImage: "text.quote",
-                        description: Text("Add a line at the current playhead position.")
+                        description: Text(
+                            "Analyze the song, or play to a spot and click Add Line to enter "
+                                + "lyrics by hand.")
                     )
                 }
             }
@@ -400,9 +406,12 @@ private struct ChordTimelineEditor: View {
                     .disabled(!model.canAnalyzeAccompaniment)
                     .help("Requires the separated accompaniment stem.")
                 }
-                Button("Add at Playhead", systemImage: "plus") {
+                Button("Add Chord", systemImage: "plus") {
                     model.addChordEvent()
                 }
+                .help(
+                    "Adds a chord at the current playback time (the playhead in the waveform). "
+                        + "Then type the chord name, e.g. Ab, and adjust its time if needed.")
             }
             if let progress = model.analysisJobSnapshot?.progress, isAnalysisRunning {
                 ProgressView(

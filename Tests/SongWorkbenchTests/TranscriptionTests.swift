@@ -271,6 +271,35 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testGroupingMergesLeadingCapitalizedWordIntoLowercaseContinuation() {
+        // "Friday" then a long gap, then "night is coming" (lowercase continuation): the transcriber
+        // split a single line after its first word. They rejoin.
+        let tokens = [
+            token("Friday", 10.87, 11.87),
+            token("night", 20.78, 21.2),  // lowercase, 8.9s gap
+            token("is", 21.2, 21.5),
+            token("coming", 21.5, 22.5),
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("Friday night is coming", 10.87, 22.5)]
+        )
+    }
+
+    func testGroupingKeepsLoneCapitalizedWordBeforeACapitalizedLine() {
+        // A lone capitalized word before a CAPITALIZED next line is a real one-word line, not a
+        // split continuation, so it stays separate.
+        let tokens = [
+            token("Stop", 0.0, 0.5),
+            token("Dance", 5.0, 5.5),  // capitalized next line (gap forces the break)
+            token("along", 5.6, 6.0),
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("Stop", 0.0, 0.5), ("Dance along", 5.0, 6.0)]
+        )
+    }
+
     func testGroupingKeepsACapitalizedOneWordLineSeparate() {
         // The anti-orphan merge must not swallow a legitimate capitalized one-word line.
         let tokens = [
