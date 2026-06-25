@@ -1087,10 +1087,8 @@ final class AppModel: ObservableObject {
         // Migrate older analyses to the current line-grouping rules from each segment's
         // stored word timings (no re-transcription). Idempotent for already-current lyrics.
         let regroupedLyrics = TimedLyricSegmentGrouper.regroup(analysis.lyrics)
-        // Fix garbled words in repeated lines from the song's own clean repetitions.
-        let correctedLyrics = RepeatedLyricCorrector().corrected(regroupedLyrics)
-        let lyricsRegrouped = correctedLyrics != analysis.lyrics
-        lyricSegments = correctedLyrics
+        let lyricsRegrouped = regroupedLyrics != analysis.lyrics
+        lyricSegments = regroupedLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
         estimatedBPM = analysis.estimatedBPM
