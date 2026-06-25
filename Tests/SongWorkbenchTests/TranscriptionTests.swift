@@ -323,6 +323,99 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    // MARK: - RepeatedLyricCorrector
+
+    func testRepeatedLyricCorrectorFixesMinorityWordWithTwoThirdsMajority() {
+        let segments = [
+            lyricSegment("flip flops and barbecue"),
+            lyricSegment("flip flops and barbecue"),
+            lyricSegment("slip flops and barbecue"),
+        ]
+
+        let corrected = RepeatedLyricCorrector().corrected(segments)
+
+        XCTAssertEqual(corrected.map(\.text), Array(repeating: "flip flops and barbecue", count: 3))
+        XCTAssertEqual(
+            corrected[2].words.map(\.text),
+            ["flip", "flops", "and", "barbecue"]
+        )
+        // Timings unchanged: same word count, original starts/ends preserved.
+        XCTAssertEqual(corrected[2].words.count, segments[2].words.count)
+        XCTAssertEqual(corrected[2].words.map(\.start), segments[2].words.map(\.start))
+        XCTAssertEqual(corrected[2].words.map(\.end), segments[2].words.map(\.end))
+        // Idempotent.
+        XCTAssertEqual(RepeatedLyricCorrector().corrected(corrected), corrected)
+    }
+
+    func testRepeatedLyricCorrectorLeavesColumnWithoutMajorityUnchanged() {
+        let segments = [
+            lyricSegment("red flops and barbecue"),
+            lyricSegment("blue flops and barbecue"),
+            lyricSegment("green flops and barbecue"),
+        ]
+
+        let corrected = RepeatedLyricCorrector().corrected(segments)
+
+        XCTAssertEqual(corrected, segments)
+    }
+
+    func testRepeatedLyricCorrectorLeavesTwoLineClusterUnchanged() {
+        let segments = [
+            lyricSegment("flip flops and barbecue"),
+            lyricSegment("slip flops and barbecue"),
+        ]
+
+        let corrected = RepeatedLyricCorrector().corrected(segments)
+
+        XCTAssertEqual(corrected, segments)
+    }
+
+    func testRepeatedLyricCorrectorAlignsShiftedContentInsteadOfByIndex() {
+        // Index-alignment would compare "rabbit" vs "grab" vs "grab" at column 0 and corrupt the
+        // line. Sequence alignment recovers the shared run and only the genuine garble ("grin" →
+        // "grim") is a minority, so it is the sole change.
+        let segments = [
+            lyricSegment("grab a chair grab a grim"),
+            lyricSegment("grab a chair grab a grim"),
+            lyricSegment("grab a chair grab a grin"),
+        ]
+
+        let corrected = RepeatedLyricCorrector().corrected(segments)
+
+        XCTAssertEqual(
+            corrected.map(\.text),
+            Array(repeating: "grab a chair grab a grim", count: 3)
+        )
+    }
+
+    func testRepeatedLyricCorrectorPreservesPunctuationAndCapitalization() {
+        // The garbled member carries leading capitalization and trailing punctuation that must
+        // survive the core swap: "Barbecue," → "Bruise,".
+        let segments = [
+            lyricSegment("flip flops and bruise"),
+            lyricSegment("flip flops and bruise"),
+            lyricSegment("flip flops and Barbecue,"),
+        ]
+
+        let corrected = RepeatedLyricCorrector().corrected(segments)
+
+        XCTAssertEqual(corrected[2].text, "flip flops and Bruise,")
+        XCTAssertEqual(corrected[2].words.last?.text, "Bruise,")
+    }
+
+    /// Builds a single lyric line (one segment) from a phrase, with real per-word timings and
+    /// `characterRange`s produced by the production grouper. Tokens get small increasing
+    /// timestamps so they stay in one group.
+    private func lyricSegment(_ phrase: String) -> TimedLyricSegment {
+        var time = 0.0
+        let tokens = phrase.split(separator: " ").map { word -> TimedTranscriptionToken in
+            let start = time
+            time += 0.1
+            return token(String(word), start, time - 0.02)
+        }
+        return TimedLyricSegmentGrouper.group(tokens: tokens)[0]
+    }
+
     private func assertSendable<T: Sendable>(_ value: T) {}
 
     private func assertSegments(

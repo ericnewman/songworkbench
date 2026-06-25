@@ -387,3 +387,307 @@ enum TimedLyricSegmentGrouper {
         }
     }
 }
+
+/// Repairs garbled words in REPEATED song lines (choruses) using cross-line consensus.
+///
+/// Transcribers mishear the same chorus differently on each pass — "flip flops" becomes
+/// "slip flops", "bruise" becomes "Brooms". When a line recurs three or more times we can
+/// recover the intended word by majority vote: align the repeats word-for-word and, at each
+/// column where a strict two-thirds majority of the repeats agree, rewrite the dissenters to
+/// match.
+///
+/// The corrector is deliberately conservative. It votes only WITHIN a cluster of near-duplicate
+/// lines (never song-wide, which would let common theme words overrun correct rare ones), aligns
+/// with real word-level sequence alignment (never by positional index, which corrupts lines whose
+/// content has shifted), and changes a word only when a clear ≥2/3 majority disagrees with it.
+/// With no clear consensus it is a no-op, and applying it twice changes nothing.
+struct RepeatedLyricCorrector: Sendable {
+    /// Minimum Jaccard similarity of two lines' normalized word sets to cluster them together.
+    private let clusterSimilarityThreshold = 0.6
+    /// Minimum cluster size to attempt correction — need enough repeats for a real majority.
+    private let minimumClusterSize = 3
+
+    /// A normalized comparison word plus the index of the `segment.words` token it came from.
+    private struct ComparisonWord {
+        var core: String
+        var wordIndex: Int
+    }
+
+    func corrected(_ segments: [TimedLyricSegment]) -> [TimedLyricSegment] {
+        // Comparison words per segment; nil for segments we leave untouched (empty `words`).
+        // Each carries the originating `segment.words` index so a voted column maps back to the
+        // exact token to rewrite — all-punctuation tokens (empty core) are excluded from voting.
+        let comparisonWords = segments.map { segment -> [ComparisonWord]? in
+            guard !segment.words.isEmpty else { return nil }
+            let words = segment.words.enumerated().compactMap {
+                index, word -> ComparisonWord? in
+                let normalized = core(of: word.text).lowercased()
+                return normalized.isEmpty ? nil : ComparisonWord(core: normalized, wordIndex: index)
+            }
+            return words.isEmpty ? nil : words
+        }
+
+        let clusters = cluster(comparisonWords)
+
+        var result = segments
+        for cluster in clusters where cluster.count >= minimumClusterSize {
+            applyConsensus(
+                to: &result,
+                members: cluster,
+                comparisonWords: comparisonWords
+            )
+        }
+        return result
+    }
+
+    // MARK: - Clustering
+
+    /// Greedily groups segment indices whose normalized word SETS have Jaccard similarity
+    /// ≥ threshold with the cluster's seed line. Segments without comparison words are skipped.
+    private func cluster(_ comparisonWords: [[ComparisonWord]?]) -> [[Int]] {
+        var clusters: [[Int]] = []
+        var seedSets: [Set<String>] = []
+
+        for index in comparisonWords.indices {
+            guard let words = comparisonWords[index], !words.isEmpty else { continue }
+            let set = Set(words.map(\.core))
+            if let match = seedSets.indices.first(where: {
+                jaccard(seedSets[$0], set) >= clusterSimilarityThreshold
+            }) {
+                clusters[match].append(index)
+            } else {
+                clusters.append([index])
+                seedSets.append(set)
+            }
+        }
+        return clusters
+    }
+
+    private func jaccard(_ lhs: Set<String>, _ rhs: Set<String>) -> Double {
+        if lhs.isEmpty && rhs.isEmpty { return 1 }
+        let intersection = lhs.intersection(rhs).count
+        let union = lhs.union(rhs).count
+        return union == 0 ? 0 : Double(intersection) / Double(union)
+    }
+
+    // MARK: - Consensus
+
+    private func applyConsensus(
+        to segments: inout [TimedLyricSegment],
+        members: [Int],
+        comparisonWords: [[ComparisonWord]?]
+    ) {
+        let memberWords = members.map { comparisonWords[$0] ?? [] }
+
+        // Reference = the member whose word count is the most common length; ties break toward
+        // the earliest member. Aligning every other member onto this reference gives a stable set
+        // of columns to vote over.
+        guard let referenceLocal = referenceMemberIndex(memberWords) else { return }
+        let referenceCores = memberWords[referenceLocal].map(\.core)
+        guard !referenceCores.isEmpty else { return }
+
+        // For each member, the index into that member's comparison words aligned to each reference
+        // column (nil = gap).
+        let alignedIndices = memberWords.map {
+            alignWithIndices(reference: referenceCores, other: $0.map(\.core))
+        }
+
+        // Consensus core per reference column, or nil when no strict ≥2/3 majority winner exists.
+        var consensus: [String?] = Array(repeating: nil, count: referenceCores.count)
+        let required = Int((Double(members.count) * 2.0 / 3.0).rounded(.up))
+        for column in referenceCores.indices {
+            var counts: [String: Int] = [:]
+            for member in members.indices {
+                if let index = alignedIndices[member][column] {
+                    counts[memberWords[member][index].core, default: 0] += 1
+                }
+            }
+            let ranked = counts.sorted { $0.value > $1.value }
+            if let top = ranked.first, top.value >= required,
+                ranked.count == 1 || ranked[1].value < top.value
+            {
+                consensus[column] = top.key
+            }
+        }
+
+        // Rewrite each member that disagrees with a consensus column.
+        for (local, segmentIndex) in members.enumerated() {
+            var replacements: [Int: String] = [:]  // segment word index -> new core
+            for column in referenceCores.indices {
+                guard let target = consensus[column] else { continue }
+                guard let index = alignedIndices[local][column] else { continue }
+                let comparison = memberWords[local][index]
+                if comparison.core != target {
+                    replacements[comparison.wordIndex] = target
+                }
+            }
+            if !replacements.isEmpty,
+                let rewritten = rewrite(segments[segmentIndex], replacements: replacements)
+            {
+                segments[segmentIndex] = rewritten
+            }
+        }
+    }
+
+    private func referenceMemberIndex(_ memberWords: [[ComparisonWord]]) -> Int? {
+        let lengths = memberWords.map(\.count).filter { $0 > 0 }
+        guard !lengths.isEmpty else { return nil }
+        var frequency: [Int: Int] = [:]
+        for length in lengths { frequency[length, default: 0] += 1 }
+        let mostCommon = frequency.sorted {
+            $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key
+        }.first
+        guard let targetLength = mostCommon?.key else { return nil }
+        return memberWords.firstIndex { $0.count == targetLength }
+    }
+
+    // MARK: - Word-level alignment (Needleman–Wunsch)
+
+    /// Aligns `other` onto `reference`, returning the index into `other` for each reference column
+    /// (nil = gap). Words inserted by `other` that don't line up with any reference column are
+    /// dropped (they can't be voted on against the reference's columns).
+    private func alignWithIndices(reference: [String], other: [String]) -> [Int?] {
+        let n = reference.count
+        let m = other.count
+        let gapPenalty = -1
+        let mismatch = -1
+        let match = 1
+
+        var scores = Array(
+            repeating: Array(repeating: 0, count: m + 1),
+            count: n + 1
+        )
+        for i in 0...n { scores[i][0] = i * gapPenalty }
+        for j in 0...m { scores[0][j] = j * gapPenalty }
+        for i in 1...max(n, 1) where n > 0 {
+            for j in 1...max(m, 1) where m > 0 {
+                let cost = reference[i - 1] == other[j - 1] ? match : mismatch
+                let diagonal = scores[i - 1][j - 1] + cost
+                let up = scores[i - 1][j] + gapPenalty
+                let left = scores[i][j - 1] + gapPenalty
+                scores[i][j] = Swift.max(diagonal, up, left)
+            }
+        }
+
+        // Traceback. `columnWord[i]` is the `other` index aligned to reference column i, or nil.
+        var columnWord: [Int?] = Array(repeating: nil, count: n)
+        var i = n
+        var j = m
+        while i > 0 || j > 0 {
+            if i > 0, j > 0 {
+                let cost = reference[i - 1] == other[j - 1] ? match : mismatch
+                if scores[i][j] == scores[i - 1][j - 1] + cost {
+                    columnWord[i - 1] = j - 1
+                    i -= 1
+                    j -= 1
+                    continue
+                }
+            }
+            if i > 0, scores[i][j] == scores[i - 1][j] + gapPenalty {
+                // Reference word i-1 aligned to a gap in `other`.
+                i -= 1
+                continue
+            }
+            // Otherwise an `other` word j-1 aligned to a gap in reference; drop it.
+            j -= 1
+        }
+        return columnWord
+    }
+
+    // MARK: - Rewriting
+
+    /// Replaces the alphanumeric core of the indicated words with new cores, preserving each
+    /// token's surrounding punctuation and leading capitalization, then recomputes character
+    /// ranges. Returns nil (caller keeps the original) if the rewrite would change the word count.
+    private func rewrite(
+        _ segment: TimedLyricSegment,
+        replacements: [Int: String]
+    ) -> TimedLyricSegment? {
+        var newWordTexts = segment.words.map(\.text)
+        for (index, newCore) in replacements {
+            guard index >= 0, index < newWordTexts.count else { return nil }
+            newWordTexts[index] = replacingCore(in: newWordTexts[index], with: newCore)
+        }
+
+        // Rebuild the segment text right-to-left by character range so earlier ranges stay valid.
+        var characters = Array(segment.text)
+        for index in segment.words.indices.sorted(by: >) {
+            let range = segment.words[index].characterRange
+            guard range.lowerBound >= 0, range.upperBound <= characters.count else { return nil }
+            characters.replaceSubrange(range, with: Array(newWordTexts[index]))
+        }
+        let newText = String(characters)
+
+        // Recompute character ranges by re-scanning whitespace-delimited tokens. A mismatched
+        // token count means our edit disturbed the spacing — fall back to leaving it unchanged.
+        let tokens = whitespaceTokens(in: newText)
+        guard tokens.count == segment.words.count else { return nil }
+
+        var newWords = segment.words
+        for index in newWords.indices {
+            newWords[index].text = String(Array(newText)[tokens[index]])
+            newWords[index].characterRange = tokens[index]
+        }
+
+        var corrected = segment
+        corrected.text = newText
+        corrected.words = newWords
+        return corrected
+    }
+
+    /// Whitespace-delimited token ranges (half-open Character-index ranges) within `text`.
+    private func whitespaceTokens(in text: String) -> [Range<Int>] {
+        let characters = Array(text)
+        var ranges: [Range<Int>] = []
+        var start: Int?
+        for index in characters.indices {
+            if characters[index].isWhitespace {
+                if let begin = start {
+                    ranges.append(begin..<index)
+                    start = nil
+                }
+            } else if start == nil {
+                start = index
+            }
+        }
+        if let begin = start { ranges.append(begin..<characters.count) }
+        return ranges
+    }
+
+    /// Replaces the leading alphanumeric run of `token` with `core`, matching the original run's
+    /// leading capitalization, and keeps all surrounding (and trailing) punctuation. "Brooms" with
+    /// core "bruise" → "Bruise"; "barbecue," → "bruise,".
+    private func replacingCore(in token: String, with core: String) -> String {
+        let characters = Array(token)
+        var coreStart = 0
+        while coreStart < characters.count, !characters[coreStart].isLetter,
+            !characters[coreStart].isNumber
+        {
+            coreStart += 1
+        }
+        var coreEnd = coreStart
+        while coreEnd < characters.count,
+            characters[coreEnd].isLetter || characters[coreEnd].isNumber
+        {
+            coreEnd += 1
+        }
+        guard coreStart < coreEnd else { return token }
+
+        let originalFirst = characters[coreStart]
+        let cased: String
+        if originalFirst.isUppercase {
+            cased = core.prefix(1).uppercased() + core.dropFirst()
+        } else {
+            cased = core
+        }
+
+        let prefix = String(characters[0..<coreStart])
+        let suffix = String(characters[coreEnd..<characters.count])
+        return prefix + cased + suffix
+    }
+
+    /// The lowercased alphanumeric core of a word token (strips surrounding punctuation).
+    private func core(of token: String) -> String {
+        String(token.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+}
