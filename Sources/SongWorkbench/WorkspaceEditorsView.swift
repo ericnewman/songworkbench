@@ -590,6 +590,7 @@ private struct ChordProTabEditor: View {
     @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
+    @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     @State private var errorMessage: String?
     @State private var mode = Mode.preview
 
@@ -631,6 +632,11 @@ private struct ChordProTabEditor: View {
                     .font(.swDisplay(11))
                     .foregroundStyle(Color.swTextSecondary)
                     .help("Show a beat-synced bouncing ball over the current lyric line")
+                Toggle("Beat dots", isOn: $beatDotsEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .help("Show small dots above each lyric line marking the beats")
                 Spacer()
                 if config.supportsMarkReviewed {
                     Button("Mark Reviewed", systemImage: "checkmark.seal") {
@@ -667,7 +673,8 @@ private struct ChordProTabEditor: View {
                             source: previewSource,
                             transpose: config.supportsTranspose ? model.chordProTranspose : 0,
                             highlightContext: highlightContext(style: config.highlightStyle),
-                            beatBall: beatBallInput
+                            beatBall: beatBallInput,
+                            beatDots: beatDotContext
                         )
                     }
                 }
@@ -871,6 +878,34 @@ private struct ChordProTabEditor: View {
             chordTimes: gapChordTimes
         )
     }
+
+    /// Per-line beat data for the "Beat dots" overlay, when the toggle is on. `nil` when
+    /// disabled or there is no beat data.
+    private var beatDotContext: BeatDotContext? {
+        guard beatDotsEnabled else { return nil }
+        let segments =
+            model.lyricSegments
+            .filter { !$0.text.isEmpty }
+            .sorted {
+                if $0.start == $1.start, $0.end == $1.end { return $0.text < $1.text }
+                if $0.start == $1.start { return $0.end < $1.end }
+                return $0.start < $1.start
+            }
+        let bpm = model.estimatedBPM
+        let beatTimes = model.beatTimes
+        guard !segments.isEmpty, !beatTimes.isEmpty || (bpm.map { $0 > 0 } ?? false) else {
+            return nil
+        }
+        return BeatDotContext(segments: segments, beatTimes: beatTimes, bpm: bpm)
+    }
+}
+
+/// Per-line beat positions for the "Beat dots" overlay: the sorted lyric segments plus the
+/// song's beats, mapped per lyric line by ordinal.
+struct BeatDotContext: Equatable {
+    let segments: [TimedLyricSegment]
+    let beatTimes: [TimeInterval]
+    let bpm: Double?
 }
 
 /// Per-frame inputs the App Preview needs to draw the beat-synced bouncing ball over
@@ -898,6 +933,7 @@ private struct ChordProAppPreview: View {
     var transpose: Int = 0
     var highlightContext: ChordProPlaybackHighlightContext?
     var beatBall: BeatBallInput?
+    var beatDots: BeatDotContext?
 
     var body: some View {
         Group {
@@ -920,7 +956,8 @@ private struct ChordProAppPreview: View {
                                             highlight: highlightContext?.highlight(
                                                 forLyricOrdinal: item.lyricOrdinal
                                             ),
-                                            beatBall: beatBallValue(for: item, in: document)
+                                            beatBall: beatBallValue(for: item, in: document),
+                                            beatDots: beatDotValue(for: item)
                                         )
                                         .id(item.offset)
                                     }
@@ -1088,6 +1125,23 @@ private struct ChordProAppPreview: View {
             words: beatBall.words
         )
     }
+
+    /// Per-line beat dots for a lyric line, keyed by ordinal; reuses LineBeatBall's
+    /// word/beat fields so dots land at each beat over the line's words.
+    private func beatDotValue(for item: ChordProPreviewIndexedBlock) -> LineBeatBall? {
+        guard let beatDots, let ordinal = item.lyricOrdinal,
+            beatDots.segments.indices.contains(ordinal)
+        else { return nil }
+        let segment = beatDots.segments[ordinal]
+        return LineBeatBall(
+            currentTime: 0,
+            segmentStart: segment.start,
+            segmentEnd: segment.end,
+            bpm: beatDots.bpm,
+            beatTimes: beatDots.beatTimes,
+            words: segment.words
+        )
+    }
 }
 
 /// The minimal, per-line slice of `BeatBallInput` the line view needs to position the
@@ -1119,6 +1173,7 @@ private struct ChordProPreviewBlockView: View {
     let block: ChordProPreviewBlock
     var highlight: ChordProLinePlaybackHighlight?
     var beatBall: LineBeatBall?
+    var beatDots: LineBeatBall?
 
     var body: some View {
         switch block {
@@ -1143,7 +1198,8 @@ private struct ChordProPreviewBlockView: View {
                 .font(.callout.italic())
                 .foregroundStyle(.secondary)
         case .lyric(let line):
-            ChordProPreviewLineView(line: line, highlight: highlight, beatBall: beatBall)
+            ChordProPreviewLineView(
+                line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots)
         case .directive(let source):
             Text(source)
                 .font(.caption.monospaced())
@@ -1169,9 +1225,17 @@ private struct ChordProPreviewLineView: View {
     let line: ChordProPreviewLine
     var highlight: ChordProLinePlaybackHighlight?
     var beatBall: LineBeatBall?
+    var beatDots: LineBeatBall?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
+            ForEach(Array(beatDotPositions.enumerated()), id: \.offset) { _, x in
+                Circle()
+                    .fill(Color.swTextSecondary.opacity(0.55))
+                    .frame(width: 3.5, height: 3.5)
+                    .position(x: x, y: 4)
+            }
+
             ZStack(alignment: .topLeading) {
                 lyricText
                     .offset(y: line.chords.isEmpty ? 0 : 20)
@@ -1205,6 +1269,19 @@ private struct ChordProPreviewLineView: View {
             height: (line.chords.isEmpty ? 20 : 42) + Self.ballTopReserve,
             alignment: .topLeading
         )
+    }
+
+    /// The x of each beat within this line's time span, for the static beat-dot overlay —
+    /// positioned over the word sung at each beat (same mapping the bouncing ball uses).
+    private var beatDotPositions: [CGFloat] {
+        guard let beatDots, !beatDots.words.isEmpty || !wordCenters.isEmpty else { return [] }
+        let beats = BouncingBall.beats(
+            in: beatDots.segmentStart,
+            beatDots.segmentEnd,
+            beatTimes: beatDots.beatTimes,
+            bpm: beatDots.bpm
+        )
+        return beats.map { wordCenterX(at: $0, beatBall: beatDots) }
     }
 
     /// The ball's center in this line's coordinate space, or `nil` when no ball should
