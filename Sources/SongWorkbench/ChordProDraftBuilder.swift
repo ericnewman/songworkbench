@@ -100,6 +100,18 @@ struct ChordProDraftBuilder: Sendable {
             }
             lines.append(render(segment: segment, chords: segmentChords))
         }
+
+        // Trailing chords after the last lyric line (an outro) belong to no segment;
+        // render them as a chord-only line so no detected chords are dropped.
+        if let lastLyricEnd = lyrics.map(\.end).max() {
+            let outroChords = chords.filter { $0.time >= lastLyricEnd }
+            if !outroChords.isEmpty {
+                lines.append("")
+                lines.append("{comment: Outro}")
+                let outroEnd = (outroChords.map(\.time).max() ?? lastLyricEnd) + 1
+                lines.append(chordOnlyLine(outroChords, start: lastLyricEnd, end: outroEnd))
+            }
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 

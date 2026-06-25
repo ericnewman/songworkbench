@@ -105,6 +105,24 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertEqual(chordLine, "[C#]   [A]  [G#]", document)
     }
 
+    func testTrailingChordsAfterLastLyricRenderAsOutro() {
+        // Chords detected after the final lyric line must not be dropped.
+        let input = ChordProDraftInput(
+            title: "Outro Song",
+            tempo: 120,
+            lyrics: [TimedLyricSegment(start: 0, end: 4, text: "Last line")],
+            chords: [
+                EditableChordEvent(time: 1, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 6, chord: "G", confidence: 0.9),
+                EditableChordEvent(time: 8, chord: "Am", confidence: 0.9),
+            ]
+        )
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(document.contains("{comment: Outro}"), document)
+        XCTAssertTrue(document.contains("[G]"), document)
+        XCTAssertTrue(document.contains("[Am]"), document)
+    }
+
     func testBuildAlignsIncludedChordChangesToLyrics() {
         let input = ChordProDraftInput(
             title: "Test Song",
