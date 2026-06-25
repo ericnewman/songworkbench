@@ -179,6 +179,34 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(grouped[0].words.first?.text, "Grass")
     }
 
+    func testGroupingBreaksAtCapitalizedSegmentLineStartsWithoutAGap() {
+        // Whisper packs words back-to-back (≈0 inter-word gap) but emits one segment per sung
+        // line. The segment line-start onsets must drive the breaks even though the gap-based
+        // capitalization rule can't fire.
+        let tokens = [
+            token("between", 20.12, 20.90),
+            token("my", 20.90, 21.09),
+            token("toes", 21.19, 21.76),
+            token("Smoke", 21.76, 22.30),  // new line, no gap before it
+            token("curls", 22.30, 22.80),
+            token("Laugh", 22.80, 23.30),  // new line, no gap before it
+            token("the", 23.30, 23.70),
+        ]
+        let onsets: Set<TimeInterval> = [20.12, 21.76, 22.80]
+
+        // Without the segment hints the zero-gap stream runs on into one line (the reported bug).
+        XCTAssertEqual(TimedLyricSegmentGrouper.group(tokens: tokens).count, 1)
+
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens, lineStartOnsets: onsets),
+            equal: [
+                ("between my toes", 20.12, 21.76),
+                ("Smoke curls", 21.76, 22.80),
+                ("Laugh the", 22.80, 23.70),
+            ]
+        )
+    }
+
     func testGroupingMergesLowercaseTrailingOrphanIntoItsLine() {
         // A line pushed just over the duration cap strands its last lowercase word ("you.")
         // onto its own line; it must rejoin the line it continues.

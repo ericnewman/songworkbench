@@ -256,7 +256,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // Grouping-version suffix: changes the stage record (so re-analysis
                     // re-groups from the cached raw transcription) without changing the raw
                     // transcription cache key, so no re-transcription is needed.
-                    version: result.engine.engineVersion + "|grouping-6-depad-orphan"
+                    version: result.engine.engineVersion + "|grouping-7-segment-lines"
                 ),
                 modelIdentifier: result.engine.modelName,
                 modelVersion: result.engine.modelVersion,
@@ -272,7 +272,12 @@ struct TranscriptionStage: AnalysisStageRunning {
             // for an opt-in path once a dictionary/language signal can pick the real word.)
             let gatedTokens = TranscriptionSilenceGate.filtered(
                 result.segments.flatMap(\.tokens))
-            let lyrics = TimedLyricSegmentGrouper.group(tokens: gatedTokens)
+            // Respect the transcriber's segment boundaries as line breaks: Whisper segments per
+            // sung line (with ~zero word gaps), so without this its lines run on; Parakeet emits a
+            // single segment, so this is a no-op and its lines still come from the grouping rules.
+            let lyrics = TimedLyricSegmentGrouper.group(
+                tokens: gatedTokens,
+                lineStartOnsets: TimedLyricSegmentGrouper.lineStartOnsets(of: result.segments))
             return AnalysisStageOutcome { document in
                 document.lyrics = lyrics
                 document.lyricReviewState = .draft

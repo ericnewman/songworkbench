@@ -157,8 +157,21 @@ enum TimedLyricSegmentGrouper {
     ) -> [TimedLyricSegment] {
         group(
             tokens: result.segments.flatMap(\.tokens),
-            configuration: configuration
+            configuration: configuration,
+            lineStartOnsets: lineStartOnsets(of: result.segments)
         )
+    }
+
+    /// The onset of the first non-empty token of each transcriber segment. Whisper returns one
+    /// segment per sung line but packs the words with ~zero inter-word gaps, so these onsets are
+    /// the only reliable line breaks for it; the gap-based capitalization rule can't fire. Parakeet
+    /// returns a single segment holding the whole take, so this yields just the first token and
+    /// changes nothing — its lines come from the gap/capitalization rules as before.
+    static func lineStartOnsets(of segments: [TimedTranscriptionSegment]) -> Set<TimeInterval> {
+        Set(
+            segments.compactMap { segment in
+                segment.tokens.first { !normalized($0.text).isEmpty }?.startTime
+            })
     }
 
     /// Re-groups already-segmented lyrics into lines using the current rules, driven by
@@ -187,7 +200,8 @@ enum TimedLyricSegmentGrouper {
 
     static func group(
         tokens: [TimedTranscriptionToken],
-        configuration: TimedLyricGroupingConfiguration = .init()
+        configuration: TimedLyricGroupingConfiguration = .init(),
+        lineStartOnsets: Set<TimeInterval> = []
     ) -> [TimedLyricSegment] {
         let orderedTokens = tokens.enumerated()
             .compactMap { index, token -> (Int, TimedTranscriptionToken)? in
@@ -237,8 +251,14 @@ enum TimedLyricSegmentGrouper {
                     beginsCapitalizedWord(token.text)
                     && gap >= configuration.capitalizedLineStartGap
                     && current.count >= 2
+                // A capitalized word that opens a new transcriber segment is a line start even
+                // with no gap before it (Whisper packs words back-to-back yet segments per line).
+                let segmentLineStart =
+                    lineStartOnsets.contains(token.startTime)
+                    && beginsCapitalizedWord(token.text)
                 if isSentenceEnding(previous.text)
                     || capitalizedLineStart
+                    || segmentLineStart
                     || gap > configuration.maximumGap
                     || duration > configuration.maximumDuration
                     || current.count >= configuration.maximumTokens
