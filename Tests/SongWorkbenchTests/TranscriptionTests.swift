@@ -146,14 +146,66 @@ final class TranscriptionTests: XCTestCase {
             token("five", 4, 5.5),
         ]
 
+        // The caps split the run, then the anti-orphan pass rejoins single lowercase words that
+        // are contiguous with the previous line: "three" (0.1s after "two") rejoins, but "four"
+        // is fenced off by a real 1.6s gap, and "five" (0.6s after "four") rejoins it.
         assertSegments(
             TimedLyricSegmentGrouper.group(tokens: tokens, configuration: configuration),
             equal: [
-                ("one two", 0, 0.9),
-                ("three", 1, 1.4),
-                ("four", 3, 3.4),
-                ("five", 4, 5.5),
+                ("one two three", 0, 1.4),
+                ("four five", 3, 5.5),
             ]
+        )
+    }
+
+    func testGroupingDepadsAnOverlongLeadingWordPreservingTheWord() {
+        // Real Whisper failure mode (from "Flip Flops and Barbeque"): the first word "Grass" is
+        // padded to span the whole 20s instrumental intro before the vocal enters. It must be
+        // re-timed (kept, not dropped) so it rejoins its line and the intro gap reappears.
+        let tokens = [
+            token("Grass", 0.0, 20.0),  // padded across the intro
+            token("between", 20.12, 20.90),
+            token("my", 20.90, 21.09),
+            token("toes", 21.19, 21.76),
+        ]
+
+        let grouped = TimedLyricSegmentGrouper.group(tokens: tokens)
+
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertEqual(grouped[0].text, "Grass between my toes")
+        // "Grass" survives and is re-timed to a normal span just before "between"; the 0–19s
+        // intro gap is restored (the line no longer starts at 0).
+        XCTAssertEqual(grouped[0].start, 19.0, accuracy: 0.001)
+        XCTAssertEqual(grouped[0].words.first?.text, "Grass")
+    }
+
+    func testGroupingMergesLowercaseTrailingOrphanIntoItsLine() {
+        // A line pushed just over the duration cap strands its last lowercase word ("you.")
+        // onto its own line; it must rejoin the line it continues.
+        let configuration = TimedLyricGroupingConfiguration(maximumDuration: 2)
+        let tokens = [
+            token("being", 0.0, 0.5),
+            token("here", 0.6, 1.0),
+            token("with", 1.2, 1.8),
+            token("you.", 2.4, 2.9),  // would orphan: line duration would exceed the 2s cap
+        ]
+
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens, configuration: configuration),
+            equal: [("being here with you.", 0.0, 2.9)]
+        )
+    }
+
+    func testGroupingKeepsACapitalizedOneWordLineSeparate() {
+        // The anti-orphan merge must not swallow a legitimate capitalized one-word line.
+        let tokens = [
+            token("go.", 0.0, 0.4),
+            token("Stop", 1.0, 1.6),  // capitalized new line after a gap
+        ]
+
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("go.", 0.0, 0.4), ("Stop", 1.0, 1.6)]
         )
     }
 
@@ -483,51 +535,6 @@ final class TranscriptionTests: XCTestCase {
         let filtered = TranscriptionSilenceGate.filtered(tokens)
 
         XCTAssertEqual(filtered, tokens)
-    }
-
-    func testSilenceGateDropsLeadingStrayAtSongStart() {
-        // Real Whisper failure mode (from "Flip Flops and Barbeque"): a near-zero-confidence word
-        // at 0.0 padded to a 20-second span over the instrumental intro, before the first real
-        // line. The song's start counts as silence (so the stray is isolated), and a lone token's
-        // padded span must not shield it via the duration guard. It is dropped, restoring the intro.
-        let tokens = [
-            token("Grass", 0.0, 20.0, confidence: 0.045),  // leading stray padded over the intro
-            token("between", 20.12, 20.90, confidence: 0.70),
-            token("my", 20.90, 21.09, confidence: 0.99),
-            token("toes", 21.19, 21.76, confidence: 0.77),
-        ]
-
-        let filtered = TranscriptionSilenceGate.filtered(tokens)
-
-        XCTAssertEqual(filtered.map(\.text), ["between", "my", "toes"])
-        XCTAssertEqual(filtered.first?.startTime, 20.12)
-    }
-
-    func testSilenceGateKeepsLongHeldNoteWithHighConfidence() {
-        // A confidently sung sustained note (long span, high confidence) is real and must survive
-        // the padded-stray pre-filter, which only targets low-confidence long tokens.
-        let tokens = [
-            token("Ohhh", 0.0, 8.0, confidence: 0.93),  // long but confident: a held note
-            token("Goodbye", 20.0, 20.4, confidence: 0.95),
-            token("now", 20.5, 20.9, confidence: 0.95),
-        ]
-
-        XCTAssertEqual(TranscriptionSilenceGate.filtered(tokens), tokens)
-    }
-
-    func testSilenceGateKeepsRealOpeningLineAtSongStart() {
-        // A multi-word opening line at 0.0 followed by a gap is a real line (exceeds
-        // maxIslandTokens), so the song-start boundary does not cause it to be trimmed.
-        let tokens = [
-            token("Grass", 0.0, 0.4, confidence: 0.2),
-            token("between", 0.5, 0.9, confidence: 0.2),
-            token("my", 1.0, 1.2, confidence: 0.2),
-            token("toes", 1.3, 1.7, confidence: 0.2),
-            token("warm", 1.8, 2.2, confidence: 0.2),
-            token("Goodbye", 20.0, 20.4, confidence: 0.95),
-        ]
-
-        XCTAssertEqual(TranscriptionSilenceGate.filtered(tokens), tokens)
     }
 
     func testSilenceGatePassesThroughUnchangedWithNoQualifyingIslands() {

@@ -19,10 +19,12 @@ final class AppModelTests: XCTestCase {
         let model = AppModel(store: store)
 
         model.importSongs(from: [importedURL])
-        let expectedIDs = Set([Song(url: importedURL).id, Song(url: restoredURL).id])
-        try await waitUntil { Set(model.songs.map(\.id)) == expectedIDs }
+        try await Task.sleep(for: .milliseconds(250))
 
-        XCTAssertEqual(Set(model.songs.map(\.id)), expectedIDs)
+        XCTAssertEqual(
+            Set(model.songs.map(\.id)),
+            Set([Song(url: importedURL).id, Song(url: restoredURL).id])
+        )
     }
 
     func testBassNoteSourcePrefersDetectedBassNotes() async throws {
@@ -31,7 +33,7 @@ final class AppModelTests: XCTestCase {
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         await model.restoreProjects()
         model.importSongs(from: [url])
-        try await waitUntil { !model.songs.isEmpty }
+        try await Task.sleep(for: .milliseconds(120))
         let song = try XCTUnwrap(model.songs.first)
         model.select(song)
 
@@ -67,10 +69,7 @@ final class AppModelTests: XCTestCase {
         }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [firstURL, secondURL])
-        try await waitUntil {
-            model.songs.contains { $0.url == firstURL }
-                && model.songs.contains { $0.url == secondURL }
-        }
+        try await Task.sleep(for: .milliseconds(120))
         let first = try XCTUnwrap(model.songs.first { $0.url == firstURL })
         let second = try XCTUnwrap(model.songs.first { $0.url == secondURL })
 
@@ -89,10 +88,7 @@ final class AppModelTests: XCTestCase {
         }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [firstURL, secondURL])
-        try await waitUntil {
-            model.songs.contains { $0.url == firstURL }
-                && model.songs.contains { $0.url == secondURL }
-        }
+        try await Task.sleep(for: .milliseconds(120))
         let first = try XCTUnwrap(model.songs.first { $0.url == firstURL })
         let second = try XCTUnwrap(model.songs.first { $0.url == secondURL })
 
@@ -124,22 +120,14 @@ final class AppModelTests: XCTestCase {
         model.select(first)
 
         model.removeSong(first)
-
-        // Persistence is debounced (~250ms) then saved asynchronously. Poll for the
-        // result instead of sleeping a fixed interval: a fixed 350ms sleep raced the
-        // debounce and failed intermittently on the slower CI runner (lastSavedDocument
-        // was still nil at XCTUnwrap). The loop exits as soon as the save is observed.
-        var lastSavedDocument: ProjectLibraryDocument?
-        for _ in 0..<100 where lastSavedDocument == nil {
-            try await Task.sleep(for: .milliseconds(50))
-            lastSavedDocument = await store.lastSavedDocument()
-        }
-        let saved = try XCTUnwrap(lastSavedDocument)
+        try await Task.sleep(for: .milliseconds(350))
 
         XCTAssertFalse(model.songs.contains(first))
         XCTAssertEqual(model.selectedSongID, second.id)
         XCTAssertEqual(model.playback.loadedURL.map { Song(url: $0).id }, second.id)
         XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        let lastSavedDocument = await store.lastSavedDocument()
+        let saved = try XCTUnwrap(lastSavedDocument)
         XCTAssertFalse(saved.songs.contains { Song(url: $0.resolvedURL()).id == first.id })
         XCTAssertTrue(saved.songs.contains { Song(url: $0.resolvedURL()).id == second.id })
     }
@@ -172,7 +160,7 @@ final class AppModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [url])
-        try await waitUntil { !model.songs.isEmpty }
+        try await Task.sleep(for: .milliseconds(120))
 
         model.markLyricsReviewed()
         XCTAssertEqual(model.lyricReviewState, .reviewed)
@@ -193,7 +181,7 @@ final class AppModelTests: XCTestCase {
         }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [songURL])
-        try await waitUntil { !model.songs.isEmpty }
+        try await Task.sleep(for: .milliseconds(120))
         let song = try XCTUnwrap(model.songs.first)
         model.select(song)
         try model.importStems(from: stemDirectory)
@@ -358,22 +346,6 @@ final class AppModelTests: XCTestCase {
             model.analysisStageRecords[.separation]?.errorMessage,
             "Saved stems were created by an older separator. Rerun Stems."
         )
-    }
-
-    /// Polls `condition` until it is true or `timeout` elapses, sleeping briefly between
-    /// checks. Replaces fixed `Task.sleep` waits that raced async work (importSongs,
-    /// persistence) and failed intermittently on the slower CI runner: the poll exits as
-    /// soon as the work is observed locally, yet tolerates a slow runner up to `timeout`.
-    private func waitUntil(
-        timeout: Duration = .seconds(5),
-        pollInterval: Duration = .milliseconds(20),
-        _ condition: () -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            if ContinuousClock.now >= deadline { return }
-            try await Task.sleep(for: pollInterval)
-        }
     }
 
     private func makeSilentWAV(frameCount: AVAudioFrameCount = 800) throws -> URL {

@@ -123,17 +123,30 @@ struct TimedLyricGroupingConfiguration: Equatable, Sendable {
     /// `maximumDuration` / `maximumTokens` bounds are generous safety nets so that
     /// line breaks are driven primarily by capitalization and sentence punctuation.
     let capitalizedLineStartGap: TimeInterval
+    /// A single token whose span exceeds this many seconds is "padded": the transcriber
+    /// (notably Whisper) stretches the first word after a long silence to span the whole
+    /// gap, e.g. "Grass" reported at 0.0–20.0 when the vocal actually enters ~20s. Such a
+    /// token is re-timed to `depaddedWordDuration` anchored at its (reliable) end, so the
+    /// word keeps its true onset, the instrumental gap before it reappears, and it no longer
+    /// breaks onto its own line. The word itself is always preserved.
+    let maximumWordDuration: TimeInterval
+    /// The span a padded token is trimmed back to (anchored at its end time).
+    let depaddedWordDuration: TimeInterval
 
     init(
         maximumGap: TimeInterval = 3,
         maximumDuration: TimeInterval = 15,
         maximumTokens: Int = 32,
-        capitalizedLineStartGap: TimeInterval = 0.3
+        capitalizedLineStartGap: TimeInterval = 0.3,
+        maximumWordDuration: TimeInterval = 5,
+        depaddedWordDuration: TimeInterval = 1
     ) {
         self.maximumGap = max(maximumGap, 0)
         self.maximumDuration = max(maximumDuration, 0)
         self.maximumTokens = max(maximumTokens, 1)
         self.capitalizedLineStartGap = max(capitalizedLineStartGap, 0)
+        self.maximumWordDuration = max(maximumWordDuration, 0)
+        self.depaddedWordDuration = max(depaddedWordDuration, 0)
     }
 }
 
@@ -180,12 +193,19 @@ enum TimedLyricSegmentGrouper {
             .compactMap { index, token -> (Int, TimedTranscriptionToken)? in
                 let text = normalized(token.text)
                 guard !text.isEmpty else { return nil }
+                let end = max(token.endTime, token.startTime)
+                // De-pad an implausibly long token (see `maximumWordDuration`): re-time it to a
+                // normal word length anchored at its end so its true onset is restored.
+                let start =
+                    end - token.startTime > configuration.maximumWordDuration
+                    ? max(end - configuration.depaddedWordDuration, 0)
+                    : token.startTime
                 return (
                     index,
                     TimedTranscriptionToken(
                         text: text,
-                        startTime: token.startTime,
-                        endTime: max(token.endTime, token.startTime),
+                        startTime: start,
+                        endTime: end,
                         confidence: token.confidence
                     )
                 )
@@ -231,7 +251,7 @@ enum TimedLyricSegmentGrouper {
         }
         groups.append(current)
 
-        return groups.map { tokens in
+        return mergedTrailingOrphans(groups, configuration: configuration).map { tokens in
             let layout = renderedLayout(tokens.map(\.text))
             let text = layout.text
             let start = tokens[0].startTime
@@ -285,6 +305,33 @@ enum TimedLyricSegmentGrouper {
             flush(throughTokenIndex: tokens.count - 1)
         }
         return words
+    }
+
+    /// Merges a one-word continuation line back into the previous line. The duration/token
+    /// safety caps can strand a single trailing lowercase word — e.g. "…being here with" |
+    /// "you." — onto its own line. A lowercase word contiguous with the previous line (small
+    /// gap, no sentence break between) is a continuation, not a new line, so it rejoins even if
+    /// that nudges the line slightly past a safety cap. Capitalized one-word lines are legitimate
+    /// line starts and are left untouched.
+    private static func mergedTrailingOrphans(
+        _ groups: [[TimedTranscriptionToken]],
+        configuration: TimedLyricGroupingConfiguration
+    ) -> [[TimedTranscriptionToken]] {
+        var result: [[TimedTranscriptionToken]] = []
+        for group in groups {
+            if group.count == 1,
+                let orphan = group.first,
+                !beginsCapitalizedWord(orphan.text),
+                let previousLast = result.last?.last,
+                !isSentenceEnding(previousLast.text),
+                orphan.startTime - previousLast.endTime <= configuration.maximumGap
+            {
+                result[result.count - 1].append(contentsOf: group)
+            } else {
+                result.append(group)
+            }
+        }
+        return result
     }
 
     private static func normalized(_ text: String) -> String {
@@ -720,26 +767,17 @@ enum TranscriptionSilenceGate {
         /// An island is eligible only if its total sung duration (sum of token spans) is at most
         /// this many seconds.
         let maxIslandDuration: TimeInterval
-        /// A single low-confidence token whose span exceeds this many seconds is treated as a
-        /// "padded stray" and dropped outright, independent of the island logic. Whisper pads the
-        /// first word after a silence to the next vocal onset, so a hallucinated word over an
-        /// instrumental section can report a span of many seconds (e.g. a 20s "Grass" at 0.0 with
-        /// 0.045 confidence). No real word is sung this long, and the padding hides the surrounding
-        /// silence from the gap-based island split, so it must be caught directly.
-        let maxPlausibleWordDuration: TimeInterval
 
         init(
             isolationSilence: TimeInterval = 2.0,
             confidenceThreshold: Float = 0.5,
             maxIslandTokens: Int = 4,
-            maxIslandDuration: TimeInterval = 1.5,
-            maxPlausibleWordDuration: TimeInterval = 5.0
+            maxIslandDuration: TimeInterval = 1.5
         ) {
             self.isolationSilence = max(isolationSilence, 0)
             self.confidenceThreshold = max(confidenceThreshold, 0)
             self.maxIslandTokens = max(maxIslandTokens, 1)
             self.maxIslandDuration = max(maxIslandDuration, 0)
-            self.maxPlausibleWordDuration = max(maxPlausibleWordDuration, 0)
         }
     }
 
@@ -751,31 +789,13 @@ enum TranscriptionSilenceGate {
     ) -> [TimedTranscriptionToken] {
         guard !tokens.isEmpty else { return tokens }
 
-        // Pre-pass: drop "padded strays" — a lyric token sustained implausibly long with low
-        // confidence (Whisper padding a hallucinated word over an instrumental section). Its long
-        // span hides the surrounding silence from the gap-based island split below, so it must be
-        // removed first. Whitespace tokens are never strays.
-        let paddedStrayIndices = Set(
-            tokens.enumerated().compactMap { offset, token -> Int? in
-                guard !isWhitespace(token.text),
-                    let confidence = token.confidence,
-                    confidence < configuration.confidenceThreshold,
-                    token.endTime - token.startTime > configuration.maxPlausibleWordDuration
-                else { return nil }
-                return offset
+        // Sort by startTime (stably, by original index) without disturbing equal-time tokens.
+        let ordered = tokens.enumerated().sorted {
+            if $0.element.startTime != $1.element.startTime {
+                return $0.element.startTime < $1.element.startTime
             }
-        )
-
-        // Sort the non-stray tokens by startTime (stably, by original index). Padded strays are
-        // excluded so the island split sees the true silence they were masking.
-        let ordered = tokens.enumerated()
-            .filter { !paddedStrayIndices.contains($0.offset) }
-            .sorted {
-                if $0.element.startTime != $1.element.startTime {
-                    return $0.element.startTime < $1.element.startTime
-                }
-                return $0.offset < $1.offset
-            }
+            return $0.offset < $1.offset
+        }
 
         // Whitespace-only tokens shouldn't define or split islands, but their time spans still
         // count toward gap math. Split the ordered tokens into islands at every gap >= the
@@ -784,7 +804,6 @@ enum TranscriptionSilenceGate {
             ordered: ordered,
             configuration: configuration
         )
-        .union(paddedStrayIndices)
         guard !droppedOriginalIndices.isEmpty else { return tokens }
 
         return tokens.enumerated()
@@ -814,20 +833,20 @@ enum TranscriptionSilenceGate {
         }
         if !current.isEmpty { islands.append(current) }
 
-        // The song's start and end are treated as fully isolating silence boundaries (see the
-        // preceding/following silence comments below).
+        // The song spans time 0 to the latest token end. An island at the very start/end is
+        // bounded by silence on the outer side only if its distance to the boundary is also >=
+        // the isolation silence.
+        let songEnd = ordered.map(\.element.endTime).max() ?? 0
+
         var dropped = Set<Int>()
         for index in islands.indices {
             let island = islands[index]
 
             // Outer silence on the preceding side: a real gap to the prior island, or — for the
-            // first island — the song's start. Nothing is sung before the song begins, so the
-            // start boundary counts as fully isolating silence; this lets a leading stray (e.g.
-            // Whisper hallucinating a word at 0.0 before the first real line) be dropped. Real
-            // opening lines survive via the shouldDrop guards (low-confidence AND short).
+            // first island — the distance from time 0 to its first token's start.
             let precedingSilence: TimeInterval
             if index == 0 {
-                precedingSilence = configuration.isolationSilence
+                precedingSilence = (island.first?.element.startTime ?? 0) - 0
             } else {
                 precedingSilence =
                     (island.first?.element.startTime ?? 0)
@@ -835,11 +854,12 @@ enum TranscriptionSilenceGate {
             }
 
             // Following silence: a real gap to the next island, or — for the last island — the
-            // song's end, treated symmetrically as fully isolating silence so a trailing stray can
-            // be dropped.
+            // distance from its last token's end to the song end (always 0, so the song end never
+            // counts as isolating silence; an island ending the song is kept unless it is also a
+            // first island isolated from time 0).
             let followingSilence: TimeInterval
             if index == islands.count - 1 {
-                followingSilence = configuration.isolationSilence
+                followingSilence = songEnd - (island.last?.element.endTime ?? 0)
             } else {
                 followingSilence =
                     (islands[index + 1].first?.element.startTime ?? 0)
