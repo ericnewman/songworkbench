@@ -98,6 +98,33 @@ final class AudioAnalysisTests: XCTestCase {
         )
     }
 
+    func testBassInformedRefinerRerootsSharedNoteConfusion() {
+        // Cm (C-Eb-G) detected, but the bass plays Ab → Ab major (Ab-C-Eb), which shares
+        // C+Eb with Cm. The bass is the unambiguous root, so it wins.
+        let abMidi = 56  // Ab3
+        let events = [EditableChordEvent(time: 3.0, chord: "Cm", confidence: 0.8)]
+        let bass = [BassNoteObservation(timestamp: 2.9, midiNote: abMidi, confidence: 0.9)]
+
+        let refined = BassInformedChordRefiner().refine(events, bassNotes: bass)
+        XCTAssertEqual(refined.map(\.chord), ["Ab"])
+    }
+
+    func testBassInformedRefinerKeepsChordWhenBassMatchesRootOrIsChordTone() {
+        let refiner = BassInformedChordRefiner()
+        // Bass = root: unchanged.
+        let cWithCBass = refiner.refine(
+            [EditableChordEvent(time: 0, chord: "C", confidence: 0.8)],
+            bassNotes: [BassNoteObservation(timestamp: 0, midiNote: 48, confidence: 0.9)]  // C
+        )
+        XCTAssertEqual(cWithCBass.map(\.chord), ["C"])
+        // Bass = the third (E under C major) is an inversion, not a re-root: keep C.
+        let cWithEBass = refiner.refine(
+            [EditableChordEvent(time: 0, chord: "C", confidence: 0.8)],
+            bassNotes: [BassNoteObservation(timestamp: 0, midiNote: 52, confidence: 0.9)]  // E
+        )
+        XCTAssertEqual(cWithEBass.map(\.chord), ["C"])
+    }
+
     func testPipelineClassifiesSyntheticAMinorChord() throws {
         let sampleRate = 8_192.0
         let configuration = try AudioAnalysisConfiguration(

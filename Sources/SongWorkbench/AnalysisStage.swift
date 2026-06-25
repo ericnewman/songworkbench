@@ -363,11 +363,15 @@ struct HarmonyStage: AnalysisStageRunning {
             let beatTimes = result.beat?.beatTimes ?? []
             let estimatedKey: MusicalKey? =
                 result.estimatedKey ?? MusicalKeyEstimator().estimate(from: result.chords)
-            let chords = ChordEventReducer().events(from: result)
             // Additive: detect the played bass line from the BASS stem (runs
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
             let detectedBassNotes = detectBassNotes(context)
+            // Re-root shared-note chord confusions (e.g. Cm vs Ab) using the bass line.
+            let chords = BassInformedChordRefiner().refine(
+                ChordEventReducer().events(from: result),
+                bassNotes: detectedBassNotes ?? []
+            )
             return AnalysisStageOutcome { document in
                 document.estimatedBPM = estimatedBPM
                 document.beatTimes = beatTimes

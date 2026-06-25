@@ -144,6 +144,72 @@ struct ChordAnalysisPipeline: Sendable {
     }
 }
 
+/// Re-roots chord events using the detected bass line. Triads that share two notes (e.g.
+/// Ab major and C minor share C+Eb) are easily confused by chroma matching; the bass note
+/// is the unambiguous root. When a chord shares two notes with a triad rooted at the bass
+/// (and the bass isn't already one of the chord's notes — i.e. it's not an inversion), the
+/// bass-rooted chord wins. A no-op when there are no bass notes.
+struct BassInformedChordRefiner: Sendable {
+    private static let rootNames = [
+        "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
+    ]
+
+    func refine(
+        _ events: [EditableChordEvent],
+        bassNotes: [BassNoteObservation]
+    ) -> [EditableChordEvent] {
+        guard !bassNotes.isEmpty else { return events }
+        let sortedBass = bassNotes.sorted { $0.timestamp < $1.timestamp }
+        return events.map { event in
+            guard
+                let parsed = parse(event.chord),
+                let bass = bassPitchClass(at: event.time, in: sortedBass),
+                bass != parsed.root
+            else { return event }
+            let detectedTones = triad(root: parsed.root, quality: parsed.quality)
+            // The bass is already a chord tone: it's an inversion, keep the chord.
+            if detectedTones.contains(bass) { return event }
+            for quality in [ChordQuality.major, .minor]
+            where triad(root: bass, quality: quality).intersection(detectedTones).count >= 2 {
+                return EditableChordEvent(
+                    id: event.id,
+                    time: event.time,
+                    chord: name(root: bass, quality: quality),
+                    confidence: event.confidence
+                )
+            }
+            return event
+        }
+    }
+
+    /// The bass pitch class sounding at `time`: the last onset at or before it, else the
+    /// first available.
+    private func bassPitchClass(at time: TimeInterval, in sortedBass: [BassNoteObservation])
+        -> Int?
+    {
+        let chosen = sortedBass.last { $0.timestamp <= time + 0.1 } ?? sortedBass.first
+        guard let chosen else { return nil }
+        return ((chosen.midiNote % 12) + 12) % 12
+    }
+
+    private func parse(_ chord: String) -> (root: Int, quality: ChordQuality)? {
+        var name = chord
+        let quality: ChordQuality = name.hasSuffix("m") ? .minor : .major
+        if quality == .minor { name.removeLast() }
+        guard let root = Self.rootNames.firstIndex(of: name) else { return nil }
+        return (root, quality)
+    }
+
+    private func triad(root: Int, quality: ChordQuality) -> Set<Int> {
+        let third = quality == .major ? 4 : 3
+        return [root % 12, (root + third) % 12, (root + 7) % 12]
+    }
+
+    private func name(root: Int, quality: ChordQuality) -> String {
+        Self.rootNames[root % 12] + (quality == .minor ? "m" : "")
+    }
+}
+
 /// Fixed-size buffer of optional observations written from parallel chunks. Each index is written
 /// exactly once by exactly one chunk, so the unsynchronized element writes do not race.
 private final class ResultBuffer: @unchecked Sendable {

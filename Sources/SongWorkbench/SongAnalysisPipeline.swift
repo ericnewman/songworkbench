@@ -19,8 +19,8 @@ protocol SongHarmonyAnalyzing: Sendable {
 
 extension AudioFileAnalysisService: SongHarmonyAnalyzing {
     nonisolated var metadata: AnalysisEngineVersion {
-        // v3: root-weighted chord classification (disambiguates shared-note triads).
-        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "3")
+        // v4: bass-informed chord re-rooting (uses the detected bass line as the root).
+        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "4")
     }
 }
 
