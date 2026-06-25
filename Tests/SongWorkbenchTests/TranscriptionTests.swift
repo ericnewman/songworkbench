@@ -271,6 +271,32 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testGroupingBreaksAtCommasWithoutSegmentStructure() {
+        // Parakeet returns one segment (no line-start onsets) but punctuates its run-on text with
+        // commas at the sung-line ends — so break there to avoid one giant line.
+        let tokens = [
+            token("Grab", 0.0, 0.3), token("a", 0.3, 0.5), token("chair,", 0.5, 0.9),
+            token("grab", 1.0, 1.3), token("a", 1.3, 1.5), token("grin", 1.5, 1.9),
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("Grab a chair,", 0.0, 0.9), ("grab a grin", 1.0, 1.9)]
+        )
+    }
+
+    func testGroupingDoesNotBreakAtMidLineCommaWhenSegmentStructurePresent() {
+        // Whisper segments per line, so a mid-line comma must NOT split the line.
+        let tokens = [
+            token("Grab", 0.0, 0.3), token("a", 0.3, 0.5), token("chair,", 0.5, 0.9),
+            token("grab", 1.0, 1.3), token("a", 1.3, 1.5), token("grin", 1.5, 1.9),
+        ]
+        let onsets: Set<TimeInterval> = [0.0, 5.0]  // 2+ onsets => segment structure present
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens, lineStartOnsets: onsets),
+            equal: [("Grab a chair, grab a grin", 0.0, 1.9)]
+        )
+    }
+
     func testGroupingMergesLeadingCapitalizedWordIntoLowercaseContinuation() {
         // "Friday" then a long gap, then "night is coming" (lowercase continuation): the transcriber
         // split a single line after its first word. They rejoin.

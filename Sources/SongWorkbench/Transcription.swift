@@ -244,6 +244,12 @@ enum TimedLyricSegmentGrouper {
 
         guard !orderedTokens.isEmpty else { return [] }
 
+        // When the transcriber provides no line structure (Parakeet returns one segment for the
+        // whole take, so there are 0–1 line-start onsets), fall back to breaking at commas: its
+        // run-on text punctuates the sung lines with commas. Engines that DO segment per line
+        // (Whisper, many onsets) keep their structure and are not split at mid-line commas.
+        let hasSegmentStructure = lineStartOnsets.count >= 2
+
         var groups: [[TimedTranscriptionToken]] = []
         var current: [TimedTranscriptionToken] = []
 
@@ -263,9 +269,13 @@ enum TimedLyricSegmentGrouper {
                 let segmentLineStart =
                     lineStartOnsets.contains(token.startTime)
                     && beginsCapitalizedWord(token.text)
+                // Comma-delimited line end, only when there's no segment structure to rely on.
+                let commaLineEnd =
+                    !hasSegmentStructure && current.count >= 2 && endsWithComma(previous.text)
                 if isSentenceEnding(previous.text)
                     || capitalizedLineStart
                     || segmentLineStart
+                    || commaLineEnd
                     || gap > configuration.maximumGap
                     || duration > configuration.maximumDuration
                     || current.count >= configuration.maximumTokens
@@ -438,6 +448,13 @@ enum TimedLyricSegmentGrouper {
         let closingCharacters: Set<Character> = ["\"", "'", ")", "]", "}"]
         let finalContentCharacter = text.reversed().first { !closingCharacters.contains($0) }
         return finalContentCharacter.map { ".!?".contains($0) } ?? false
+    }
+
+    /// Whether the token ends a comma-delimited clause (ignoring trailing quotes/brackets).
+    private static func endsWithComma(_ text: String) -> Bool {
+        let closingCharacters: Set<Character> = ["\"", "'", ")", "]", "}"]
+        let finalContentCharacter = text.reversed().first { !closingCharacters.contains($0) }
+        return finalContentCharacter == ","
     }
 
     /// The rendered segment text plus, per token, the half-open Character-index range it
