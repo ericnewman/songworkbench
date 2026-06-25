@@ -403,6 +403,106 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(corrected[2].words.last?.text, "Bruise,")
     }
 
+    // MARK: - TranscriptionSilenceGate
+
+    func testSilenceGateDropsSingleLowConfidenceWordIsolatedInSilence() {
+        // A real opening line, a long instrumental gap, one stray low-confidence word alone in
+        // that gap, another long gap, then a real closing line. The stray word is dropped.
+        let tokens = [
+            token("Hello", 0.0, 0.4, confidence: 0.95),
+            token("world", 0.5, 0.9, confidence: 0.95),
+            token("uh", 10.0, 10.3, confidence: 0.2),  // isolated low-confidence stray
+            token("Goodbye", 20.0, 20.4, confidence: 0.95),
+            token("now", 20.5, 20.9, confidence: 0.95),
+        ]
+
+        let filtered = TranscriptionSilenceGate.filtered(tokens)
+
+        XCTAssertEqual(
+            filtered.map(\.text),
+            ["Hello", "world", "Goodbye", "now"]
+        )
+    }
+
+    func testSilenceGateKeepsRealMultiWordLineEvenIfLowConfidence() {
+        // A multi-word line whose words sit close together (no internal isolating silence) is one
+        // island. With more than maxIslandTokens words it is kept even though all are low conf.
+        let tokens = [
+            token("Hello", 0.0, 0.4, confidence: 0.95),
+            token("there", 0.5, 0.9, confidence: 0.95),
+            token("whisper", 10.0, 10.3, confidence: 0.2),
+            token("these", 10.4, 10.7, confidence: 0.2),
+            token("quiet", 10.8, 11.1, confidence: 0.2),
+            token("little", 11.2, 11.5, confidence: 0.2),
+            token("words", 11.6, 11.9, confidence: 0.2),
+            token("Goodbye", 20.0, 20.4, confidence: 0.95),
+        ]
+
+        let filtered = TranscriptionSilenceGate.filtered(tokens)
+
+        XCTAssertEqual(filtered, tokens)
+    }
+
+    func testSilenceGateKeepsLowConfidenceWordAdjacentToHighConfidenceLine() {
+        // The low-confidence word sits a small gap (0.1s) after a high-confidence line, so it is
+        // part of that island — not isolated — and is kept.
+        let tokens = [
+            token("Hello", 10.0, 10.4, confidence: 0.95),
+            token("world", 10.5, 10.9, confidence: 0.95),
+            token("hmm", 11.0, 11.3, confidence: 0.2),  // small gap: not isolated
+        ]
+
+        let filtered = TranscriptionSilenceGate.filtered(tokens)
+
+        XCTAssertEqual(filtered, tokens)
+    }
+
+    func testSilenceGateKeepsIslandContainingNilConfidenceToken() {
+        // An isolated short island whose lone token has nil confidence could be a real word, so
+        // it is kept.
+        let tokens = [
+            token("Hello", 0.0, 0.4, confidence: 0.95),
+            token("mystery", 10.0, 10.3, confidence: nil),  // isolated but nil confidence
+            token("Goodbye", 20.0, 20.4, confidence: 0.95),
+        ]
+
+        let filtered = TranscriptionSilenceGate.filtered(tokens)
+
+        XCTAssertEqual(filtered, tokens)
+    }
+
+    func testSilenceGateKeepsHighConfidenceIsolatedWord() {
+        // A confidently transcribed word alone in a gap is a real lyric (e.g. a held note) and is
+        // kept.
+        let tokens = [
+            token("Hello", 0.0, 0.4, confidence: 0.95),
+            token("yeah", 10.0, 10.3, confidence: 0.95),  // isolated but high confidence
+            token("Goodbye", 20.0, 20.4, confidence: 0.95),
+        ]
+
+        let filtered = TranscriptionSilenceGate.filtered(tokens)
+
+        XCTAssertEqual(filtered, tokens)
+    }
+
+    func testSilenceGatePassesThroughUnchangedWithNoQualifyingIslands() {
+        // A normal continuous line with no isolated low-confidence strays is returned identically.
+        let tokens = [
+            token("just", 0.0, 0.3, confidence: 0.4),
+            token("good", 0.4, 0.7, confidence: 0.4),
+            token("friends", 0.8, 1.2, confidence: 0.4),
+            token("and", 1.3, 1.5, confidence: 0.4),
+            token("a", 1.6, 1.7, confidence: 0.4),
+            token("beer", 1.8, 2.2, confidence: 0.4),
+        ]
+
+        XCTAssertEqual(TranscriptionSilenceGate.filtered(tokens), tokens)
+        // Idempotent on its own output.
+        let once = TranscriptionSilenceGate.filtered(tokens)
+        XCTAssertEqual(TranscriptionSilenceGate.filtered(once), once)
+        XCTAssertTrue(TranscriptionSilenceGate.filtered([]).isEmpty)
+    }
+
     /// Builds a single lyric line (one segment) from a phrase, with real per-word timings and
     /// `characterRange`s produced by the production grouper. Tokens get small increasing
     /// timestamps so they stay in one group.

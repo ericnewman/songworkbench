@@ -691,3 +691,175 @@ struct RepeatedLyricCorrector: Sendable {
         String(token.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
     }
 }
+
+/// Drops stray, low-confidence tokens that sit isolated in a long silence, restoring the
+/// instrumental/intro/outro gaps that the ChordPro chart renders.
+///
+/// Some transcription engines hallucinate a stray low-confidence word during an instrumental
+/// or silent section. A single mis-heard word dropped into a 10-second instrumental break fills
+/// the gap and erases the section. This gate removes such tokens — but only when they are
+/// *clearly* spurious, never when they could be a real (if quietly sung) lyric.
+///
+/// The gate is deliberately conservative. It only considers "islands": maximal runs of tokens
+/// fenced off from their neighbours (and, at the song edges, from the song boundary) by a long
+/// silence on BOTH sides. An island is dropped only when EVERY one of its tokens is low
+/// confidence (and none has nil confidence), the island is short (few tokens), and its total sung
+/// duration is small. Any nil-confidence token, any high-confidence token, a longer run, or a
+/// token that isn't isolated keeps the whole island — so real lyric lines are never removed.
+/// Applying the gate twice changes nothing.
+enum TranscriptionSilenceGate {
+    struct Configuration: Equatable, Sendable {
+        /// Minimum silence (seconds) that must fence an island on BOTH sides for it to be
+        /// eligible for dropping. At the song's very start/end the distance to time 0 / the last
+        /// token's end is the silence on that side.
+        let isolationSilence: TimeInterval
+        /// An island is eligible only if every token's confidence is below this threshold.
+        let confidenceThreshold: Float
+        /// An island is eligible only if it has at most this many tokens.
+        let maxIslandTokens: Int
+        /// An island is eligible only if its total sung duration (sum of token spans) is at most
+        /// this many seconds.
+        let maxIslandDuration: TimeInterval
+
+        init(
+            isolationSilence: TimeInterval = 2.0,
+            confidenceThreshold: Float = 0.5,
+            maxIslandTokens: Int = 4,
+            maxIslandDuration: TimeInterval = 1.5
+        ) {
+            self.isolationSilence = max(isolationSilence, 0)
+            self.confidenceThreshold = max(confidenceThreshold, 0)
+            self.maxIslandTokens = max(maxIslandTokens, 1)
+            self.maxIslandDuration = max(maxIslandDuration, 0)
+        }
+    }
+
+    /// Filters the flattened, time-sorted tokens (the `result.segments.flatMap(\.tokens)`
+    /// ordering is the input contract), returning the survivors in their original relative order.
+    static func filtered(
+        _ tokens: [TimedTranscriptionToken],
+        configuration: Configuration = .init()
+    ) -> [TimedTranscriptionToken] {
+        guard !tokens.isEmpty else { return tokens }
+
+        // Sort by startTime (stably, by original index) without disturbing equal-time tokens.
+        let ordered = tokens.enumerated().sorted {
+            if $0.element.startTime != $1.element.startTime {
+                return $0.element.startTime < $1.element.startTime
+            }
+            return $0.offset < $1.offset
+        }
+
+        // Whitespace-only tokens shouldn't define or split islands, but their time spans still
+        // count toward gap math. Split the ordered tokens into islands at every gap >= the
+        // isolation silence, then decide per island whether to drop it.
+        let droppedOriginalIndices = droppedIndices(
+            ordered: ordered,
+            configuration: configuration
+        )
+        guard !droppedOriginalIndices.isEmpty else { return tokens }
+
+        return tokens.enumerated()
+            .filter { !droppedOriginalIndices.contains($0.offset) }
+            .map(\.element)
+    }
+
+    /// The set of ORIGINAL token indices to drop. An entry in `ordered` is `(offset, element)`
+    /// where `offset` is the index into the caller's array.
+    private static func droppedIndices(
+        ordered: [(offset: Int, element: TimedTranscriptionToken)],
+        configuration: Configuration
+    ) -> Set<Int> {
+        // Group into islands: a new island starts whenever the gap from the previous token's end
+        // to this token's start is >= the isolation silence.
+        var islands: [[(offset: Int, element: TimedTranscriptionToken)]] = []
+        var current: [(offset: Int, element: TimedTranscriptionToken)] = []
+        for entry in ordered {
+            if let previous = current.last {
+                let gap = entry.element.startTime - previous.element.endTime
+                if gap >= configuration.isolationSilence {
+                    islands.append(current)
+                    current = []
+                }
+            }
+            current.append(entry)
+        }
+        if !current.isEmpty { islands.append(current) }
+
+        // The song spans time 0 to the latest token end. An island at the very start/end is
+        // bounded by silence on the outer side only if its distance to the boundary is also >=
+        // the isolation silence.
+        let songEnd = ordered.map(\.element.endTime).max() ?? 0
+
+        var dropped = Set<Int>()
+        for index in islands.indices {
+            let island = islands[index]
+
+            // Outer silence on the preceding side: a real gap to the prior island, or — for the
+            // first island — the distance from time 0 to its first token's start.
+            let precedingSilence: TimeInterval
+            if index == 0 {
+                precedingSilence = (island.first?.element.startTime ?? 0) - 0
+            } else {
+                precedingSilence =
+                    (island.first?.element.startTime ?? 0)
+                    - (islands[index - 1].last?.element.endTime ?? 0)
+            }
+
+            // Following silence: a real gap to the next island, or — for the last island — the
+            // distance from its last token's end to the song end (always 0, so the song end never
+            // counts as isolating silence; an island ending the song is kept unless it is also a
+            // first island isolated from time 0).
+            let followingSilence: TimeInterval
+            if index == islands.count - 1 {
+                followingSilence = songEnd - (island.last?.element.endTime ?? 0)
+            } else {
+                followingSilence =
+                    (islands[index + 1].first?.element.startTime ?? 0)
+                    - (island.last?.element.endTime ?? 0)
+            }
+
+            let isolated =
+                precedingSilence >= configuration.isolationSilence
+                && followingSilence >= configuration.isolationSilence
+            guard isolated else { continue }
+
+            if shouldDrop(island: island.map(\.element), configuration: configuration) {
+                for entry in island { dropped.insert(entry.offset) }
+            }
+        }
+        return dropped
+    }
+
+    /// Whether an isolated island is a stray hallucination safe to drop. Conservative AND: every
+    /// token low-confidence (none nil), few tokens, small total sung duration. Whitespace-only
+    /// tokens are ignored for the count/duration/confidence checks (they carry no lyric), but an
+    /// island of only whitespace is never dropped.
+    private static func shouldDrop(
+        island: [TimedTranscriptionToken],
+        configuration: Configuration
+    ) -> Bool {
+        let lyricTokens = island.filter { !isWhitespace($0.text) }
+        guard !lyricTokens.isEmpty else { return false }
+
+        guard lyricTokens.count <= configuration.maxIslandTokens else { return false }
+
+        let totalDuration = lyricTokens.reduce(0.0) {
+            $0 + max($1.endTime - $1.startTime, 0)
+        }
+        guard totalDuration <= configuration.maxIslandDuration else { return false }
+
+        // Every lyric token must be present-and-low confidence. A nil or high-confidence token
+        // could be a real sung word, so the whole island is kept.
+        for token in lyricTokens {
+            guard let confidence = token.confidence,
+                confidence < configuration.confidenceThreshold
+            else { return false }
+        }
+        return true
+    }
+
+    private static func isWhitespace(_ text: String) -> Bool {
+        text.allSatisfy(\.isWhitespace)
+    }
+}
