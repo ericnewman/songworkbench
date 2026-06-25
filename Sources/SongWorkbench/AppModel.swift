@@ -528,9 +528,13 @@ final class AppModel: ObservableObject {
     }
 
     func importSongs(from urls: [URL]) {
-        let imported = SongImportPolicy.songs(from: urls)
-        if imported.count < urls.count {
-            projectErrorMessage = "Some selected files use unsupported audio formats."
+        // Expand dropped/selected folders into their audio files before importing.
+        let candidates = SongImportPolicy.expandingDirectories(urls)
+        let imported = SongImportPolicy.songs(from: candidates)
+        if imported.isEmpty, !urls.isEmpty {
+            projectErrorMessage = "No supported audio files were found."
+        } else if imported.count < candidates.count {
+            projectErrorMessage = "Some files use unsupported audio formats."
         }
         let existingIDs = Set(songs.map(\.id))
         songs.append(contentsOf: imported.filter { !existingIDs.contains($0.id) })

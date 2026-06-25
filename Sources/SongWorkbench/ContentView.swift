@@ -36,6 +36,7 @@ struct ContentView: View {
 
 private struct SongSidebar: View {
     @ObservedObject var model: AppModel
+    @State private var isDropTargeted = false
 
     var body: some View {
         List(selection: selection) {
@@ -68,6 +69,28 @@ private struct SongSidebar: View {
                 Text("Songs")
                     .font(.swDisplay(12, weight: .semibold))
                     .foregroundStyle(Color.swTextSecondary)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            model.importSongs(from: urls)
+            return true
+        } isTargeted: {
+            isDropTargeted = $0
+        }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.swAccent, lineWidth: 2)
+                    .background(Color.swAccent.opacity(0.08))
+                    .overlay {
+                        Label(
+                            "Drop audio files or folders to add",
+                            systemImage: "square.and.arrow.down"
+                        )
+                        .font(.swDisplay(13, weight: .medium))
+                        .foregroundStyle(Color.swAccent)
+                    }
+                    .allowsHitTesting(false)
             }
         }
         .navigationTitle("Songs")
