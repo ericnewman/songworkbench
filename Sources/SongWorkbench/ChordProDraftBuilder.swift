@@ -125,14 +125,22 @@ struct ChordProDraftBuilder: Sendable {
         let duration = max(segment.end - segment.start, 0.001)
         var chordsByOffset: [Int: [String]] = [:]
         for event in chords {
-            let relative = min(max((event.time - segment.start) / duration, 0), 1)
-            let desired = Int((relative * Double(characters.count)).rounded())
-            let offset =
-                wordStarts.min {
-                    let leftDistance = abs($0 - desired)
-                    let rightDistance = abs($1 - desired)
-                    return leftDistance == rightDistance ? $0 < $1 : leftDistance < rightDistance
-                } ?? 0
+            let offset: Int
+            if let word = wordSounding(at: event.time, in: segment) {
+                // Place the chord over the word actually being sung at its onset.
+                offset = min(max(word.characterRange.lowerBound, 0), characters.count)
+            } else {
+                // No per-word timings: estimate the position proportionally by time.
+                let relative = min(max((event.time - segment.start) / duration, 0), 1)
+                let desired = Int((relative * Double(characters.count)).rounded())
+                offset =
+                    wordStarts.min {
+                        let leftDistance = abs($0 - desired)
+                        let rightDistance = abs($1 - desired)
+                        return leftDistance == rightDistance
+                            ? $0 < $1 : leftDistance < rightDistance
+                    } ?? 0
+            }
             chordsByOffset[offset, default: []].append(event.label)
         }
 
@@ -146,6 +154,17 @@ struct ChordProDraftBuilder: Sendable {
             }
         }
         return output
+    }
+
+    /// The word being sung at `time` within the segment, from per-word timings — or `nil`
+    /// when the segment carries no word-level timings (older analyses).
+    private func wordSounding(at time: TimeInterval, in segment: TimedLyricSegment)
+        -> TimedLyricWord?
+    {
+        guard !segment.words.isEmpty else { return nil }
+        return segment.words.last(where: { $0.start <= time && time < $0.end })
+            ?? segment.words.last(where: { $0.start <= time })
+            ?? segment.words.first
     }
 
     private func wordStartOffsets(in characters: [Character]) -> [Int] {
