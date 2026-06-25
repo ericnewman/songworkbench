@@ -89,7 +89,6 @@ struct ChordProDraftBuilder: Sendable {
                 if !gapChords.isEmpty {
                     lines.append(chordOnlyLine(gapChords, start: gapStart, end: segment.start))
                 }
-                lines.append("")
             } else if !gapChords.isEmpty {
                 lines.append(chordOnlyLine(gapChords, start: gapStart, end: segment.start))
             } else if index > 0, segment.start - lyrics[index - 1].end > 1.5 {

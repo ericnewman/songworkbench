@@ -180,14 +180,24 @@ private struct PlayerView: View {
                         .minimumScaleFactor(0.85)
                     Spacer()
                     Button {
-                        model.playLoopRegion()
+                        if model.isLoopPlaying {
+                            model.toggleActivePlayback()
+                        } else {
+                            model.playLoopRegion()
+                        }
                     } label: {
-                        Label("Play Loop", systemImage: "repeat")
+                        Label(
+                            model.isLoopPlaying ? "Stop Loop" : "Play Loop",
+                            systemImage: model.isLoopPlaying ? "stop.fill" : "repeat"
+                        )
                     }
                     .labelStyle(.titleAndIcon)
                     .controlSize(.small)
                     .disabled(!model.canPlayLoop)
-                    .help("Play the selected loop region (repeats until stopped)")
+                    .help(
+                        model.isLoopPlaying
+                            ? "Stop loop playback"
+                            : "Play the selected loop region (repeats until stopped)")
                     Button {
                         model.clearLoop()
                     } label: {

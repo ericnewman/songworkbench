@@ -650,6 +650,9 @@ final class AppModel: ObservableObject {
     /// Whether a loop region is set and can be played.
     var canPlayLoop: Bool { loopRegion != nil }
 
+    /// Whether a loop region is set and playback is currently running (looping it).
+    var isLoopPlaying: Bool { loopRegion != nil && isActivePlaybackPlaying }
+
     /// Starts playback at the loop region's start; playback then loops within the region
     /// (the playback service seeks back to the start when it reaches the end).
     func playLoopRegion() {
