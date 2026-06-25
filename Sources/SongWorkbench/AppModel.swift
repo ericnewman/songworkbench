@@ -459,6 +459,14 @@ final class AppModel: ObservableObject {
         )
     }
 
+    /// The current lyric lines as plain text, one line per segment. Used to seed the reference
+    /// lyrics from a good transcription (e.g. an Accuracy run): Parakeet (Fast/Balanced) has the
+    /// same words but no line structure, so promoting the better mode's lines to the reference and
+    /// re-aligning gives the quick modes the same line breaks.
+    var currentLyricsAsText: String {
+        lyricSegments.map(\.text).joined(separator: "\n")
+    }
+
     /// Re-runs analysis for every song that already has an analysis, sequentially, re-running
     /// each song's existing stages (caching skips unchanged stages). Used to roll out
     /// analysis improvements (e.g. chord detection) across the whole library.

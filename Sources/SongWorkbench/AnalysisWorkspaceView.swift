@@ -171,6 +171,16 @@ private struct ReferenceLyricsSheet: View {
             )
             .font(.caption)
             .foregroundStyle(.secondary)
+            HStack {
+                Button("Fill from current transcription", systemImage: "arrow.down.doc") {
+                    draft = model.currentLyricsAsText
+                }
+                .disabled(model.lyricSegments.isEmpty)
+                .help(
+                    "Copy the current lyric lines here — e.g. run Accuracy first, then reuse its "
+                        + "clean line breaks so Fast/Balanced align to the same lines.")
+                Spacer()
+            }
             TextEditor(text: $draft)
                 .font(.swMono(12))
                 .frame(minHeight: 300)
