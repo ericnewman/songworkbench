@@ -19,8 +19,8 @@ protocol SongHarmonyAnalyzing: Sendable {
 
 extension AudioFileAnalysisService: SongHarmonyAnalyzing {
     nonisolated var metadata: AnalysisEngineVersion {
-        // v6: peak-normalized bass detection (recovers quiet bass for bass-informed roots).
-        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "6")
+        // v7: more permissive bass clarity gate (tracks quieter intro bass).
+        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "7")
     }
 }
 

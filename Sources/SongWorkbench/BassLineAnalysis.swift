@@ -49,8 +49,10 @@ struct BassLineAnalyzer: Sendable {
     /// stays silent and the clarity gate still rejects amplified noise.
     private let detectionTargetPeak: Float = 0.7
     /// Frames whose best normalized autocorrelation peak is below this are
-    /// treated as unvoiced (no clear pitch).
-    private let clarityThreshold: Float = 0.5
+    /// treated as unvoiced (no clear pitch). Kept fairly permissive so quieter, less
+    /// perfectly-periodic bass (e.g. intros, separation artifacts) is still tracked; the
+    /// median filter and minimum-segment-duration gate suppress isolated spurious frames.
+    private let clarityThreshold: Float = 0.35
     /// Window (in frames) of the per-frame MIDI median filter.
     private let medianWindow = 5
     /// Segments shorter than this are discarded as jitter.
