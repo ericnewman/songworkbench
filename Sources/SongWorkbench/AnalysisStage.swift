@@ -388,7 +388,13 @@ struct HarmonyStage: AnalysisStageRunning {
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: source.kind,
-                engine: harmonyEngine.metadata,
+                // Reducer-version suffix: changes the stage record (so re-analysis re-reduces the
+                // cached raw chord observations into events) WITHOUT changing the raw chroma cache
+                // key — so no re-chroma is needed when only the ChordEventReducer changes.
+                engine: AnalysisEngineVersion(
+                    identifier: harmonyEngine.metadata.identifier,
+                    version: harmonyEngine.metadata.version + "|reduce-2"
+                ),
                 modelIdentifier: nil,
                 modelVersion: nil,
                 configurationIdentifier: source.configurationIdentifier,

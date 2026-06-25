@@ -9,7 +9,11 @@ struct ChordEventReducer: Sendable {
     init(
         beatsPerWindow: Int = 2,
         minimumConfidence: Float = 0.45,
-        minimumWinningShare: Float = 0.55,
+        // The winner only needs a clear plurality of the window's confidence, not a super-majority.
+        // Chord chroma routinely splits the vote between chords that share notes (e.g. A vs D vs
+        // F#), so 0.55 dropped ~half of all windows as "ambiguous" — the main cause of missing
+        // chords. 0.45 keeps the winner when it is clearly ahead while still rejecting true ties.
+        minimumWinningShare: Float = 0.45,
         fallbackWindowDuration: TimeInterval = 2
     ) {
         self.beatsPerWindow = max(beatsPerWindow, 1)
