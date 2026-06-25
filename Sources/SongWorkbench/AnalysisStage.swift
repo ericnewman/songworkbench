@@ -256,7 +256,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // Grouping-version suffix: changes the stage record (so re-analysis
                     // re-groups from the cached raw transcription) without changing the raw
                     // transcription cache key, so no re-transcription is needed.
-                    version: result.engine.engineVersion + "|grouping-2"
+                    version: result.engine.engineVersion + "|grouping-3-gate-consensus"
                 ),
                 modelIdentifier: result.engine.modelName,
                 modelVersion: result.engine.modelVersion,
@@ -264,7 +264,13 @@ struct TranscriptionStage: AnalysisStageRunning {
                 confidence: AnalysisStageRecordFactory.confidenceSummary(confidences),
                 loadedFromCache: loadedFromCache
             )
-            let lyrics = TimedLyricSegmentGrouper.group(result: result)
+            // Drop stray low-confidence words isolated in silence (so instrumental gaps
+            // survive and become Intro/Instrumental/Outro sections), group into lines, then
+            // fix garbled words in repeated lines via cross-line consensus.
+            let gatedTokens = TranscriptionSilenceGate.filtered(
+                result.segments.flatMap(\.tokens))
+            let lyrics = RepeatedLyricCorrector().corrected(
+                TimedLyricSegmentGrouper.group(tokens: gatedTokens))
             return AnalysisStageOutcome { document in
                 document.lyrics = lyrics
                 document.lyricReviewState = .draft
