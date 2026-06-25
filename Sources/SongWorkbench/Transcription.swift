@@ -128,7 +128,7 @@ struct TimedLyricGroupingConfiguration: Equatable, Sendable {
         maximumGap: TimeInterval = 3,
         maximumDuration: TimeInterval = 15,
         maximumTokens: Int = 32,
-        capitalizedLineStartGap: TimeInterval = 0.2
+        capitalizedLineStartGap: TimeInterval = 0.3
     ) {
         self.maximumGap = max(maximumGap, 0)
         self.maximumDuration = max(maximumDuration, 0)
@@ -210,9 +210,13 @@ enum TimedLyricSegmentGrouper {
             if let first = current.first, let previous = current.last {
                 let gap = token.startTime - previous.endTime
                 let duration = token.endTime - first.startTime
+                // A capitalized word starts a new line — but only past the first token, so a
+                // run of consecutive capitalized words (e.g. "Charcoal Crackle Sparks") sung
+                // together isn't split into one-word orphan lines.
                 let capitalizedLineStart =
                     beginsCapitalizedWord(token.text)
                     && gap >= configuration.capitalizedLineStartGap
+                    && current.count >= 2
                 if isSentenceEnding(previous.text)
                     || capitalizedLineStart
                     || gap > configuration.maximumGap

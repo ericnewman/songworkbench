@@ -88,6 +88,20 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(TimedLyricSegmentGrouper.regroup(stored), stored)
     }
 
+    func testGroupingDoesNotOrphanASingleCapitalizedWord() {
+        // "Charcoal" then "Crackle" (both capitalized, sung together with a small gap) must
+        // stay on one line rather than orphaning "Charcoal" onto its own line.
+        let tokens = [
+            token("Charcoal", 0.0, 0.6),
+            token("Crackle", 0.84, 1.2),  // capitalized, 0.24s gap
+            token("sparks", 1.3, 1.7),
+        ]
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens),
+            equal: [("Charcoal Crackle sparks", 0.0, 1.7)]
+        )
+    }
+
     func testGroupingStartsNewLineAtCapitalizedWordAfterGap() {
         // "Down" is capitalized and follows a 0.6s gap, so it starts a new line;
         // the lowercase continuation stays on its line.
