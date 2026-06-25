@@ -148,6 +148,34 @@ enum TimedLyricSegmentGrouper {
         )
     }
 
+    /// Re-groups already-segmented lyrics into lines using the current rules, driven by
+    /// each segment's stored per-word timings (which preserve word case, so capitalized
+    /// line-starts are honored). Lets songs analyzed before a grouping change adopt the
+    /// new line breaks on load without re-transcribing. Idempotent for lyrics already
+    /// grouped under the current rules.
+    static func regroup(
+        _ segments: [TimedLyricSegment],
+        configuration: TimedLyricGroupingConfiguration = .init()
+    ) -> [TimedLyricSegment] {
+        let tokens = segments.flatMap { segment -> [TimedTranscriptionToken] in
+            guard !segment.words.isEmpty else {
+                return [
+                    TimedTranscriptionToken(
+                        text: segment.text,
+                        startTime: segment.start,
+                        endTime: segment.end,
+                        confidence: nil
+                    )
+                ]
+            }
+            return segment.words.map {
+                TimedTranscriptionToken(
+                    text: $0.text, startTime: $0.start, endTime: $0.end, confidence: nil)
+            }
+        }
+        return group(tokens: tokens, configuration: configuration)
+    }
+
     static func group(
         tokens: [TimedTranscriptionToken],
         configuration: TimedLyricGroupingConfiguration = .init()

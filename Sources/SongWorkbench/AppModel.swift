@@ -1024,7 +1024,11 @@ final class AppModel: ObservableObject {
 
     private func applyAnalysis(_ analysis: SongAnalysisDocument) {
         isApplyingAnalysis = true
-        lyricSegments = analysis.lyrics
+        // Migrate older analyses to the current line-grouping rules from each segment's
+        // stored word timings (no re-transcription). Idempotent for already-current lyrics.
+        let regroupedLyrics = TimedLyricSegmentGrouper.regroup(analysis.lyrics)
+        let lyricsRegrouped = regroupedLyrics != analysis.lyrics
+        lyricSegments = regroupedLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
         estimatedBPM = analysis.estimatedBPM
@@ -1038,6 +1042,9 @@ final class AppModel: ObservableObject {
         chordReviewState = analysis.chordReviewState
         chordProReviewState = analysis.chordProReviewState
         analysisStageRecords = analysis.stageRecords
+        // When migration changed the lines, rebuild the generated chart so it matches
+        // (skipped for user-reviewed charts). Still suppressed by `isApplyingAnalysis`.
+        if lyricsRegrouped { rebuildGeneratedChordProDraft() }
         if let stemFiles, isCurrentSeparation(record: analysisStageRecords[.separation]) {
             try? stemPlayback.load(stemFiles, mixer: stemMixer)
             stemPlayback.setPitch(semitones: pitchSemitones)
@@ -1054,6 +1061,8 @@ final class AppModel: ObservableObject {
             }
         }
         isApplyingAnalysis = false
+        // Persist the migrated lyrics/chart so the re-grouping happens once per song.
+        if lyricsRegrouped { persistSelectedAnalysis() }
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {
