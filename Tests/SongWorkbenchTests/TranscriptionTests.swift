@@ -485,6 +485,51 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(filtered, tokens)
     }
 
+    func testSilenceGateDropsLeadingStrayAtSongStart() {
+        // Real Whisper failure mode (from "Flip Flops and Barbeque"): a near-zero-confidence word
+        // at 0.0 padded to a 20-second span over the instrumental intro, before the first real
+        // line. The song's start counts as silence (so the stray is isolated), and a lone token's
+        // padded span must not shield it via the duration guard. It is dropped, restoring the intro.
+        let tokens = [
+            token("Grass", 0.0, 20.0, confidence: 0.045),  // leading stray padded over the intro
+            token("between", 20.12, 20.90, confidence: 0.70),
+            token("my", 20.90, 21.09, confidence: 0.99),
+            token("toes", 21.19, 21.76, confidence: 0.77),
+        ]
+
+        let filtered = TranscriptionSilenceGate.filtered(tokens)
+
+        XCTAssertEqual(filtered.map(\.text), ["between", "my", "toes"])
+        XCTAssertEqual(filtered.first?.startTime, 20.12)
+    }
+
+    func testSilenceGateKeepsLongHeldNoteWithHighConfidence() {
+        // A confidently sung sustained note (long span, high confidence) is real and must survive
+        // the padded-stray pre-filter, which only targets low-confidence long tokens.
+        let tokens = [
+            token("Ohhh", 0.0, 8.0, confidence: 0.93),  // long but confident: a held note
+            token("Goodbye", 20.0, 20.4, confidence: 0.95),
+            token("now", 20.5, 20.9, confidence: 0.95),
+        ]
+
+        XCTAssertEqual(TranscriptionSilenceGate.filtered(tokens), tokens)
+    }
+
+    func testSilenceGateKeepsRealOpeningLineAtSongStart() {
+        // A multi-word opening line at 0.0 followed by a gap is a real line (exceeds
+        // maxIslandTokens), so the song-start boundary does not cause it to be trimmed.
+        let tokens = [
+            token("Grass", 0.0, 0.4, confidence: 0.2),
+            token("between", 0.5, 0.9, confidence: 0.2),
+            token("my", 1.0, 1.2, confidence: 0.2),
+            token("toes", 1.3, 1.7, confidence: 0.2),
+            token("warm", 1.8, 2.2, confidence: 0.2),
+            token("Goodbye", 20.0, 20.4, confidence: 0.95),
+        ]
+
+        XCTAssertEqual(TranscriptionSilenceGate.filtered(tokens), tokens)
+    }
+
     func testSilenceGatePassesThroughUnchangedWithNoQualifyingIslands() {
         // A normal continuous line with no isolated low-confidence strays is returned identically.
         let tokens = [

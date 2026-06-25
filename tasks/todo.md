@@ -1,5 +1,23 @@
 # Key West Bar ChordPro
 
+- [x] Fix instrumental ChordPro chord spacing.
+  - [x] Reproduce chord-only instrumental lines losing rhythmic spacing.
+  - [x] Add a regression for timed chord-only instrumental output.
+  - [x] Render instrumental chord-only lines with time-based spacing.
+  - [x] Verify focused ChordPro builder tests and project build.
+
+## Review
+
+- Root cause: instrumental and intro chord-only lines rendered chord labels with
+  a fixed single space, ignoring the event timing that carries rhythmic gaps.
+- Updated chord-only ChordPro generation to preserve time-based spacing between
+  chord events, and added a regression that fails on collapsed instrumental
+  spacing.
+- Verified `swift test --filter ChordProDraftBuilderTests` passed 10 tests with
+  0 failures, `xcodebuild -workspace SongWorkbench.xcworkspace -scheme
+  SongWorkbench -configuration Debug build -quiet` exited successfully, and
+  `git diff --check` is clean.
+
 - [x] Inspect the MP3 and available local audio-analysis runtimes.
 - [x] Produce a timestamped lyric transcription.
 - [x] Determine the song key, meter, form, and chord changes.
