@@ -28,10 +28,12 @@ final class StemMixerTests: XCTestCase {
     func testGainIsClampedAndStemOrderIsStable() {
         var mixer = StemMixerModel()
         mixer.setGain(-1, for: .vocals)
-        mixer.setGain(2, for: .other)
+        mixer.setGain(1.5, for: .other)
+        mixer.setGain(5, for: .drums)
 
         XCTAssertEqual(mixer[.vocals].gain, 0)
-        XCTAssertEqual(mixer[.other].gain, 1)
+        XCTAssertEqual(mixer[.other].gain, 1.5)  // boost above unity is allowed
+        XCTAssertEqual(mixer[.drums].gain, StemMixState.maximumGain)  // clamped to the ceiling
         XCTAssertEqual(StemKind.allCases, [.vocals, .drums, .bass, .guitar, .piano, .other])
     }
 
