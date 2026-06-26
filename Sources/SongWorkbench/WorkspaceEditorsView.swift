@@ -600,6 +600,7 @@ private struct ChordProTabEditor: View {
     @ObservedObject private var stemPlayback: StemPlaybackService
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
+    @AppStorage("rhythmicSpacing") private var rhythmicSpacing = false
     @State private var errorMessage: String?
     @State private var mode = Mode.preview
 
@@ -646,6 +647,13 @@ private struct ChordProTabEditor: View {
                     .font(.swDisplay(11))
                     .foregroundStyle(Color.swTextSecondary)
                     .help("Show small dots above each lyric line marking the beats")
+                Toggle("Rhythmic spacing", isOn: $rhythmicSpacing)
+                    .toggleStyle(.checkbox)
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .help(
+                        "Space words by when they're sung instead of evenly, so the layout shows "
+                            + "the rhythm (App Preview)")
                 Spacer()
                 if config.supportsMarkReviewed {
                     Button("Mark Reviewed", systemImage: "checkmark.seal") {
@@ -683,7 +691,8 @@ private struct ChordProTabEditor: View {
                             transpose: config.supportsTranspose ? model.chordProTranspose : 0,
                             highlightContext: highlightContext(style: config.highlightStyle),
                             beatBall: beatBallInput,
-                            beatDots: beatDotContext
+                            beatDots: beatDotContext,
+                            rhythmicSpacing: rhythmicSpacing
                         )
                     }
                 }
@@ -943,6 +952,7 @@ private struct ChordProAppPreview: View {
     var highlightContext: ChordProPlaybackHighlightContext?
     var beatBall: BeatBallInput?
     var beatDots: BeatDotContext?
+    var rhythmicSpacing = false
 
     var body: some View {
         Group {
@@ -966,7 +976,8 @@ private struct ChordProAppPreview: View {
                                                 forLyricOrdinal: item.lyricOrdinal
                                             ),
                                             beatBall: beatBallValue(for: item, in: document),
-                                            beatDots: beatDotValue(for: item)
+                                            beatDots: beatDotValue(for: item),
+                                            rhythmicSpacing: rhythmicSpacing
                                         )
                                         .id(item.offset)
                                     }
@@ -1183,6 +1194,7 @@ private struct ChordProPreviewBlockView: View {
     var highlight: ChordProLinePlaybackHighlight?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
+    var rhythmicSpacing = false
 
     var body: some View {
         switch block {
@@ -1208,7 +1220,8 @@ private struct ChordProPreviewBlockView: View {
                 .foregroundStyle(.secondary)
         case .lyric(let line):
             ChordProPreviewLineView(
-                line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots)
+                line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots,
+                rhythmicSpacing: rhythmicSpacing)
         case .directive(let source):
             Text(source)
                 .font(.caption.monospaced())
@@ -1231,12 +1244,95 @@ private struct ChordProPreviewLineView: View {
     private static let ballApexHeight: CGFloat = 18
     private static let ballDiameter: CGFloat = 11
 
+    /// Pixels per second of song time used to space words in rhythmic mode.
+    private static let pixelsPerSecond: CGFloat = 52
+
     let line: ChordProPreviewLine
     var highlight: ChordProLinePlaybackHighlight?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
+    /// When true (and real word timings are available), words are spaced by their onset time
+    /// instead of one monospace space apart, so the layout reflects the sung rhythm.
+    var rhythmicSpacing = false
+
+    private var rhythmicWords: [TimedLyricWord] {
+        guard rhythmicSpacing, let words = beatBall?.words, !words.isEmpty else { return [] }
+        return words
+    }
 
     var body: some View {
+        if rhythmicWords.isEmpty {
+            monospaceContent
+        } else {
+            rhythmicContent
+        }
+    }
+
+    /// Words positioned by their onset time (clamped so they never overlap), with each chord
+    /// anchored over the word it lands on. The bouncing ball is omitted here — the spacing itself
+    /// conveys the timing.
+    private var rhythmicContent: some View {
+        let words = rhythmicWords
+        let xs = rhythmicWordXs
+        let totalWidth =
+            (xs.last ?? 0) + CGFloat(max(words.last?.text.count ?? 1, 1))
+            * Self.characterWidth + Self.characterWidth
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(words.enumerated()), id: \.offset) { index, word in
+                let isHighlighted =
+                    highlight?.wordRange.map { $0.overlaps(word.characterRange) } ?? false
+                Text(word.text)
+                    .font(
+                        .system(
+                            size: 15, weight: isHighlighted ? .bold : .regular, design: .monospaced)
+                    )
+                    .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
+                    .offset(x: xs[index], y: line.chords.isEmpty ? 0 : 20)
+            }
+            ForEach(Array(line.chords.enumerated()), id: \.offset) { _, chord in
+                Text(chord.name)
+                    .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
+                    .foregroundStyle(.tint)
+                    .offset(x: chordRhythmicX(chord, words: words, xs: xs))
+            }
+        }
+        .frame(
+            width: max(1, totalWidth),
+            height: line.chords.isEmpty ? 20 : 42,
+            alignment: .topLeading
+        )
+    }
+
+    /// Left x of each word, from its onset time, pushed right so words never overlap.
+    private var rhythmicWordXs: [CGFloat] {
+        let words = rhythmicWords
+        guard let lineStart = words.first?.start else { return [] }
+        var xs: [CGFloat] = []
+        var cursor: CGFloat = 0
+        for (index, word) in words.enumerated() {
+            let desired = CGFloat(max(word.start - lineStart, 0)) * Self.pixelsPerSecond
+            let x = index == 0 ? 0 : max(desired, cursor)
+            xs.append(x)
+            cursor =
+                x + CGFloat(max(word.text.count, 1)) * Self.characterWidth + Self.characterWidth
+        }
+        return xs
+    }
+
+    private func chordRhythmicX(
+        _ chord: ChordProPreviewChord, words: [TimedLyricWord], xs: [CGFloat]
+    ) -> CGFloat {
+        if let index = words.firstIndex(where: { $0.characterRange.contains(chord.column) }) {
+            return xs[index]
+        }
+        if let index = words.lastIndex(where: { $0.characterRange.lowerBound <= chord.column }) {
+            return xs[index]
+                + CGFloat(words[index].text.count + 1) * Self.characterWidth
+        }
+        return 0
+    }
+
+    private var monospaceContent: some View {
         ZStack(alignment: .topLeading) {
             ForEach(Array(beatDotPositions.enumerated()), id: \.offset) { _, x in
                 Circle()
