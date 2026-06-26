@@ -601,6 +601,18 @@ private struct ChordProTabEditor: View {
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     @AppStorage("rhythmicSpacing") private var rhythmicSpacing = false
+
+    /// Lyric-line word timings sorted into the same order the highlight/ball ordinals use, so the
+    /// App Preview can space each line's words by their onset in rhythmic mode.
+    private var sortedLyricLineWords: [[TimedLyricWord]] {
+        model.lyricSegments
+            .sorted {
+                if $0.start == $1.start, $0.end == $1.end { return $0.text < $1.text }
+                if $0.start == $1.start { return $0.end < $1.end }
+                return $0.start < $1.start
+            }
+            .map(\.words)
+    }
     @State private var errorMessage: String?
     @State private var mode = Mode.preview
 
@@ -692,7 +704,8 @@ private struct ChordProTabEditor: View {
                             highlightContext: highlightContext(style: config.highlightStyle),
                             beatBall: beatBallInput,
                             beatDots: beatDotContext,
-                            rhythmicSpacing: rhythmicSpacing
+                            rhythmicSpacing: rhythmicSpacing,
+                            lyricLineWords: sortedLyricLineWords
                         )
                     }
                 }
@@ -953,6 +966,14 @@ private struct ChordProAppPreview: View {
     var beatBall: BeatBallInput?
     var beatDots: BeatDotContext?
     var rhythmicSpacing = false
+    /// Per-lyric-line word timings, indexed by lyric ordinal (same order the highlight/ball use),
+    /// for rhythmic spacing — available regardless of playback.
+    var lyricLineWords: [[TimedLyricWord]] = []
+
+    private func wordTimings(forLyricOrdinal ordinal: Int?) -> [TimedLyricWord] {
+        guard let ordinal, lyricLineWords.indices.contains(ordinal) else { return [] }
+        return lyricLineWords[ordinal]
+    }
 
     var body: some View {
         Group {
@@ -977,7 +998,9 @@ private struct ChordProAppPreview: View {
                                             ),
                                             beatBall: beatBallValue(for: item, in: document),
                                             beatDots: beatDotValue(for: item),
-                                            rhythmicSpacing: rhythmicSpacing
+                                            rhythmicSpacing: rhythmicSpacing,
+                                            rhythmicWordTimings: wordTimings(
+                                                forLyricOrdinal: item.lyricOrdinal)
                                         )
                                         .id(item.offset)
                                     }
@@ -1195,6 +1218,7 @@ private struct ChordProPreviewBlockView: View {
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
     var rhythmicSpacing = false
+    var rhythmicWordTimings: [TimedLyricWord] = []
 
     var body: some View {
         switch block {
@@ -1221,7 +1245,7 @@ private struct ChordProPreviewBlockView: View {
         case .lyric(let line):
             ChordProPreviewLineView(
                 line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots,
-                rhythmicSpacing: rhythmicSpacing)
+                rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings)
         case .directive(let source):
             Text(source)
                 .font(.caption.monospaced())
@@ -1254,10 +1278,11 @@ private struct ChordProPreviewLineView: View {
     /// When true (and real word timings are available), words are spaced by their onset time
     /// instead of one monospace space apart, so the layout reflects the sung rhythm.
     var rhythmicSpacing = false
+    /// This line's per-word timings (from its lyric segment), available regardless of playback.
+    var rhythmicWordTimings: [TimedLyricWord] = []
 
     private var rhythmicWords: [TimedLyricWord] {
-        guard rhythmicSpacing, let words = beatBall?.words, !words.isEmpty else { return [] }
-        return words
+        rhythmicSpacing ? rhythmicWordTimings : []
     }
 
     var body: some View {
