@@ -1482,6 +1482,7 @@ private struct StemMixerEditor: View {
                     ForEach(StemKind.allCases, id: \.self) { kind in
                         ChannelStrip(kind: kind, model: model, stemPlayback: stemPlayback)
                     }
+                    ClickChannelStrip(stemPlayback: stemPlayback)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -1515,6 +1516,36 @@ private struct StemMixerEditor: View {
         panel.nameFieldStringValue = "Stem Mix.wav"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         model.exportStemMix(to: url)
+    }
+}
+
+/// The synthetic click-track channel: a vertical fader (default 0 = off) that mixes a metronome
+/// clicking on each detected beat. Driven by the playback service's `clickGain`, not the stem
+/// mixer, since it isn't a separated stem.
+private struct ClickChannelStrip: View {
+    @ObservedObject var stemPlayback: StemPlaybackService
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(stemPlayback.clickGain, format: .percent.precision(.fractionLength(0)))
+                .font(.swMono(10))
+                .foregroundStyle(Color.swTextSecondary)
+
+            VerticalFader(
+                value: Binding(
+                    get: { Double(stemPlayback.clickGain) },
+                    set: { stemPlayback.clickGain = Float($0) }
+                ),
+                range: 0...Double(StemMixState.maximumGain)
+            )
+            .frame(maxHeight: .infinity)
+
+            Color.clear.frame(height: 22)
+
+            ScribbleStrip(text: "Click")
+        }
+        .frame(maxWidth: 70)
+        .help("Metronome clicking on each detected beat. Raise to play along; 0% is off.")
     }
 }
 

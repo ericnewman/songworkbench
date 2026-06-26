@@ -28,10 +28,20 @@ final class StemPlaybackService: ObservableObject {
     private var scheduledStartTime: TimeInterval = 0
     private var timer: Timer?
 
+    // Synthetic click-track channel: a metronome clicking on each detected beat. Not a separated
+    // stem — its buffer is generated from the song's beat times and mixed alongside the stems.
+    private let clickPlayer = AVAudioPlayerNode()
+    private var clickBuffer: AVAudioPCMBuffer?
+    private var isClickConnected = false
+    @Published var clickGain: Float = 0 {
+        didSet { clickPlayer.volume = max(min(clickGain, StemMixState.maximumGain), 0) }
+    }
+
     init() {
         for player in players.values {
             engine.attach(player)
         }
+        engine.attach(clickPlayer)
         engine.attach(stemMixerNode)
         engine.attach(timePitch)
         engine.connect(stemMixerNode, to: timePitch, format: nil)
@@ -88,6 +98,71 @@ final class StemPlaybackService: ObservableObject {
         }
     }
 
+    /// Builds the click track from the song's beat times and connects it. Call after `load`. A
+    /// nil/empty `beatTimes` leaves the channel silent. Safe to call while playing.
+    func loadClickTrack(beatTimes: [TimeInterval]) {
+        guard let sampleRate = files.values.first?.processingFormat.sampleRate else {
+            clickBuffer = nil
+            return
+        }
+        clickBuffer = Self.makeClickBuffer(
+            beatTimes: beatTimes, duration: duration, sampleRate: sampleRate)
+        if let clickBuffer, !isClickConnected {
+            engine.connect(clickPlayer, to: stemMixerNode, format: clickBuffer.format)
+            isClickConnected = true
+        }
+        clickPlayer.volume = max(min(clickGain, StemMixState.maximumGain), 0)
+        if isScheduled {
+            scheduleClick(from: scheduledStartTime)
+            if isPlaying { clickPlayer.play() }
+        }
+    }
+
+    private static func makeClickBuffer(
+        beatTimes: [TimeInterval], duration: TimeInterval, sampleRate: Double
+    ) -> AVAudioPCMBuffer? {
+        guard duration > 0, sampleRate > 0, !beatTimes.isEmpty,
+            let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
+        else { return nil }
+        let totalFrames = AVAudioFrameCount(duration * sampleRate) + 1
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames),
+            let channel = buffer.floatChannelData?[0]
+        else { return nil }
+        buffer.frameLength = totalFrames
+        for index in 0..<Int(totalFrames) { channel[index] = 0 }
+        // A short enveloped 1 kHz blip on each beat.
+        let clickFrames = Int(0.03 * sampleRate)
+        for beat in beatTimes {
+            let startIndex = Int(beat * sampleRate)
+            guard startIndex >= 0, startIndex < Int(totalFrames) else { continue }
+            for offset in 0..<clickFrames {
+                let index = startIndex + offset
+                guard index < Int(totalFrames) else { break }
+                let seconds = Double(offset) / sampleRate
+                let envelope = exp(-seconds * 90)
+                channel[index] = Float(sin(2 * Double.pi * 1000 * seconds) * envelope * 0.6)
+            }
+        }
+        return buffer
+    }
+
+    private func scheduleClick(from time: TimeInterval) {
+        guard let clickBuffer, isClickConnected else { return }
+        let sampleRate = clickBuffer.format.sampleRate
+        let startFrame = Int(min(max(time, 0), duration) * sampleRate)
+        let total = Int(clickBuffer.frameLength)
+        guard startFrame < total else { return }
+        let count = AVAudioFrameCount(total - startFrame)
+        guard count > 0,
+            let slice = AVAudioPCMBuffer(pcmFormat: clickBuffer.format, frameCapacity: count),
+            let source = clickBuffer.floatChannelData?[0],
+            let destination = slice.floatChannelData?[0]
+        else { return }
+        slice.frameLength = count
+        for index in 0..<Int(count) { destination[index] = source[startFrame + index] }
+        clickPlayer.scheduleBuffer(slice, at: nil, options: [], completionHandler: nil)
+    }
+
     func togglePlayback() {
         isPlaying ? pause() : play()
     }
@@ -105,6 +180,7 @@ final class StemPlaybackService: ObservableObject {
             for kind in StemKind.allCases where files[kind] != nil {
                 players[kind]?.play()
             }
+            if isClickConnected { clickPlayer.play() }
             isPlaying = true
             startTimer()
         } catch {
@@ -118,6 +194,7 @@ final class StemPlaybackService: ObservableObject {
         for player in players.values {
             player.pause()
         }
+        clickPlayer.pause()
         isPlaying = false
         stopTimer()
         resetStemLevels()
@@ -129,6 +206,7 @@ final class StemPlaybackService: ObservableObject {
         for player in players.values {
             player.stop()
         }
+        clickPlayer.stop()
         stopTimer()
         isScheduled = false
         currentTime = min(max(time, 0), duration)
@@ -137,6 +215,7 @@ final class StemPlaybackService: ObservableObject {
             for kind in StemKind.allCases where files[kind] != nil {
                 players[kind]?.play()
             }
+            if isClickConnected { clickPlayer.play() }
             startTimer()
         } else if !isScheduled {
             isPlaying = false
@@ -164,6 +243,11 @@ final class StemPlaybackService: ObservableObject {
         duration = 0
         referenceKind = nil
         isLoaded = false
+        clickBuffer = nil
+        if isClickConnected {
+            engine.disconnectNodeOutput(clickPlayer)
+            isClickConnected = false
+        }
         releaseSecurityScopes()
     }
 
@@ -172,6 +256,7 @@ final class StemPlaybackService: ObservableObject {
         for player in players.values {
             player.stop()
         }
+        clickPlayer.stop()
         engine.stop()
         isPlaying = false
         isScheduled = false
@@ -221,6 +306,7 @@ final class StemPlaybackService: ObservableObject {
                 )
             }
         }
+        scheduleClick(from: scheduledStartTime)
         isScheduled = scheduledAny
     }
 

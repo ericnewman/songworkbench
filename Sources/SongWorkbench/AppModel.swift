@@ -923,6 +923,7 @@ final class AppModel: ObservableObject {
         )
         if let stemFiles {
             try stemPlayback.load(stemFiles, mixer: stemMixer)
+            stemPlayback.loadClickTrack(beatTimes: beatTimes)
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         }
@@ -1176,6 +1177,7 @@ final class AppModel: ObservableObject {
         let chordProRebuilt = chordProSource != chordProBeforeRebuild
         if let stemFiles, isCurrentSeparation(record: analysisStageRecords[.separation]) {
             try? stemPlayback.load(stemFiles, mixer: stemMixer)
+            stemPlayback.loadClickTrack(beatTimes: beatTimes)
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         } else {
