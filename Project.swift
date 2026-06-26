@@ -27,6 +27,8 @@ let project = Project(
                 "NSHighResolutionCapable": true,
                 "NSMicrophoneUsageDescription":
                     "SongWorkbench uses audio input for music analysis.",
+                "NSAppleMusicUsageDescription":
+                    "SongWorkbench reads your Music library so you can open and analyze local tracks.",
             ]),
             sources: ["Sources/SongWorkbench/**"],
             resources: ["Resources/**"],
