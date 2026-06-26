@@ -31,6 +31,9 @@ struct ContentView: View {
         ) { result in
             model.handleSongImportResult(result)
         }
+        .sheet(isPresented: $model.isMusicLibraryPickerPresented) {
+            MusicLibraryPickerView(model: model)
+        }
     }
 }
 
@@ -101,6 +104,10 @@ private struct SongSidebar: View {
                 }
             }
             .disabled(model.selectedSong == nil)
+
+            Button("Open from Music", systemImage: "music.note") {
+                model.isMusicLibraryPickerPresented = true
+            }
 
             Button("Import Songs", systemImage: "plus") {
                 model.isImporterPresented = true

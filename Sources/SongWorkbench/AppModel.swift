@@ -159,11 +159,21 @@ final class AppModel: ObservableObject {
     }
     @Published var isImporterPresented = false
 
+    // MARK: Music library (Apple Music / Music app) browsing
+    @Published var isMusicLibraryPickerPresented = false
+    @Published private(set) var musicLibraryItems: [MusicLibraryItem] = []
+    @Published private(set) var isLoadingMusicLibrary = false
+    @Published private(set) var musicLibraryError: String?
+    /// Friendly explanation shown when the user picks a DRM/cloud track that
+    /// can't be opened. Cleared when an openable track loads.
+    @Published var musicLibraryNotice: String?
+
     let playback = AudioPlaybackService()
     let stemPlayback = StemPlaybackService()
     let offlineExporter = OfflineAudioExporter()
 
     private let store: any ProjectStore
+    private let musicLibrary: any MusicLibraryProviding
     private let waveformAnalyzer = WaveformAnalyzer()
     private let audioAnalysisService = AudioFileAnalysisService()
     private let analysisJobs = BackgroundJobCoordinator()
@@ -188,8 +198,12 @@ final class AppModel: ObservableObject {
     private var hasRestoredProjects = false
     private var needsSaveAfterRestore = false
 
-    init(store: any ProjectStore = JSONProjectStore.standard) {
+    init(
+        store: any ProjectStore = JSONProjectStore.standard,
+        musicLibrary: (any MusicLibraryProviding)? = nil
+    ) {
         self.store = store
+        self.musicLibrary = musicLibrary ?? DefaultMusicLibrary.make()
         let applicationSupportDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -608,6 +622,56 @@ final class AppModel: ObservableObject {
             select(first)
         }
         scheduleSave()
+    }
+
+    /// Loads the Music library on first open of the picker. Reads happen off the
+    /// main actor because enumerating a large library is slow; the iTunesLibrary
+    /// access triggers the macOS Media authorization prompt on first use.
+    func loadMusicLibraryIfNeeded() {
+        guard musicLibraryItems.isEmpty, !isLoadingMusicLibrary else { return }
+        loadMusicLibrary()
+    }
+
+    func loadMusicLibrary() {
+        isLoadingMusicLibrary = true
+        musicLibraryError = nil
+        let provider = musicLibrary
+        Task { [weak self] in
+            do {
+                let items = try await Task.detached { try provider.fetchSongs() }.value
+                await MainActor.run {
+                    self?.musicLibraryItems = items
+                    self?.isLoadingMusicLibrary = false
+                }
+            } catch {
+                await MainActor.run {
+                    self?.musicLibraryError =
+                        "Couldn't read your Music library: \(error.localizedDescription)"
+                    self?.isLoadingMusicLibrary = false
+                }
+            }
+        }
+    }
+
+    /// Opens a Music-library track. An openable local file is funneled through
+    /// the exact same import path as a dropped/selected file, so every
+    /// downstream feature (playback, pitch, tempo, waveform, stems, lyrics,
+    /// chords, export, persistence) works identically. DRM/cloud tracks set a
+    /// friendly notice and load nothing.
+    @discardableResult
+    func openMusicLibraryItem(_ item: MusicLibraryItem) -> Bool {
+        guard case .openable(let url) = item.openability() else {
+            let reason = item.unopenableReason ?? "This track can't be opened."
+            musicLibraryNotice = "“\(item.title)” can't be opened. \(reason)"
+            return false
+        }
+        importSongs(from: [url])
+        if let song = songs.first(where: { $0.id == Song(url: url).id }) {
+            select(song)
+        }
+        musicLibraryNotice = nil
+        isMusicLibraryPickerPresented = false
+        return true
     }
 
     func handleSongImportResult(_ result: Result<[URL], Error>) {
