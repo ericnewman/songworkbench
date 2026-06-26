@@ -19,11 +19,16 @@ struct PracticeSettings: Codable, Equatable, Sendable {
     /// Chord-chart transposition in semitones (shared by the ChordPro-style
     /// screens). Independent of audio pitch.
     var chordProTranspose = 0
+    /// User-tuned timing offset (milliseconds) applied to where the ChordPro
+    /// bouncing ball / position indicator is *drawn*. Positive = indicator runs
+    /// ahead of playback; negative = behind. Does not affect audio playback.
+    var chordProTimingOffsetMS = 0
 
     mutating func normalize() {
         pitchSemitones = PitchShift.normalized(pitchSemitones)
         tempoRate = min(max(tempoRate, 0.5), 1.5)
         chordProTranspose = min(max(chordProTranspose, -12), 12)
+        chordProTimingOffsetMS = min(max(chordProTimingOffsetMS, -500), 500)
     }
 }
 
@@ -38,6 +43,8 @@ extension PracticeSettings {
         loopRegion = try container.decodeIfPresent(LoopRegion.self, forKey: .loopRegion)
         chordProTranspose =
             try container.decodeIfPresent(Int.self, forKey: .chordProTranspose) ?? 0
+        chordProTimingOffsetMS =
+            try container.decodeIfPresent(Int.self, forKey: .chordProTimingOffsetMS) ?? 0
     }
 }
 

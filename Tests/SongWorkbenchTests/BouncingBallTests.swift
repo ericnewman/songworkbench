@@ -96,6 +96,37 @@ final class BouncingBallTests: XCTestCase {
         }
     }
 
+    // The ChordPro view draws the ball at `effective = playbackTime + offsetMS/1000`.
+    // This mirrors that formula (the single source of truth in WorkspaceEditorsView's
+    // `currentPlaybackTime`) and asserts a ±offset shifts where the ball lands.
+    private func effectiveTime(playback: TimeInterval, offsetMS: Int) -> TimeInterval {
+        // Clamp matches PracticeSettings.normalize / AppModel.chordProTimingOffsetMS.
+        let clamped = min(max(offsetMS, -500), 500)
+        return playback + Double(clamped) / 1000.0
+    }
+
+    func testTimingOffsetShiftsBallPositionByOffsetSeconds() {
+        let ball = BouncingBall(beatTimes: [0, 1, 2], beatX: [0, 10, 20])
+        // At true playback time 1.0 the ball taps beat index 1 (x == 10, lift == 0).
+        let centered = ball.position(at: effectiveTime(playback: 1.0, offsetMS: 0))
+        XCTAssertEqual(Double(centered?.x ?? -1), 10, accuracy: 0.0001)
+
+        // +500ms offset advances the render clock to 1.5 -> apex between beats 1 and 2.
+        let ahead = ball.position(at: effectiveTime(playback: 1.0, offsetMS: 500))
+        XCTAssertEqual(Double(ahead?.x ?? -1), 15, accuracy: 0.0001)
+        XCTAssertEqual(Double(ahead?.lift ?? -1), 1, accuracy: 0.0001)
+
+        // -500ms offset rewinds to 0.5 -> apex between beats 0 and 1.
+        let behind = ball.position(at: effectiveTime(playback: 1.0, offsetMS: -500))
+        XCTAssertEqual(Double(behind?.x ?? -1), 5, accuracy: 0.0001)
+    }
+
+    func testTimingOffsetIsClampedToPlusMinus500ms() {
+        // Out-of-range offsets are clamped before they reach the render clock.
+        XCTAssertEqual(effectiveTime(playback: 1.0, offsetMS: 5000), 1.5, accuracy: 0.0001)
+        XCTAssertEqual(effectiveTime(playback: 1.0, offsetMS: -5000), 0.5, accuracy: 0.0001)
+    }
+
     func testSynthesizedBeatsDriveASmoothArc() {
         let beats = BouncingBall.beats(in: 0, 2, beatTimes: [], bpm: 120)
         let xs = beats.map { CGFloat($0 * 100) }
