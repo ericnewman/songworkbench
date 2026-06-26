@@ -18,9 +18,42 @@ final class PracticeWorkspaceTests: XCTestCase {
 
     func testPracticeSettingsNormalizeSupportedRanges() {
         var settings = PracticeSettings(pitchSemitones: 40, tempoRate: 0.1)
+        settings.chordProTimingOffsetMS = 9000
         settings.normalize()
         XCTAssertEqual(settings.pitchSemitones, 12)
         XCTAssertEqual(settings.tempoRate, 0.5)
+        XCTAssertEqual(settings.chordProTimingOffsetMS, 500)
+
+        var negative = PracticeSettings()
+        negative.chordProTimingOffsetMS = -9000
+        negative.normalize()
+        XCTAssertEqual(negative.chordProTimingOffsetMS, -500)
+    }
+
+    func testChordProTimingOffsetRoundTripsThroughStore() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = JSONProjectStore(fileURL: directory.appendingPathComponent("projects.json"))
+        let source = directory.appendingPathComponent("song.wav")
+        var settings = PracticeSettings()
+        settings.chordProTimingOffsetMS = -250
+        let document = ProjectLibraryDocument(songs: [
+            StoredSongProject(url: source, settings: settings)
+        ])
+
+        try await store.save(document)
+        let loaded = try await store.load()
+
+        XCTAssertEqual(loaded.songs.first?.settings.chordProTimingOffsetMS, -250)
+    }
+
+    func testChordProTimingOffsetDefaultsToZeroForOlderProjects() throws {
+        // Projects saved before the offset existed decode with the field absent.
+        let json = #"{"pitchSemitones":3,"tempoRate":0.9,"chordProTranspose":2}"#
+        let settings = try JSONDecoder().decode(PracticeSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(settings.chordProTimingOffsetMS, 0)
+        XCTAssertEqual(settings.chordProTranspose, 2)
     }
 
     func testJSONProjectStoreRoundTripsDocument() async throws {

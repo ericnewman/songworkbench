@@ -157,6 +157,18 @@ final class AppModel: ObservableObject {
             persistSelectedSettings()
         }
     }
+    /// Render-only timing offset (ms) for the ChordPro bouncing ball / position
+    /// indicator. Single source of truth read by the ball clock; never touches audio.
+    @Published var chordProTimingOffsetMS = 0 {
+        didSet {
+            let normalized = min(max(chordProTimingOffsetMS, -500), 500)
+            if normalized != chordProTimingOffsetMS {
+                chordProTimingOffsetMS = normalized
+                return
+            }
+            persistSelectedSettings()
+        }
+    }
     @Published var isImporterPresented = false
 
     let playback = AudioPlaybackService()
@@ -1128,6 +1140,7 @@ final class AppModel: ObservableObject {
         tempoRate = settings.tempoRate
         loopRegion = settings.loopRegion?.clamped(to: playback.duration)
         chordProTranspose = settings.chordProTranspose
+        chordProTimingOffsetMS = settings.chordProTimingOffsetMS
         isApplyingSettings = false
         playback.setPitch(semitones: pitchSemitones)
         playback.setTempo(rate: tempoRate)
@@ -1142,7 +1155,8 @@ final class AppModel: ObservableObject {
             pitchSemitones: pitchSemitones,
             tempoRate: tempoRate,
             loopRegion: loopRegion,
-            chordProTranspose: chordProTranspose
+            chordProTranspose: chordProTranspose,
+            chordProTimingOffsetMS: chordProTimingOffsetMS
         )
         scheduleSave()
     }

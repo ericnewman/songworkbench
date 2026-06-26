@@ -654,6 +654,7 @@ private struct ChordProTabEditor: View {
                     .font(.swDisplay(11))
                     .foregroundStyle(Color.swTextSecondary)
                     .help("Show a beat-synced bouncing ball over the current lyric line")
+                timingOffsetControl
                 Toggle("Beat dots", isOn: $beatDotsEnabled)
                     .toggleStyle(.checkbox)
                     .font(.swDisplay(11))
@@ -836,7 +837,10 @@ private struct ChordProTabEditor: View {
         let base =
             model.activePlaybackSource == .stemMix
             ? stemPlayback.currentTime : playback.currentTime
-        return model.isActivePlaybackPlaying ? base + Self.highlightLeadSeconds : base
+        let lead = model.isActivePlaybackPlaying ? base + Self.highlightLeadSeconds : base
+        // Render-only: shift where the ball/highlight is drawn by the user's tuned
+        // offset. Audio playback time is untouched. Single source: model.chordProTimingOffsetMS.
+        return lead + Double(model.chordProTimingOffsetMS) / 1000.0
     }
 
     /// Drives the karaoke bouncing ball over the active lyric line during playback.
@@ -845,6 +849,42 @@ private struct ChordProTabEditor: View {
     /// Gaps shorter than this don't get a waiting ball — only noticeable instrumental
     /// stretches (intros, breaks) park the ball at the upcoming line.
     private static let waitingBallMinimumGap: TimeInterval = 2
+
+    /// Compact render-only timing-offset tuner for the bouncing ball / position
+    /// indicator. −500…+500 ms, center = 0. Only shown when the ball is enabled.
+    @ViewBuilder private var timingOffsetControl: some View {
+        if bouncingBallEnabled {
+            let offsetBinding = Binding<Double>(
+                get: { Double(model.chordProTimingOffsetMS) },
+                set: { raw in
+                    // Center detent: snap small drags back to exactly 0.
+                    let snapped = abs(raw) < 15 ? 0 : raw
+                    model.chordProTimingOffsetMS = Int(snapped.rounded())
+                }
+            )
+            HStack(spacing: 4) {
+                Text("Timing")
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextSecondary)
+                Slider(value: offsetBinding, in: -500...500)
+                    .frame(width: 90)
+                    .help(
+                        "Shift the bouncing ball earlier/later relative to playback "
+                            + "(render only; does not change audio). Reset to remove the offset.")
+                let sign = model.chordProTimingOffsetMS > 0 ? "+" : ""
+                Text("\(sign)\(model.chordProTimingOffsetMS) ms")
+                    .font(.swDisplay(11).monospacedDigit())
+                    .foregroundStyle(Color.swTextSecondary)
+                    .frame(width: 52, alignment: .leading)
+                Button("Reset") { model.chordProTimingOffsetMS = 0 }
+                    .font(.swDisplay(11))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.swTextSecondary)
+                    .disabled(model.chordProTimingOffsetMS == 0)
+                    .help("Reset timing offset to 0 ms")
+            }
+        }
+    }
 
     private var beatBallInput: BeatBallInput? {
         guard bouncingBallEnabled else { return nil }
