@@ -510,6 +510,8 @@ private struct ChordTimelineEditor: View {
             "Full recording fallback"
         case .vocalsStem:
             "Vocal stem"
+        case .liveCapture:
+            "Live capture"
         }
     }
 

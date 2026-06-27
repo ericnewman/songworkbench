@@ -4,6 +4,7 @@ struct AnalysisWorkspaceView: View {
     @ObservedObject var model: AppModel
     @State private var showReplacementConfirmation = false
     @State private var showReferenceLyrics = false
+    @State private var showLiveCapture = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -40,6 +41,11 @@ struct AnalysisWorkspaceView: View {
                     showReferenceLyrics = true
                 }
                 .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+                Button("Live Capture", systemImage: "dot.radiowaves.left.and.right") {
+                    showLiveCapture = true
+                }
+                .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+                .help("Detect chords in real time from a loopback device, mic, or another app.")
                 if !model.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Image(systemName: "checkmark.seal.fill")
                         .foregroundStyle(Color.swMint)
@@ -72,6 +78,9 @@ struct AnalysisWorkspaceView: View {
         }
         .sheet(isPresented: $showReferenceLyrics) {
             ReferenceLyricsSheet(model: model)
+        }
+        .sheet(isPresented: $showLiveCapture) {
+            LiveCaptureSheet(model: model)
         }
     }
 

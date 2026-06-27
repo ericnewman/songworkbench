@@ -1485,6 +1485,52 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Applies a live-captured chord chart to the selected song as a DRAFT. Reuses the same
+    /// `ChordEventReducer` + `SongAnalysisDocument` persistence as the offline path, but with
+    /// `AnalysisSourceKind.liveCapture` provenance. NO audio file is written and NO
+    /// `StoredAudioReference` is ever created — the song keeps whatever recording it had (or none).
+    /// The provenance digest is a session identity (no file to hash); `loadedFromCache` is always
+    /// false. Returns false when there is no selected song to attach the chart to.
+    @discardableResult
+    func applyLiveCaptureChart(_ analysis: SongAudioAnalysis) -> Bool {
+        guard let songID = selectedSongID else { return false }
+        let events = ChordEventReducer().events(from: analysis)
+        var document = analysisBySongID[songID] ?? SongAnalysisDocument()
+        document.estimatedBPM = analysis.beat?.bpm
+        document.beatTimes = analysis.beat?.beatTimes ?? []
+        document.estimatedKey = analysis.estimatedKey
+        document.chords = events
+        document.chordReviewState = .draft
+        document.stageRecords[.harmony] = AnalysisStageRecord(
+            state: .succeeded,
+            provenance: AnalysisProvenance(
+                sourceDigest: "livecapture-\(UUID().uuidString)",
+                sourceKind: .liveCapture,
+                engineIdentifier: "live-capture-vdsp-chroma",
+                engineVersion: "1",
+                modelIdentifier: nil,
+                modelVersion: nil,
+                configurationIdentifier: "live-\(LiveHarmonyAnalyzer.frameLength)",
+                resultSchemaVersion: SongAnalysisDocument.currentSchemaVersion,
+                completedAt: Date(),
+                loadedFromCache: false
+            ),
+            confidence: AnalysisConfidenceSummary(
+                average: analysis.chords.isEmpty
+                    ? nil
+                    : analysis.chords.map(\.confidence).reduce(0, +)
+                        / Float(analysis.chords.count),
+                lowConfidenceCount: analysis.chords.filter { $0.confidence < 0.5 }.count,
+                totalCount: analysis.chords.count
+            ),
+            errorMessage: nil
+        )
+        analysisBySongID[songID] = document
+        applyAnalysis(document)
+        scheduleSave()
+        return true
+    }
+
     private func monitorAnalysisJob(_ id: BackgroundJobID) {
         analysisMonitorTask?.cancel()
         analysisMonitorTask = Task { [weak self] in

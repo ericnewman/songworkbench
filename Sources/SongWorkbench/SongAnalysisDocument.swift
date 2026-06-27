@@ -83,6 +83,9 @@ enum AnalysisSourceKind: String, Codable, Equatable, Sendable {
     case vocalsStem
     case stemSet
     case accompanimentStem
+    /// Real-time capture (loopback / mic / system audio). No audio is ever persisted; only the
+    /// derived chart is saved. Always a draft, never loaded from cache.
+    case liveCapture
 }
 
 struct AnalysisProvenance: Codable, Equatable, Sendable {
@@ -112,7 +115,9 @@ struct AnalysisStageRecord: Codable, Equatable, Sendable {
 }
 
 struct SongAnalysisDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 5
+    // 6: added AnalysisSourceKind.liveCapture (Phase 1 live capture). Older docs decode
+    // unchanged — the new case never appears in pre-6 data.
+    static let currentSchemaVersion = 6
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
