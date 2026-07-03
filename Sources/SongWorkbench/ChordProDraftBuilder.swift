@@ -151,9 +151,9 @@ struct ChordProDraftBuilder: Sendable {
         if lyrics.isEmpty, !chords.isEmpty {
             lines.append("{start_of_grid}")
             for start in stride(from: 0, to: chords.count, by: 8) {
-                let row = chords[start..<min(start + 8, chords.count)]
-                    .map(\.label)
-                    .joined(separator: " | ")
+                let slice = Array(chords[start..<min(start + 8, chords.count)])
+                lines.append(chordTimeDirective(for: slice))
+                let row = slice.map(\.label).joined(separator: " | ")
                 lines.append("| \(row) |")
             }
             lines.append("{end_of_grid}")
@@ -191,6 +191,7 @@ struct ChordProDraftBuilder: Sendable {
                         gapChords, start: gapStart, end: segment.start,
                         gapBars: gapBars, typicalBars: typicalBars, grid: measureGrid)
                     {
+                        if !row.chords.isEmpty { lines.append(chordTimeDirective(for: row.chords)) }
                         lines.append(row.text)
                         if !row.text.isEmpty {
                             appendRow(
@@ -251,6 +252,7 @@ struct ChordProDraftBuilder: Sendable {
                         time: segment.start, label: active.label, confidence: active.confidence),
                     at: 0)
             }
+            if !segmentChords.isEmpty { lines.append(chordTimeDirective(for: segmentChords)) }
             lines.append(render(segment: segment, chords: segmentChords))
             appendRow(
                 kind: .lyric(ordinal: index),
@@ -277,6 +279,7 @@ struct ChordProDraftBuilder: Sendable {
                     gapBars: bars(from: lastLyricEnd, to: songEnd, input: input),
                     typicalBars: typicalBars, grid: measureGrid)
                 {
+                    if !row.chords.isEmpty { lines.append(chordTimeDirective(for: row.chords)) }
                     lines.append(row.text)
                     if !row.text.isEmpty {
                         appendRow(
@@ -371,6 +374,31 @@ struct ChordProDraftBuilder: Sendable {
         return offsets
     }
 
+    /// B5: the `x_chord_times` round-trip carrier directive — one line, immediately preceding
+    /// the rendered row/line it annotates, listing every chord event actually sounding there as
+    /// an exact `time:label` pair (semicolon-separated; chord labels never contain `:` or `;`).
+    /// This is the ONLY place an exact chord timestamp is written into the ChordPro TEXT itself —
+    /// everywhere else (inline `[Chord]` markup, bar-aligned chord-only rows) a chord's position
+    /// only ever encodes its time approximately (proportional character offset, or a bar/beat
+    /// cell on the grid), and the app's real per-event timestamps live only in the separate
+    /// in-memory `SongTimeline`/analysis cache. Embedding them here means a `.cho` file's exact
+    /// chord timing survives being hand-edited, shared, or re-imported after that cache is gone
+    /// or invalidated — see `ChordProChordTimeCarrier.parse(_:)` for the reader side.
+    ///
+    /// `x_` is the ChordPro convention for app-specific extensions other ChordPro tools should
+    /// silently ignore: `ChordProParser` already stores any `{...}` line verbatim regardless of
+    /// its key, and `ChordProPreviewDocument`'s directive dispatcher already falls back to an
+    /// opaque, harmless `.directive` case for anything it doesn't specifically recognize — so
+    /// this directive is safe to emit without touching either parser.
+    private func chordTimeDirective(for events: [RenderableChordEvent]) -> String {
+        let pairs =
+            events
+            .sorted { $0.time < $1.time }
+            .map { "\(String(format: "%.3f", $0.time)):\($0.label)" }
+            .joined(separator: ";")
+        return "{x_chord_times: \(pairs)}"
+    }
+
     private func directiveValue(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\n", with: " ")
@@ -438,6 +466,14 @@ struct ChordProDraftBuilder: Sendable {
         let start: TimeInterval
         let end: TimeInterval
         let chordTimes: [TimeInterval]
+        /// The real chord events actually rendered in this row (in time order), including any
+        /// synthetic sustain restatement used to keep an empty slice non-blank — used to emit
+        /// this row's `x_chord_times` round-trip directive (B5). Deliberately NOT the same thing
+        /// as every `[chord]` token `chordOnlyLine`'s text contains: a bar that merely holds a
+        /// chord across several bars re-prints that one symbol with no new timestamped event, so
+        /// this list (unlike the rendered text) has exactly one entry per genuine chord-sounding
+        /// fact, which is what a lossless round-trip needs.
+        fileprivate let chords: [RenderableChordEvent]
     }
 
     /// Renders an instrumental span as one or more chord-only lines: a span longer than
@@ -458,11 +494,13 @@ struct ChordProDraftBuilder: Sendable {
         // sized: a long outro should wrap into more short rows, not widen each row.
         let count = min(max(1, Int((gapBars / max(typicalBars, 1)).rounded())), 16)
         guard count > 1, end > start else {
+            let sorted = chords.sorted { $0.time < $1.time }
             return [
                 InstrumentalRowLine(
                     text: chordOnlyLine(chords, start: start, end: end, grid: grid),
                     start: start, end: end,
-                    chordTimes: chords.map(\.time).sorted())
+                    chordTimes: sorted.map(\.time),
+                    chords: sorted)
             ]
         }
         let slice = (end - start) / Double(count)
@@ -479,11 +517,13 @@ struct ChordProDraftBuilder: Sendable {
                 ]
             }
             carried = sliceChords.last ?? carried
+            let sortedSliceChords = sliceChords.sorted { $0.time < $1.time }
             rows.append(
                 InstrumentalRowLine(
                     text: chordOnlyLine(sliceChords, start: sliceStart, end: sliceEnd, grid: grid),
                     start: sliceStart, end: sliceEnd,
-                    chordTimes: sliceChords.map(\.time).sorted()))
+                    chordTimes: sortedSliceChords.map(\.time),
+                    chords: sortedSliceChords))
         }
         return rows
     }
@@ -689,6 +729,44 @@ private struct RenderableChordEvent: Equatable {
     let time: TimeInterval
     let label: String
     let confidence: Float?
+}
+
+/// Reads back the `x_chord_times` directives `ChordProDraftBuilder.chordTimeDirective(for:)`
+/// emits (B5), recovering each chord event's exact original `(time, label)` pair straight from
+/// the `.cho` TEXT — no dependency on the app's separate analysis cache/`SongTimeline`. This is
+/// the "carrier" round-tripping: a hand-edited or foreign-re-imported chart still carries
+/// lossless chord timing even when that cache is missing or invalidated.
+///
+/// Deliberately just a parser, not wired into any import path: turning recovered entries back
+/// into a live `SongTimeline`/chord-editing timeline is a separate, larger decision (would need
+/// to reconcile with confidence thresholds, existing cached analysis, etc.) left for a future
+/// backlog item if it's ever needed — this only proves the carrier itself is lossless.
+enum ChordProChordTimeCarrier {
+    struct Entry: Equatable {
+        let time: TimeInterval
+        let label: String
+    }
+
+    private static let prefix = "{x_chord_times:"
+
+    /// Every `x_chord_times` entry found in `source`, in file order — which is chronological
+    /// order, since the builder always emits rows top-to-bottom in time order.
+    static func parse(_ source: String) -> [Entry] {
+        var entries: [Entry] = []
+        for rawLine in source.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix(prefix), trimmed.hasSuffix("}") else { continue }
+            let payload = trimmed.dropFirst(prefix.count).dropLast(1)
+                .trimmingCharacters(in: .whitespaces)
+            guard !payload.isEmpty else { continue }
+            for pair in payload.split(separator: ";") {
+                let parts = pair.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2, let time = TimeInterval(parts[0]) else { continue }
+                entries.append(Entry(time: time, label: String(parts[1])))
+            }
+        }
+        return entries
+    }
 }
 
 /// Infers a song's vocal section structure (verses and choruses) from its lyric lines, using the
