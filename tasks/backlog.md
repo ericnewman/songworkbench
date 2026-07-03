@@ -28,8 +28,19 @@ Touches: WorkspaceEditorsView.swift, AudioPlaybackService/StemPlaybackService, S
    energy, which is what made the old lead necessary. Scaling a lead that's now always 0
    by `1/tempoRate` is still 0 — nothing left to do. Checked before implementing rather
    than adding dead rate-scaling code. (todo.md: 2026-06-27 Phase 1 item D)
-4. **Q2: per-word onset snapping** — snap word.start to the nearest true vocal onset via a
-   new `VocalWordOnsetAligner`. Builds on #3. (todo.md: 2026-07-01 "Vocal-energy alignment")
+4. [x] **Q2: per-word onset snapping** — ALREADY DONE, no code change needed: commit 91e700c
+   (same commit that resolved #3) shipped `InstrumentOnsetDetector` (energy-flux onset
+   detection: RMS envelope → positive first-difference → adaptive noise-floor/peak
+   threshold → spaced peak-picking) run on the vocals stem, and `VocalWordOnsetAligner`
+   snaps each word's start to the nearest such onset within tolerance. Wired in as the
+   FINAL precision pass in `AnalysisStage.swift` (after line distribution, before the
+   melisma normalizer). Existing tests: testInstrumentOnsetDetectorFindsTwoBurstsSeparated
+   BySilence/ReturnsEmptyForDegenerateInput, testVocalWordOnsetAlignerSnapsNearWordsAndRe
+   DerivesSegment/IsNoOpWithoutOnsets/KeepsWordsNondecreasingAndPositiveDuration (all in
+   AudioAnalysisTests.swift). Caught this BEFORE building a duplicate detector — asked Eric
+   to choose an onset-detection design (he picked "new energy-onset detector"), then found
+   the code already existed with exactly that design. Backlog checklist was stale, not the
+   product. (todo.md: 2026-07-01 "Vocal-energy alignment")
 15. **Split the ChordPro tab: restore a true ChordPro view + a new Review/Annotate tab.**
     Not previously tracked anywhere (todo.md, memory.md, EditorTab enum all checked — this
     was a verbal/undiscovered requirement until 2026-07-03 chat). Numbered 15 (not
