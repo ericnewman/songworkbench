@@ -218,6 +218,34 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published private(set) var analysisJobSnapshot: BackgroundJobSnapshot?
+    /// Live import/localization progress ("Importing 2 of 5: …"); nil when idle. Feeds the
+    /// always-visible background-status line.
+    @Published private(set) var importStatus: String?
+
+    /// One-line description of whatever the app is doing in the background right now, for
+    /// the persistent status line at the bottom of the main window. `nil` = idle.
+    var backgroundActivityStatus: String? {
+        if let importStatus { return importStatus }
+        if let bulk = reanalyzeAllStatus {
+            return "Re-analyzing \(bulk.index) of \(bulk.total): \(bulk.title)…"
+        }
+        if isSongAnalysisRunning {
+            if let progress = songAnalysisProgress {
+                let percent = Int((progress.fractionCompleted * 100).rounded())
+                return "Analyzing… \(progress.message) (\(percent)%)"
+            }
+            return "Analyzing song…"
+        }
+        if isExporting {
+            return "Exporting mix… \(Int((exportProgress * 100).rounded()))%"
+        }
+        if let (id, progress) = modelInstallProgress.min(by: { $0.key < $1.key }) {
+            let name = ModelCatalog.all.first { $0.id == id }?.displayName ?? "model"
+            return "Downloading \(name)… \(Int((progress * 100).rounded()))%"
+        }
+        if isLoadingWaveform { return "Loading waveform…" }
+        return nil
+    }
     static let transcriptionModeDefaultsKey = "transcriptionMode"
     @Published var transcriptionMode: TranscriptionMode =
         UserDefaults.standard.string(forKey: AppModel.transcriptionModeDefaultsKey)
@@ -890,7 +918,13 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             var localizedSongs: [Song] = []
             var firstFailure: String?
-            for song in imported {
+            for (index, song) in imported.enumerated() {
+                // Surface the copy/download step — an iCloud item can take a while to
+                // materialize and the song only appears in the list afterwards.
+                self.importStatus =
+                    imported.count == 1
+                    ? "Importing “\(song.title)”…"
+                    : "Importing \(index + 1) of \(imported.count): \(song.title)…"
                 switch await AppModel.localizedSource(for: song.url) {
                 case .success(let localURL):
                     localizedSongs.append(Song(url: localURL))
@@ -898,6 +932,7 @@ final class AppModel: ObservableObject {
                     if firstFailure == nil { firstFailure = reason }
                 }
             }
+            self.importStatus = nil
             let existingIDs = Set(self.songs.map(\.id))
             let newSongs = localizedSongs.filter { !existingIDs.contains($0.id) }
             self.songs.append(contentsOf: newSongs)
@@ -907,6 +942,11 @@ final class AppModel: ObservableObject {
             }
             if let firstFailure { self.projectErrorMessage = firstFailure }
             self.scheduleSave()
+            // Newly imported songs go straight into analysis (sequentially for bulk
+            // imports), so a fresh song is ready to practice without another click.
+            if !newSongs.isEmpty, !self.isSongAnalysisRunning {
+                self.reanalyzeNext(in: newSongs, total: newSongs.count)
+            }
         }
     }
 

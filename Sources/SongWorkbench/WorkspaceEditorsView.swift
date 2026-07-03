@@ -64,30 +64,32 @@ struct PlaybackTransportCard: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Label("Playback Controls", systemImage: "play.circle")
-                    .font(.swDisplay(13, weight: .semibold))
+        // One THIN full-width bar: identity · transport · scrubber (flexible) · pitch/speed.
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Playback", systemImage: "play.circle")
+                    .font(.swDisplay(12, weight: .semibold))
                     .foregroundStyle(Color.swTextPrimary)
                     .lineLimit(1)
-                Spacer()
                 Text(sourceLabel)
-                    .font(.swDisplay(11))
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swTextSecondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
                     .background(Color.swSurface, in: Capsule())
             }
+            .fixedSize()
 
-            HStack(spacing: 24) {
+            HStack(spacing: 12) {
                 Button("Back 10 Seconds", systemImage: "gobackward.10") {
                     model.skipActivePlayback(by: -10)
                 }
                 .labelStyle(.iconOnly)
-                .font(.system(size: 24))
-                .swAccentHoverBorder(cornerRadius: 8)
+                .font(.system(size: 18))
+                .swAccentHoverBorder(cornerRadius: 6)
+                .help("Back 10 seconds")
 
-                playButton(
+                compactPlayButton(
                     title: model.isActivePlaybackPlaying ? "Pause Song" : "Play Song",
                     disabled: model.selectedSong == nil,
                     isPlaying: model.isActivePlaybackPlaying,
@@ -96,10 +98,11 @@ struct PlaybackTransportCard: View {
                     model.toggleActivePlayback()
                 }
 
-                playButton(
+                compactPlayButton(
                     title: stemPlayback.isPlaying ? "Pause Stem Mix" : "Play Stem Mix",
                     disabled: !stemPlayback.isLoaded,
                     isPlaying: stemPlayback.isPlaying,
+                    symbolVariant: "square.stack",
                     help: stemPlayback.isLoaded
                         ? "Play or pause the separated stem mix"
                         : "Run Stems separation to enable mix playback"
@@ -111,17 +114,17 @@ struct PlaybackTransportCard: View {
                     model.skipActivePlayback(by: 10)
                 }
                 .labelStyle(.iconOnly)
-                .font(.system(size: 24))
-                .swAccentHoverBorder(cornerRadius: 8)
+                .font(.system(size: 18))
+                .swAccentHoverBorder(cornerRadius: 6)
+                .help("Forward 10 seconds")
             }
+            .fixedSize()
 
-            // Compact scrubber so seeking works from every editor view, not just the
-            // sidebar's waveform card (which hosts its own instance of this slider).
+            // Compact scrubber (~3in) — enough travel for seeking without dominating the bar.
             PlaybackProgressSlider(model: model)
+                .frame(width: 220)
 
-            // Pitch & speed practice controls (moved here from the sidebar card so they're
-            // available in every view), with a one-tap reset.
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 VStack(spacing: 1) {
                     Slider(
                         value: Binding(
@@ -132,21 +135,23 @@ struct PlaybackTransportCard: View {
                             PitchShift.range.lowerBound)...Double(PitchShift.range.upperBound),
                         step: 1
                     )
-                    .controlSize(.small)
+                    .controlSize(.mini)
                     Text("Pitch \(compactPitchLabel)")
-                        .font(.swDisplay(10))
+                        .font(.swDisplay(9))
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
+                .frame(width: 108)
                 .help("Pitch shift (semitones); playback speed is unaffected")
                 VStack(spacing: 1) {
                     Slider(value: $model.tempoRate, in: 0.5...1.5, step: 0.05)
-                        .controlSize(.small)
+                        .controlSize(.mini)
                     Text("Speed \(Int((model.tempoRate * 100).rounded()))%")
-                        .font(.swDisplay(10))
+                        .font(.swDisplay(9))
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
+                .frame(width: 108)
                 .help("Playback speed (pitch preserved)")
                 Button("Reset Pitch and Speed", systemImage: "arrow.counterclockwise") {
                     model.pitchSemitones = 0
@@ -156,9 +161,10 @@ struct PlaybackTransportCard: View {
                 .disabled(model.pitchSemitones == 0 && model.tempoRate == 1)
                 .help("Reset pitch and speed")
             }
+            .fixedSize()
         }
-        .frame(maxWidth: .infinity)
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .swSurfacePanel(cornerRadius: 12)
     }
 
@@ -173,31 +179,33 @@ struct PlaybackTransportCard: View {
         return semitones > 0 ? "+\(semitones) st" : "\(semitones) st"
     }
 
-    /// A large play/pause button with a caption naming the track it controls.
+    /// A compact play/pause icon button (badge overlay distinguishes the stem-mix control;
+    /// the caption moved into the tooltip to keep the bar thin).
     @ViewBuilder
-    private func playButton(
+    private func compactPlayButton(
         title: String,
         disabled: Bool,
         isPlaying: Bool,
+        symbolVariant: String? = nil,
         help: String,
         action: @escaping () -> Void
     ) -> some View {
-        VStack(spacing: 5) {
-            Button(title, systemImage: isPlaying ? "pause.circle.fill" : "play.circle.fill") {
-                action()
+        Button(title, systemImage: isPlaying ? "pause.circle.fill" : "play.circle.fill") {
+            action()
+        }
+        .labelStyle(.iconOnly)
+        .font(.system(size: 26))
+        .disabled(disabled)
+        .swAccentHoverBorder(cornerRadius: 13)
+        .overlay(alignment: .bottomTrailing) {
+            if let symbolVariant {
+                Image(systemName: symbolVariant)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(
+                        disabled ? Color.swTextSecondary.opacity(0.5) : Color.swTextSecondary
+                    )
+                    .offset(x: 3, y: 2)
             }
-            .labelStyle(.iconOnly)
-            .font(.system(size: 46))
-            .disabled(disabled)
-            .swAccentHoverBorder(cornerRadius: 24)
-
-            Text(title)
-                .font(.swDisplay(10))
-                .foregroundStyle(
-                    disabled ? Color.swTextSecondary.opacity(0.5) : Color.swTextSecondary
-                )
-                .lineLimit(1)
-                .fixedSize()
         }
         .help(help)
     }
@@ -678,8 +686,15 @@ private struct ChordTimelineEditor: View {
                 )
             }
             HStack(spacing: 12) {
-                Label("ChordPro confidence", systemImage: "line.3.horizontal.decrease.circle")
-                    .font(.callout)
+                Button {
+                    model.chordConfidenceThreshold = 0.5
+                } label: {
+                    Label("ChordPro confidence", systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.callout)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Click to reset the confidence threshold to its default (50%)")
                 Slider(
                     value: Binding(
                         get: { Double(model.chordConfidenceThreshold) },

@@ -57,9 +57,25 @@ private struct SongSidebar: View {
                     .tag(song.id)
                 }
             } header: {
-                Text("Songs")
-                    .font(.swDisplay(12, weight: .semibold))
-                    .foregroundStyle(Color.swTextSecondary)
+                HStack(spacing: 8) {
+                    Text("Songs")
+                        .font(.swDisplay(12, weight: .semibold))
+                        .foregroundStyle(Color.swTextSecondary)
+                    Spacer()
+                    // Library actions live with the library list.
+                    Button("Import Songs", systemImage: "plus") {
+                        model.isImporterPresented = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Import audio files")
+                    Button("Open from Music", systemImage: "music.note") {
+                        model.isMusicLibraryPickerPresented = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Open a track from your Music library")
+                }
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -117,44 +133,64 @@ private struct SongSidebar: View {
     }
 }
 
-/// Header card with the library/analysis actions as full labeled buttons — the same
-/// actions that used to be tiny icon-only items in the window toolbar.
+/// Always-visible one-line status bar at the bottom of the main window: shows whatever the
+/// app is doing in the background (importing/copying a song, analyzing, exporting,
+/// downloading a model, loading a waveform) so long-running work is never invisible.
+private struct BackgroundStatusBar: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let status = model.backgroundActivityStatus {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.65)
+                    .frame(width: 14, height: 14)
+                Text(status)
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else {
+                Circle()
+                    .fill(Color.swMint.opacity(0.8))
+                    .frame(width: 6, height: 6)
+                Text("Ready")
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swTextSecondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 3)
+        .frame(height: 22)
+        .background(Color.swSurface.opacity(0.7))
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+}
+
+/// Header card with the library/analysis actions as full labeled buttons — a single thin
+/// row matching the playback bar's height.
 private struct SongActionsCard: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Actions")
-                .font(.swDisplay(11))
-                .foregroundStyle(Color.swTextSecondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(Color.swSurface, in: Capsule())
-
-            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-                GridRow {
-                    Button("Import Songs", systemImage: "plus") {
-                        model.isImporterPresented = true
-                    }
-                    Button("Open from Music", systemImage: "music.note") {
-                        model.isMusicLibraryPickerPresented = true
-                    }
-                }
-                GridRow {
-                    Button("Remove Song", systemImage: "trash") {
-                        if let song = model.selectedSong {
-                            model.removeSong(song)
-                        }
-                    }
-                    .disabled(model.selectedSong == nil)
-                    .help("Remove the selected song from the library (the file is kept)")
-                    AnalyzeSongButton(model: model)
-                        .buttonStyle(.borderedProminent)
+        HStack(spacing: 8) {
+            Button("Remove Song", systemImage: "trash") {
+                if let song = model.selectedSong {
+                    model.removeSong(song)
                 }
             }
-            .buttonStyle(.bordered)
+            .disabled(model.selectedSong == nil)
+            .help("Remove the selected song from the library (the file is kept)")
+            AnalyzeSongButton(model: model)
+                .buttonStyle(.borderedProminent)
         }
-        .padding(12)
+        .buttonStyle(.bordered)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .swSurfacePanel(cornerRadius: 12)
         .fixedSize()
     }
@@ -167,19 +203,45 @@ private struct PlayerView: View {
     @State private var selectedEditor: EditorTab = .lyrics
     /// Mirrors the stem-mix rail's own expansion state so the rail's WIDTH shrinks too.
     @AppStorage(StemMixSidebar.expansionDefaultsKey) private var stemRailExpanded = true
+    /// Initial height of the songs list in the left split: the persisted value from the
+    /// last session, defaulting to a third of the screen. Captured ONCE at init (the split
+    /// view owns the height after that; we only record the user's adjustments).
+    @State private var songListIdealHeight: CGFloat
+    private static let songListHeightDefaultsKey = "songListHeight"
 
     init(model: AppModel) {
         self.model = model
         playback = model.playback
+        let stored = UserDefaults.standard.double(forKey: Self.songListHeightDefaultsKey)
+        let screenThird = (NSScreen.main?.visibleFrame.height ?? 900) / 3
+        _songListIdealHeight = State(initialValue: stored >= 150 ? stored : screenThird)
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            mainColumns
+            BackgroundStatusBar(model: model)
+        }
+    }
+
+    private var mainColumns: some View {
         HStack(alignment: .top, spacing: 16) {
             // Left column: the song list on top, the tool cards below it (resizable divider), so
             // the editor gets the whole rest of the window.
             VSplitView {
                 SongSidebar(model: model)
-                    .frame(minHeight: 150, idealHeight: 300)
+                    .frame(minHeight: 150, idealHeight: songListIdealHeight)
+                    // Persist divider adjustments so the songs area keeps its height
+                    // across sessions (default: a third of the screen).
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.onChange(of: geo.size.height) { _, height in
+                                guard height >= 150 else { return }
+                                UserDefaults.standard.set(
+                                    Double(height), forKey: Self.songListHeightDefaultsKey)
+                            }
+                        }
+                    )
                 ScrollView {
                     VStack(spacing: 18) {
                         waveformContent
@@ -191,53 +253,60 @@ private struct PlayerView: View {
             }
             .frame(width: 380)
 
-            // Main column: the segment/editor view, maximized. The playback transport sits in
-            // the upper-left corner of this column so play/pause/rewind stays available across
-            // ALL editor views (Lyrics, Stems, ChordPro), not just when the sidebar shows it.
+            // Main column: the segment/editor view, maximized. The playback bar spans the
+            // full width up top (thin, scrubber gets the extra width) so play/pause/seek
+            // stays available across ALL editor views (Lyrics, Stems, ChordPro).
             VStack(alignment: .center, spacing: 12) {
-                HStack(alignment: .top, spacing: 16) {
-                    PlaybackTransportCard(model: model)
-                        .frame(width: 320)
-                    if let song = model.selectedSong {
-                        VStack(spacing: 4) {
-                            Text(song.title)
-                                .font(.swDisplay(22, weight: .semibold))
-                                .foregroundStyle(Color.swTextPrimary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
-                            Text(song.url.lastPathComponent)
-                                .font(.swMono(11))
-                                .foregroundStyle(Color.swTextSecondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
-                    } else {
-                        Spacer()
+                // Title first, then one thin row: playback controls left, actions right.
+                if let song = model.selectedSong {
+                    VStack(spacing: 4) {
+                        Text(song.title)
+                            .font(.swDisplay(22, weight: .semibold))
+                            .foregroundStyle(Color.swTextPrimary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                        Text(song.url.lastPathComponent)
+                            .font(.swMono(11))
+                            .foregroundStyle(Color.swTextSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-                    // Library/analysis actions as real labeled buttons (formerly tiny
-                    // window-toolbar icons), in a header card matching the transport.
-                    SongActionsCard(model: model)
+                    .frame(maxWidth: .infinity)
                 }
 
-                Picker("Editor", selection: $selectedEditor) {
-                    ForEach(EditorTab.allCases) { tab in
-                        Label(tab.title, systemImage: tab.systemImage).tag(tab)
+                // ONE control row — playback · editor tabs · song actions — so the editor
+                // below gets every remaining vertical point.
+                HStack(alignment: .center, spacing: 12) {
+                    PlaybackTransportCard(model: model)
+
+                    Spacer(minLength: 8)
+
+                    Picker("Editor", selection: $selectedEditor) {
+                        ForEach(EditorTab.allCases) { tab in
+                            Label(tab.title, systemImage: tab.systemImage).tag(tab)
+                        }
                     }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 680)
-                .background {
-                    // ⌘1…⌘5 switch editor tabs (also enables hands-free navigation).
-                    ForEach(Array(EditorTab.allCases.enumerated()), id: \.element) { index, tab in
-                        Button("Show \(tab.title)") { selectedEditor = tab }
-                            .keyboardShortcut(
-                                KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(minWidth: 280, maxWidth: 560)
+                    .background {
+                        // ⌘1…⌘4 switch editor tabs (also enables hands-free navigation).
+                        ForEach(
+                            Array(EditorTab.allCases.enumerated()), id: \.element
+                        ) { index, tab in
+                            Button("Show \(tab.title)") { selectedEditor = tab }
+                                .keyboardShortcut(
+                                    KeyEquivalent(Character(String(index + 1))),
+                                    modifiers: .command)
+                        }
+                        .opacity(0)
+                        .accessibilityHidden(true)
                     }
-                    .opacity(0)
-                    .accessibilityHidden(true)
+
+                    Spacer(minLength: 8)
+
+                    // Library/analysis actions as real labeled buttons, matching the bar.
+                    SongActionsCard(model: model)
                 }
 
                 if model.selectedSong != nil {
