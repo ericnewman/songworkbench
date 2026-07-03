@@ -12,3 +12,4 @@ Derived/
 .swiftpm/xcode/
 SongWorkbench.xcodeproj/project.xcworkspace/xcuserdata/
 .claude/
+.worktrees/
