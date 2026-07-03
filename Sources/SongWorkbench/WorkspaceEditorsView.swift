@@ -260,9 +260,10 @@ struct PlaybackProgressSlider: View {
         }
     }
 
-    private var activeDuration: TimeInterval {
-        model.activePlaybackSource == .stemMix ? stemPlayback.duration : playback.duration
-    }
+    // Duration for whichever source is active — delegates to `AppModel.activeClock` rather
+    // than re-deriving the branch here; `playback`/`stemPlayback` above are kept only so
+    // SwiftUI's `.onChange` has concrete `@Published` values to observe.
+    private var activeDuration: TimeInterval { model.activePlaybackDuration }
 
     private func updateSeekPosition(_ value: TimeInterval, for source: PlaybackSource) {
         guard !isSeeking, model.activePlaybackSource == source else { return }

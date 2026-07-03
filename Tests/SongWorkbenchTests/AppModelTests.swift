@@ -203,6 +203,43 @@ final class AppModelTests: XCTestCase {
         model.playback.pause()
     }
 
+    /// `activeClock` is the single source of truth `activePlaybackTime`/`activePlaybackDuration`/
+    /// `isActivePlaybackPlaying`/`seekActivePlayback` all delegate through — this verifies it
+    /// resolves to the correct concrete service (by identity) in both playback-source states,
+    /// so no call site needs its own `activePlaybackSource == .stemMix ? … : …` branch.
+    func testActiveClockResolvesToTheCorrectConcreteServiceForBothSources() async throws {
+        let songURL = try makeSilentWAV(frameCount: 16_000)
+        let stemDirectory = try makeStemDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: songURL)
+            try? FileManager.default.removeItem(at: stemDirectory)
+        }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [songURL])
+        try await Task.sleep(for: .milliseconds(120))
+        let song = try XCTUnwrap(model.songs.first)
+        model.select(song)
+        try model.importStems(from: stemDirectory)
+
+        XCTAssertEqual(model.activePlaybackSource, .recording)
+        XCTAssertTrue(model.activeClock === model.playback)
+        XCTAssertEqual(model.activePlaybackTime, model.playback.currentTime)
+        XCTAssertEqual(model.activePlaybackDuration, model.playback.duration)
+        XCTAssertEqual(model.isActivePlaybackPlaying, model.playback.isPlaying)
+
+        model.toggleStemPlayback()
+
+        XCTAssertEqual(model.activePlaybackSource, .stemMix)
+        XCTAssertTrue(model.activeClock === model.stemPlayback)
+        XCTAssertEqual(model.activePlaybackTime, model.stemPlayback.currentTime)
+        XCTAssertEqual(model.activePlaybackDuration, model.stemPlayback.duration)
+        XCTAssertEqual(model.isActivePlaybackPlaying, model.stemPlayback.isPlaying)
+
+        model.seekActivePlayback(to: 0.3)
+        XCTAssertEqual(model.stemPlayback.currentTime, 0.3, accuracy: 0.02)
+        model.stemPlayback.pause()
+    }
+
     func testChangingConfidenceRebuildsOnlyUnreviewedGeneratedChordPro() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
