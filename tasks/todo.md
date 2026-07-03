@@ -711,6 +711,20 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   directives, C1 reference-first workflow, phrase-structure grouper, Lyric Blending,
   legacy ball-heuristic deletion.
 
+## 2026-07-03 — Whisper decode collapse ("second half missing", slow analysis)
+- Data-verified (cache c74117de, 225.6s song, decode2-1.00): whisper.cpp emitted segments
+  0–66s then JUMPED to 204s — the middle of the song was never transcribed (5 segments
+  total). The user's 0.80 decode-speed run (7385b31f) recovered all 38 segments, at the
+  cost of a slow-render pass + 25% longer decode = "extremely long".
+- Fix: `TranscriptionVoicedCoverage.fraction` (merged segment spans vs strict-VAD voiced
+  time). On cache miss: if Accuracy at 1.0× covers < 60% of the sung audio, retry ONCE at
+  0.85× and keep the better result (cached under the original key). On cache hit: a cached
+  low-coverage Accuracy result is treated as a MISS (self-heals caches poisoned before the
+  rescue existed). 2 unit tests on the real failure shape.
+- User guidance: decode-speed slider can stay at 100% — the rescue engages only when a
+  song actually needs it. Bulk-import auto-analysis is sequential by design (stems per
+  song are the slow part).
+
 ## Continue (2026-07-02 late) — A3 + B1 done
 - [x] A3 `ChorusChordConsensus`: repeated lyric lines (normalized text, ≥2 instances) vote
       confidence-weighted per beat-offset slot; dissenting labels rewritten only on a ≥0.6

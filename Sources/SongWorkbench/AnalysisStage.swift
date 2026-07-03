@@ -228,18 +228,18 @@ struct TranscriptionStage: AnalysisStageRunning {
                     "decode2-\(String(format: "%.2f", decodeRate))",
                 ].joined(separator: "|")
             )
-            let result: TranscriptionResult
-            let loadedFromCache: Bool
-            if let cached: TranscriptionResult = try await context.cache?.value(
-                forSourceHash: audioDigest,
-                engine: cacheEngine
-            ) {
-                result = cached
-                loadedFromCache = true
-                stageProgress(1, "loadedFromCache")
-            } else {
+            // Strict VAD is needed both for the decode-collapse check below and for the tail
+            // gates further down — computed once here.
+            let strictVAD = VocalActivityEnvelope.Configuration.strictVocalPresence
+            let strictVoiced =
+                (try? VocalActivityEnvelope.voicedIntervals(
+                    url: audioURL, configuration: strictVAD)) ?? []
+
+            /// One transcription pass at `rate` (slow-rendering a temp copy when < 1.0), with
+            /// timestamps mapped back to the real timeline.
+            func transcribeOnce(rate: Double) async throws -> TranscriptionResult {
                 let requestID = UUID()
-                let usesSlowDecode = decodeRate < 0.999
+                let usesSlowDecode = rate < 0.999
                 let decodeURL: URL
                 if usesSlowDecode {
                     stageProgress(0, "preparingAudio")
@@ -247,7 +247,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                         .appendingPathComponent("decode-\(requestID.uuidString).wav")
                     try await OfflineAudioExporter().export(
                         sourceURL: audioURL, destinationURL: temporary,
-                        settings: OfflineExportSettings(pitchSemitones: 0, tempoRate: decodeRate))
+                        settings: OfflineExportSettings(pitchSemitones: 0, tempoRate: rate))
                     decodeURL = temporary
                 } else {
                     decodeURL = audioURL
@@ -271,13 +271,58 @@ struct TranscriptionStage: AnalysisStageRunning {
                     throw CancellationError()
                 }
                 // Map slowed-decode timestamps back onto the real timeline before caching/use.
-                // The slowed file runs at `decodeRate` of normal speed, so a slowed-time t maps to
-                // real time t * decodeRate (e.g. 0.85). (Earlier 1/decodeRate over-stretched the
-                // timeline and pushed later verses past the song's end.)
-                result =
-                    usesSlowDecode
-                    ? TranscriptionTimeScaler.scaled(rawResult, by: decodeRate)
+                // The slowed file runs at `rate` of normal speed, so a slowed-time t maps to
+                // real time t * rate (e.g. 0.85). (Earlier 1/rate over-stretched the timeline
+                // and pushed later verses past the song's end.)
+                return usesSlowDecode
+                    ? TranscriptionTimeScaler.scaled(rawResult, by: rate)
                     : rawResult
+            }
+
+            let result: TranscriptionResult
+            let loadedFromCache: Bool
+            var cachedResult: TranscriptionResult? = try await context.cache?.value(
+                forSourceHash: audioDigest,
+                engine: cacheEngine
+            )
+            // Self-heal poisoned caches: a collapsed decode may already be cached from before
+            // the rescue existed. Treat a cached low-coverage Accuracy result as a miss so
+            // re-analyzing re-transcribes (and the rescue below can fix it) instead of
+            // returning the truncated lyrics forever.
+            if let cached = cachedResult, request.transcriptionMode == .accuracy,
+                let coverage = TranscriptionVoicedCoverage.fraction(
+                    of: cached, voicedIntervals: strictVoiced),
+                coverage < 0.6
+            {
+                cachedResult = nil
+            }
+            if let cached = cachedResult {
+                result = cached
+                loadedFromCache = true
+                stageProgress(1, "loadedFromCache")
+            } else {
+                var transcribed = try await transcribeOnce(rate: decodeRate)
+                // Decode-collapse rescue: whisper.cpp sometimes aborts mid-file at normal
+                // speed — it emits the early segments, then skips to the outro, silently
+                // dropping the middle of the song. When the transcription covers far less
+                // of the strictly-voiced audio than the VAD hears, retry ONCE at 0.85×
+                // (the slowed decode reliably recovers these songs) and keep the better
+                // result. Whisper/Accuracy only; never triggered by short instrumentals.
+                if request.transcriptionMode == .accuracy, decodeRate > 0.999,
+                    let coverage = TranscriptionVoicedCoverage.fraction(
+                        of: transcribed, voicedIntervals: strictVoiced),
+                    coverage < 0.6
+                {
+                    stageProgress(0, "retryingSlowedDecode")
+                    if let retry = try? await transcribeOnce(rate: 0.85),
+                        let retryCoverage = TranscriptionVoicedCoverage.fraction(
+                            of: retry, voicedIntervals: strictVoiced),
+                        retryCoverage > coverage
+                    {
+                        transcribed = retry
+                    }
+                }
+                result = transcribed
                 try await context.cache?.store(
                     result, forSourceHash: audioDigest, engine: cacheEngine)
                 loadedFromCache = false
@@ -315,10 +360,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                 hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
             let detectedOffset: TimeInterval? =
                 hasStems ? (try? VocalOffsetDetector.lastOffset(url: audioURL)) : nil
-            let strictVAD = VocalActivityEnvelope.Configuration.strictVocalPresence
-            let strictVoiced =
-                (try? VocalActivityEnvelope.voicedIntervals(
-                    url: audioURL, configuration: strictVAD)) ?? []
+            // strictVoiced computed once above (also feeds the decode-collapse rescue).
             let tailCutoff = VocalTailCutoffResolver.resolve(
                 detectedOffset: detectedOffset,
                 strictVoicedIntervals: strictVoiced,
@@ -438,6 +480,41 @@ struct TranscriptionStage: AnalysisStageRunning {
                 document.stageRecords[.transcription] = record
             }
         }
+    }
+}
+
+/// How much of the strictly-voiced (sung) audio a transcription's segments actually cover.
+/// Detects whisper.cpp decode collapses: a healthy transcription covers nearly all sung time;
+/// an aborted one (early segments, then a jump to the outro) covers a small fraction.
+enum TranscriptionVoicedCoverage {
+    /// Fraction in 0…1, or nil when there's no voiced audio to measure against.
+    static func fraction(
+        of result: TranscriptionResult,
+        voicedIntervals: [ClosedRange<TimeInterval>]
+    ) -> Double? {
+        guard !voicedIntervals.isEmpty else { return nil }
+        let voicedTotal = voicedIntervals.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
+        guard voicedTotal > 0 else { return nil }
+        // Merge segment spans so overlaps never double-count.
+        let spans = result.segments
+            .map { (start: $0.startTime, end: max($0.endTime, $0.startTime)) }
+            .sorted { $0.start < $1.start }
+        var merged: [(start: TimeInterval, end: TimeInterval)] = []
+        for span in spans {
+            if let last = merged.last, span.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, span.end)
+            } else {
+                merged.append(span)
+            }
+        }
+        var covered = 0.0
+        for voiced in voicedIntervals {
+            for span in merged {
+                covered += max(
+                    0, min(voiced.upperBound, span.end) - max(voiced.lowerBound, span.start))
+            }
+        }
+        return covered / voicedTotal
     }
 }
 

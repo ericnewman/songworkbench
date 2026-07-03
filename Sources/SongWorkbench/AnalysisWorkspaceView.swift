@@ -65,6 +65,12 @@ struct AnalysisWorkspaceView: View {
                 }
 
                 HStack {
+                    // Compact re-run right where the settings live, so changing the
+                    // transcription mode / decode speed can be applied without reaching
+                    // for the header's Analyze button.
+                    AnalyzeSongButton(model: model)
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
                     Button("Reference Lyrics", systemImage: "text.alignleft") {
                         showReferenceLyrics = true
                     }

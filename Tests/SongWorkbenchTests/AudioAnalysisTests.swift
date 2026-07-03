@@ -1304,6 +1304,48 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(out2[0].words[2].start, 48.85, accuracy: 1e-9)
     }
 
+    // MARK: - TranscriptionVoicedCoverage (whisper decode-collapse detection)
+
+    private func coverageResult(_ spans: [(Double, Double)]) -> TranscriptionResult {
+        TranscriptionResult(
+            text: "",
+            languageCode: nil,
+            sourceDuration: 226,
+            completedAt: Date(timeIntervalSince1970: 0),
+            segments: spans.map {
+                TimedTranscriptionSegment(
+                    text: "x", startTime: $0.0, endTime: $0.1, tokens: [], confidence: 0.9)
+            },
+            engine: TranscriptionEngineMetadata(
+                engineName: "test", modelName: "test", modelVersion: nil,
+                modelSizeBytes: 0,
+                license: TranscriptionModelLicense(name: "test", url: nil)))
+    }
+
+    func testCollapsedDecodeHasLowVoicedCoverage() {
+        // The real failure: transcription covers 0–66s then jumps to the outro, while the
+        // voice sings through most of the file.
+        let voiced: [ClosedRange<TimeInterval>] = [20.0...200.0]
+        let collapsed = coverageResult([(0, 66), (204, 204.4), (221, 225.6)])
+        let coverage = TranscriptionVoicedCoverage.fraction(
+            of: collapsed, voicedIntervals: voiced)
+        XCTAssertLessThan(coverage ?? 1, 0.6)
+
+        let healthy = coverageResult([(18, 100), (100, 202)])
+        XCTAssertGreaterThan(
+            TranscriptionVoicedCoverage.fraction(of: healthy, voicedIntervals: voiced) ?? 0,
+            0.95)
+    }
+
+    func testOverlappingSegmentsDoNotDoubleCountCoverage() {
+        let voiced: [ClosedRange<TimeInterval>] = [0.0...100.0]
+        // Two fully-overlapping 50s segments must count once (0.5), not twice.
+        let overlapping = coverageResult([(0, 50), (0, 50)])
+        XCTAssertEqual(
+            TranscriptionVoicedCoverage.fraction(of: overlapping, voicedIntervals: voiced) ?? 0,
+            0.5, accuracy: 1e-9)
+    }
+
     // MARK: - VocalTailCutoffResolver: sustained voiced tails are real singing
 
     func testCutoffExtendsThroughSustainedVoicedOutro() {
