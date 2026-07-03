@@ -711,6 +711,32 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   directives, C1 reference-first workflow, phrase-structure grouper, Lyric Blending,
   legacy ball-heuristic deletion.
 
+## 2026-07-03 (later) — Repetition filter deleting real repeated chorus lines
+- Live bug: "Good friends and a beer or two" (Accuracy/Whisper) stopped transcribing
+  mid-song, several vocal lines missing (amber "vocals — not transcribed" badges).
+  Root-caused to `WhisperCPPRepetitionFilter` (added 42bfa0f for genuine hallucination
+  loops): any 6-word phrase recurring >3× within a fixed 30s window was treated as a
+  stuck-decoder loop and the whole span between first/last occurrence was deleted. This
+  song's chorus hook ("good friends and a beer or two") legitimately recurs that often
+  within 30s, so real lyrics got deleted — the actual cause of "Whisper used to work
+  better." Balanced Draft (Parakeet, no repetition filter) transcribed the same song
+  clean, confirming the diagnosis.
+- Fix (commit 646fd18): replaced the fixed-time-window trigger with word-index adjacency
+  — only counts as a loop if repeats sit back-to-back with (near) zero distinct words in
+  between (the actual signature of a stuck decoder); a real chorus always has whole
+  verses between recurrences and never builds a "packed" run. Also invariant to the
+  0.85× slow-decode retry's timestamp rescaling (index-based, not time-based). Tightened
+  the loop's resume-point search to stop at the first real-content gap. engineVersion
+  6→7 to invalidate poisoned caches.
+- Tests: `testGenuinelyRepeatedChorusHookIsNotTreatedAsALoop` (regression for this bug),
+  `testLoopWithMinorFillerBetweenRepeatsIsStillRemoved` (still catches real loops with a
+  single filler word between repeats). Full suite run on the Mac:
+  WhisperCPPTranscriptionEngineTests 11/11 passed (1 skipped, env-gated). 5 pre-existing
+  failures elsewhere (AppModelTests sandbox-path comparison, MusicLibraryAppModelTests
+  timing) unrelated to this change — not investigated further here.
+- Also committed in passing: `.gitignore` `.worktrees/` entry and `tasks/backlog.md`
+  (both pending from the prior session, uncommitted).
+
 ## 2026-07-03 — Whisper decode collapse ("second half missing", slow analysis)
 - Data-verified (cache c74117de, 225.6s song, decode2-1.00): whisper.cpp emitted segments
   0–66s then JUMPED to 204s — the middle of the song was never transcribed (5 segments
