@@ -711,6 +711,24 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   directives, C1 reference-first workflow, phrase-structure grouper, Lyric Blending,
   legacy ball-heuristic deletion.
 
+## 2026-07-03 (batch A, worktree) — Backlog #1 audited, #2 PlaybackClock unification done
+- [x] #1 Delete legacy ball-heuristic code: audited the pre-SongTimeline fallback ball math;
+  it's still load-bearing for user-edited charts (the one case `songTimelineForPreview`
+  falls back to), so nothing was safe to delete. No code change, just confirmed.
+- [x] #2 PlaybackClock protocol unification (3d): added `PlaybackClock` protocol
+  (PlayerClock.swift) that `AudioPlaybackService`/`StemPlaybackService` conform to with no
+  body changes (their currentTime/duration/isPlaying/play/pause/seek surfaces already
+  matched exactly). `AppModel.activeClock` resolves to whichever backs
+  `activePlaybackSource`; `activePlaybackTime`/`activePlaybackDuration`/
+  `isActivePlaybackPlaying`/`seekActivePlayback` now delegate through it instead of each
+  repeating the `activePlaybackSource == .stemMix ? … : …` branch.
+  `PlaybackProgressSlider.activeDuration` (the one real view-level violation) now reads
+  `model.activePlaybackDuration`. `toggleRecordingPlayback`/`toggleStemPlayback` left as-is
+  — they need both services by name for the source hand-off, not "the active one."
+  New test `testActiveClockResolvesToTheCorrectConcreteServiceForBothSources`. Verified on
+  the Mac (temporarily applied to the main checkout to reuse its open Xcode session): 416
+  passed (prior baseline +1), same 5 pre-existing unrelated failures, 0 regressions.
+
 ## 2026-07-03 (later) — Repetition filter deleting real repeated chorus lines
 - Live bug: "Good friends and a beer or two" (Accuracy/Whisper) stopped transcribing
   mid-song, several vocal lines missing (amber "vocals — not transcribed" badges).

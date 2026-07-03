@@ -16,12 +16,12 @@ sequentially, once green.
 ## Batch A — Ball/highlight/clock cleanup (sequential within batch)
 Touches: WorkspaceEditorsView.swift, AudioPlaybackService/StemPlaybackService, SongTimeline-adjacent code.
 
-1. **Delete legacy ball-heuristic code** — the pre-SongTimeline fallback ball math, kept
-   only for user-edited charts; dead weight elsewhere. (todo.md: SongTimeline Review
+1. [x] **Delete legacy ball-heuristic code** (f9aaed4) — audited; nothing safe to delete,
+   the fallback is still load-bearing for user-edited charts. (todo.md: SongTimeline Review
    2026-07-01, reconfirmed 2026-07-02 evening "Still open")
-2. **PlaybackClock protocol unification (3d)** — view currently reads
-   `model.activePlaybackTime` (a 2026-07-02 partial); finish so the view never picks between
-   the two playback services directly. (todo.md: SongTimeline plan, Phase 3d)
+2. [x] **PlaybackClock protocol unification (3d)** (589f31e) — `PlaybackClock` protocol +
+   `AppModel.activeClock`; view no longer picks between the two playback services directly.
+   (todo.md: SongTimeline plan, Phase 3d)
 3. **Word-highlight lead: make rate-aware** — fixed 0.45s lead is wrong off 1.0x tempo;
    should scale as `0.45s / tempoRate`. Small, isolated math fix. (todo.md: 2026-06-27 Phase
    1 item D)
