@@ -764,3 +764,24 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
 - Note: harmony runs BEFORE transcription finishes on fresh songs? No — stage order is
   separation → transcription → harmony, so lyrics are present; on stage RETRY of harmony
   alone the persisted lyrics are used. Consensus is a no-op when lyrics are empty.
+
+## 2026-07-03 — Backlog #1: legacy ball-heuristic deletion, audited (nothing unsafe to delete)
+- Traced every ball-position code path in `WorkspaceEditorsView.swift`: `beatBallInput`
+  branches on `model.songTimelineForPreview()` — non-nil (generated/un-edited chart) goes
+  to `timelineBeatBall` (row-window, RC-2 fixed); nil goes to `legacyBeatBall`/
+  `outroBeatBall`, which is the ONLY thing already named "legacy" in this file.
+  `songTimelineForPreview()` (AppModel.swift) returns nil precisely when the rebuilt draft
+  doesn't match `chordProSource` byte-for-byte — i.e. reviewed/user-edited charts — so
+  `legacyBeatBall` is a live, reachable, still-necessary fallback, not dead code.
+- `chordOnlyLineOffset`/`trailingChordOnlyLineOffset` (the RC-2 whole-gap-window helpers)
+  are called ONLY from `legacyBeatBall`'s call sites inside `beatBallValue`'s non-timeline
+  branch — still reachable, same reason.
+- `ballPosition`/`rhythmicBallPosition` (monospace/rhythmic renderers) and `BouncingBall`
+  itself are shared by BOTH the timeline and legacy paths (they consume the already-resolved
+  `BeatBallInput`/`LineBeatBall`, not source text) — not legacy-specific, still fully live.
+  `beatDotValue`/`chordOnlyLineWindow` (Beat Dots overlay) are an independent feature, not
+  part of the ball heuristic at all (confirmed no shared state with `beatBallInput`).
+- Conclusion: nothing safe to delete. Left the code as-is; added explicit "KEEP THIS" doc
+  comments on `legacyBeatBall`, `chordOnlyLineOffset`, and `trailingChordOnlyLineOffset`
+  naming `songTimelineForPreview()` as the trigger, so this doesn't get re-flagged as
+  cleanup-able. No test changes needed (no dead code existed to remove tests for).

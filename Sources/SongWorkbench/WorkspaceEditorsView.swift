@@ -1337,8 +1337,22 @@ private struct ChordProTabEditor: View {
         )
     }
 
-    /// Source-derived fallback for user-edited/reviewed charts, where no proven-aligned
-    /// timeline exists (kept until the alignment routine covers edited charts).
+    /// Pre-SongTimeline fallback: derives the ball's window/words straight from the
+    /// ChordPro source (ordinal + block-walking) instead of an authoritative row.
+    ///
+    /// KEEP THIS. It is not dead legacy code — it is the ONLY path available for a chart
+    /// `AppModel.songTimelineForPreview()` can't validate: that method rebuilds the draft
+    /// from the current analysis data and requires the result to match `chordProSource`
+    /// BYTE-FOR-BYTE before it will hand back a `SongTimeline`. The moment a user edits or
+    /// reviews the chart, the live source and the rebuildable draft diverge and
+    /// `songTimelineForPreview()` returns nil on purpose — there is no "row" data left to
+    /// consult, only the ChordPro text itself. `beatBallInput` falls back to this function
+    /// in exactly that case (see the `guard`/`if let timeline` above). Deleting this would
+    /// silently kill the bouncing ball for every user-edited chart. Known limitation this
+    /// path still has (accepted, not a bug to "fix" here): RC-2 from
+    /// tasks/audit-ball-timing.md — a multi-row instrumental gap collapses onto the single
+    /// chord-only row nearest the upcoming line instead of being tracked row by row, because
+    /// the per-row windows only exist in `SongTimeline`, which isn't available here.
     private func legacyBeatBall(
         now: TimeInterval, bpm: Double?, beatTimes: [TimeInterval]
     ) -> BeatBallInput? {
@@ -1959,6 +1973,10 @@ private struct ChordProAppPreview: View {
 
     /// The offset of the trailing chord-only line (outro/instrumental) after the LAST lyric line,
     /// if one exists — the line the outro ball bounces across.
+    ///
+    /// Block-walking helper for the `legacyBeatBall`/`outroBeatBall` fallback only (edited
+    /// charts with no `SongTimeline`; see the comment on `legacyBeatBall`). The timeline path
+    /// never calls this — it identifies rows by `rowNumber` instead of walking blocks.
     private func trailingChordOnlyLineOffset(in document: ChordProPreviewDocument) -> Int? {
         let items = indexedBlocks(for: document)
         guard
@@ -1981,6 +1999,15 @@ private struct ChordProAppPreview: View {
 
     /// The offset of the chord-only line (intro/instrumental) immediately preceding the
     /// given lyric line, if one exists — the line the waiting ball should bounce across.
+    ///
+    /// Block-walking helper for the `legacyBeatBall` fallback only (edited charts with no
+    /// `SongTimeline`; see the comment on `legacyBeatBall`). This is the RC-2 whole-gap
+    /// heuristic (tasks/audit-ball-timing.md): when a long intro/gap splits into several
+    /// chord-only rows, this walks up to the SINGLE row nearest the upcoming lyric and
+    /// `beatBallValue` gives it the entire gap window — a multi-row intro isn't tracked row
+    /// by row here. That bug is fixed for generated charts (the timeline path uses each
+    /// row's own authoritative window), but there is no equivalent per-row data for an
+    /// edited chart, so this coarser behavior is the accepted fallback, not a regression.
     private func chordOnlyLineOffset(
         beforeLyricOrdinal ordinal: Int,
         in document: ChordProPreviewDocument
