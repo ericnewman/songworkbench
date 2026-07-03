@@ -386,7 +386,7 @@ final class AppModel: ObservableObject {
     private var needsSaveAfterRestore = false
 
     init(
-        store: any ProjectStore = JSONProjectStore.standard,
+        store: any ProjectStore = SplitProjectStore.standard,
         musicLibrary: (any MusicLibraryProviding)? = nil
     ) {
         self.store = store
