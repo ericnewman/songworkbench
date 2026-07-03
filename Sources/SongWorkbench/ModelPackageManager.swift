@@ -6,6 +6,12 @@ struct ModelPackageComponent: Codable, Equatable, Sendable {
     let downloadURL: URL
     let expectedSizeBytes: Int64
     let sha256: String
+    /// When true, the downloaded file is a zip archive whose own top-level entry is
+    /// `relativePath`'s last path component — it is extracted into the parent of
+    /// `relativePath` rather than moved into place as a plain file. Lets a `.files`
+    /// package mix plain files with an in-place-extracted companion (e.g. a ggml model
+    /// next to its zipped Core ML encoder), unlike the whole-package `.zip` source.
+    var isArchive: Bool = false
 }
 
 enum ModelPackageSource: Codable, Equatable, Sendable {
@@ -69,6 +75,7 @@ enum ModelPackageError: LocalizedError, Equatable {
     case invalidPath(String)
     case emptyPackage
     case archiveExtractionFailed(Int32)
+    case archiveComponentMissing(String)
     case missingEntryPoint(String)
     case invalidManifest
 
@@ -80,6 +87,8 @@ enum ModelPackageError: LocalizedError, Equatable {
             "The model package contains no files."
         case .archiveExtractionFailed(let status):
             "Model archive extraction failed with status \(status)."
+        case .archiveComponentMissing(let path):
+            "Archive component did not produce the expected contents at \(path)."
         case .missingEntryPoint(let path):
             "The installed model entry point is missing: \(path)"
         case .invalidManifest:
@@ -163,11 +172,23 @@ actor ModelPackageManager {
                         ))
                 }
                 let destinationURL = stagingURL.appendingPathComponent(component.relativePath)
-                try fileManager.createDirectory(
-                    at: destinationURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try fileManager.moveItem(at: downloadURL, to: destinationURL)
+                if component.isArchive {
+                    let extractParentURL = destinationURL.deletingLastPathComponent()
+                    try fileManager.createDirectory(
+                        at: extractParentURL,
+                        withIntermediateDirectories: true
+                    )
+                    try await extractor.extract(zipURL: downloadURL, to: extractParentURL)
+                    guard fileManager.fileExists(atPath: destinationURL.path) else {
+                        throw ModelPackageError.archiveComponentMissing(component.relativePath)
+                    }
+                } else {
+                    try fileManager.createDirectory(
+                        at: destinationURL.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try fileManager.moveItem(at: downloadURL, to: destinationURL)
+                }
                 completedBytes += component.expectedSizeBytes
             }
         case .zip(let archive):

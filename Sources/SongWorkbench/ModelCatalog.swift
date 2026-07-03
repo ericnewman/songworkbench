@@ -29,7 +29,9 @@ enum ModelCatalog {
         id: "whisper-large-v3-turbo-q5-0",
         displayName: "Whisper Large V3 Turbo Q5_0",
         purpose: "Accuracy lyric transcription",
-        version: "1",
+        // v2: adds the Core ML encoder (below) so whisper.cpp's built-in ANE lookup
+        // actually finds a model instead of always failing over to CPU/BLAS decode.
+        version: "2",
         minimumOSVersion: "14.0",
         license: ModelArtifactLicense(
             name: "MIT",
@@ -44,7 +46,21 @@ enum ModelCatalog {
                 )!,
                 expectedSizeBytes: 574_041_195,
                 sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
-            )
+            ),
+            // whisper.cpp derives this path itself (dirname of the .bin + the base
+            // model name, quantization suffix stripped) and loads it unconditionally
+            // when built with Core ML support — it must land as a sibling of the .bin
+            // above inside the same package version folder, not its own package.
+            ModelPackageComponent(
+                relativePath: "ggml-large-v3-turbo-encoder.mlmodelc",
+                downloadURL: URL(
+                    string:
+                        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-encoder.mlmodelc.zip"
+                )!,
+                expectedSizeBytes: 1_173_393_014,
+                sha256: "84bedfe895bd7b5de6e8e89a0803dfc5addf8c0c5bc4c937451716bf7cf7988a",
+                isArchive: true
+            ),
         ]),
         entryPointRelativePath: "ggml-large-v3-turbo-q5_0.bin"
     )

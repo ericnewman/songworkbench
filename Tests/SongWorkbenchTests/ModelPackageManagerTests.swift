@@ -109,6 +109,56 @@ final class ModelPackageManagerTests: XCTestCase {
         }
     }
 
+    func testFilesPackageExtractsArchiveComponentInPlace() async throws {
+        let plain = Data("plain sibling file".utf8)
+        let archive = Data("fake zip".utf8)
+        let plainURL = URL(string: "https://example.invalid/model.bin")!
+        let archiveURL = URL(string: "https://example.invalid/encoder.mlmodelc.zip")!
+        let descriptor = ModelPackageDescriptor(
+            id: "mixed-model",
+            displayName: "Mixed Model",
+            purpose: "Test",
+            version: "1",
+            minimumOSVersion: "14.0",
+            license: ModelArtifactLicense(name: "MIT", attribution: "Test"),
+            source: .files([
+                component(path: "model.bin", url: plainURL, data: plain),
+                ModelPackageComponent(
+                    relativePath: "Extracted.mlpackage",
+                    downloadURL: archiveURL,
+                    expectedSizeBytes: Int64(archive.count),
+                    sha256: SHA256.hash(data: archive).map { String(format: "%02x", $0) }
+                        .joined(),
+                    isArchive: true
+                ),
+            ]),
+            entryPointRelativePath: "model.bin"
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = ModelPackageManager(
+            directoryURL: directory,
+            downloader: PackageStubDownloader(payloads: [plainURL: plain, archiveURL: archive]),
+            extractor: PackageStubExtractor()
+        )
+
+        let installed = try await manager.install(descriptor) { _ in }
+
+        // Plain component moved into place untouched...
+        XCTAssertEqual(try Data(contentsOf: installed.entryPointURL), plain)
+        // ...and the archive component extracted in-place as a sibling directory (not
+        // nested under a folder named after itself).
+        let extractedFileURL =
+            installed.packageDirectoryURL
+            .appendingPathComponent("Extracted.mlpackage")
+            .appendingPathComponent("model.mil")
+        XCTAssertEqual(try Data(contentsOf: extractedFileURL), Data("extracted model".utf8))
+        guard case .installed = await manager.status(for: descriptor) else {
+            return XCTFail("Expected verified installed package with extracted archive component")
+        }
+    }
+
     private func component(
         path: String,
         url: URL,
