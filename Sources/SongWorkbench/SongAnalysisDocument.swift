@@ -115,16 +115,21 @@ struct AnalysisStageRecord: Codable, Equatable, Sendable {
 }
 
 struct SongAnalysisDocument: Codable, Equatable, Sendable {
-    // 6: added AnalysisSourceKind.liveCapture (Phase 1 live capture). Older docs decode
-    // unchanged — the new case never appears in pre-6 data.
-    static let currentSchemaVersion = 6
+    // 7: added sourceDuration (full audio length for lyric/chord timeline bounds).
+    // 8: added untranscribedVocalRegions (sung spans the ASR produced no words for).
+    static let currentSchemaVersion = 8
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
+    /// Sung regions (strict-VAD voiced) that have NO transcribed words — chorus tails, ad-libs,
+    /// outro vocals the ASR missed (audit RC-4). Consumers must not label these Instrumental.
+    var untranscribedVocalRegions: [ClosedRange<TimeInterval>] = []
     /// User-provided reference lyrics. When non-empty, the transcription stage aligns these exact
     /// words/lines to the ASR word timings instead of using the raw ASR text (see
     /// `ReferenceLyricAligner`).
     var referenceLyrics = ""
+    /// Full audio duration from transcription (seconds), used to span intro/outro gaps on the timeline.
+    var sourceDuration: TimeInterval? = nil
     var chords: [EditableChordEvent] = []
     var chordProSource = ""
     var estimatedBPM: Double?
@@ -142,7 +147,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case lyrics
+        case untranscribedVocalRegions
         case referenceLyrics
+        case sourceDuration
         case chords
         case chordProSource
         case estimatedBPM
@@ -161,7 +168,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     init(
         schemaVersion: Int = currentSchemaVersion,
         lyrics: [TimedLyricSegment] = [],
+        untranscribedVocalRegions: [ClosedRange<TimeInterval>] = [],
         referenceLyrics: String = "",
+        sourceDuration: TimeInterval? = nil,
         chords: [EditableChordEvent] = [],
         chordProSource: String = "",
         estimatedBPM: Double? = nil,
@@ -178,7 +187,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     ) {
         self.schemaVersion = schemaVersion
         self.lyrics = lyrics
+        self.untranscribedVocalRegions = untranscribedVocalRegions
         self.referenceLyrics = referenceLyrics
+        self.sourceDuration = sourceDuration
         self.chords = chords
         self.chordProSource = chordProSource
         self.estimatedBPM = estimatedBPM
@@ -200,8 +211,13 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
             ?? Self.currentSchemaVersion
         lyrics = try container.decodeIfPresent([TimedLyricSegment].self, forKey: .lyrics) ?? []
+        untranscribedVocalRegions =
+            try container.decodeIfPresent(
+                [ClosedRange<TimeInterval>].self, forKey: .untranscribedVocalRegions) ?? []
         referenceLyrics =
             try container.decodeIfPresent(String.self, forKey: .referenceLyrics) ?? ""
+        sourceDuration =
+            try container.decodeIfPresent(TimeInterval.self, forKey: .sourceDuration)
         chords = try container.decodeIfPresent([EditableChordEvent].self, forKey: .chords) ?? []
         chordProSource = try container.decodeIfPresent(String.self, forKey: .chordProSource) ?? ""
         estimatedBPM = try container.decodeIfPresent(Double.self, forKey: .estimatedBPM)

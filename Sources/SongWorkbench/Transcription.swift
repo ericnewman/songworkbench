@@ -70,6 +70,37 @@ struct TranscriptionResult: Codable, Equatable, Sendable {
     let engine: TranscriptionEngineMetadata
 }
 
+/// Rescales every timestamp in a transcription by a constant `factor`. Used to map a transcript
+/// produced from a SLOWED decode pass back onto the original timeline: the slowed file runs at
+/// `rate` of normal speed, so a slowed-time t corresponds to real time `t * rate` — pass `rate`
+/// as the factor (e.g. 0.85), NOT `1/rate`. `factor == 1` is a no-op.
+enum TranscriptionTimeScaler {
+    static func scaled(_ result: TranscriptionResult, by factor: Double) -> TranscriptionResult {
+        guard factor > 0, abs(factor - 1) > 1e-6 else { return result }
+        let segments = result.segments.map { segment in
+            TimedTranscriptionSegment(
+                text: segment.text,
+                startTime: segment.startTime * factor,
+                endTime: segment.endTime * factor,
+                tokens: segment.tokens.map { token in
+                    TimedTranscriptionToken(
+                        text: token.text,
+                        startTime: token.startTime * factor,
+                        endTime: token.endTime * factor,
+                        confidence: token.confidence)
+                },
+                confidence: segment.confidence)
+        }
+        return TranscriptionResult(
+            text: result.text,
+            languageCode: result.languageCode,
+            sourceDuration: result.sourceDuration * factor,
+            completedAt: result.completedAt,
+            segments: segments,
+            engine: result.engine)
+    }
+}
+
 struct TranscriptionProgress: Codable, Equatable, Sendable {
     enum Phase: String, Codable, Sendable {
         case loadingModel
@@ -114,6 +145,11 @@ protocol TranscriptionEngine: Sendable {
 
 struct TimedLyricGroupingConfiguration: Equatable, Sendable {
     let maximumGap: TimeInterval
+    /// Gap that breaks a line when the transcriber gives NO per-line structure (Parakeet returns one
+    /// run-on segment). Much tighter than `maximumGap` so Parakeet lines break at normal phrase
+    /// silences instead of only at a 3s gap (which left lines far too long). Whisper keeps
+    /// `maximumGap` since its line breaks come from its own segment structure.
+    let noStructureMaximumGap: TimeInterval
     let maximumDuration: TimeInterval
     let maximumTokens: Int
     /// Start a new line at a word whose first letter is uppercase (the way the
@@ -135,6 +171,7 @@ struct TimedLyricGroupingConfiguration: Equatable, Sendable {
 
     init(
         maximumGap: TimeInterval = 3,
+        noStructureMaximumGap: TimeInterval = 0.9,
         maximumDuration: TimeInterval = 15,
         maximumTokens: Int = 32,
         capitalizedLineStartGap: TimeInterval = 0.3,
@@ -142,6 +179,7 @@ struct TimedLyricGroupingConfiguration: Equatable, Sendable {
         depaddedWordDuration: TimeInterval = 1
     ) {
         self.maximumGap = max(maximumGap, 0)
+        self.noStructureMaximumGap = max(noStructureMaximumGap, 0)
         self.maximumDuration = max(maximumDuration, 0)
         self.maximumTokens = max(maximumTokens, 1)
         self.capitalizedLineStartGap = max(capitalizedLineStartGap, 0)
@@ -249,6 +287,10 @@ enum TimedLyricSegmentGrouper {
         // run-on text punctuates the sung lines with commas. Engines that DO segment per line
         // (Whisper, many onsets) keep their structure and are not split at mid-line commas.
         let hasSegmentStructure = lineStartOnsets.count >= 2
+        // With per-line structure (Whisper) breaks come from the structure, so keep the generous
+        // gap; without it (Parakeet's one run-on segment) break at normal phrase silences.
+        let effectiveMaximumGap =
+            hasSegmentStructure ? configuration.maximumGap : configuration.noStructureMaximumGap
 
         var groups: [[TimedTranscriptionToken]] = []
         var current: [TimedTranscriptionToken] = []
@@ -276,7 +318,7 @@ enum TimedLyricSegmentGrouper {
                     || capitalizedLineStart
                     || segmentLineStart
                     || commaLineEnd
-                    || gap > configuration.maximumGap
+                    || gap > effectiveMaximumGap
                     || duration > configuration.maximumDuration
                     || current.count >= configuration.maximumTokens
                 {
@@ -288,8 +330,10 @@ enum TimedLyricSegmentGrouper {
         }
         groups.append(current)
 
-        let merged = mergedTrailingOrphans(
-            mergedLeadingOrphans(groups, configuration: configuration),
+        let merged = mergedConjunctionContinuations(
+            mergedTrailingOrphans(
+                mergedLeadingOrphans(groups, configuration: configuration),
+                configuration: configuration),
             configuration: configuration)
         return merged.map { tokens in
             let layout = renderedLayout(tokens.map(\.text))
@@ -415,6 +459,91 @@ enum TimedLyricSegmentGrouper {
         }
         return result
     }
+
+    /// High-confidence rejoin of a line that was split mid-phrase: if a line ENDS on a word that
+    /// grammatically cannot end a phrase (an article/conjunction/preposition/possessive, e.g.
+    /// "…up and" | "I'm all cleaned up nice"), and the next line follows closely without a sentence
+    /// break, the two are one sung line — merge them. Conservative by design: verbs/nouns/pronouns
+    /// that CAN end a line ("She talks", "…with you") are not in the set, so a real short line stays.
+    private static func mergedConjunctionContinuations(
+        _ groups: [[TimedTranscriptionToken]],
+        configuration: TimedLyricGroupingConfiguration
+    ) -> [[TimedTranscriptionToken]] {
+        guard groups.count > 1 else { return groups }
+        var result: [[TimedTranscriptionToken]] = []
+        for group in groups {
+            if let previous = result.last, let previousFirst = previous.first,
+                let previousLast = previous.last, let first = group.first,
+                !isSentenceEnding(previousLast.text)
+            {
+                let gap = first.startTime - previousLast.endTime
+                // (a) the line ENDS on a word that can't end a phrase ("…up and"), next follows
+                //     closely.
+                let endsOpen = endsWithContinuationWord(previousLast.text) && gap <= 1.0
+                // (b) a SHORT fragment whose NEXT line OPENS with a connective ("She talks" |
+                //     "about living in a mansion someday") — one phrase split across a gap. The
+                //     opening preposition/conjunction can't begin an independent line.
+                let shortLeadIn =
+                    previous.count <= 2
+                    && !isInterjectionWord(previousLast.text)
+                    && beginsWithConnective(first.text)
+                    && gap <= 4.0
+                // A merged line must obey the SAME size caps a base line does, so a run of
+                // conjunction-ending fragments (common on dense/rough transcriptions) can't chain
+                // into one over-long line.
+                let mergedTokens = previous.count + group.count
+                let mergedDuration =
+                    (group.last?.endTime ?? first.startTime) - previousFirst.startTime
+                let withinBounds =
+                    mergedTokens <= configuration.maximumTokens
+                    && mergedDuration <= configuration.maximumDuration
+                if (endsOpen || shortLeadIn) && withinBounds {
+                    result[result.count - 1].append(contentsOf: group)
+                    continue
+                }
+            }
+            result.append(group)
+        }
+        return result
+    }
+
+    /// True when a line's FIRST word is a connective (preposition/conjunction) that grammatically
+    /// attaches to the preceding clause, so it can't be the start of an independent sung line.
+    private static func beginsWithConnective(_ text: String) -> Bool {
+        let core = String(text.lowercased().unicodeScalars.filter(CharacterSet.letters.contains))
+        return leadingConnectiveWords.contains(core)
+    }
+
+    private static let leadingConnectiveWords: Set<String> = [
+        "about", "of", "with", "for", "to", "from", "in", "on", "at", "by", "into", "onto", "upon",
+        "and", "but", "or", "nor", "so", "than", "then", "as", "that",
+    ]
+
+    /// Interjections that CAN stand alone as a short sung line, so a fragment ending in one is not
+    /// merged forward.
+    private static func isInterjectionWord(_ text: String) -> Bool {
+        let core = String(text.lowercased().unicodeScalars.filter(CharacterSet.letters.contains))
+        return interjectionWords.contains(core)
+    }
+
+    private static let interjectionWords: Set<String> = [
+        "oh", "yeah", "yea", "ya", "hey", "no", "woah", "whoa", "ah", "ooh", "oo", "na", "la",
+        "mm", "hmm", "uh", "ohh",
+    ]
+
+    /// True when the token is a word that requires something after it (so it can't legitimately end
+    /// a sung line). Narrower than `functionWords` — omits pronouns/verbs like "you", "is", "we"
+    /// that DO end lines.
+    private static func endsWithContinuationWord(_ text: String) -> Bool {
+        let core = String(text.lowercased().unicodeScalars.filter(CharacterSet.letters.contains))
+        return continuationEndingWords.contains(core)
+    }
+
+    private static let continuationEndingWords: Set<String> = [
+        "a", "an", "the", "and", "or", "but", "nor", "to", "of", "in", "on", "at", "by", "for",
+        "with", "from", "into", "onto", "upon", "about", "my", "your", "his", "her", "its", "our",
+        "their",
+    ]
 
     /// Short grammatical function words that are essentially never a real one-word lyric line, so
     /// a lone one is a mis-split continuation of the previous line. Deliberately excludes
@@ -731,6 +860,8 @@ struct RepeatedLyricCorrector: Sendable {
     /// Minimum cluster size to attempt correction — need enough repeats for a real majority.
     private let minimumClusterSize = 3
 
+    init() {}
+
     /// A normalized comparison word plus the index of the `segment.words` token it came from.
     private struct ComparisonWord {
         var core: String
@@ -761,7 +892,95 @@ struct RepeatedLyricCorrector: Sendable {
                 comparisonWords: comparisonWords
             )
         }
+        // Second pass: repair a garbled word embedded in a recurring PHRASE (sub-line), which the
+        // whole-line cluster vote above can't reach.
+        return repairPhrases(in: result)
+    }
+
+    // MARK: - Phrase-level repair
+
+    /// Minimum number of times a bigram context must resolve to the SAME follower before that
+    /// follower is trusted as the phrase's intended word.
+    private let phraseMinimumSupport = 3
+
+    /// Repairs a single garbled word lodged inside a RECURRING phrase, using bigram context.
+    ///
+    /// The line-cluster consensus only fires for whole near-duplicate lines; a chorus phrase
+    /// embedded in an otherwise-unique line (e.g. "…flip flops and barki charcoal sparks fly high")
+    /// slips past it. Here we vote per word: if a token appears only ONCE song-wide (a one-off
+    /// garble) and sits right after a two-word context that, across the song, is dominated by a
+    /// DIFFERENT follower the token is a near-spelling of, rewrite it to that follower —
+    /// "flip flops and barki" → "barbecue".
+    ///
+    /// Deliberately conservative: only hapax tokens are eligible, the dominant follower needs ≥3
+    /// occurrences AND at least twice the runner-up, and the two must share a ≥3-char word stem so
+    /// unrelated words are never swapped. Simple singular/plural variants are left alone. Bigram
+    /// context never crosses a line boundary. Idempotent.
+    private func repairPhrases(in segments: [TimedLyricSegment]) -> [TimedLyricSegment] {
+        // Per-segment lowercased cores (punctuation stripped, empty cores dropped) with a
+        // back-reference to the originating `segment.words` index for rewriting.
+        let perSegment: [[(core: String, wordIndex: Int)]] = segments.map { segment in
+            segment.words.enumerated().compactMap { index, word in
+                let normalized = core(of: word.text).lowercased()
+                return normalized.isEmpty ? nil : (core: normalized, wordIndex: index)
+            }
+        }
+
+        // Song-wide stats: how often each word occurs, and for each (w-2, w-1) context which word
+        // follows and how often. Contexts are built within a line only.
+        var unigram: [String: Int] = [:]
+        var bigramFollowers: [String: [String: Int]] = [:]
+        for cores in perSegment {
+            let sequence = cores.map(\.core)
+            for word in sequence { unigram[word, default: 0] += 1 }
+            guard sequence.count >= 3 else { continue }
+            for k in 2..<sequence.count {
+                let key = sequence[k - 2] + "\u{1}" + sequence[k - 1]
+                bigramFollowers[key, default: [:]][sequence[k], default: 0] += 1
+            }
+        }
+
+        var result = segments
+        for (segmentIndex, cores) in perSegment.enumerated() {
+            guard cores.count >= 3 else { continue }
+            var replacements: [Int: String] = [:]
+            for k in 2..<cores.count {
+                let token = cores[k].core
+                guard unigram[token] == 1 else { continue }  // only one-off garbles
+                let key = cores[k - 2].core + "\u{1}" + cores[k - 1].core
+                guard let followers = bigramFollowers[key] else { continue }
+                let ranked = followers.sorted { $0.value > $1.value }
+                guard let top = ranked.first,
+                    top.value >= phraseMinimumSupport,
+                    top.key != token,
+                    top.key.count >= 4,
+                    ranked.count == 1 || top.value >= 2 * ranked[1].value
+                else { continue }
+                // Keep simple singular/plural variants ("barbecue" vs "barbecues").
+                if top.key == token + "s" || token == top.key + "s" { continue }
+                // Require a shared word stem so only near-spellings are swapped.
+                guard sharedPrefixLength(token, top.key) >= 3 else { continue }
+                replacements[cores[k].wordIndex] = top.key
+            }
+            if !replacements.isEmpty,
+                let rewritten = rewrite(result[segmentIndex], replacements: replacements)
+            {
+                result[segmentIndex] = rewritten
+            }
+        }
         return result
+    }
+
+    private func sharedPrefixLength(_ lhs: String, _ rhs: String) -> Int {
+        var count = 0
+        var li = lhs.startIndex
+        var ri = rhs.startIndex
+        while li < lhs.endIndex, ri < rhs.endIndex, lhs[li] == rhs[ri] {
+            count += 1
+            li = lhs.index(after: li)
+            ri = rhs.index(after: ri)
+        }
+        return count
     }
 
     // MARK: - Clustering
@@ -1060,9 +1279,12 @@ enum TranscriptionSilenceGate {
 
     /// Filters the flattened, time-sorted tokens (the `result.segments.flatMap(\.tokens)`
     /// ordering is the input contract), returning the survivors in their original relative order.
+    /// When `sourceDuration` is provided, trailing islands at the song end can be fenced by the
+    /// silence after the last token through the actual audio end (not just the last token end).
     static func filtered(
         _ tokens: [TimedTranscriptionToken],
-        configuration: Configuration = .init()
+        configuration: Configuration = .init(),
+        sourceDuration: TimeInterval? = nil
     ) -> [TimedTranscriptionToken] {
         guard !tokens.isEmpty else { return tokens }
 
@@ -1079,7 +1301,8 @@ enum TranscriptionSilenceGate {
         // isolation silence, then decide per island whether to drop it.
         let droppedOriginalIndices = droppedIndices(
             ordered: ordered,
-            configuration: configuration
+            configuration: configuration,
+            sourceDuration: sourceDuration
         )
         guard !droppedOriginalIndices.isEmpty else { return tokens }
 
@@ -1092,7 +1315,8 @@ enum TranscriptionSilenceGate {
     /// where `offset` is the index into the caller's array.
     private static func droppedIndices(
         ordered: [(offset: Int, element: TimedTranscriptionToken)],
-        configuration: Configuration
+        configuration: Configuration,
+        sourceDuration: TimeInterval?
     ) -> Set<Int> {
         // Group into islands: a new island starts whenever the gap from the previous token's end
         // to this token's start is >= the isolation silence.
@@ -1110,10 +1334,10 @@ enum TranscriptionSilenceGate {
         }
         if !current.isEmpty { islands.append(current) }
 
-        // The song spans time 0 to the latest token end. An island at the very start/end is
-        // bounded by silence on the outer side only if its distance to the boundary is also >=
-        // the isolation silence.
-        let songEnd = ordered.map(\.element.endTime).max() ?? 0
+        // The song spans time 0 to the latest token end (or the full audio when known). An island at
+        // the very start/end is bounded by silence on the outer side only if its distance to the
+        // boundary is also >= the isolation silence.
+        let songEnd = sourceDuration ?? (ordered.map(\.element.endTime).max() ?? 0)
 
         var dropped = Set<Int>()
         for index in islands.indices {
@@ -1131,9 +1355,8 @@ enum TranscriptionSilenceGate {
             }
 
             // Following silence: a real gap to the next island, or — for the last island — the
-            // distance from its last token's end to the song end (always 0, so the song end never
-            // counts as isolating silence; an island ending the song is kept unless it is also a
-            // first island isolated from time 0).
+            // distance from its last token's end to the song end (uses `sourceDuration` when
+            // provided so trailing outro hallucinations can be fenced by instrumental silence).
             let followingSilence: TimeInterval
             if index == islands.count - 1 {
                 followingSilence = songEnd - (island.last?.element.endTime ?? 0)

@@ -394,6 +394,84 @@ final class AppModelTests: XCTestCase {
         file = nil
         return url
     }
+
+    func testSongTypeaheadMatchesTitlePrefixCaseInsensitively() {
+        let songs = [
+            Song(url: URL(fileURLWithPath: "/tmp/Another day above ground.mp3")),
+            Song(url: URL(fileURLWithPath: "/tmp/Summertime's her with you.mp3")),
+            Song(url: URL(fileURLWithPath: "/tmp/Summer on the lake.mp3")),
+        ]
+        // Case-insensitive prefix picks the first title starting with it.
+        XCTAssertEqual(
+            SongTypeahead.firstMatch(prefix: "summ", in: songs)?.title,
+            "Summertime's her with you")
+        XCTAssertEqual(
+            SongTypeahead.firstMatch(prefix: "ANOT", in: songs)?.title,
+            "Another day above ground")
+        // Empty prefix and non-matches return nil.
+        XCTAssertNil(SongTypeahead.firstMatch(prefix: "", in: songs))
+        XCTAssertNil(SongTypeahead.firstMatch(prefix: "zz", in: songs))
+    }
+
+    private func lyricWord(_ text: String, _ start: TimeInterval, _ end: TimeInterval, _ lo: Int)
+        -> TimedLyricWord
+    {
+        TimedLyricWord(text: text, start: start, end: end, characterRange: lo..<(lo + text.count))
+    }
+
+    func testLyricLineMergeJoinsTextAndReindexesWords() {
+        let a = TimedLyricSegment(
+            start: 0, end: 1, text: "She talks",
+            words: [lyricWord("She", 0, 0.4, 0), lyricWord("talks", 0.4, 1.0, 4)])
+        let b = TimedLyricSegment(
+            start: 4, end: 6, text: "about it",
+            words: [lyricWord("about", 4, 4.5, 0), lyricWord("it", 4.5, 6, 6)])
+        let merged = LyricLineEdit.merged(a, b)
+        XCTAssertEqual(merged.text, "She talks about it")
+        XCTAssertEqual(merged.start, 0)
+        XCTAssertEqual(merged.end, 6)
+        XCTAssertEqual(merged.words.count, 4)
+        // Each merged word's range still points at its own text.
+        for word in merged.words {
+            XCTAssertEqual(String(Array(merged.text)[word.characterRange]), word.text)
+        }
+    }
+
+    func testLyricLineSplitAtLargestGapRoundTrips() {
+        let a = TimedLyricSegment(
+            start: 0, end: 1, text: "She talks",
+            words: [lyricWord("She", 0, 0.4, 0), lyricWord("talks", 0.4, 1.0, 4)])
+        let b = TimedLyricSegment(
+            start: 4, end: 6, text: "about it",
+            words: [lyricWord("about", 4, 4.5, 0), lyricWord("it", 4.5, 6, 6)])
+        let merged = LyricLineEdit.merged(a, b)
+        guard let (first, second) = LyricLineEdit.split(merged) else {
+            return XCTFail("expected a split at the 3s gap")
+        }
+        XCTAssertEqual(first.text, "She talks")
+        XCTAssertEqual(second.text, "about it")
+        for word in second.words {
+            XCTAssertEqual(String(Array(second.text)[word.characterRange]), word.text)
+        }
+    }
+
+    func testLyricLineSplitReturnsNilForSingleWord() {
+        let seg = TimedLyricSegment(
+            start: 0, end: 1, text: "Hey", words: [lyricWord("Hey", 0, 1, 0)])
+        XCTAssertNil(LyricLineEdit.split(seg))
+    }
+
+    func testLyricDiagnosticsFlagsShortLineNotNormalLines() {
+        // 120 BPM → 1 beat = 0.5s. Four 4-beat (2s) lines + one 1.2-beat (0.6s) short line.
+        let beats = stride(from: 0.0, through: 12.0, by: 0.5).map { $0 }
+        func seg(_ start: Double, _ end: Double) -> TimedLyricSegment {
+            TimedLyricSegment(start: start, end: end, text: "x", words: [])
+        }
+        let segments = [seg(0, 2), seg(2, 4), seg(4, 6), seg(6, 8), seg(8, 8.6)]
+        let flags = LyricLineDiagnostics.suspectReasons(segments, beatTimes: beats, tempo: 120)
+        XCTAssertNotNil(flags[segments[4].id], "the 1.2-beat line should be flagged")
+        XCTAssertNil(flags[segments[0].id], "a normal 4-beat line should not be flagged")
+    }
 }
 
 private actor DelayedProjectStore: ProjectStore {

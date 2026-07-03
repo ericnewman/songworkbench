@@ -47,3 +47,49 @@ Re-time/normalize suspicious tokens (de-pad: trim the span) rather than delete t
 token that is genuinely isolated in silence AND short AND low-confidence. Verify against the actual
 lyric before calling anything a hallucination. Deleting persisted content is destructive — the word
 is then gone from storage and only re-analysis from the raw cache can restore it.
+
+## 2026-07-01 — Verify which subsystem owns a symptom before patching
+**Mistake risk:** "Short musical intervals shown as separate lines" looked like a lyric-grouper
+(TimedLyricSegmentGrouper) bug, and the grouper is a documented minefield. Patching it blind would
+have been wrong AND risked regressions.
+**Reality:** The lyric lines were clean; the spurious line was a chord-only line emitted by
+ChordProDraftBuilder for any sub-4-bar inter-line gap containing a chord. Root cause was a different
+file entirely.
+**Rule:** When a symptom could live in several subsystems, confirm the owner against live data/UI
+first (read the running app's store, screenshot the actual render) before editing a fragile core
+algorithm. The sandboxed app's real store is in ~/Library/Containers/com.local.SongWorkbench/…, not
+~/Library/Application Support/SongWorkbench (stale copy).
+
+## 2026-07-01 — computer-use input environment is menu-bar-only this session
+- Symptom: in-window left_clicks collapse in Y (hit menu bar or wrong control); typed keys land on
+  whatever control is focused (Timing slider, Transpose stepper), not the song list. Menu-BAR clicks
+  (y≈11) DO work, but menu-ITEM clicks below collapse, and keyboard menu nav didn't select either.
+- Consequence: could not switch songs or toggle View on screen; accidentally changed Timing/Transpose.
+- Rule: when live UI control is unreliable, DON'T keep poking (it mutates user state). Verify layout
+  changes NUMERICALLY against the cached analysis JSON (container Caches/.../Analysis/*.json:
+  transcription cache = word onsets; beat cache = beatTimes/bpm/chords), replicating the view's
+  formula in Python. Then hand the live eyeball to the user. This proved the fixed-grid downbeat
+  alignment (constant 114px column) without a screenshot.
+- MeasureGrid downbeat phase is derived IN-VIEW from beatTimes + first-word onsets; no re-analysis.
+
+## 2026-07-01 — Whack-a-mole symptoms = shared-state architecture smell
+**Pattern:** Four "different" ball/chart bugs (one intro line tracked, early word entry,
+phantom line-8 pause, progressive drift) all traced to ONE cause class: six subsystems
+independently re-derive structure×time from a ChordPro STRING round-trip, plus clock math
+mixing sample-rate timebases (`sampleTime / fileRate` where sampleTime is bus-rate).
+**Rule:** When a third symptom lands in the same feature area, stop patching and audit the
+data flow end-to-end with real container data (segments vs vocals-stem RMS vs beat cache)
+before touching code. Prefer `playerTime.sampleTime / playerTime.sampleRate` — never divide
+a sampleTime by a rate it wasn't expressed in. See tasks/audit-ball-timing.md.
+
+## 2026-07-01 — Baseline-testing in a tree full of someone else's WIP
+- `git stash -u` to get a "clean baseline" also stashes the USER's uncommitted in-flight work, so
+  the comparison is against HEAD, not against "my changes removed". Failures that appear/disappear
+  may belong to the other WIP. To isolate MY change: patch out ONLY my files (git diff > patch;
+  checkout my touched files; mv my new files away), test, restore.
+- `git stash pop` can fail restoring untracked files when Xcode has recreated one (xcuserstate);
+  tracked changes ARE applied and the stash is kept — verify content markers, then `git stash drop`.
+  Avoid `stash -u` here while Xcode/the app is running.
+- AppModelTests import/restore tests fail in this tree due to pre-existing uncommitted WIP (or real
+  Application Support store pollution), independent of chord-pipeline changes — proven by removing
+  my changes and re-running.

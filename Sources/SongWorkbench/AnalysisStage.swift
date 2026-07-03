@@ -207,6 +207,12 @@ struct TranscriptionStage: AnalysisStageRunning {
                     request.transcriptionMode)
             }
             let sourceKind: AnalysisSourceKind = hasStems ? .vocalsStem : .recording
+            // Pitch-preserved slow-decode (Accuracy/Whisper only): transcribe a slowed copy of the
+            // vocals to help fast/dense singing, then map timestamps back. Part of the cache key so
+            // changing it re-transcribes; constant 1.0 for other modes so it never disturbs them.
+            let decodeRate =
+                request.transcriptionMode == .accuracy
+                ? min(max(request.transcriptionDecodeRate, 0.5), 1.0) : 1.0
             let cacheEngine = AnalysisEngineVersion(
                 identifier: [
                     "transcription",
@@ -219,6 +225,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     engine.metadata.engineVersion,
                     engine.metadata.modelVersion ?? "unknown",
                     "schema-\(SongAnalysisDocument.currentSchemaVersion)",
+                    "decode2-\(String(format: "%.2f", decodeRate))",
                 ].joined(separator: "|")
             )
             let result: TranscriptionResult
@@ -232,9 +239,30 @@ struct TranscriptionStage: AnalysisStageRunning {
                 stageProgress(1, "loadedFromCache")
             } else {
                 let requestID = UUID()
+                let usesSlowDecode = decodeRate < 0.999
+                let decodeURL: URL
+                if usesSlowDecode {
+                    stageProgress(0, "preparingAudio")
+                    let temporary = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("decode-\(requestID.uuidString).wav")
+                    try await OfflineAudioExporter().export(
+                        sourceURL: audioURL, destinationURL: temporary,
+                        settings: OfflineExportSettings(pitchSemitones: 0, tempoRate: decodeRate))
+                    decodeURL = temporary
+                } else {
+                    decodeURL = audioURL
+                }
+                defer {
+                    if usesSlowDecode { try? FileManager.default.removeItem(at: decodeURL) }
+                }
+                let rawResult: TranscriptionResult
                 do {
-                    result = try await engine.transcribe(
-                        request: TranscriptionRequest(id: requestID, audioURL: audioURL)
+                    rawResult = try await engine.transcribe(
+                        request: TranscriptionRequest(
+                            id: requestID,
+                            audioURL: decodeURL,
+                            localeIdentifier: Locale.current.language.languageCode?.identifier
+                        )
                     ) { value in
                         stageProgress(value.fractionCompleted, value.phase.rawValue)
                     }
@@ -242,6 +270,14 @@ struct TranscriptionStage: AnalysisStageRunning {
                     await engine.cancel(requestID: requestID)
                     throw CancellationError()
                 }
+                // Map slowed-decode timestamps back onto the real timeline before caching/use.
+                // The slowed file runs at `decodeRate` of normal speed, so a slowed-time t maps to
+                // real time t * decodeRate (e.g. 0.85). (Earlier 1/decodeRate over-stretched the
+                // timeline and pushed later verses past the song's end.)
+                result =
+                    usesSlowDecode
+                    ? TranscriptionTimeScaler.scaled(rawResult, by: decodeRate)
+                    : rawResult
                 try await context.cache?.store(
                     result, forSourceHash: audioDigest, engine: cacheEngine)
                 loadedFromCache = false
@@ -256,7 +292,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // Grouping-version suffix: changes the stage record (so re-analysis
                     // re-groups from the cached raw transcription) without changing the raw
                     // transcription cache key, so no re-transcription is needed.
-                    version: result.engine.engineVersion + "|grouping-10-parakeet-commas"
+                    version: result.engine.engineVersion + "|grouping-41-keep-voiced-tail"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
                 modelIdentifier: result.engine.modelName,
@@ -267,27 +303,128 @@ struct TranscriptionStage: AnalysisStageRunning {
             )
             // Drop stray low-confidence words isolated in silence so instrumental gaps
             // survive and become Intro/Instrumental/Outro sections, then group into lines.
-            // (The consensus RepeatedLyricCorrector is intentionally NOT applied here: on
-            // real songs a majority mis-hearing — e.g. "flip flops" heard as "slip flops" in
-            // 2 of 3 choruses — makes consensus propagate the wrong word. It stays available
-            // for an opt-in path once a dictionary/language signal can pick the real word.)
+            // When stems exist, re-anchor/drop intro hallucinations and drop outro tokens after
+            // the last detected vocal offset before grouping.
+            let sourceDuration = result.sourceDuration
+            let normalizedDuration = sourceDuration > 0 ? sourceDuration : nil
+            let vocalOnset: TimeInterval? =
+                hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
+            // Every vocal onset on the stem, used to snap each word to the actual energy burst in
+            // the final timing pass below. Only meaningful on the isolated vocals stem.
+            let vocalOnsets: [TimeInterval] =
+                hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
+            let detectedOffset: TimeInterval? =
+                hasStems ? (try? VocalOffsetDetector.lastOffset(url: audioURL)) : nil
+            let strictVAD = VocalActivityEnvelope.Configuration.strictVocalPresence
+            let strictVoiced =
+                (try? VocalActivityEnvelope.voicedIntervals(
+                    url: audioURL, configuration: strictVAD)) ?? []
+            let tailCutoff = VocalTailCutoffResolver.resolve(
+                detectedOffset: detectedOffset,
+                strictVoicedIntervals: strictVoiced,
+                sourceDuration: normalizedDuration)
+            let vocalOffset = tailCutoff.effectiveOffset
+            var segmentsForGrouping: [TimedTranscriptionSegment]
+            if let vocalOnset {
+                segmentsForGrouping = TranscriptionOnsetCorrection.preparedSegments(
+                    result.segments, onset: vocalOnset)
+            } else {
+                segmentsForGrouping = result.segments
+            }
+            if let vocalOffset {
+                segmentsForGrouping = TranscriptionOnsetCorrection.preparedSegments(
+                    segmentsForGrouping, droppingSegmentsStartingAtOrAfter: vocalOffset)
+                segmentsForGrouping = TranscriptionOnsetCorrection.preparedSegments(
+                    segmentsForGrouping, droppingAfter: vocalOffset)
+            }
             let gatedTokens = TranscriptionSilenceGate.filtered(
-                result.segments.flatMap(\.tokens))
+                segmentsForGrouping.flatMap(\.tokens),
+                sourceDuration: sourceDuration > 0 ? sourceDuration : nil)
             // Respect the transcriber's segment boundaries as line breaks: Whisper segments per
             // sung line (with ~zero word gaps), so without this its lines run on; Parakeet emits a
             // single segment, so this is a no-op and its lines still come from the grouping rules.
-            let groupedLyrics = TimedLyricSegmentGrouper.group(
+            let groupedRaw = TimedLyricSegmentGrouper.group(
                 tokens: gatedTokens,
-                lineStartOnsets: TimedLyricSegmentGrouper.lineStartOnsets(of: result.segments))
-            // When the user supplied reference lyrics, align their exact words/lines to the ASR
-            // word timings (most accurate path); otherwise use the ASR-grouped lines.
+                lineStartOnsets: TimedLyricSegmentGrouper.lineStartOnsets(of: segmentsForGrouping))
+            // Collapse within-line repetition hallucinations (a phrase looped to fill one line).
+            let rawGroupedLyrics = RepeatedPhraseCollapser.collapse(groupedRaw)
+            // TEXT first: if the user supplied reference lyrics, replace the (error-prone) ASR words
+            // with their exact words/lines, borrowing ASR timings as a starting point. Otherwise fix
+            // garbled words in REPEATED lines (choruses) by cross-line ≥2/3 consensus — recovers
+            // e.g. "slip flops"→"flip flops", "biccuyeckle"→"barbecue" when most repeats heard it
+            // right. (No-op without ≥3 similar lines or a clear majority; reference lyrics override.)
             let reference = context.document.referenceLyrics
-            let lyrics =
+            let textCorrected =
                 reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? groupedLyrics
-                : ReferenceLyricAligner.align(referenceText: reference, asrSegments: groupedLyrics)
+                ? RepeatedLyricCorrector().corrected(rawGroupedLyrics)
+                : ReferenceLyricAligner.align(
+                    referenceText: reference, asrSegments: rawGroupedLyrics)
+            // TIMING last: pin the FINAL words (ASR or reference) to the actual singing — distribute
+            // each line's words across the voiced regions near it so words land only on
+            // signal and silent gaps stay wordless. Per-line + non-destructive; vocals stem when
+            // present, otherwise the full mix (weaker but better than no VAD).
+            let referenceEmpty =
+                reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let lyrics: [TimedLyricSegment]
+            if !strictVoiced.isEmpty {
+                let voicedForGating = VocalActivityEnvelope.voicedIntervalsForGating(
+                    strictVoiced, trailingCutoff: vocalOffset)
+                let distributed = VocalAlignmentCorrector.distributeAcrossSignal(
+                    textCorrected, voicedIntervals: voicedForGating)
+                // On the pure-ASR path, definitively drop any line with NO real vocal under it —
+                // hallucinations over instrumental intro/breaks/outro. With reference lyrics the
+                // words are user-supplied, so never gate.
+                if referenceEmpty {
+                    let lastVoicedEnd =
+                        tailCutoff.lastVoicedEnd ?? voicedForGating.map(\.upperBound).max()
+                    var gated = VocalHallucinationGate.filtered(
+                        distributed,
+                        voicedIntervals: voicedForGating,
+                        trailingCutoff: vocalOffset,
+                        lastVoicedEnd: lastVoicedEnd)
+                    gated = TrailingLyricTailPruner.pruned(
+                        gated, lastVoicedEnd: lastVoicedEnd, vocalOffset: vocalOffset,
+                        sourceDuration: normalizedDuration)
+                    gated = TrailingDuplicateLineCollapser.collapsed(
+                        gated, lastVoicedEnd: lastVoicedEnd, vocalOffset: vocalOffset)
+                    gated = TrailingEarlierLyricRepeater.filtered(
+                        gated, lastVoicedEnd: lastVoicedEnd, vocalOffset: vocalOffset,
+                        sourceDuration: normalizedDuration)
+                    // Pull line-leading words stranded on a weak blip (ASR early-padding after an
+                    // instrumental) forward to the line's main body when the gap is unvoiced.
+                    let repaired = StrandedLeadingWordRepairer.repaired(
+                        gated, voicedIntervals: voicedForGating)
+                    // Split double-phrase ASR lines at long UNVOICED internal pauses so a
+                    // chorus line pair doesn't render as one double-length line. ASR path
+                    // only — reference lyrics carry authoritative line breaks.
+                    lyrics = IntraLinePauseSplitter.split(
+                        repaired, voicedIntervals: voicedForGating)
+                } else {
+                    lyrics = StrandedLeadingWordRepairer.repaired(
+                        distributed, voicedIntervals: voicedForGating)
+                }
+            } else {
+                lyrics = textCorrected
+            }
+            // FINAL precision pass: after words are distributed onto voiced regions, snap each word's
+            // onset to the nearest vocal-stem energy onset so words (and everything anchored to them
+            // — the ChordPro strip, the bouncing ball, and chords placed over words) land on the
+            // actual vocal energy. No-op without a vocals stem (`vocalOnsets` empty).
+            let alignedLyrics = VocalWordOnsetAligner.snapped(lyrics, toOnsets: vocalOnsets)
+            // Melisma repair (audit RC-3): bridge held words across continuously-voiced
+            // inter-word gaps and pull late ASR onsets back to the voiced re-entry edge, so
+            // held notes stop rendering as phantom mid-line pauses. Runs LAST, on the final
+            // word timings. No-op when strict VAD is unavailable.
+            let normalizedLyrics = VocalWordSpanNormalizer.normalized(
+                alignedLyrics, voicedIntervals: strictVoiced)
+            // Sung spans with no words (audit RC-4): persist so structure decisions and the
+            // chart can flag them instead of mislabeling them Instrumental.
+            let untranscribed = UntranscribedVocalRegionDetector.regions(
+                voicedIntervals: strictVoiced, lyrics: normalizedLyrics)
             return AnalysisStageOutcome { document in
-                document.lyrics = lyrics
+                document.lyrics = normalizedLyrics
+                document.untranscribedVocalRegions = untranscribed
+                document.sourceDuration = sourceDuration > 0 ? sourceDuration : nil
                 document.lyricReviewState = .draft
                 document.stageRecords[.transcription] = record
             }
@@ -393,7 +530,8 @@ struct HarmonyStage: AnalysisStageRunning {
                 // key — so no re-chroma is needed when only the ChordEventReducer changes.
                 engine: AnalysisEngineVersion(
                     identifier: harmonyEngine.metadata.identifier,
-                    version: harmonyEngine.metadata.version + "|reduce-2"
+                    version: harmonyEngine.metadata.version
+                        + "|reduce-11-chorus-consensus"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -404,22 +542,72 @@ struct HarmonyStage: AnalysisStageRunning {
             )
             let estimatedBPM: Double? = result.beat?.bpm
             let beatTimes = result.beat?.beatTimes ?? []
+            // Make the click track follow the song's REAL beats: keep the estimated tempo as a
+            // spacing prior, but phase-lock the grid to the DRUMS stem's onsets and snap each beat
+            // onto the nearest actual drum hit. Best-effort & non-destructive — any failure (no drum
+            // stem, unreadable file, no onsets, bad BPM, empty result) keeps the uniform beatTimes.
+            var drumBeatTimes = beatTimes
+            if let drumsURL = context.document.stems?.resolved().drums,
+                let bpm = estimatedBPM, bpm > 0,
+                let onsets = try? InstrumentOnsetDetector.onsets(url: drumsURL), !onsets.isEmpty
+            {
+                let duration = max(onsets.last ?? 0, beatTimes.last ?? 0)
+                let derived = DrumBeatGrid.beatTimes(onsets: onsets, bpm: bpm, duration: duration)
+                if !derived.isEmpty { drumBeatTimes = derived }
+            }
+            let resolvedBeatTimes = drumBeatTimes
             let estimatedKey: MusicalKey? =
                 result.estimatedKey ?? MusicalKeyEstimator().estimate(from: result.chords)
             // Additive: detect the played bass line from the BASS stem (runs
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
             let detectedBassNotes = detectBassNotes(context)
-            // Re-root shared-note chord confusions (e.g. Cm vs Ab) using the bass line.
-            let chords = BassInformedChordRefiner().refine(
-                ChordEventReducer().events(from: result),
+            // Key-aware Viterbi decoding over beat windows: a diatonic prior scales frame
+            // evidence and a switch penalty smooths window-to-window flicker, with a no-chord
+            // state absorbing weak-evidence windows (quiet intros/fades). Replaces independent
+            // per-window voting, which let transient out-of-key chroma noise win 28% of the
+            // events on the reference song.
+            var chords = BassInformedChordRefiner().refine(
+                ChordTimelineDecoder().events(
+                    from: result,
+                    key: estimatedKey,
+                    bassNotes: detectedBassNotes ?? context.document.bassNotes
+                ),
                 bassNotes: detectedBassNotes ?? []
             )
+            // Snap chord-change times to where the instrumental actually changes: onsets detected
+            // on the GUITAR stem (falling back to the "other"/accompaniment stem). Best-effort and
+            // non-destructive — any failure or missing stem leaves the chord times unchanged.
+            let instrumentURL: URL? =
+                context.document.stems?.resolved().guitar
+                ?? context.document.stems?.resolved().other
+                ?? context.document.stems?.resolved().accompaniment
+            if let instrumentURL,
+                let onsets = try? InstrumentOnsetDetector.onsets(url: instrumentURL),
+                !onsets.isEmpty
+            {
+                chords = ChordOnsetAligner.snap(chords, toOnsets: onsets)
+            }
+            // Onset snapping (and its nondecreasing clamp) can compress neighbouring events to
+            // sub-beat spacing; merge those slivers into the preceding chord. Runs LAST so it
+            // sees final event times on the resolved (drum-locked) beat grid.
+            chords = ChordEventDurationFilter.merge(
+                chords,
+                beatTimes: resolvedBeatTimes,
+                sourceDuration: context.document.sourceDuration
+            )
+            let alignedChords = chords
             return AnalysisStageOutcome { document in
                 document.estimatedBPM = estimatedBPM
-                document.beatTimes = beatTimes
+                document.beatTimes = resolvedBeatTimes
                 document.estimatedKey = estimatedKey
-                document.chords = chords
+                // A3: identically-sung lines vote on one shared progression (label rewrite
+                // only), so repeated choruses can't decode to different chords. No-op when
+                // lyrics aren't available yet.
+                document.chords = ChorusChordConsensus.applied(
+                    chords: alignedChords,
+                    lyrics: document.lyrics,
+                    beatTimes: resolvedBeatTimes)
                 if let detectedBassNotes {
                     document.bassNotes = detectedBassNotes
                 }
@@ -470,12 +658,15 @@ struct ChordProStage: AnalysisStageRunning {
                     lyrics: document.lyrics,
                     chords: document.chords,
                     confidenceThreshold: document.chordConfidenceThreshold,
-                    beatTimes: document.beatTimes
+                    beatTimes: document.beatTimes,
+                    sourceDuration: document.sourceDuration,
+                    estimatedKey: document.estimatedKey
                 ))
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: .recording,
-                engine: AnalysisEngineVersion(identifier: "chordpro-draft-builder", version: "3"),
+                // 4: {key}/{time} directives + trailing chords typeset past the last word.
+                engine: AnalysisEngineVersion(identifier: "chordpro-draft-builder", version: "4"),
                 modelIdentifier: nil,
                 modelVersion: nil,
                 configurationIdentifier:

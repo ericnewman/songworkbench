@@ -33,3 +33,694 @@ line breaks; ASR gives the timing.
   from ASR; stage version showed |ref-<hash>. Reverted test injection; song clean.
 - Note: paste the FULL lyrics incl. repeats — repeated short references align to a
   single ASR occurrence, leaving gaps (expected).
+
+---
+
+# ChordPro preview fixes + Lyric Blending feature (2026-06-27)
+
+## Phase 1 — ChordPro App Preview fixes (do first, one build/verify batch)
+- [ ] A. Reset button sits too far from slider -> place it adjacent to the slider (before the ms readout).
+- [ ] B. First chords overlap in rhythmic mode -> de-collide rhythmic chord x positions (push each chord >= prev chord width to the right).
+- [ ] C. Bouncing ball hidden in rhythmic mode -> render ball over rhythmic word x positions (user wants it shown).
+- [ ] D. Word highlight drifts vs sung time -> make highlight lead rate-aware (0.45s / tempoRate); the fixed lead is wrong at non-1.0x speed. (Word-level ASR bias is a separate, larger effort.)
+- [ ] E. Accuracy (Whisper) duplicates lyric lines -> drop adjacent duplicate Whisper segments (same normalized text + overlapping/adjacent timespan) in WhisperCPPTranscriptionEngine before grouping.
+- [ ] F. Outro/instrumental (chord-only) lines have no beat dots -> beat dots are keyed to lyric lines only; extend to chord-only lines via their time window (feasibility-check; may defer).
+- [ ] Verify: Clean Build Folder + Run (external edits need clean build), screenshot each fix.
+
+## Phase 2 — Lyric Blending feature
+- Drop the Fast/Balanced/Accuracy quality picker; always run all 3 modes.
+- On analysis complete, open a new "Lyric Blend" window (openWindow id) for the selected song.
+- Rows = time windows across the song (model-agnostic). Per row, stack the 3 models'
+  text for that window in 3 distinct colors, with a blank gap before the next row.
+- User picks the best candidate per row; blended selection persists as official lyrics.
+- Open question: with run-all-3, do we still expose any per-model settings (see G)?
+
+## G. Model-settings question (answer)
+- Recommendation: do NOT expose raw Parakeet/Whisper params; with run-all-3 + blend, the blend IS the tuning.
+- High-value optional knobs worth exposing instead: timing lead (per song), silence sensitivity, confidence threshold, reference lyrics (already exists).
+
+## G2 — Lyrics start at 0:00 over an instrumental intro (timeline misalignment)
+- Symptom: first lyric line timestamped at song start though vocals enter several measures in.
+- Likely: Whisper first-word-after-silence padding bias (de-padding may not be catching it),
+  or first segment start pinned to 0. Investigate de-padding thresholds + segment start handling.
+- Root-cause pass needed before fixing (don't guess).
+
+## Batch status (2026-06-27, code complete, pending visual verify)
+- A done+verified. B (snap-to-beat + de-overlap) code done. C (ball in rhythmic) code done.
+- E (Whisper overlapping-dup dedup) code done. F (beat dots on chord-only lines) code done.
+- D deferred. G2 + drum-track beats = follow-ups.
+
+## G2 review (done 2026-06-27)
+- Root cause: Whisper places/hallucinates lyric words during a silent instrumental intro; grouper
+  de-padding only fixes a SINGLE >5s token, so a multi-word intro line keeps start≈0.
+- Fix: VocalOnsetDetector (energy onset on isolated vocals stem) in AudioFileAnalysisService.swift;
+  TranscriptionStage drops tokens before the onset (hasStems only, best-effort, never empties).
+  Grouping tag bumped grouping-10 -> grouping-11-vocal-onset so re-analysis re-groups from cache.
+- Tests: 3 in AudioAnalysisTests.swift (onset after intro, nil when immediate, nil degenerate).
+- Compiles (Xcode Build succeeded). NOT yet runtime-verified — re-run Accuracy on the intro song.
+- Existing songs keep wrong lyrics until re-analyzed.
+
+---
+
+# Lyrics/chords accuracy review (2026-06-29)
+
+## Plan
+- [x] H1: Wire `VocalOnsetDetector` + `TranscriptionOnsetCorrection` (reanchor + drop pre-onset tokens) before grouping; bump grouping tag to `grouping-27-vocal-onset-strict-vad`.
+- [x] H2: Whisper segment `no_speech_prob` + average token logprob filter (~0.6 / -1.0); optional locale→language hint for whisper.cpp.
+- [x] H3: Repetition-filter safety valve (revert to raw when retained span < 50% duration); whisper engine version bumped to `6`.
+- [x] H4: `HarmonyAudioSourceSelector` prefers guitar → piano → accompaniment → other; per-stem `configurationIdentifier` in cache key.
+- [x] H5: Run strict VAD on full-mix path when stems absent.
+- [x] M1: Unify strict `VocalActivityEnvelope.Configuration.strictVocalPresence` for distribute + hallucination gate.
+- [x] Quick wins: `RepeatedPhraseCollapser` minCycles 3→2; `VocalHallucinationGate` padding 0.35→0.15.
+- [x] H6: maj7/min7/dom7 templates in `ChordClassifier` + `Chord.displayName`.
+- [ ] M7: Default transcription mode → Accuracy (skipped — not requested).
+
+## Review (2026-06-29)
+- H1–H6 + M1 + quick wins implemented. Grouping tag `grouping-27-vocal-onset-strict-vad`; whisper engine `6`.
+- Tests: `swift test --filter 'AudioAnalysisTests|WhisperCPPTranscriptionEngineTests|HarmonyAudioSourceTests|SongAnalysisPipelineTests'` — all pass except pre-existing `testDrumBeatGridKeepsUniformBeatWhereOnsetIsMissing` flake (unrelated).
+- M7 deferred: user asked not to change default transcription mode.
+- Runtime verify: re-analyze a song with a long instrumental intro to confirm onset re-anchor; re-analyze harmony on a guitar-forward mix to confirm stem selection.
+
+---
+
+# Trailing lyric hallucinations + full-song timeline (2026-06-29)
+
+## Acceptance criteria
+- [x] Trailing ASR hallucinations after the last real vocal offset are dropped (token + line gates).
+- [x] `TranscriptionSilenceGate` fences trailing islands using `sourceDuration` (actual audio end).
+- [x] Strict VAD for gating/distribution is clipped at the detected vocal offset (bleed blips ignored).
+- [x] Lyric/chord timeline spans full song duration (`sourceDuration` persisted + UI `timelineDuration`).
+- [x] Real outro vocals before the offset are preserved (regression test).
+- [x] Grouping tag bumped to `grouping-28-trailing-vocal-cutoff`.
+
+## Review (2026-06-29)
+- Root causes: (1) `TranscriptionSilenceGate` treated `songEnd` as last token end, so trailing outro
+  islands were never isolated; (2) intro had `VocalOnsetDetector` but outro had no symmetric cutoff;
+  (3) strict VAD bleed blips after real vocals kept hallucinated lines in `VocalHallucinationGate`;
+  (4) ChordPro outro/chord-only windows ended at last chord or last beat, not full audio length.
+- Fix: `VocalOffsetDetector`, trailing token drop, clipped strict VAD, `trailingCutoff` on gate,
+  `sourceDuration` on document + `ChordProDraftInput`, `BeatDotContext.songDuration`.
+- Tuning knobs: `VocalOffsetDetector.Configuration.minOutroSeconds` (0.75),
+  `TranscriptionOnsetCorrection` trailing `padding` (0.15), `VocalHallucinationGate.trailingCutoff`
+  (vocal offset, no extra padding), `TrailingLyricTailPruner` (`minClusterGap` 2s).
+- Tests: `swift test --filter 'AudioAnalysisTests|TranscriptionTests|ChordProDraftBuilderTests'` — all new tests pass; only pre-existing `testDrumBeatGridKeepsUniformBeatWhereOnsetIsMissing` flake fails (unrelated).
+
+---
+
+# Trailing tail pruner + Lyrics section headers (2026-06-29)
+
+## Acceptance criteria
+- [x] Remaining 2-line outro hallucinations dropped (segment-level + tail pruner pass).
+- [x] Lyrics view shows Intro / Instrumental / Outro / Verse / Chorus section headers.
+- [x] Regression tests for 2-line outro scenario and section derivation.
+- [x] Grouping tag bumped to `grouping-29-trailing-tail-pruner`.
+
+## Review (2026-06-29)
+- Root cause of surviving hallucinations: bleed segments starting at/after vocal offset kept partial
+  tokens (token drop only); clipped strict-VAD blips still let overlap-gated lines through; trailing
+  cutoff used offset+0.25s padding so lines just past offset survived.
+- Fix: drop whole ASR segments at/after offset, tighten token padding to 0.15s, gate at raw offset,
+  `TrailingLyricTailPruner` after grouping for isolated tail clusters.
+- Section headers: `LyricSectionDeriver` (shared with ChordPro gap logic) wired into
+  `TimedLyricsEditor` timestamped + paragraph views.
+
+---
+
+# Vocal level threshold for stem bleed (2026-06-29)
+
+## Acceptance criteria
+- [x] Adaptive body-level threshold in `VocalEnergyThreshold` filters sub-threshold instrumental bleed.
+- [x] `VocalOnsetDetector`, `VocalOffsetDetector`, and `VocalActivityEnvelope` share level-aware enter threshold.
+- [x] Strict VAD / `voicedIntervalsForGating` / offset detector ignore bleed after real singing (~107.7s scenario).
+- [x] Quiet vocal tail regression preserved (amplitude ~35% of body still detected).
+- [x] Grouping tag bumped to `grouping-30-vocal-level-threshold`.
+- [x] Tests in `AudioAnalysisTests` for bleed rejection + quiet tail regression.
+
+## Review (2026-06-29)
+- Root cause: relative-only thresholds (noise floor × multiple, peak × fraction) still admit bleed
+  once the noise floor drops after vocals end; bleed RMS clears the bar but sits far below typical
+  sung level.
+- Fix: `VocalEnergyThreshold` adds adaptive floor = 75th-percentile RMS of relative-threshold frames ×
+  `vocalBodyFraction` (default 0.30; strict VAD 0.25). Quiet-frame median noise floor avoids inflation
+  on vocal-heavy files. Shared via `VocalRMSEnvelope`.
+- Tuning knobs: `vocalBodyFraction` on each detector `Configuration` (0.30 default, 0.25 strict VAD),
+  plus existing `peakFraction`, `noiseFloorMultiple`, `minOutroSeconds`, `minVoicedSeconds`.
+- Tests: `swift test --filter AudioAnalysisTests` — bleed + quiet-tail tests pass.
+
+---
+
+# Tail line-start cutoff for outro hallucinations (2026-06-29)
+
+## Acceptance criteria
+- [x] Lines **starting** at/after `vocalOffset` or `lastVoicedEnd` dropped (Summertime "Sunset winks…" scenario).
+- [x] Real last line ending at offset kept (starts before cutoff).
+- [x] Trailing duplicate identical lines collapsed after tail filter.
+- [x] Token drop at raw offset (no +0.15s padding).
+- [x] Grouping tag bumped to `grouping-31-tail-start-cutoff`.
+- [x] Regression test for 107.76s anchored hallucinations + duplicate tail.
+
+## Review (2026-06-29)
+- Root cause: `TrailingLyricTailPruner` used `start < cutoff + 0.08s` (kept lines starting just after
+  offset); token drop used `offset + 0.15s` (kept bleed tokens anchored to previous line end); gate
+  only checked `segment.start` so lines with offset slightly after anchor survived bleed overlap.
+- Fix: line-start cutoff at `vocalOffset` and `lastVoicedEnd` (2ms epsilon), strict token drop at
+  offset, `TrailingDuplicateLineCollapser` for repeated tail lines.
+- Tests: `swift test --filter AudioAnalysisTests` — new Summertime + duplicate + token tests pass.
+
+---
+
+# Vocal tail cutoff fallback (2026-06-29)
+
+## Acceptance criteria
+- [x] Summertime "Sunset winks…" hallucinations dropped when `VocalOffsetDetector` returns `nil` (bleed to file end).
+- [x] Same hallucinations dropped when detector anchors on bleed (~109.5s) instead of body end (~107.76s).
+- [x] `VocalTailCutoffResolver` infers body end from strict-VAD trailing blip + min with detector offset.
+- [x] `TrailingLyricTailPruner` lyric-body fallback when song continues instrumentally after last real line.
+- [x] Grouping tag bumped to `grouping-32-vocal-tail-cutoff-fallback`.
+- [x] Regression tests for nil offset, late offset, and resolver min().
+
+## Review (2026-06-29)
+- Root cause (production): grouping-31 tests assumed `vocalOffset ≈ 107.7`, but on Summertime the
+  detector often returns `nil` (bleed keeps RMS above threshold until EOF — no sustained silence) or
+  a **late** offset on the bleed blip (~109.5s after a short silent outro). With cutoff ≥ 109.5,
+  lines at 107.76/109.36 overlap clipped/unclipped strict-VAD bleed and survive all tail gates.
+  Re-analyze did re-run post-processing (no stage skip); persisted lyrics were not the issue.
+- Not root cause: reference-lyrics bypass (only outputs reference lines), UI reading a different
+  source (`model.lyricSegments` from persisted document), grouping-31 cache tag (transcription stage
+  always re-groups when re-analyzed).
+- Fix: `VocalTailCutoffResolver` takes `min(detector, strict-VAD body end)`; strict VAD computed once
+  and reused; `TrailingLyricTailPruner` adds lyric-body end fallback from `sourceDuration`.
+- Verify UI: Re-analyze Summertime → last lyric "And under the stars it feels so right" ending
+  ~107.76s; no "Sunset winks…" lines. Stage record should show `grouping-32-vocal-tail-cutoff-fallback`.
+- Tests: `swift test --filter AudioAnalysisTests` — Summertime nil/late offset + resolver tests pass.
+
+---
+
+# Tail earlier-lyric repeater + section labels (2026-06-29)
+
+## Acceptance criteria
+- [x] Single tail ASR repeat of an earlier lyric line (Summertime "Sunset winks…" at ~107.76s) dropped.
+- [x] `TrailingEarlierLyricRepeater` cross-timeline duplicate filter after tail pruner/collapser.
+- [x] `LyricSectionDeriver` / ChordPro: no Verse/Chorus labels after inferred body end; Outro from last real line.
+- [x] `lyricBodyEndBeforeInstrumentalTail` requires tail cluster within 2s of body line (no false cut on verse→chorus gaps).
+- [x] Grouping tag bumped to `grouping-33-trailing-earlier-repeater`.
+- [x] Regression: intentional double chorus before cutoff preserved.
+
+## Review (2026-06-29)
+- Root cause A: `TrailingDuplicateLineCollapser` only drops *consecutive* identical tail lines. When ONE
+  hallucinated line survives (107.76–109.36) and its text matches an *earlier* chorus line (~40s), nothing
+  removed it — not a new invention, an ASR repeat during bleed.
+- Root cause B: `SongStructureAnalyzer` matched the tail repeat to the earlier chorus → spurious "Chorus"
+  header; Outro anchored on tail hallucination end instead of last real body line.
+- Fix: `TrailingEarlierLyricRepeater` drops tail-window lines whose normalized text appears earlier;
+  section deriver/ChordPro infer body end and exclude post-cutoff lines from verse/chorus labeling.
+- Verify UI: Re-analyze Summertime → last lyric "And under the stars it feels so right" ~107.76s;
+  no "Sunset winks…"; section headers show Outro (not Chorus) after last lyric.
+  Stage record: `grouping-33-trailing-earlier-repeater`.
+- Tests: targeted AudioAnalysis + ChordProDraftBuilder section tests pass.
+
+---
+
+# Lyric line highlight lag (2026-06-29)
+
+## Acceptance criteria
+- [x] Active lyric line is a pure function of playhead time (`[start, end)` containment).
+- [x] Overlapping segments resolve to the latest-starting match; past last end keeps last line lit.
+- [x] TimedLyricsEditor refreshes highlight on every playhead tick (no scroll animation fighting).
+- [x] Playback services publish time at 60 Hz without async timer hop.
+- [x] Unit tests for playhead → segment index.
+
+## Review (2026-06-29)
+- Root cause: `TimedLyricsEditor` used a "latest started + cap at next start" heuristic instead of
+  direct `[start, end)` lookup, so highlight could trail when segment ends were short or gaps were
+  capped early; SwiftUI List row backgrounds did not always refresh because playhead lived only on
+  child `ObservableObject`s; 30 Hz playhead publisher added visible delay.
+- Fix: shared `ChordProHighlightDeriver.activeSegmentIndex(at:in:)`; `playheadTime` state synced from
+  active playback service; scroll without animation; playhead timer raised to 60 Hz.
+- Tests: `swift test --filter ChordProHighlightDeriverTests` — all pass.
+- Manual verify: play/scrub a song with timed lyrics — highlight should track the waveform playhead.
+
+---
+
+# Lyric highlight lag + instrumental gaps (2026-06-29)
+
+## Acceptance criteria
+- [x] Highlight at exact `line.start` (zero offset vs playhead).
+- [x] During instrumental gap between lines, previous line stays highlighted (karaoke hold).
+- [x] Intro section header highlighted before first sung line.
+- [x] Playhead timer updates synchronously on main thread (no `Task` hop).
+- [x] `TimedLyricsEditor` reads `lyricHighlightTime` (= waveform clock), not stale `@State`.
+
+## Review (2026-06-29)
+- Root cause (~5s lag): `TimedLyricsEditor` cached playhead in `@State` updated only via `.onChange`,
+  which could fall behind `@ObservedObject` playback ticks under load; playback timers still wrapped
+  `updateCurrentTime` in `Task { @MainActor }`, queueing ticks and letting `currentTime` drift behind
+  audible output. Highlight also wasn't sharing a single clock with the waveform.
+- Fix: `model.lyricHighlightTime` aliases `activePlaybackTime`; removed `@State playheadTime`; timer
+  callbacks call `updateCurrentTime` / `updatePlaybackMeters` directly; scroll uses
+  `disablesAnimations`.
+- Instrumental UX: `activeSegmentIndex` default spans `[start, nextLine.start)` (hold previous line);
+  strict `[start, end)` kept via `holdThroughGaps: false` for bouncing-ball gap detection; intro
+  section header highlights via `activeInstrumentalSection` when no lyric is active.
+- Tests: `swift test --filter ChordProHighlightDeriverTests` — all pass.
+
+# Vocal-energy alignment (ChordPro preview) — 2026-07-01
+
+## Done & verified
+- [x] Q1: instrumental/chord-only line strips are time-scaled (pixelsPerSecond) so a 5-bar
+  interlude reads wider than a 4s verse line. WorkspaceEditorsView: isInstrumentalLine,
+  instrumentalTimeWidth, monospaceChordX; stripWidth/monospaceContent/beatDotPositions use it.
+  Verified live on "Summertime's her with you".
+
+## Planned (approved: upstream / persisted)
+- [ ] Q2: per-word onset snapping. The pipeline ALREADY aligns words to voiced signal via
+  VocalAlignmentCorrector.distributeAcrossSignal (AudioFileAnalysisService.swift:907). Add a
+  precise pass on top: detect vocal onsets with InstrumentOnsetDetector.onsets(url: vocalsStem)
+  and snap each word.start to the nearest onset (tolerance ~0.15-0.2s), nondecreasing, start<end,
+  update segment.start. New enum VocalWordOnsetAligner modeled on ChordOnsetAligner.snap. Wire into
+  AnalysisStage transcription stage AFTER distributeAcrossSignal (both ASR + reference paths).
+  Unit tests. Re-analyze Summertime to apply; verify words+strip sit on energy bursts.
+- [ ] Q3: bouncing ball bottoms on vocal peaks. Change ball cadence from the beat grid to the
+  (now energy-accurate) word onset times so each bounce-bottom lands on a vocal peak. Lives in the
+  ball position logic (WorkspaceEditorsView rhythmicBallPosition/ballPosition + BouncingBall in
+  ChordProPreviewDocument.swift). Verify live.
+
+## Note / caution
+This touches the most heavily-tuned code path (word↔vocal alignment: distributeAcrossSignal, VAD,
+VocalHallucinationGate, onset detectors — many prior fixes in memory). Implement as a focused,
+test-backed pass with a Summertime re-analysis to verify, not a rushed change.
+
+# Fixed measure grid — restore repeating cadence (ChordPro preview) — 2026-07-01
+
+## Problem (data-verified, "She thinks I'm a millionaire", bpm 105.47, beat 0.569s)
+- Vocal-line first-word onsets cluster at beat 3 (pickup) and beat 0 (downbeat):
+  histogram {0:13, 1:5, 2:5, 3:13}, mean 3.61b — a strong repeating anacrusis cadence.
+- Current view loses it: (a) each line has its OWN local time axis (words stretched to fill
+  row width via rhythmicWordXs' `max(desired,cursor)` clamp) so a beat = different px per row;
+  (b) leadingIndent = (onset mod one bar) x pxPerSec off an arbitrary phase (beatTimes.first),
+  so a 3.9b pickup looks hugely indented while the downbeat 0.1b later snaps flush-left — same
+  cadence, scattered indents.
+
+## Approach (user-approved: option 1 + 3 = fixed grid aligned to true downbeat)
+1. MeasureGrid helper (new, pure, unit-tested): given beatTimes+bpm+barPhase, map time->(bar,
+   beatInBar), nearestDownbeat(time), downbeatTime(barIndex). No new model download.
+2. Downbeat phase detection (new, pure, unit-tested): pick barPhase in {0,1,2,3} that best aligns
+   vocal-line onsets to the grid (min circular variance of (onset mapped to beat-in-bar), favoring
+   mass at beat 0 & pickup beat 3). Feed vocal onsets already computed in AnalysisStage. Persist on
+   BeatEstimate (add `barPhase: Int` + `downbeatTimes: [TimeInterval]`, Codable; bump grouping/beat
+   version tag so cached songs re-derive).
+3. Layout rewrite (WorkspaceEditorsView ChordProPreviewLineView): replace per-line
+   leadingIndent+rhythmicWordXs scale with ONE shared mapping x(t) = gutter + (t - rowDownbeat) *
+   pxPerBeat/beatLen, constant pxPerBeat across ALL rows. rowDownbeat = grid downbeat the line
+   resolves to; gutter = one bar so pickups render to the left of the shared downbeat column.
+   Keep a light local overlap-nudge only for crowded syllables (does not move the row's downbeat
+   anchor), so readability holds without breaking vertical beat alignment.
+4. beat dots + NEW barlines drawn at the fixed shared columns; strip/chords/ball reuse x(t) so they
+   stay consistent for free.
+
+## Key tradeoff to confirm
+Fixed pixels-per-beat means dense/fast syllables can crowd. Plan: keep pxPerBeat generous (~57px)
+and apply a local right-nudge ONLY within a bar cluster, never moving downbeat anchors. Alternative
+(rejected unless requested): full metric reflow where lyrics wrap at bar boundaries (breaks
+one-row-per-lyric-line readability).
+
+## Verify before done
+- Unit tests: MeasureGrid mapping, downbeat-phase picker (synthetic + the real onset set).
+- Rebuild .app (xcodebuild, not swift build) + relaunch; re-analyze the song to apply new tag.
+- Live: confirm downbeat columns align vertically across verse rows and the pickup cadence renders
+  identically line-to-line. Diff against current screenshots.
+
+## Added 2026-07-01: trailing melody fill (user: "no melodic parts at the END of lines")
+- Only leadingMelodyFill (pre-vocal gap) was ever built; the symmetric trailing fill from the
+  user's original ask ("same is true at the end of a line") was never implemented.
+- Fold into the grid rewrite: on the shared x(t) axis, draw melody-stem peaks in BOTH gaps —
+  leading [rowStart..firstWord] and trailing [lastWordEnd..rowEnd/nextDownbeat] — same melody
+  lane color. Trailing bounded so it can't overrun the NEXT line's first word.
+
+## Review (2026-07-01) — fixed measure grid DONE
+- New MeasureGrid.swift (MeasureGrid + DownbeatEstimator), 9 unit tests PASS (incl. realistic
+  "She thinks" cadence → barPhase 0). Derived in-view from beatTimes + word onsets (NO BeatEstimate
+  schema change, NO re-analysis needed — simpler than the planned persistence).
+- WorkspaceEditorsView: rhythmicWordXs now places words at metricX(t)=gutterPx+(t-rowDownbeat)*pps,
+  constant px/sec; downbeat pinned to gutterPx column on every row; local nudge only. Beat dots +
+  faint barlines drawn at pure-metric columns. Leading AND trailing melody fill on the shared axis.
+- Numerical proof on real data: downbeat column constant 114px across all verse rows; OLD mod-bar
+  indent scattered 22-222px for the same pickup cadence. swift build + xcodebuild + app relaunch OK.
+- LIVE VIEW: blocked this session — the computer-use input env only registers menu-bar clicks;
+  in-window clicks/keys collapse or hit the wrong control, so I could not select the rhythmic song
+  on screen. Verified by tests + numerics instead. User to eyeball "She thinks I'm a millionaire"
+  → ChordPro. (Accidentally nudged Timing/Transpose on "Theres a place in my heart" — hit Reset.)
+
+# Phrase-structure lyric grouping — 2026-07-01 (approved)
+User signals: (1) verse lines have similar word/syllable counts; (2) lines often end on a rhyme;
+(3) there's usually a repeating musical phrase (bars/chords) behind verse lines.
+
+## Approach — post-pass over the beat/chord grid (keeps the tested lexical grouper intact)
+New LyricPhraseGrouper.swift (pure, tested), applied in AppModel.applyAnalysis AFTER regroup when
+beats+chords exist; falls back to current grouping when no reliable musical period.
+- Stage 1 (foundation, this pass): detect the repeating PHRASE PERIOD in bars from per-bar chord
+  labels (autocorrelation over {2,4,8}, default 4). Lay phrase boundaries at section downbeat +
+  k*period*barSeconds (via MeasureGrid). Re-segment each section's words into one line per phrase
+  cell, breaking at the word gap nearest each boundary → musically-aligned, consistent-length lines.
+- Stage 2 (refinement, next): score/adjust candidate breaks by rhyme at line ends + syllable-count
+  similarity to sibling lines; nudge a boundary to the local best break within ±~1 beat.
+- Guard: only re-segment sections with a confident period + enough bars; never cross section
+  headers; bound line length by existing caps.
+
+## Verify
+- Unit tests: period autocorrelation (synthetic ABAB / AABB chord bars), re-segmentation at
+  boundaries, fallback on no-period.
+- Re-analyze the song on ACCURACY (user chose) for clean words, then eyeball verse lines: even
+  length, aligned to bars. Bump grouping version tag.
+
+---
+
+# Reconstruction-accuracy audit + refinement plan — 2026-07-01
+
+Goal: ChordPro accurate enough to reconstruct the original song. Reference case:
+"Summertime's her with you (Edit)" (158.7s, 112.35 BPM, est. key Db/C# major,
+117 chord events, 24 lyric lines, 295 beats, all states draft).
+
+## Audit findings (numeric, from persisted document + generated chart)
+
+### Chord accuracy — the dominant error source
+- 33/117 chord events (28%) are non-diatonic to the estimated Db-major key
+  (E, Eb, D, Dm, F, Bb, Cm, Gm, Em) — implausible for this song; almost all noise.
+- 26/116 events last < 1 beat despite two-beat voting — sub-beat flicker survives.
+- Chorus self-consistency ~40%: the identically-sung choruses get materially
+  different progressions (c1: Ab C# Ab F# Cm... vs c2: Fm C# F# Ab Eb...).
+  Same melody must yield the same chords.
+- Confidences span only 0.53–0.84; the 0.5 threshold filters almost nothing.
+
+### Lyric accuracy — minor
+- ASR text mostly clean; suspect line "Toes curl up like a secret's toe" (72.9s);
+  minor line-boundary overlaps (~0.1s). referenceLyrics is empty for this song —
+  for ORIGINAL songs the writer has ground-truth lyrics; the existing
+  ReferenceLyricAligner path is the highest-accuracy route and should be the
+  canonical-chart default.
+
+### Arrangement detail — structural information loss in ChordProDraftBuilder
+(Full inventory from code audit of ChordProDraftBuilder.swift + input types.)
+- Never emits {key} (estimatedKey isn't even in ChordProDraftInput), {time}, {capo}.
+- Chord-only lines are proportional-space strings with a single "N bars" comment;
+  no bar boundaries → a reader cannot map chords to measures.
+- Chord durations, beat/bar alignment, and sub-measure timing are all quantized
+  away to character offsets; stacked artifacts like [Eb][E][C#][Ab][F][Bb]Word
+  come from rapid noise events all snapping to the same word anchor.
+- Sections are {comment}s, not {start_of_verse}/{start_of_chorus} directives;
+  repeats not identified; bassNotes never used in the standard draft.
+
+## Refinement plan (proposed order)
+
+### A. Chord-timeline accuracy (do first — everything downstream inherits it)
+- [ ] A1 Key-aware decoding: pass estimatedKey into chord selection; penalize
+      non-diatonic labels unless evidence is strong (allow common borrowed chords).
+      Target: non-diatonic rate 28% → <10% on Summertime.
+- [ ] A2 Minimum-duration enforcement: investigate why sub-beat events survive
+      two-beat voting; merge events < 1 beat into neighbors by evidence.
+      Target: <1-beat events 26 → ~0.
+- [ ] A3 Repeated-section consensus: sections with matching lyrics (chorus
+      detection already exists) vote on ONE shared progression, applied to all
+      instances. Target: chorus agreement 40% → >90%.
+- [ ] A4 Bass-root fusion: constrain bar-root choices with persisted bassNotes
+      (per lessons.md: bass stem owns roots).
+
+### B. ChordPro arrangement fidelity (reconstruction)
+- [ ] B1 Emit {key}, {time} (4/4 explicit), tempo already present.
+- [ ] B2 Bar-aligned chord-only lines: `| C# | F# . | Ab | C# |` style with real
+      barlines derived from MeasureGrid + DownbeatEstimator (already built);
+      bar count must equal the section comment.
+- [ ] B3 Beat-anchored chord placement in lyric lines (MeasureGrid), replacing
+      pure character-proportional anchoring; kill stacked-chord artifacts at
+      source (A2 helps) and de-collide the rest.
+- [ ] B4 Proper section directives {start_of_verse N}/{start_of_chorus} (+ keep
+      human comments); mark detected repeats (identical section → "Repeat chorus").
+- [ ] B5 Round-trip carrier for timing the ChordPro spec can't hold: x_ custom
+      directives (e.g. {x_section_start: 24.56}, per-bar chord map) that the app
+      writes and can re-import losslessly; foreign parsers ignore them.
+
+### C. Lyric canonicalization
+- [ ] C1 Reference-lyrics-first workflow for original songs: prompt/surface the
+      paste-reference step before a chart is considered reviewable.
+
+### Verification (definition of done per phase)
+- Golden metrics on Summertime (scripted, repeatable): non-diatonic %, sub-beat
+  event count, chorus-agreement %, chart bar-count consistency.
+- Round-trip test: parse the generated chart → rebuild per-bar chord map →
+  compare against the persisted chord timeline within one beat tolerance.
+- Unit tests per change + swift test; re-analyze Summertime in-app to verify live.
+
+## Review — A1+A2 done (2026-07-01)
+- Plain per-window rescoring (first A1 attempt) was measured INSUFFICIENT on the real
+  cached frames (28%→24% non-diatonic only). Replaced with `ChordTimelineDecoder`:
+  Viterbi over per-beat windows; emissions = confidence-summed labels scaled by
+  `KeyPriorChordRescorer` (dia 1.0 / borrowed 0.75 / chromatic 0.5; parallel minor
+  of tonic demoted to chromatic — one-chroma-bin confusion of the tonic); switch
+  penalty 2.5; explicit no-chord state (floor 0.5) absorbs weak windows; empty
+  windows are uninformative (do NOT punish sustaining). Falls back to
+  ChordEventReducer when no beat grid. `ChordEventDurationFilter` (0.8 beat min,
+  merge into previous, collapse duplicates) runs LAST, after bass refine + onset
+  snap, on the drum-locked grid.
+- Offline validation on Summertime's cached frames (cache 28136d82b525…):
+  old voting 117 events / 28% non-diatonic / 26 sub-beat / 31% chorus agreement →
+  Viterbi+prior ~58 / ~12% / ~4 / 67%; +chorus consensus sim (A3 preview) 56 /
+  11% / 2 / 100%.
+- Harmony stage record tag bumped: reduce-5-per-beat-chords → reduce-7-viterbi-key-prior
+  (re-reduces from cached chroma; no re-separation).
+- Tests: ChordTimelineDecoderTests (6) + KeyAwareChordFilteringTests (13) pass;
+  pipeline/key/audio suites pass. AppModelTests import failures are PRE-EXISTING
+  (uncommitted WIP in tree; proven by removing my changes — see lessons.md).
+- Tuist regenerate + xcodebuild compile check OK (signing skipped in CLI).
+- NEXT: user re-analyzes Summertime in-app (harmony re-runs from cache), then
+  re-run metrics on projects.json. Then A3 (consensus in ChordPro stage,
+  event-level, lyric-matched sections) and B-phase chart fidelity.
+
+## Review — cascading-indent + missing-verse-chords fixes (2026-07-01, user-reported)
+User saw (ChordPro preview, Summertime, after re-analysis with reduce-7):
+(1) verse rows 4-6 cascade rightward, row 7 snaps left; (2) no melody strip in
+rows 5-6's leading space; (3) NO chord symbols in verse 1; (4) row 4's leading
+strip shows intro material that isn't part of the verse.
+Root causes (data-verified):
+- (1) Lines are spaced ~2.7s = exactly FIVE 0.534s beats; drum comb fit confirms
+  the 112.35 tactus is real, so the song phrases in 5-beat units while the view
+  hard-coded beatsPerBar=4 → each line lands +1 beat-in-bar (phases 3.86, 0.88,
+  1.95, 3.01; R=0.22). With 5-beat bars R doubles and lines align.
+  FIX: DownbeatEstimator.estimateBeatsPerBar (phrase-period scoring of line-onset
+  spacings vs candidate bar lengths {3,4,5,6}, conservative 4 default + margin),
+  wired into WorkspaceEditorsView.beatsPerBar. 4 unit tests incl. real onsets.
+- (2) NOT a bug: lines are contiguous (prev vocal runs to each line start), so
+  there is no unheard melody; blank was metric offset only, disappears with (1).
+- (3) New sparser decoder timeline holds one chord (C#→D transposed) across the
+  whole verse; chart marks CHANGES only, and the change happened in the intro.
+  FIX: ChordProDraftBuilder restates the active sustained chord at each section
+  start (index 0, ≥4-bar gap, or labeled section) unless the line already opens
+  with a chord within 0.5s. 2 unit tests. Draft rebuilds on next analysis/retry.
+- (4) Leading melody fill reached gutterSeconds back into the intro whose audio
+  the intro rows already draw. FIX: suppress leading fill when the pre-vocal gap
+  ≥ 4 bars (same threshold as Intro/Instrumental rows).
+Verify: swift test MeasureGrid+ChordProDraftBuilder PASS; xcodebuild Debug PASS.
+User must relaunch the app to see (1)(2)(4); re-run analysis to regenerate the
+draft for (3).
+
+## Review — A4 done: frame-level bass re-rooting (2026-07-01)
+Author confirmed verse changes MID-LINE → penalty 2.5 was over-smoothing, but
+the root cause was deeper: in the verse's Ab passage the classifier emits Cm/C
+on EVERY frame (Ab root quiet in chroma; C+Eb dominate) — Ab never appears as a
+label, so no re-weighting can recover it, and the decoder rode C# through 3s of
+real Ab. The persisted BASS LINE is ground truth here (C#@24.4 F@26.6 F#@27.3
+Ab@29.5→32.3 F#@33.0 C#@35.8 = the actual verse progression).
+- FIX: `BassInformedChordRefiner.refineObservations` — the ≥2-shared-tones
+  re-rooting moved to the FRAME level, applied inside `ChordTimelineDecoder`
+  BEFORE windowing/voting (sustained bass: last onset ≤ t within 4s, conf
+  ≥0.25 via existing bassPitchClass). Event-level refine kept downstream.
+- switchPenalty 2.5 → 2.0. Sim on real frames: verse now decodes
+  C#…Ab(29.6) F#(32.8) C#(35.4) — matches bass ground truth; global n=77,
+  nonDia 17%, chorus 67%. Stage tag reduce-8-bass-frame-reroot.
+- triad() third fixed for minor7 (was mapping major7/dom7 wrong is fine, minor7
+  previously OK; now explicit: minor/minor7 → 3, else 4).
+- Tests: testBassRerootRecoversChordMaskedByChromaConfusion + all chord suites
+  PASS; xcodebuild Debug PASS. Sim scripts: outputs/summertime_frames.json.
+- Remaining known miss: early F#@27.3 (1-beat change, evidence 1.48 vs C# 2.79
+  neighbours) — A3 chorus/section consensus + possible per-line pass later.
+
+## Review — F#@27.3 recovered: seventh-chord re-rooting (2026-07-01)
+Root cause: bass holds F# 27.28→29.49 (not 1 beat) while chroma reads C# — the
+FIFTH of F#. C# triad shares only 1 tone with the F# triad, so ≥2-shared-tones
+re-rooting skipped it; but it shares 2 tones (C#+E#) with F#maj7 — the actual
+upper-structure sound.
+- `refineObservations`: candidates extended to [major, minor, major7, dominant7]
+  (plain triads first so Cm→Ab stays Ab); bass notes filtered to conf ≥0.35
+  (persisted bassNotes include conf-0 junk); `tones()` adds the seventh.
+- `ChordTimelineDecoder.mergeSameRootExtensions`: adjacent same-root events that
+  differ only by a seventh extension (F# / F#maj7) merge into the plain triad —
+  upper voices moving over one sustained chord, not a change.
+- Sim on real frames (pen 2.0): verse = C#, F#maj7@27.4, Ab@29.6, F#@32.8 —
+  matches the bass ground truth; chorus agreement 67%→80%, nonDia 17%→11%.
+- Stage tag reduce-9-seventh-reroot. 3 new decoder tests; all suites + xcodebuild
+  Debug PASS. User: re-run analysis to apply.
+
+## Review — adaptive row anchoring (2026-07-01, "left sides all over the place")
+After re-analysis the verse-2 rows still scattered. Data: verse-2 line spacings
+are 4.7/5.2/5.5/6.2/8.2 beats (verse 1 was a tight 5.0) and first-word onsets
+sit ANYWHERE relative to the beat grid — beat-alignment score R = -0.09
+(deviation from nearest beat spread across the full ±0.5-beat range). The
+performance is loose/rubato; metric downbeat anchoring renders that honestly
+as scattered indents, which reads as chaos.
+- FIX: `DownbeatEstimator.beatAlignment(beatTimes:onsets:)` = circular mean of
+  cos(2π·distance-to-nearest-beat). WorkspaceEditorsView: alignment ≥ 0.3 →
+  metric downbeat anchor (tight songs keep the verified cadence rendering,
+  e.g. She thinks I'm a millionaire); below → rows anchor on their FIRST WORD
+  (uniform left margin), and barlines are suppressed (row origin is not a
+  downbeat). Beat dots keep true times.
+- 3 new MeasureGrid tests; xcodebuild Debug PASS. User relaunches app to see.
+- NOTE: this is presentation-level. The underlying loose timing is real; if the
+  user wants beat-aligned indents on loose songs, that would need onset
+  quantization upstream (not planned).
+
+## Review — Oceans gap + missing verse chords + beat-ball rework (2026-07-01)
+1. "Oceans" false 2.4s intra-line gap: vocals stem proves real singing starts
+   61.8s; ASR pinned the word at 59.54 on a half-level bleed blip. FIX:
+   `StrandedLeadingWordRepairer` (small leading cluster + ≥1s mostly-UNVOICED
+   gap → translate forward to abut the body; voiced gap = held note, untouched).
+   Wired after the tail gates, both ASR and reference paths. Tag
+   grouping-38-stranded-lead-repair. 3 tests.
+2. "Chords not detected": Swift timeline lost the verse-opening C# (21-29.6s
+   all F#). Reproduced offline: the real bass C#@24.38 has conf 0.27, fell under
+   the 0.35 filter, so the stale F#@22.64 sustained 4s into the verse and
+   frame-re-rooted every C# to F#maj7; the same-root merge then swallowed it.
+   FIX: low-confidence bass onsets now TERMINATE the previous note's sustain
+   without asserting pitch (no re-root there — chroma wins). Tag
+   reduce-10-bass-sustain-boundary.
+3. Bouncing ball (user-chosen model): the ball now lands ON THE BEAT everywhere.
+   Rhythmic lyric rows: bounce bottoms at beats, x = metricX(beat) (same fixed
+   columns as beat dots) — replaces word-onset bounce. Instrumental rows: beats
+   at time-proportional x across instrumentalTimeWidth (was stale character
+   columns that no longer matched the time-scaled render).
+All suites + xcodebuild Debug PASS. User: relaunch + re-analyze to apply 1+2.
+
+---
+
+# SongTimeline consolidation — audit + full plan (2026-07-01, AWAITING APPROVAL)
+
+User called whack-a-mole; full audit in `tasks/audit-ball-timing.md`, implementation
+spec in `tasks/spec-songtimeline.md`. Root causes (all data-verified on Summertime):
+RC-1 playback clock divides bus-rate sampleTime by FILE rate (48k mp3 → progressive
+drift); RC-2 waiting ball gets ONE chord-only row + whole-gap window (multi-row intro
+broken); RC-3 melisma words get tiny ASR spans → phantom mid-line pauses (line 8);
+RC-4 sub-4-bar real breaks invisible + ASR-missed vocal regions mislabeled Instrumental.
+
+## Plan (per spec — do not start until Eric approves)
+- [ ] Phase 0: PlayerClock fix (sampleTime/playerTime.sampleRate) in both services +
+      connect player with file format; unit + 60s live drift check.
+- [ ] Phase 1: VocalWordSpanNormalizer (melisma bridge + late-onset pullback) before
+      grouping; tag grouping-39-word-span-normalizer; golden re-analysis of Summertime.
+- [ ] Phase 2: UntranscribedVocalRegionDetector; persist regions (additive schema).
+- [ ] Phase 3a/b: SongTimelineBuilder + ChordProTextRenderer (string = projection;
+      golden byte-compat test).
+- [ ] Phase 3c: preview/ball/highlight/dots consume timeline rows; delete
+      chordOnlyLineOffset/trailingChordOnlyLineOffset/whole-gap window hack; single
+      alignment routine for reviewed/edited charts.
+- [ ] Phase 3d: PlaybackClock protocol; view stops picking services.
+- [ ] Verify each phase: unit + golden + rebuilt-.app live checks (see spec).
+
+## Open questions for Eric (in spec §Open questions)
+rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is.
+
+## Review (2026-07-01) — Phases 0–3 implemented
+- Phase 0 DONE: `PlayerClock` (elapsed = sampleTime / playerTime.sampleRate) used by BOTH
+  services; `AudioPlaybackService.load` reconnects player→timePitch→mainMixer at the FILE's
+  format (timePitch can't resample across its own seam — an 8 kHz test file made
+  engine.start() throw until the full segment ran at file rate; mixer converts to hw).
+  3 PlayerClockTests. This also fixed the previously failing
+  testPlaybackCompletionClearsPlayingState + testPlaybackSourceSwitchTransfersPosition.
+- Phase 1 DONE: `VocalWordSpanNormalizer` (melisma bridge ≥0.4s gap ≥0.8 voiced → extend
+  word.end; late-onset pullback ≤0.5 voiced → next.start to voiced re-entry edge, slack
+  0.25s) wired LAST in the transcription stage (both ASR + reference paths). Tag bumped
+  grouping-38 → grouping-39-word-span-normalizer. 4 tests on the real Summertime seg8 shape.
+- Phase 2 DONE: `UntranscribedVocalRegionDetector` (strict-VAD voiced minus padded word
+  coverage, ≥1.5s) persisted as `document.untranscribedVocalRegions` (schema 7→8, additive
+  decode). 3 tests.
+- Phase 3 DONE (core): `SongTimeline` (typed rows w/ authoritative windows);
+  `ChordProDraftBuilder.buildResult` emits rows in the SAME pass as text (byte-compat
+  proven: 22 golden builder tests unchanged + testBuildAndBuildResultProduceIdenticalSource);
+  `AppModel.songTimelineForPreview()` validates by REBUILDING the draft and comparing
+  byte-for-byte with chordProSource (edited/reviewed charts → nil → legacy fallback);
+  ball follows `timeline.row(at: now)` — multi-row intros tracked row by row (RC-2 dead
+  on generated charts); waiting auto-scroll targets display line numbers. 6 SongTimelineTests.
+- NOT done (follow-ups): preview rendering for unrecognizedVocals rows + rest markers
+  (RC-4 render half — flags/data are persisted and on the rows already); PlaybackClock
+  protocol cosmetic unification (3d); deleting the legacy ball heuristics (kept as the
+  fallback for user-edited charts).
+- Verification: swift test 408 executed / 8 failures — ALL 5 failing tests are the
+  documented pre-existing Application-Support store pollution class (lessons.md
+  2026-07-01), none in changed code paths; xcodebuild Debug BUILD SUCCEEDED; tuist
+  generate re-run for the 4 new files.
+- User steps: relaunch the app (Phases 0/3 immediate); re-analyze Summertime to apply
+  grouping-39 + untranscribed regions (re-groups from cache, no re-transcription).
+
+## Follow-up (2026-07-02) — instrumental row width + double-phrase lines ("Settle Down")
+- Data-verified: line 9 = one ASR segment holding TWO chorus phrases with a 1.72 s pause
+  ("down," → "trading", 12 % voiced); seg27 same (1.09 s, 30 % voiced). Chorus 2 splits fine.
+- Fix 1: `IntraLinePauseSplitter` — split ASR lines at internal word gaps ≥ 1.0 s that are
+  ≤ 50 % voiced with ≥ 4 words per side (recursive; exact text/characterRange slicing).
+  ASR path only (reference line breaks are authoritative). Tag →
+  grouping-40-intra-line-pause-split. 3 tests + numeric verification against the stem RMS.
+- Fix 2: instrumental rows now split to the TYPICAL LYRIC line length: typicalLyricBars
+  floor 4→2 bars, row cap 8→16 — intro/outro rows render about as wide as verse rows
+  instead of exploding when the time-scaled strip is on. 2 builder tests updated to the
+  new intent (intro "[C]" + "[G]" rows; per-row rhythmic spacing preserved).
+- User steps: relaunch, then Re-analyze the song (re-groups from cached transcription).
+
+## Follow-up (2026-07-02) — truncated outro vocals ("Settle Down")
+- Data-verified: Whisper DID transcribe "I never thought I'd want to hang around."
+  (220.8–225.9) and "She makes me want to settle down." (226.8–229.8); the tail cutoff
+  resolved to ~220.4 (level-aware offset detector anchored on the last LOUD phrase) and the
+  pre-grouping segment drop deleted both REAL lines. Strict VAD hears sustained voice
+  221.5–230.1 (the same spans our UntranscribedVocalRegionDetector flagged).
+- Fix: `VocalTailCutoffResolver` extends the cutoff through trailing strict-voiced
+  intervals ≥ 1.5 s (`minRealSingingSeconds`) — sustained voice is singing, not bleed;
+  sub-1.5 s blips still never extend (Summertime regression covered by test). Tag →
+  grouping-41-keep-voiced-tail. Junk repeats after 230.1 ("I don't know what else to say"
+  ×3, "to say." at 248) stay outside the cutoff and are handled by the existing gates.
+- Ball-vs-beat accuracy: crude drum-flux check shows the persisted grid locked to 10 ms in
+  the song's middle third; first/last thirds unverifiable with a crude detector (uniform
+  grid scored WORSE, 145 ms) — no evidence to convict the beat tracker; not touched.
+  Re-test after relaunch (clock fix) + re-analysis (restored lines, grouping-41).
+- Ball tap model changed (user-chosen 2026-07-02): on lyric lines the bounce bottoms land
+  on WORD ONSETS over the rendered word (rhythmic + monospace modes); the beat grid is the
+  fallback only when a line has no word timings; instrumental rows keep beat/chord taps.
+  WorkspaceEditorsView rhythmicBallPosition + ballPosition. Supersedes the 2026-07-01
+  "ball lands on the beat" model.
+
+## Follow-up (2026-07-02 evening) — queue execution
+- [x] Trailing line-end chords (user report): builder anchors a chord sounding ≥ last word's
+      end at the END-OF-TEXT column (was: stacked over the last word); preview widens the
+      onset-snap tolerance to 1.6 s for end-of-line chords. Builder test added; goldens pass.
+- [x] RC-4 render half: rest markers ("𝄽n" glyph after the last word for ≥2-beat, <4-bar true
+      gaps; word ends are energy-normalized so the glyph starts where the voice stops) and
+      amber "vocals — not transcribed" badges on rows overlapping untranscribedVocalRegions.
+- [x] B3 (precise chord placement): preview places chords at the SongTimeline row's REAL
+      chordTimes (1:1 with rendered chords) — the lossy column→word→nearest-onset round trip
+      is now only the fallback for edited charts.
+- [x] 3d partial: preview reads model.activePlaybackTime (single clock accessor).
+- Chord EVENT-time audit ("There's a party goin on", guitar stem, crude flux onsets):
+  signed median +10 ms (no systematic bias), median |Δ| 100 ms, 63% within 150 ms of a real
+  onset; chord→nearest-beat median 135 ms. Caveat: with 941 onsets the nearest-onset metric
+  is weak — a rigorous event audit needs chroma-flux change-point comparison (A-phase work).
+- Still open: B2 bar-aligned chord-only rows, B4 section directives, B5 x_ round-trip
+  directives, C1 reference-first workflow, phrase-structure grouper, Lyric Blending,
+  legacy ball-heuristic deletion.
+
+## Continue (2026-07-02 late) — A3 + B1 done
+- [x] A3 `ChorusChordConsensus`: repeated lyric lines (normalized text, ≥2 instances) vote
+      confidence-weighted per beat-offset slot; dissenting labels rewritten only on a ≥0.6
+      majority; label-rewrite ONLY (never adds/removes/re-times); deterministic ordering.
+      Wired into HarmonyStage outcome (no-op without lyrics); tag reduce-10 →
+      reduce-11-chorus-consensus. 3 unit tests + real-data validation (Key West Bar:
+      chorus agreement 17%→50%, 1/114 labels rewritten — ties correctly left alone).
+- [x] B1: `{key: …}` (from document.estimatedKey, all builder call sites incl. the timeline
+      path so byte-compare stays valid) + `{time: 4/4}` emitted; chordPro stage version
+      3 → 4 so existing drafts regenerate on next analysis/load. 2 golden tests updated.
+- Note: harmony runs BEFORE transcription finishes on fresh songs? No — stage order is
+  separation → transcription → harmony, so lyrics are present; on stage RETRY of harmony
+  alone the persisted lyrics are used. Consensus is a no-op when lyrics are empty.

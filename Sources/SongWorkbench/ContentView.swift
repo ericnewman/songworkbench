@@ -6,23 +6,10 @@ struct ContentView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        NavigationSplitView {
-            SongSidebar(model: model)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 280)
-        } detail: {
-            Group {
-                if let song = model.selectedSong {
-                    PlayerView(song: song, model: model)
-                } else {
-                    ContentUnavailableView(
-                        "No Song Selected",
-                        systemImage: "music.note.list",
-                        description: Text("Import an audio file to begin.")
-                    )
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.swCanvas)
+        NavigationStack {
+            PlayerView(model: model)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.swCanvas)
         }
         .fileImporter(
             isPresented: $model.isImporterPresented,
@@ -40,6 +27,7 @@ struct ContentView: View {
 private struct SongSidebar: View {
     @ObservedObject var model: AppModel
     @State private var isDropTargeted = false
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         List(selection: selection) {
@@ -97,21 +85,20 @@ private struct SongSidebar: View {
             }
         }
         .navigationTitle("Songs")
-        .toolbar {
-            Button("Remove Selected Song", systemImage: "trash") {
-                if let song = model.selectedSong {
-                    model.removeSong(song)
-                }
+        .focused($listFocused)
+        .task { listFocused = true }
+        // Selecting a song programmatically (type-to-select) can move first-responder to the new
+        // row; re-assert list focus so the next typed character keeps refining the same prefix.
+        .onChange(of: model.selectedSongID) { listFocused = true }
+        // Type-to-select: alphanumeric/space/punctuation keys jump to the first matching song title;
+        // arrows/Return fall through to the List's own selection navigation.
+        .onKeyPress(
+            characters: CharacterSet.alphanumerics.union(.whitespaces).union(.punctuationCharacters)
+        ) { press in
+            guard press.modifiers.isDisjoint(with: [.command, .control, .option]) else {
+                return .ignored
             }
-            .disabled(model.selectedSong == nil)
-
-            Button("Open from Music", systemImage: "music.note") {
-                model.isMusicLibraryPickerPresented = true
-            }
-
-            Button("Import Songs", systemImage: "plus") {
-                model.isImporterPresented = true
-            }
+            return model.typeToSelect(press.characters) ? .handled : .ignored
         }
     }
 
@@ -130,72 +117,161 @@ private struct SongSidebar: View {
     }
 }
 
+/// Header card with the library/analysis actions as full labeled buttons — the same
+/// actions that used to be tiny icon-only items in the window toolbar.
+private struct SongActionsCard: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Actions")
+                .font(.swDisplay(11))
+                .foregroundStyle(Color.swTextSecondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.swSurface, in: Capsule())
+
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                GridRow {
+                    Button("Import Songs", systemImage: "plus") {
+                        model.isImporterPresented = true
+                    }
+                    Button("Open from Music", systemImage: "music.note") {
+                        model.isMusicLibraryPickerPresented = true
+                    }
+                }
+                GridRow {
+                    Button("Remove Song", systemImage: "trash") {
+                        if let song = model.selectedSong {
+                            model.removeSong(song)
+                        }
+                    }
+                    .disabled(model.selectedSong == nil)
+                    .help("Remove the selected song from the library (the file is kept)")
+                    AnalyzeSongButton(model: model)
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(12)
+        .swSurfacePanel(cornerRadius: 12)
+        .fixedSize()
+    }
+}
+
 private struct PlayerView: View {
-    let song: Song
     @ObservedObject var model: AppModel
     @ObservedObject private var playback: AudioPlaybackService
-    @ObservedObject private var stemPlayback: StemPlaybackService
     @State private var waveformZoom = 1.0
     @State private var selectedEditor: EditorTab = .lyrics
+    /// Mirrors the stem-mix rail's own expansion state so the rail's WIDTH shrinks too.
+    @AppStorage(StemMixSidebar.expansionDefaultsKey) private var stemRailExpanded = true
 
-    init(song: Song, model: AppModel) {
-        self.song = song
+    init(model: AppModel) {
         self.model = model
         playback = model.playback
-        stemPlayback = model.stemPlayback
     }
 
     var body: some View {
-        VStack(alignment: .center, spacing: 16) {
-            VStack(spacing: 4) {
-                Text(song.title)
-                    .font(.swDisplay(22, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                Text(song.url.lastPathComponent)
-                    .font(.swMono(11))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .frame(maxWidth: .infinity)
-
-            Picker("Editor", selection: $selectedEditor) {
-                ForEach(EditorTab.allCases) { tab in
-                    Label(tab.title, systemImage: tab.systemImage).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 680)
-
-            HStack(alignment: .top, spacing: 20) {
+        HStack(alignment: .top, spacing: 16) {
+            // Left column: the song list on top, the tool cards below it (resizable divider), so
+            // the editor gets the whole rest of the window.
+            VSplitView {
+                SongSidebar(model: model)
+                    .frame(minHeight: 150, idealHeight: 300)
                 ScrollView {
                     VStack(spacing: 18) {
                         waveformContent
-                        PlaybackTransportCard(model: model)
-                        PitchSpeedCard(model: model)
                         AnalysisWorkspaceView(model: model)
                     }
-                    .padding(.trailing, 4)
+                    .padding(12)
                 }
-                .frame(minWidth: 380, idealWidth: 400, maxWidth: 440)
+                .frame(minHeight: 220)
+            }
+            .frame(width: 380)
 
-                VStack(spacing: 12) {
-                    WorkspaceEditorsView(model: model, selectedEditor: selectedEditor)
-                    if let error = playback.errorMessage ?? model.projectErrorMessage {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(Color.swCoral)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+            // Main column: the segment/editor view, maximized. The playback transport sits in
+            // the upper-left corner of this column so play/pause/rewind stays available across
+            // ALL editor views (Lyrics, Stems, ChordPro), not just when the sidebar shows it.
+            VStack(alignment: .center, spacing: 12) {
+                HStack(alignment: .top, spacing: 16) {
+                    PlaybackTransportCard(model: model)
+                        .frame(width: 320)
+                    if let song = model.selectedSong {
+                        VStack(spacing: 4) {
+                            Text(song.title)
+                                .font(.swDisplay(22, weight: .semibold))
+                                .foregroundStyle(Color.swTextPrimary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                            Text(song.url.lastPathComponent)
+                                .font(.swMono(11))
+                                .foregroundStyle(Color.swTextSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+                    } else {
+                        Spacer()
+                    }
+                    // Library/analysis actions as real labeled buttons (formerly tiny
+                    // window-toolbar icons), in a header card matching the transport.
+                    SongActionsCard(model: model)
+                }
+
+                Picker("Editor", selection: $selectedEditor) {
+                    ForEach(EditorTab.allCases) { tab in
+                        Label(tab.title, systemImage: tab.systemImage).tag(tab)
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 680)
+                .background {
+                    // ⌘1…⌘5 switch editor tabs (also enables hands-free navigation).
+                    ForEach(Array(EditorTab.allCases.enumerated()), id: \.element) { index, tab in
+                        Button("Show \(tab.title)") { selectedEditor = tab }
+                            .keyboardShortcut(
+                                KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                    }
+                    .opacity(0)
+                    .accessibilityHidden(true)
+                }
+
+                if model.selectedSong != nil {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(spacing: 12) {
+                            WorkspaceEditorsView(model: model, selectedEditor: selectedEditor)
+                            if let error = playback.errorMessage ?? model.projectErrorMessage {
+                                Label(error, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(Color.swCoral)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                        // Right rail: a slim copy of the Stems console (full-height vertical
+                        // faders + VU meters), persistent across ALL editor views and
+                        // collapsible so the editor can reclaim the width.
+                        StemMixSidebar(model: model)
+                            .frame(width: stemRailExpanded ? 250 : 44)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                } else {
+                    ContentUnavailableView(
+                        "No Song Selected",
+                        systemImage: "music.note.list",
+                        description: Text("Import an audio file to begin.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(16)
     }
 
     @ViewBuilder
@@ -208,6 +284,11 @@ private struct PlayerView: View {
                         .foregroundStyle(Color.swTextPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                    if !model.vocalActivityIntervals.isEmpty {
+                        Text("· \(model.vocalActivityIntervals.count) vocal regions")
+                            .font(.swDisplay(11))
+                            .foregroundStyle(Color.swAmber)
+                    }
                     Spacer()
                     Button {
                         if model.isLoopPlaying {
@@ -252,19 +333,53 @@ private struct PlayerView: View {
                 }
 
                 GeometryReader { geo in
+                    let laneWidth = max(geo.size.width, geo.size.width * waveformZoom)
                     ScrollView(.horizontal) {
-                        WaveformView(
-                            envelope: waveform,
-                            currentTime: model.activePlaybackTime,
-                            loopRegion: $model.loopRegion
-                        )
-                        // Fill the card at 1x; widen (and scroll) as zoom increases.
-                        .frame(
-                            width: max(geo.size.width, geo.size.width * waveformZoom), height: 100)
+                        VStack(alignment: .leading, spacing: 14) {
+                            WaveformView(
+                                envelope: waveform,
+                                currentTime: model.activePlaybackTime,
+                                loopRegion: $model.loopRegion,
+                                // Vocal activity is shown in its own Vocals stem lane below rather
+                                // than overlaid here, so it no longer sits on top of the full mix.
+                                onSeek: { model.seekActivePlayback(to: $0) }
+                            )
+                            // Fill the card at 1x; widen (and scroll) as zoom increases.
+                            .frame(width: laneWidth, height: 64)
+
+                            // One waveform lane per available stem, sharing the mix's time axis so
+                            // each instrument's energy lines up vertically with the mix above.
+                            if !model.stemWaveforms.isEmpty {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    ForEach(model.stemWaveforms, id: \.kind) { entry in
+                                        ZStack(alignment: .leading) {
+                                            StemWaveformLane(
+                                                envelope: entry.envelope,
+                                                color: Self.stemColor(for: entry.kind),
+                                                totalDuration: waveform.duration
+                                            )
+                                            .frame(width: laneWidth)
+                                            Text(entry.kind.rawValue.capitalized)
+                                                .font(.swDisplay(11))
+                                                .foregroundStyle(Self.stemColor(for: entry.kind))
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 1)
+                                                .background(
+                                                    Color.swCanvas.opacity(0.55),
+                                                    in: RoundedRectangle(
+                                                        cornerRadius: 4, style: .continuous)
+                                                )
+                                                .padding(.leading, 4)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.top, 6)
                     }
                     .scrollIndicators(.visible)
                 }
-                .frame(height: 100)
+                .frame(height: waveformPanelHeight)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 PlaybackProgressSlider(model: model)
@@ -278,6 +393,26 @@ private struct PlayerView: View {
             ContentUnavailableView("Waveform Unavailable", systemImage: "waveform")
                 .frame(height: 120)
         }
+    }
+
+    /// Total height of the waveform + stacked-stem-lane area. The main mix lane is 64pt; each stem
+    /// lane is 26pt with 2pt spacing, plus 4pt between the mix and the stem stack.
+    private var waveformPanelHeight: CGFloat {
+        let topPadding: CGFloat = 6
+        let mixHeight: CGFloat = 64
+        let laneCount = model.stemWaveforms.count
+        guard laneCount > 0 else { return topPadding + mixHeight }
+        let laneHeight: CGFloat = 26
+        let laneSpacing: CGFloat = 2
+        let mixToStackGap: CGFloat = 14
+        let stackHeight =
+            CGFloat(laneCount) * laneHeight + CGFloat(max(laneCount - 1, 0)) * laneSpacing
+        return topPadding + mixHeight + mixToStackGap + stackHeight
+    }
+
+    /// Distinct color per stem so each lane is visually identifiable at a glance.
+    private static func stemColor(for kind: StemKind) -> Color {
+        kind.laneColor
     }
 
 }

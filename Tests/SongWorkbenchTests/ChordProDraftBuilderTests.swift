@@ -74,6 +74,174 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertFalse(document.contains("{comment: Instrumental"), document)
     }
 
+    func testLongInstrumentalSplitsIntoSeveralRows() {
+        // 120 BPM → 1 bar = 2s. Two 2-bar sung lines (typical = 2 bars) and an 8-bar intro
+        // (0→16s) full of chords. The intro must break into ~4 chord-only rows, not one wide line.
+        var introChords: [EditableChordEvent] = []
+        for i in stride(from: 0.0, to: 16.0, by: 2.0) {
+            introChords.append(EditableChordEvent(time: i, chord: "C", confidence: 0.9))
+        }
+        let input = ChordProDraftInput(
+            title: "Long Intro",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 16, end: 18, text: "First line here"),
+                TimedLyricSegment(start: 18, end: 20, text: "Second line here"),
+            ],
+            chords: introChords,
+            beatTimes: stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        )
+        let document = ChordProDraftBuilder().build(input)
+        // Count chord-only rows (only [chord] tokens + spaces, no lyric letters) before the lyrics.
+        let intro = document.components(separatedBy: "First line").first ?? document
+        let chordOnlyRows = intro.split(separator: "\n").filter { row in
+            let s = String(row)
+            guard s.contains("["), !s.hasPrefix("{") else { return false }
+            let stripped = s.replacingOccurrences(
+                of: "\\[[^\\]]*\\]", with: "", options: .regularExpression)
+            return stripped.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        XCTAssertGreaterThan(
+            chordOnlyRows.count, 1,
+            "expected the 8-bar intro to split into multiple rows, got \(chordOnlyRows.count):\n\(document)"
+        )
+    }
+
+    func testSustainedChordIsRestatedAtSectionStartAfterInstrumental() {
+        // 120 BPM → 1 bar = 2s. C changes during the 8-bar intro and SUSTAINS through the sung
+        // lines (no further events). Without restatement the whole verse shows no chord at all;
+        // the chart must restate [C] on the first sung line.
+        let input = ChordProDraftInput(
+            title: "Sustained",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 16, end: 18, text: "Warm sun kisses my nose"),
+                TimedLyricSegment(start: 18, end: 20, text: "Cool sand under my toes"),
+            ],
+            chords: [EditableChordEvent(time: 2, chord: "C", confidence: 0.9)],
+            beatTimes: stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        )
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(
+            document.contains("[C]Warm sun"),
+            "expected the sustained chord restated at the section start:\n\(document)")
+        // But NOT restated on the following non-section line (change-only there).
+        XCTAssertFalse(document.contains("[C]Cool sand"), document)
+    }
+
+    func testRestatementSkippedWhenLineAlreadyStartsWithChord() {
+        let input = ChordProDraftInput(
+            title: "Already Chorded",
+            tempo: 120,
+            lyrics: [TimedLyricSegment(start: 16, end: 18, text: "Warm sun kisses my nose")],
+            chords: [
+                EditableChordEvent(time: 2, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 16.1, chord: "G", confidence: 0.9),
+            ],
+            beatTimes: stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        )
+        let document = ChordProDraftBuilder().build(input)
+        // The line's own G within half a beat of the start suppresses a [C] restatement.
+        XCTAssertFalse(document.contains("[C]Warm"), document)
+    }
+
+    func testShortIntervalChordFoldsIntoPreviousLineNotOwnLine() {
+        // 120 BPM, 4/4 → 1 bar = 2s. The [2, 3] gap is 1s ≈ 0.5 bar — a brief musical breath
+        // between sung lines, NOT an instrumental section. Its passing C#m must not become a
+        // standalone chord-only line; it belongs to the tail of the previous sung line.
+        let input = ChordProDraftInput(
+            title: "Breath Song",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "Nothing else I'd rather do"),
+                TimedLyricSegment(start: 3, end: 5, text: "Laughter rising in the air"),
+            ],
+            chords: [
+                EditableChordEvent(time: 2.4, chord: "C#m", confidence: 0.9),
+                EditableChordEvent(time: 3.2, chord: "A", confidence: 0.9),
+            ],
+            beatTimes: stride(from: 0.0, through: 6.0, by: 0.5).map { $0 }
+        )
+        let document = ChordProDraftBuilder().build(input)
+
+        // No interlude marker for such a short gap.
+        XCTAssertFalse(document.contains("{comment: Instrumental"), document)
+
+        // No content line may consist only of chords (i.e. a standalone chord-only line):
+        // stripping [..] tokens must leave real lyric text on every content line.
+        let contentLines = document.split(separator: "\n").map(String.init).filter {
+            !$0.hasPrefix("{") && !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        for line in contentLines {
+            let withoutChords = line.replacingOccurrences(
+                of: "\\[[^\\]]*\\]", with: "", options: .regularExpression)
+            XCTAssertFalse(
+                withoutChords.trimmingCharacters(in: .whitespaces).isEmpty,
+                "Unexpected chord-only line: \(line)\n\(document)")
+        }
+
+        // The C#m is carried onto the previous sung line; the next line still gets its own A.
+        let ratherLine = contentLines.first { $0.contains("rather") }
+        XCTAssertTrue(ratherLine?.contains("[C#m]") ?? false, document)
+        let laughterLine = contentLines.first { $0.contains("Laughter") }
+        XCTAssertTrue(laughterLine?.contains("[A]") ?? false, document)
+        XCTAssertFalse(laughterLine?.contains("[C#m]") ?? true, document)
+    }
+
+    func testLyricSectionDeriverMarksIntroInstrumentalAndOutro() {
+        let beats = stride(from: 0.0, through: 80.0, by: 0.5).map { $0 }
+        let lyrics = [
+            TimedLyricSegment(start: 10, end: 12, text: "First line"),
+            TimedLyricSegment(start: 24, end: 26, text: "Second line"),
+            TimedLyricSegment(start: 50, end: 52, text: "Third line"),
+        ]
+        let sections = LyricSectionDeriver().sections(
+            lyrics: lyrics,
+            beatTimes: beats,
+            tempo: 120,
+            sourceDuration: 72)
+
+        XCTAssertTrue(sections.contains { $0.kind == .intro && $0.label.hasPrefix("Intro") })
+        XCTAssertTrue(sections.contains { $0.kind == .instrumental })
+        XCTAssertTrue(sections.contains { $0.kind == .outro && $0.label == "Outro" })
+    }
+
+    func testLyricSectionDeriverOutroNotChorusAfterTailHallucination() {
+        let beats = stride(from: 0.0, through: 240.0, by: 0.5).map { $0 }
+        let lyrics = [
+            TimedLyricSegment(start: 40, end: 44, text: "Sunset winks and starts to leave"),
+            TimedLyricSegment(
+                start: 104, end: 107.76, text: "And under the stars it feels so right"),
+            TimedLyricSegment(start: 107.76, end: 109.36, text: "Sunset winks and starts to leave"),
+        ]
+        let sections = LyricSectionDeriver().sections(
+            lyrics: lyrics,
+            beatTimes: beats,
+            tempo: 120,
+            sourceDuration: 233)
+
+        XCTAssertFalse(sections.contains { $0.label == "Chorus" && $0.start >= 107.76 })
+        XCTAssertTrue(sections.contains { $0.kind == .outro && $0.start == 107.76 })
+    }
+
+    func testLyricSectionDeriverLabelsVersesAndChoruses() {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
+            TimedLyricSegment(start: 2, end: 4, text: "With little jeans in my hand"),
+            TimedLyricSegment(start: 4, end: 6, text: "It's a party going on"),
+            TimedLyricSegment(start: 6, end: 8, text: "Shout it loud till the dawn"),
+            TimedLyricSegment(start: 20, end: 22, text: "Drinks start a flowing now"),
+            TimedLyricSegment(start: 22, end: 24, text: "Strangers turn into friends"),
+            TimedLyricSegment(start: 24, end: 26, text: "It's a party going on"),
+            TimedLyricSegment(start: 26, end: 28, text: "Shout it loud till the dawn"),
+        ]
+        let sections = LyricSectionDeriver().sections(lyrics: lyrics, beatTimes: [], tempo: 120)
+
+        XCTAssertTrue(sections.contains { $0.label == "Verse 1" })
+        XCTAssertTrue(sections.contains { $0.label == "Chorus" })
+        XCTAssertTrue(sections.contains { $0.label == "Verse 2" })
+    }
+
     func testIntroChordsBeforeFirstLyricAreRendered() {
         // Chords play during an 8s intro before the first vocal line; the chart
         // should start on the first chord rather than the first lyric's chord.
@@ -91,9 +259,12 @@ final class ChordProDraftBuilderTests: XCTestCase {
         )
         let document = ChordProDraftBuilder().build(input)
         let body = document.split(separator: "\n")
-        // First non-directive line should be the intro chord line with timing preserved.
-        let firstContent = body.first { !$0.hasPrefix("{") && !$0.isEmpty }
-        XCTAssertEqual(firstContent.map(String.init), "[C]    [G]", document)
+        // First non-directive line should be an intro chord line, so the chart starts on the
+        // first chord rather than the first lyric's chord. Intro rows now split to the typical
+        // LYRIC line length (here ~2 bars), so the 4-bar intro renders as two rows.
+        let content = body.filter { !$0.hasPrefix("{") && !$0.isEmpty }.map(String.init)
+        XCTAssertEqual(content.first, "[C]", document)
+        XCTAssertEqual(content.dropFirst().first, "[G]", document)
     }
 
     func testInstrumentalChordOnlyLineUsesRhythmicSpacing() {
@@ -114,8 +285,43 @@ final class ChordProDraftBuilderTests: XCTestCase {
 
         let document = ChordProDraftBuilder().build(input)
 
-        XCTAssertTrue(document.contains("[C]  [F]   [G]   [C]"), document)
-        XCTAssertFalse(document.contains("[C] [F] [G] [C]"), document)
+        // The 4-bar break splits into two lyric-line-length rows, each preserving
+        // rhythmic (timed) spacing between its chords — never uniform single spaces.
+        XCTAssertTrue(document.contains("[C]  [F]"), document)
+        XCTAssertTrue(document.contains("[G]   [C]"), document)
+        XCTAssertFalse(document.contains("[C] [F]"), document)
+        XCTAssertFalse(document.contains("[G] [C]"), document)
+    }
+
+    func testTrailingChordAfterLastWordIsTypesetPastTheText() {
+        // A chord that sounds a beat AFTER the line's last word must land past the end of
+        // the text, not stacked over the final word (in the audio it's to the RIGHT of it).
+        let input = ChordProDraftInput(
+            title: "Tail Chord",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(
+                    start: 0, end: 2.0, text: "Sing along",
+                    words: [
+                        TimedLyricWord(text: "Sing", start: 0.0, end: 0.8, characterRange: 0..<4),
+                        TimedLyricWord(text: "along", start: 1.0, end: 2.0, characterRange: 5..<10),
+                    ]),
+                TimedLyricSegment(
+                    start: 4.0, end: 5.0, text: "Next line",
+                    words: [
+                        TimedLyricWord(text: "Next", start: 4.0, end: 4.4, characterRange: 0..<4),
+                        TimedLyricWord(text: "line", start: 4.5, end: 5.0, characterRange: 5..<9),
+                    ]),
+            ],
+            chords: [
+                EditableChordEvent(time: 0.0, chord: "C", confidence: 0.9),
+                // Sounds 0.5s after "along" ends — a trailing chord in the short gap.
+                EditableChordEvent(time: 2.5, chord: "G", confidence: 0.9),
+            ]
+        )
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(document.contains("Sing along[G]"), document)
+        XCTAssertFalse(document.contains("[G]along"), document)
     }
 
     func testChordOnlyLineReservesMultiCharLabelWidth() {
@@ -162,6 +368,34 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertTrue(document.contains("[Am]"), document)
     }
 
+    func testOutroLineSpansFullSourceDuration() {
+        let input = ChordProDraftInput(
+            title: "Long Outro",
+            tempo: 120,
+            lyrics: [TimedLyricSegment(start: 0, end: 4, text: "Last line")],
+            chords: [
+                EditableChordEvent(time: 6, chord: "G", confidence: 0.9),
+                EditableChordEvent(time: 30, chord: "C", confidence: 0.9),
+            ],
+            sourceDuration: 120
+        )
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(document.contains("{comment: Outro}"), document)
+        // A long outro is broken into multiple chord-only rows (so it wraps instead of running off
+        // the right edge); both detected chords still appear, on their respective rows.
+        let outro = document.components(separatedBy: "{comment: Outro}").last ?? document
+        let chordOnlyRows = outro.split(separator: "\n").filter { row in
+            let s = String(row)
+            guard s.contains("["), !s.hasPrefix("{") else { return false }
+            let stripped = s.replacingOccurrences(
+                of: "\\[[^\\]]*\\]", with: "", options: .regularExpression)
+            return stripped.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        XCTAssertGreaterThan(chordOnlyRows.count, 1, document)
+        XCTAssertTrue(outro.contains("[G]"), document)
+        XCTAssertTrue(outro.contains("[C]"), document)
+    }
+
     func testBuildAlignsIncludedChordChangesToLyrics() {
         let input = ChordProDraftInput(
             title: "Test Song",
@@ -182,6 +416,7 @@ final class ChordProDraftBuilderTests: XCTestCase {
             """
             {title: Test Song}
             {tempo: 120}
+            {time: 4/4}
             {comment: Generated analysis draft - review required}
 
             [C]Hello [G]wide world
@@ -282,6 +517,7 @@ final class ChordProDraftBuilderTests: XCTestCase {
             """
             {title: Bass Song}
             {tempo: 96}
+            {time: 4/4}
             {comment: Generated bass-note analysis draft - review required}
 
             [C]Walk [B]the [A]low line

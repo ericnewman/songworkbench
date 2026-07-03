@@ -31,6 +31,8 @@ struct SongAnalysisPipelineFactory: Sendable {
         let stemEngine: (any StemSeparationEngine)?
         if let stemPackage {
             stemEngine = try await Task.detached(priority: .userInitiated) {
+                // CPU execution provider (known-good). The CoreML/ANE provider was tried for
+                // speed but reverted until it can be verified not to break separation output.
                 try ONNXSixStemSeparationEngine(modelURL: stemPackage.entryPointURL)
             }.value
         } else {

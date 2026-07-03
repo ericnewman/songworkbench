@@ -1,0 +1,29 @@
+{
+  "configurations" : [
+    {
+      "id" : "8CE7C905-FCF1-4105-9AE2-4179A6C7AAAD",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:",
+      "identifier" : "SongWorkbench",
+      "name" : "SongWorkbench"
+    }
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "SongWorkbenchTests",
+        "name" : "SongWorkbenchTests"
+      }
+    }
+  ],
+  "version" : 1
+}

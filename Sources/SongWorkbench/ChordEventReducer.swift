@@ -7,7 +7,10 @@ struct ChordEventReducer: Sendable {
     let fallbackWindowDuration: TimeInterval
 
     init(
-        beatsPerWindow: Int = 2,
+        // One chord per BEAT (not every two beats): two-beat windows merged passing chords in
+        // walk-ups/walk-downs into a single winner, dropping the short ones. Per-beat windows catch
+        // them; sustained chords still collapse to one event via the same-chord dedup below.
+        beatsPerWindow: Int = 1,
         minimumConfidence: Float = 0.45,
         // The winner only needs a clear plurality of the window's confidence, not a super-majority.
         // Chord chroma routinely splits the vote between chords that share notes (e.g. A vs D vs

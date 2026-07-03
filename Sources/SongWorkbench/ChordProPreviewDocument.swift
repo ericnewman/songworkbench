@@ -70,12 +70,102 @@ struct ChordProHighlightDeriver: Sendable {
         self.confidenceThreshold = confidenceThreshold
     }
 
-    /// The ordinal (index into the sorted lyric segments) of the lyric active at
-    /// `currentTime`, where a lyric is active for `currentTime` in `[start, end)`.
-    func lyricOrdinal(at currentTime: TimeInterval) -> Int? {
-        sortedLyrics.firstIndex(where: {
-            currentTime >= $0.start && currentTime < $0.end
-        })
+    /// The ordinal (index into the sorted lyric segments) of the lyric active at `currentTime`.
+    func lyricOrdinal(at currentTime: TimeInterval, holdThroughGaps: Bool = true) -> Int? {
+        Self.activeSegmentIndex(
+            at: currentTime, in: sortedLyrics, holdThroughGaps: holdThroughGaps)
+    }
+
+    /// Playhead-driven lyric selection. With `holdThroughGaps` (default), each line's highlight
+    /// span runs `[start, nextLine.start)` so the previous line stays lit through instrumental
+    /// breaks; the latest-starting overlap wins. The last line stays active through the outro.
+    /// With `holdThroughGaps: false`, only strict `[start, end)` containment is used (for gap
+    /// detection such as the waiting bouncing ball).
+    static func activeSegmentIndex(
+        at currentTime: TimeInterval,
+        in segments: [TimedLyricSegment],
+        holdThroughGaps: Bool = true
+    ) -> Int? {
+        guard !segments.isEmpty else { return nil }
+        let sorted = sortedLyricSegments(segments)
+        if holdThroughGaps {
+            let match = sorted.enumerated().compactMap { index, segment -> (Int, TimeInterval)? in
+                let highlightEnd =
+                    index + 1 < sorted.count ? sorted[index + 1].start : TimeInterval.infinity
+                guard currentTime >= segment.start && currentTime < highlightEnd else { return nil }
+                return (index, segment.start)
+            }
+            return match.max(by: { $0.1 < $1.1 })?.0
+        }
+        if let index = sorted.lastIndex(where: { currentTime >= $0.start && currentTime < $0.end })
+        {
+            return index
+        }
+        let lastIndex = sorted.count - 1
+        if currentTime >= sorted[lastIndex].end {
+            return lastIndex
+        }
+        return nil
+    }
+
+    /// Intro / Instrumental / Outro section active while the playhead is in that region and no
+    /// lyric line is highlighted (e.g. the intro before the first sung line).
+    static func activeInstrumentalSection(
+        at currentTime: TimeInterval,
+        sections: [LyricTimelineSection],
+        lyricSegments: [TimedLyricSegment],
+        sourceDuration: TimeInterval?
+    ) -> LyricTimelineSection? {
+        guard
+            activeSegmentIndex(at: currentTime, in: lyricSegments, holdThroughGaps: true) == nil
+        else { return nil }
+        let lines = sortedLyricSegments(lyricSegments)
+        let ordered = sections.sorted { $0.start < $1.start }
+        for (index, section) in ordered.enumerated() {
+            guard section.isInstrumentalMarker else { continue }
+            let end = instrumentalSectionEnd(
+                section: section,
+                sectionIndex: index,
+                sections: ordered,
+                lyrics: lines,
+                sourceDuration: sourceDuration)
+            if currentTime >= section.start && currentTime < end {
+                return section
+            }
+        }
+        return nil
+    }
+
+    private static func sortedLyricSegments(_ segments: [TimedLyricSegment]) -> [TimedLyricSegment]
+    {
+        segments.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            if $0.end != $1.end { return $0.end < $1.end }
+            return $0.text < $1.text
+        }
+    }
+
+    private static func instrumentalSectionEnd(
+        section: LyricTimelineSection,
+        sectionIndex: Int,
+        sections: [LyricTimelineSection],
+        lyrics: [TimedLyricSegment],
+        sourceDuration: TimeInterval?
+    ) -> TimeInterval {
+        let nextSectionStart =
+            sections[(sectionIndex + 1)...].first?.start ?? TimeInterval.infinity
+        let nextLyricStart =
+            lyrics.first(where: { $0.start > section.start + 0.001 })?.start
+            ?? TimeInterval.infinity
+        switch section.kind {
+        case .outro:
+            let songEnd = sourceDuration ?? lyrics.map(\.end).max() ?? section.start
+            return max(songEnd, section.start + 0.001)
+        case .intro, .instrumental:
+            return min(nextSectionStart, nextLyricStart)
+        case .vocal:
+            return nextLyricStart
+        }
     }
 
     /// The ordinal of the next lyric beginning strictly after `currentTime` — used,

@@ -63,6 +63,12 @@ struct SongWorkbenchApp: App {
             }
 
             CommandMenu("Analysis") {
+                Button("Analyze Selected Song") {
+                    model.analyzeSelectedSong(replaceExistingChordPro: true)
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+                .disabled(model.isSongAnalysisRunning || model.selectedSong == nil)
+
                 Button("Re-analyze All Songs") {
                     model.reanalyzeAllSongs()
                 }

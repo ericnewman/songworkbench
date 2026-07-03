@@ -38,7 +38,7 @@ final class SongAnalysisPipelineTests: XCTestCase {
         let requestedURLs = await transcription.requestedURLs()
         let harmonyURLs = await harmony.requestedURLs()
         XCTAssertEqual(requestedURLs.map(\.lastPathComponent), [vocalsURL.lastPathComponent])
-        XCTAssertEqual(harmonyURLs.map(\.lastPathComponent), [accompanimentURL.lastPathComponent])
+        XCTAssertEqual(harmonyURLs.map(\.lastPathComponent), ["guitar.wav"])
         XCTAssertEqual(result.document.lyrics.map(\.text), ["Hello world"])
         XCTAssertEqual(result.document.chords.map(\.chord), ["C"])
         XCTAssertEqual(result.document.estimatedBPM, 120)

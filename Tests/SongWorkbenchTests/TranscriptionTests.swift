@@ -78,6 +78,25 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testConjunctionMergeDoesNotChainPastDurationCap() {
+        // A dense run of lines each ending on the open word "and" a beat apart — the exact shape
+        // that used to chain through the conjunction-merge into one over-long line. The merge must
+        // respect the same 15s duration cap the base grouper obeys, so no monster line survives.
+        var tokens: [TimedTranscriptionToken] = []
+        for i in 0..<14 {
+            let base = Double(i) * 1.3
+            tokens.append(token("Line\(i)", base, base + 0.3))
+            tokens.append(token("and", base + 0.4, base + 0.7))
+        }
+        let grouped = TimedLyricSegmentGrouper.group(tokens: tokens)
+        XCTAssertGreaterThan(grouped.count, 1, "must not collapse into one giant line")
+        for segment in grouped {
+            XCTAssertLessThanOrEqual(
+                segment.end - segment.start, 15.0 + 1e-6,
+                "no merged line may exceed the duration cap")
+        }
+    }
+
     func testRegroupLeavesLyricsWithoutWordTimingsUntouched() {
         // Older analyses store segments without per-word data; re-grouping must not
         // collapse them into atomic tokens or merge lines.
@@ -368,6 +387,42 @@ final class TranscriptionTests: XCTestCase {
             ),
             equal: [("word", 2, 2)]
         )
+    }
+
+    func testLineEndingInConjunctionMergesWithContinuation() {
+        // "I pick her up and" | "I'm all cleaned up nice" — split at the capitalized "I'm" segment
+        // start, but "and" can't end a phrase and the next line follows in 0.3s → one sung line.
+        let tokens = [
+            token("I", 0.0, 0.2), token("pick", 0.2, 0.4), token("her", 0.4, 0.6),
+            token("up", 0.6, 0.8), token("and", 0.8, 1.0),
+            token("I'm", 1.3, 1.5), token("all", 1.5, 1.7), token("cleaned", 1.7, 1.9),
+            token("up", 1.9, 2.1), token("nice", 2.1, 2.3),
+        ]
+        let segs = TimedLyricSegmentGrouper.group(tokens: tokens, lineStartOnsets: [0.0, 1.3])
+        XCTAssertEqual(segs.count, 1, segs.map(\.text).joined(separator: " | "))
+        XCTAssertTrue(segs[0].text.contains("and I'm"), segs[0].text)
+    }
+
+    func testShortFragmentBeforeConnectiveLineMerges() {
+        // "She talks" | "About living…" — the next line OPENS with the preposition "about", which
+        // can't begin an independent line, so the short fragment joins it (even across a ~3.3s gap).
+        let tokens = [
+            token("She", 0.0, 0.3), token("talks", 0.3, 0.7),
+            token("About", 4.0, 4.3), token("living", 4.3, 4.6),
+        ]
+        let segs = TimedLyricSegmentGrouper.group(tokens: tokens, lineStartOnsets: [0.0, 4.0])
+        XCTAssertEqual(segs.count, 1, segs.map(\.text).joined(separator: " | "))
+    }
+
+    func testInterjectionFragmentBeforeConnectiveIsNotMerged() {
+        // A standalone interjection ("Oh no") is a real short line, so it is NOT pulled into the
+        // next line even though that line opens with "and".
+        let tokens = [
+            token("Oh", 0.0, 0.3), token("no", 0.3, 0.7),
+            token("And", 4.0, 4.3), token("run", 4.3, 4.6),
+        ]
+        let segs = TimedLyricSegmentGrouper.group(tokens: tokens, lineStartOnsets: [0.0, 4.0])
+        XCTAssertEqual(segs.count, 2, segs.map(\.text).joined(separator: " | "))
     }
 
     func testGroupingPopulatesWordTimingsWithCharacterRangesIntoSegmentText() {
@@ -749,6 +804,19 @@ final class TranscriptionTests: XCTestCase {
         let once = TranscriptionSilenceGate.filtered(tokens)
         XCTAssertEqual(TranscriptionSilenceGate.filtered(once), once)
         XCTAssertTrue(TranscriptionSilenceGate.filtered([]).isEmpty)
+    }
+
+    func testSilenceGateDropsTrailingIslandWhenSourceDurationProvided() {
+        // Real lines early, then a long instrumental outro with one stray low-confidence word.
+        let tokens = [
+            token("Hello", 0.0, 0.4, confidence: 0.95),
+            token("world", 0.5, 0.9, confidence: 0.95),
+            token("uh", 55.0, 55.3, confidence: 0.2),
+        ]
+
+        let filtered = TranscriptionSilenceGate.filtered(tokens, sourceDuration: 60)
+
+        XCTAssertEqual(filtered.map(\.text), ["Hello", "world"])
     }
 
     /// Builds a single lyric line (one segment) from a phrase, with real per-word timings and

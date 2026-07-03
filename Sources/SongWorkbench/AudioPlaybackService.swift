@@ -46,6 +46,15 @@ final class AudioPlaybackService: ObservableObject {
             audioFile = file
             loadedURL = url
             duration = Double(file.length) / file.processingFormat.sampleRate
+            // Connect the player at the FILE's format so the player's output-bus timebase
+            // matches the file (see PlayerClock): a mismatched bus rate makes the reported
+            // clock drift progressively even though the audio sounds correct. The whole
+            // player→timePitch segment runs at the file rate (AVAudioUnitTimePitch cannot
+            // resample across its own seam); the main mixer converts to the hardware rate.
+            engine.disconnectNodeOutput(player)
+            engine.disconnectNodeOutput(timePitch)
+            engine.connect(player, to: timePitch, format: file.processingFormat)
+            engine.connect(timePitch, to: engine.mainMixerNode, format: file.processingFormat)
             errorMessage = nil
             schedule(from: 0)
         } catch {
@@ -174,20 +183,21 @@ final class AudioPlaybackService: ObservableObject {
     private func updateCurrentTime() {
         guard
             let audioFile,
-            let renderTime = player.lastRenderTime,
-            let playerTime = player.playerTime(forNodeTime: renderTime)
+            let elapsed = PlayerClock.elapsedSeconds(player)
         else { return }
 
-        let elapsedFrames = AVAudioFramePosition(playerTime.sampleTime)
-        let absoluteFrame = min(startFrame + elapsedFrames, audioFile.length)
-        currentTime = Double(absoluteFrame) / audioFile.processingFormat.sampleRate
+        // startFrame is a FILE frame position; elapsed comes from the player's own
+        // timebase (PlayerClock) — never divide a sampleTime by a rate it wasn't
+        // expressed in, or the clock drifts by the ratio of the two rates.
+        let startSeconds = Double(startFrame) / audioFile.processingFormat.sampleRate
+        currentTime = min(startSeconds + elapsed, duration)
 
         if let loopRegion, currentTime >= loopRegion.end {
             seek(to: loopRegion.start)
             return
         }
 
-        if absoluteFrame >= audioFile.length {
+        if currentTime >= duration {
             player.stop()
             scheduled = false
             isPlaying = false
@@ -197,8 +207,8 @@ final class AudioPlaybackService: ObservableObject {
 
     private func startTimer() {
         stopTimer()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
                 self?.updateCurrentTime()
             }
         }

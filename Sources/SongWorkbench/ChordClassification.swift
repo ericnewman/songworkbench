@@ -1,9 +1,12 @@
 import Accelerate
 import Foundation
 
-enum ChordQuality: String, Codable, Equatable, Sendable {
+enum ChordQuality: String, Codable, Equatable, Sendable, CaseIterable {
     case major
     case minor
+    case major7
+    case minor7
+    case dominant7
 }
 
 struct Chord: Codable, Equatable, Sendable {
@@ -25,11 +28,32 @@ struct ChordClassifier: Sendable {
     var rootWeight: Float = 1.6
 
     func classify(_ chroma: ChromaVector) -> ChordObservation {
+        let triad = bestMatch(
+            chroma,
+            qualities: [.major, .minor]
+        )
+        let seventh = bestMatch(
+            chroma,
+            qualities: [.major7, .minor7, .dominant7]
+        )
+        if seventh.confidence > triad.confidence * 1.05 {
+            return seventh
+        }
+        return triad
+    }
+
+    private func bestMatch(
+        _ chroma: ChromaVector,
+        qualities: [ChordQuality]
+    ) -> ChordObservation {
         var bestChord = Chord(root: .c, quality: .major)
         var bestScore = Float.zero
 
         for root in PitchClass.allCases {
-            for quality in [ChordQuality.major, .minor] {
+            for quality in qualities {
+                guard supports(quality: quality, chroma: chroma.values, root: root) else {
+                    continue
+                }
                 let score = cosineSimilarity(
                     chroma.values,
                     template(root: root, quality: quality)
@@ -50,11 +74,48 @@ struct ChordClassifier: Sendable {
 
     private func template(root: PitchClass, quality: ChordQuality) -> [Float] {
         var values = Array(repeating: Float.zero, count: PitchClass.allCases.count)
-        let third = quality == .major ? 4 : 3
         values[root.rawValue] = rootWeight
-        values[(root.rawValue + third) % values.count] = 1
-        values[(root.rawValue + 7) % values.count] = 1
+        switch quality {
+        case .major:
+            values[(root.rawValue + 4) % values.count] = 1
+            values[(root.rawValue + 7) % values.count] = 1
+        case .minor:
+            values[(root.rawValue + 3) % values.count] = 1
+            values[(root.rawValue + 7) % values.count] = 1
+        case .major7:
+            values[(root.rawValue + 4) % values.count] = 1
+            values[(root.rawValue + 7) % values.count] = 1
+            values[(root.rawValue + 11) % values.count] = 1
+        case .minor7:
+            values[(root.rawValue + 3) % values.count] = 1
+            values[(root.rawValue + 7) % values.count] = 1
+            values[(root.rawValue + 10) % values.count] = 1
+        case .dominant7:
+            values[(root.rawValue + 4) % values.count] = 1
+            values[(root.rawValue + 7) % values.count] = 1
+            values[(root.rawValue + 10) % values.count] = 1
+        }
         return values
+    }
+
+    /// Seventh qualities require their distinguishing chroma bin to carry real energy so a
+    /// triad observation is not upgraded spuriously.
+    private func supports(
+        quality: ChordQuality,
+        chroma: [Float],
+        root: PitchClass
+    ) -> Bool {
+        switch quality {
+        case .major, .minor: return true
+        case .major7:
+            let seventh = chroma[(root.rawValue + 11) % chroma.count]
+            let fifth = chroma[(root.rawValue + 7) % chroma.count]
+            return seventh >= 0.25 && seventh > fifth + 0.05
+        case .minor7, .dominant7:
+            let seventh = chroma[(root.rawValue + 10) % chroma.count]
+            let fifth = chroma[(root.rawValue + 7) % chroma.count]
+            return seventh >= 0.25 && seventh > fifth + 0.05
+        }
     }
 
     private func cosineSimilarity(_ lhs: [Float], _ rhs: [Float]) -> Float {
@@ -182,6 +243,62 @@ struct BassInformedChordRefiner: Sendable {
         }
     }
 
+    /// Frame-level variant: re-roots raw chord observations BEFORE beat-window voting. This is
+    /// where re-rooting matters most — when a chord's root is quiet in the chroma (e.g. an Ab
+    /// whose C+Eb dominate), the classifier never emits the true label at all, so no amount of
+    /// downstream re-weighting can recover it; the whole region then decodes as the confusion
+    /// chord or is absorbed by a sustained neighbour. A no-op when there are no bass notes.
+    func refineObservations(
+        _ observations: [ChordObservation],
+        bassNotes: [BassNoteObservation],
+        minimumBassConfidence: Float = 0.35
+    ) -> [ChordObservation] {
+        guard !bassNotes.isEmpty else { return observations }
+        // Keep ALL bass onsets for sustain boundaries but only trust confident ones for pitch:
+        // a low-confidence onset still means "the bass moved here" — dropping it entirely would
+        // let a stale earlier note sustain through it and re-root the real chord away (the
+        // reference song's verse-opening tonic was erased exactly this way by a weak-confidence
+        // tonic bass onset being filtered while the previous IV note sustained into the verse).
+        let sortedBass = bassNotes.sorted { $0.timestamp < $1.timestamp }
+        // Candidate qualities at the bass root, plain triads first. Sevenths matter for the
+        // "upper-structure" confusion: a C# triad over an F# bass shares only ONE tone with the
+        // F# triad (C#) but TWO with F#maj7 (C# + E#/F) — the sound actually being played.
+        let candidates: [ChordQuality] = [.major, .minor, .major7, .dominant7]
+        return observations.map { observation in
+            let root = observation.chord.root.rawValue
+            guard
+                let sounding = bassObservation(at: observation.timestamp, in: sortedBass),
+                sounding.confidence >= minimumBassConfidence
+            else { return observation }
+            let bass = ((sounding.midiNote % 12) + 12) % 12
+            guard bass != root else { return observation }
+            let detectedTones = triad(root: root, quality: observation.chord.quality)
+            // The bass is already a chord tone: an inversion, keep the chord.
+            if detectedTones.contains(bass) { return observation }
+            for quality in candidates
+            where tones(root: bass, quality: quality).intersection(detectedTones).count >= 2 {
+                guard let pitchClass = PitchClass(rawValue: bass) else { return observation }
+                return ChordObservation(
+                    timestamp: observation.timestamp,
+                    chord: Chord(root: pitchClass, quality: quality),
+                    confidence: observation.confidence
+                )
+            }
+            return observation
+        }
+    }
+
+    /// All chord tones (incl. sevenths) for a root+quality, as pitch classes.
+    private func tones(root: Int, quality: ChordQuality) -> Set<Int> {
+        var result = triad(root: root, quality: quality)
+        switch quality {
+        case .major7: result.insert((root + 11) % 12)
+        case .minor7, .dominant7: result.insert((root + 10) % 12)
+        case .major, .minor: break
+        }
+        return result
+    }
+
     /// The bass pitch class sounding at `time`: the most recent onset within a short window
     /// ending just after it. Returns `nil` when no bass note is near (e.g. a quiet intro
     /// with no detected bass), so chords there are left to the chroma classifier rather than
@@ -189,12 +306,16 @@ struct BassInformedChordRefiner: Sendable {
     private func bassPitchClass(at time: TimeInterval, in sortedBass: [BassNoteObservation])
         -> Int?
     {
-        guard
-            let chosen = sortedBass.last(where: {
-                $0.timestamp >= time - 4 && $0.timestamp <= time + 0.1
-            })
-        else { return nil }
+        guard let chosen = bassObservation(at: time, in: sortedBass) else { return nil }
         return ((chosen.midiNote % 12) + 12) % 12
+    }
+
+    /// The most recent bass onset sounding at `time` (within a 4s sustain horizon), regardless
+    /// of confidence — the caller decides whether its pitch is trustworthy.
+    private func bassObservation(at time: TimeInterval, in sortedBass: [BassNoteObservation])
+        -> BassNoteObservation?
+    {
+        sortedBass.last(where: { $0.timestamp >= time - 4 && $0.timestamp <= time + 0.1 })
     }
 
     private func parse(_ chord: String) -> (root: Int, quality: ChordQuality)? {
@@ -206,7 +327,7 @@ struct BassInformedChordRefiner: Sendable {
     }
 
     private func triad(root: Int, quality: ChordQuality) -> Set<Int> {
-        let third = quality == .major ? 4 : 3
+        let third = (quality == .minor || quality == .minor7) ? 3 : 4
         return [root % 12, (root + third) % 12, (root + 7) % 12]
     }
 

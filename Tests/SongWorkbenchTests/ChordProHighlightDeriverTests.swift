@@ -50,7 +50,80 @@ final class ChordProHighlightDeriverTests: XCTestCase {
             ]
         )
 
-        XCTAssertNil(sut.lyricOrdinal(at: 6))
+        // In the gap before the line starts there is no active lyric.
+        XCTAssertNil(sut.lyricOrdinal(at: -1))
+        // Past the segment end, the last line stays active through the outro.
+        XCTAssertEqual(sut.lyricOrdinal(at: 6), 0)
+    }
+
+    func testLyricOrdinalPrefersLatestOverlapAtPlayhead() {
+        let segments = [
+            TimedLyricSegment(start: 0, end: 20, text: "Long first line"),
+            TimedLyricSegment(start: 5, end: 10, text: "Nested second line"),
+        ]
+        XCTAssertEqual(
+            ChordProHighlightDeriver.activeSegmentIndex(at: 7, in: segments), 1)
+        XCTAssertEqual(deriver(lyricSegments: segments).lyricOrdinal(at: 7), 1)
+    }
+
+    func testLyricOrdinalIsNilInInstrumentalGap() {
+        let segments = [
+            TimedLyricSegment(start: 0, end: 4, text: "First line"),
+            TimedLyricSegment(start: 12, end: 16, text: "Second line"),
+        ]
+        // Karaoke hold: previous line stays lit through the instrumental break.
+        XCTAssertEqual(
+            ChordProHighlightDeriver.activeSegmentIndex(at: 7, in: segments), 0)
+        XCTAssertEqual(deriver(lyricSegments: segments).lyricOrdinal(at: 7), 0)
+        // Strict mode (bouncing-ball gap detection) still sees no active lyric.
+        XCTAssertNil(
+            ChordProHighlightDeriver.activeSegmentIndex(
+                at: 7, in: segments, holdThroughGaps: false))
+    }
+
+    func testLyricOrdinalAtLineStartHasZeroOffset() {
+        let segments = [
+            TimedLyricSegment(start: 5, end: 9, text: "First line"),
+            TimedLyricSegment(start: 20, end: 24, text: "Second line"),
+        ]
+        XCTAssertEqual(
+            ChordProHighlightDeriver.activeSegmentIndex(at: 5, in: segments), 0)
+        XCTAssertEqual(
+            ChordProHighlightDeriver.activeSegmentIndex(at: 20, in: segments), 1)
+    }
+
+    func testLyricOrdinalHoldsPreviousLineDuringFourBarInstrumentalGap() {
+        // 120 BPM → 4 bars ≈ 8 seconds between lines.
+        let segments = [
+            TimedLyricSegment(start: 0, end: 4, text: "Verse line"),
+            TimedLyricSegment(start: 12, end: 16, text: "Chorus line"),
+        ]
+        XCTAssertEqual(
+            ChordProHighlightDeriver.activeSegmentIndex(at: 8, in: segments), 0)
+    }
+
+    func testActiveInstrumentalSectionHighlightsIntroBeforeFirstLine() {
+        let lyrics = [TimedLyricSegment(start: 12, end: 16, text: "First words")]
+        let sections = [
+            LyricTimelineSection(kind: .intro, start: 0, label: "Intro · 4 bars")
+        ]
+        XCTAssertEqual(
+            ChordProHighlightDeriver.activeInstrumentalSection(
+                at: 5,
+                sections: sections,
+                lyricSegments: lyrics,
+                sourceDuration: 180
+            )?.label,
+            "Intro · 4 bars"
+        )
+        XCTAssertNil(
+            ChordProHighlightDeriver.activeInstrumentalSection(
+                at: 13,
+                sections: sections,
+                lyricSegments: lyrics,
+                sourceDuration: 180
+            )
+        )
     }
 
     func testLyricOrdinalBoundaryIsStartInclusiveEndExclusive() {

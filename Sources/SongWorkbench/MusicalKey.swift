@@ -19,6 +19,11 @@ struct MusicalKey: Codable, Equatable, Sendable {
 }
 
 struct MusicalKeyEstimator: Sendable {
+    private enum TriadQuality {
+        case major
+        case minor
+    }
+
     func estimate(from events: [EditableChordEvent]) -> MusicalKey? {
         estimate(
             from: events.compactMap { event in
@@ -87,22 +92,30 @@ struct MusicalKeyEstimator: Sendable {
         chordQuality: ChordQuality,
         keyQuality: ChordQuality
     ) -> Float {
-        switch keyQuality {
+        let chordTriadQuality = triadQuality(chordQuality)
+        switch triadQuality(keyQuality) {
         case .major:
-            switch (interval, chordQuality) {
-            case (0, .major): 6
-            case (5, .major), (7, .major): 3.5
-            case (2, .minor), (4, .minor), (9, .minor): 2.5
-            default: 0
+            switch (interval, chordTriadQuality) {
+            case (0, .major): return 6
+            case (5, .major), (7, .major): return 3.5
+            case (2, .minor), (4, .minor), (9, .minor): return 2.5
+            default: return 0
             }
         case .minor:
-            switch (interval, chordQuality) {
-            case (0, .minor): 6
-            case (5, .minor): 3.5
-            case (3, .major), (8, .major), (10, .major): 3
-            case (7, .minor), (7, .major): 2.5
-            default: 0
+            switch (interval, chordTriadQuality) {
+            case (0, .minor): return 6
+            case (5, .minor): return 3.5
+            case (3, .major), (8, .major), (10, .major): return 3
+            case (7, .minor), (7, .major): return 2.5
+            default: return 0
             }
+        }
+    }
+
+    private func triadQuality(_ quality: ChordQuality) -> TriadQuality {
+        switch quality {
+        case .major, .major7, .dominant7: .major
+        case .minor, .minor7: .minor
         }
     }
 }

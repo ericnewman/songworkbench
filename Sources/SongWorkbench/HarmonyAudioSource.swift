@@ -30,15 +30,22 @@ struct HarmonyAudioSourceSelector: Sendable {
                 configurationIdentifier: "full-mix-fallback"
             )
         }
-        let accompanimentURL = stems.accompaniment ?? stems.other
-        guard FileManager.default.fileExists(atPath: accompanimentURL.path) else {
-            throw HarmonyAudioSourceError.missingAccompanimentStem
+
+        // Prefer the stem with the clearest harmonic content for chroma analysis.
+        let candidates: [(URL?, String)] = [
+            (stems.guitar, "harmony-guitar-stem"),
+            (stems.piano, "harmony-piano-stem"),
+            (stems.accompaniment, "harmony-accompaniment-stem"),
+            (stems.other, "harmony-other-stem"),
+        ]
+        for (url, configurationIdentifier) in candidates {
+            guard let url, FileManager.default.fileExists(atPath: url.path) else { continue }
+            return HarmonyAudioSource(
+                url: url,
+                kind: .accompanimentStem,
+                configurationIdentifier: configurationIdentifier
+            )
         }
-        return HarmonyAudioSource(
-            url: accompanimentURL,
-            kind: .accompanimentStem,
-            configurationIdentifier: stems.accompaniment == nil
-                ? "accompaniment-other-stem" : "accompaniment-guitar-piano-other"
-        )
+        throw HarmonyAudioSourceError.missingAccompanimentStem
     }
 }

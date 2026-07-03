@@ -27,6 +27,7 @@ protocol WhisperCPPTranscribing: Sendable {
     func transcribe(
         audioURL: URL,
         noContext: Bool,
+        languageCode: String?,
         cancellation: WhisperCPPCancellationToken
     ) async throws -> WhisperCPPTranscript
 }
@@ -70,7 +71,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 name: "MIT",
                 url: URL(string: "https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE")
             ),
-            engineVersion: "5"
+            engineVersion: "6"
         )
         self.runtime = runtime ?? WhisperCPPRuntime(modelURL: modelURL, useGPU: useGPU)
     }
@@ -91,6 +92,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
             try await runtime.transcribe(
                 audioURL: request.audioURL,
                 noContext: true,
+                languageCode: Self.whisperLanguageCode(from: request.localeIdentifier),
                 cancellation: cancellation
             )
         }
@@ -113,7 +115,8 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
         try Task.checkCancellation()
         // The repetition filter now drops only the runaway-loop region and keeps
         // any distinct content after it, so it is always safe to apply directly.
-        let transcript = WhisperCPPRepetitionFilter.filter(rawTranscript)
+        let filtered = WhisperCPPRepetitionFilter.filter(rawTranscript)
+        let transcript = Self.repetitionFilteredOrRaw(filtered: filtered, raw: rawTranscript)
         progress(
             TranscriptionProgress(
                 phase: .finalizing,
@@ -151,14 +154,69 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
             languageCode: transcript.languageCode,
             sourceDuration: transcript.duration,
             completedAt: Date(),
-            segments: segments,
+            segments: Self.dropOverlappingDuplicateSegments(segments),
             engine: metadata
         )
+    }
+
+    /// Whisper occasionally emits the same line twice at (near-)overlapping timestamps, which
+    /// surfaces as a duplicated lyric line. Drop a segment that repeats the previous kept
+    /// segment's text AND overlaps it in time (you cannot sing the same words twice at once).
+    /// A genuinely repeated line in the song has a separated time window and is preserved.
+    nonisolated static func dropOverlappingDuplicateSegments(
+        _ segments: [TimedTranscriptionSegment]
+    ) -> [TimedTranscriptionSegment] {
+        func normalized(_ text: String) -> String {
+            text.lowercased()
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                .joined(separator: " ")
+        }
+        var result: [TimedTranscriptionSegment] = []
+        for segment in segments {
+            let norm = normalized(segment.text)
+            if !norm.isEmpty, let last = result.last,
+                normalized(last.text) == norm,
+                segment.startTime < last.endTime
+            {
+                // Keep the richer copy (more word tokens / wider span).
+                if segment.tokens.count > last.tokens.count
+                    || segment.endTime > last.endTime
+                {
+                    result[result.count - 1] = segment
+                }
+                continue
+            }
+            result.append(segment)
+        }
+        return result
     }
 
     func cancel(requestID: UUID) async {
         activeRequests[requestID]?.cancellation.cancel()
         activeRequests[requestID]?.task.cancel()
+    }
+
+    /// Maps a BCP-47 locale (e.g. `en_US`) to whisper.cpp's two-letter language code.
+    nonisolated static func whisperLanguageCode(from localeIdentifier: String?) -> String? {
+        guard let localeIdentifier else { return nil }
+        let code = localeIdentifier.split(separator: "_").first.map(String.init) ?? localeIdentifier
+        return code.count == 2 ? code.lowercased() : nil
+    }
+
+    /// Rejects over-aggressive repetition cleanup that truncated the timeline well before
+    /// the raw transcript ended — a sign the filter mistook real lyrics for a loop.
+    nonisolated static func repetitionFilteredOrRaw(
+        filtered: WhisperCPPTranscript,
+        raw: WhisperCPPTranscript
+    ) -> WhisperCPPTranscript {
+        let tokens = filtered.segments.flatMap(\.tokens)
+        guard !tokens.isEmpty, raw.duration > 0 else { return filtered }
+        let filteredEnd = tokens.map(\.end).max() ?? 0
+        let rawEnd = raw.segments.flatMap(\.tokens).map(\.end).max() ?? 0
+        if filteredEnd < raw.duration * 0.5, filteredEnd + 1 < rawEnd {
+            return raw
+        }
+        return filtered
     }
 
 }
@@ -176,6 +234,7 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
     func transcribe(
         audioURL: URL,
         noContext: Bool,
+        languageCode: String?,
         cancellation: WhisperCPPCancellationToken
     ) async throws -> WhisperCPPTranscript {
         let context = try loadedContext()
@@ -199,6 +258,16 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
         params.no_timestamps = false
         params.token_timestamps = true
         params.single_segment = false
+        var languageBuffer: [CChar] = []
+        if let languageCode,
+            whisper_lang_id(languageCode) >= 0
+        {
+            languageBuffer = Array(languageCode.utf8CString)
+            languageBuffer.withUnsafeBufferPointer { buffer in
+                params.language = buffer.baseAddress
+            }
+            params.detect_language = false
+        }
         params.n_threads = Int32(max(1, min(8, ProcessInfo.processInfo.processorCount - 2)))
         params.abort_callback = { userData in
             guard let userData else { return false }
@@ -218,11 +287,16 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
         let segmentCount = whisper_full_n_segments(context)
         var segments: [WhisperCPPTranscriptSegment] = []
         for segmentIndex in 0..<segmentCount {
+            let noSpeechProb = whisper_full_get_segment_no_speech_prob(context, segmentIndex)
+            if noSpeechProb > WhisperCPPSegmentQualityFilter.noSpeechThreshold { continue }
+
             let segmentText = String(
                 cString: whisper_full_get_segment_text(context, segmentIndex)
             )
             let tokenCount = whisper_full_n_tokens(context, segmentIndex)
             var tokens: [WhisperCPPTranscriptToken] = []
+            var logprobTotal: Float = 0
+            var logprobCount = 0
             for tokenIndex in 0..<tokenCount {
                 let data = whisper_full_get_token_data(context, segmentIndex, tokenIndex)
                 guard
@@ -231,6 +305,8 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
                         endOfTextTokenID: whisper_token_eot(context)
                     )
                 else { continue }
+                logprobTotal += data.plog
+                logprobCount += 1
                 let text = String(
                     cString: whisper_full_get_token_text(context, segmentIndex, tokenIndex)
                 )
@@ -242,6 +318,9 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
                         confidence: data.p
                     ))
             }
+            guard !tokens.isEmpty else { continue }
+            let averageLogprob = logprobCount > 0 ? logprobTotal / Float(logprobCount) : 0
+            if averageLogprob < WhisperCPPSegmentQualityFilter.minimumAverageLogprob { continue }
             segments.append(
                 WhisperCPPTranscriptSegment(
                     text: segmentText,
@@ -282,6 +361,14 @@ enum WhisperCPPTokenFilter {
     static func isText(tokenID: whisper_token, endOfTextTokenID: whisper_token) -> Bool {
         tokenID >= 0 && tokenID < endOfTextTokenID
     }
+}
+
+/// Segment-level quality gates applied after whisper_full inference.
+enum WhisperCPPSegmentQualityFilter {
+    /// Skip segments whisper predicts are non-speech (instrumental / silence hallucinations).
+    static let noSpeechThreshold: Float = 0.6
+    /// Skip segments whose average token log-probability falls below whisper's default threshold.
+    static let minimumAverageLogprob: Float = -1.0
 }
 
 /// Aggregates whisper.cpp sub-word pieces into whole words. A piece whose text

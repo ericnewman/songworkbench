@@ -32,6 +32,9 @@ struct SongAnalysisPipelineRequest: Sendable {
     let transcriptionMode: TranscriptionMode
     let existingDocument: SongAnalysisDocument
     let chordProReplacementPolicy: ChordProReplacementPolicy
+    /// Pitch-preserved decode speed for the transcription pass (Accuracy/Whisper only): < 1 slows
+    /// the vocals before recognition, then timestamps are mapped back. 1.0 = no change.
+    let transcriptionDecodeRate: Double
 
     init(
         sourceURL: URL,
@@ -40,7 +43,8 @@ struct SongAnalysisPipelineRequest: Sendable {
         stages: Set<SongAnalysisStage>,
         transcriptionMode: TranscriptionMode,
         existingDocument: SongAnalysisDocument,
-        chordProReplacementPolicy: ChordProReplacementPolicy = .preserveExisting
+        chordProReplacementPolicy: ChordProReplacementPolicy = .preserveExisting,
+        transcriptionDecodeRate: Double = 1.0
     ) {
         self.sourceURL = sourceURL
         self.outputDirectory = outputDirectory
@@ -49,6 +53,7 @@ struct SongAnalysisPipelineRequest: Sendable {
         self.transcriptionMode = transcriptionMode
         self.existingDocument = existingDocument
         self.chordProReplacementPolicy = chordProReplacementPolicy
+        self.transcriptionDecodeRate = transcriptionDecodeRate
     }
 }
 

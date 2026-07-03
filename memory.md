@@ -95,6 +95,12 @@
   and `Caches/SongWorkbench`; on first launch/load, the app moves legacy
   `CCSSongWorkbench` support/cache directories to the new names when the new
   directories do not already exist.
+- SIGNING / TUIST: `tuist generate` rewrites the pbxproj from `Project.swift` — any
+  signing set in the Xcode UI is stomped on the next generate, so signing MUST live in
+  `Project.swift`. Eric's real Team ID is `65FBMF6CMD` (the certificate's OU field);
+  `94276EJ325` — the parenthetical in "Apple Development: Eric Newman (94276EJ325)" —
+  is the CERT identifier, not the team. Debug signs with team 65FBMF6CMD (fixed
+  2026-07-02); with the wrong ID there, every regenerate "lost" signing.
 - TestFlight prep lives in `RELEASE.md`. The app target uses
   `SongWorkbench.entitlements` with App Sandbox, user-selected read/write
   file access, and network-client access. Release signing is automatic and
@@ -172,3 +178,30 @@
   `~/.codex/skills/analyze-guitar-tones`. For future song transcription, run
   tone analysis on the same source and embed the marked guitar-tone comment
   block in the ChordPro header; repeated runs replace the block idempotently.
+- Chord timeline decoding (2026-07-01): `ChordTimelineDecoder` (Viterbi over
+  per-beat windows, key prior via `KeyPriorChordRescorer` 1.0/0.75/0.5 with
+  parallel-minor-of-tonic demoted, switch penalty 2.0, no-chord floor 0.5,
+  empty windows uninformative) replaced independent per-window voting in the
+  harmony stage; frame-level `BassInformedChordRefiner.refineObservations`
+  (bass conf ≥0.35, candidates incl. maj7/dom7 for upper-structure confusions
+  like C#-over-F# = F#maj7) runs BEFORE the vote because chroma can fully mask
+  the true label (Ab read as Cm); `mergeSameRootExtensions` collapses F#/F#maj7
+  neighbours; `ChordEventDurationFilter` merges sub-0.8-beat slivers after
+  event-level bass refine + onset snap. Stage tag `reduce-9-seventh-reroot`
+  re-reduces from cached chroma on re-analysis. Validated offline against
+  Summertime's cached frames: 117 events/28% non-diatonic/26 sub-beat/31%
+  chorus agreement → ~79/11%/8/80%; decoded verse matches the persisted BASS
+  LINE (the ground truth for roots). Tune/verify offline by replaying cached
+  frame JSON (Caches/SongWorkbench/Analysis, `value.chords` frames) in Python
+  before changing Swift; the author's musical memory is the final arbiter.
+- ChordPro preview meter: `DownbeatEstimator.estimateBeatsPerBar` picks the
+  per-song bar length ({3,4,5,6}, conservative 4) from lyric-line spacing —
+  Summertime phrases in 5 detected beats (real 112.35 tactus, drum-verified),
+  and a hard-coded 4/4 grid made verse rows cascade rightward. The draft
+  builder restates the active sustained chord at section starts; leading
+  melody fill is suppressed when the pre-vocal gap ≥4 bars (intro rows
+  already draw it).
+- The reconstruction-accuracy audit + phased refinement plan (chord accuracy →
+  ChordPro arrangement fidelity → reference-lyrics-first) lives in
+  `tasks/todo.md` ("Reconstruction-accuracy audit"). ChordPro format gaps: no
+  {key}/{time}, no bar-aligned chord-only lines, character-anchored chords.

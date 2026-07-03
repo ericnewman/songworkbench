@@ -194,7 +194,7 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
 
         XCTAssertTrue(result.text.contains("bridge still matters"))
         XCTAssertEqual(result.segments.flatMap(\.tokens).last?.text, "matters")
-        XCTAssertEqual(result.engine.engineVersion, "5")
+        XCTAssertEqual(result.engine.engineVersion, "6")
     }
 
     func testAccuracyEngineCollapsesRunawayRepetitionLoop() async throws {
@@ -242,6 +242,69 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(occurrences, 1)
         XCTAssertLessThanOrEqual(occurrences, 4)
     }
+
+    func testRepetitionFilterSafetyValveRestoresRawWhenTimelineTruncatedEarly() {
+        let repeatedPhrase = [" Oh", " take", " me", " where", " we", " belong"]
+        let repeatedTokens = (0..<5).flatMap { repetition in
+            repeatedPhrase.enumerated().map { offset, text in
+                let start = Double(repetition * repeatedPhrase.count + offset)
+                return WhisperCPPTranscriptToken(
+                    text: text,
+                    start: start,
+                    end: start + 0.5,
+                    confidence: 0.82
+                )
+            }
+        }
+        let laterTokens = [
+            WhisperCPPTranscriptToken(text: " The", start: 150, end: 150.5, confidence: 0.9),
+            WhisperCPPTranscriptToken(text: " bridge", start: 150.5, end: 151, confidence: 0.9),
+        ]
+        let raw = WhisperCPPTranscript(
+            text: (repeatedTokens + laterTokens).map(\.text).joined(),
+            duration: 180,
+            languageCode: "en",
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: repeatedTokens.map(\.text).joined(),
+                    start: 0,
+                    end: 30,
+                    tokens: repeatedTokens
+                ),
+                WhisperCPPTranscriptSegment(
+                    text: laterTokens.map(\.text).joined(),
+                    start: 150,
+                    end: 151,
+                    tokens: laterTokens
+                ),
+            ]
+        )
+        let filtered = WhisperCPPRepetitionFilter.filter(raw)
+        let truncated = WhisperCPPTranscript(
+            text: filtered.text,
+            duration: raw.duration,
+            languageCode: raw.languageCode,
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: filtered.text,
+                    start: 0,
+                    end: 20,
+                    tokens: filtered.segments.flatMap(\.tokens)
+                )
+            ]
+        )
+        let restored = WhisperCPPTranscriptionEngine.repetitionFilteredOrRaw(
+            filtered: truncated, raw: raw)
+
+        XCTAssertTrue(restored.text.contains("bridge"))
+    }
+
+    func testWhisperLanguageCodeMapsLocalePrefix() {
+        XCTAssertEqual(WhisperCPPTranscriptionEngine.whisperLanguageCode(from: "en_US"), "en")
+        XCTAssertEqual(WhisperCPPTranscriptionEngine.whisperLanguageCode(from: "de"), "de")
+        XCTAssertNil(WhisperCPPTranscriptionEngine.whisperLanguageCode(from: nil))
+        XCTAssertNil(WhisperCPPTranscriptionEngine.whisperLanguageCode(from: "eng"))
+    }
 }
 
 private actor StubWhisperRuntime: WhisperCPPTranscribing {
@@ -255,6 +318,7 @@ private actor StubWhisperRuntime: WhisperCPPTranscribing {
     func transcribe(
         audioURL: URL,
         noContext: Bool,
+        languageCode: String?,
         cancellation: WhisperCPPCancellationToken
     ) async throws -> WhisperCPPTranscript {
         self.noContext = noContext

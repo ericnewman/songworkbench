@@ -48,7 +48,20 @@ let project = Project(
                 "MARKETING_VERSION": "1.0",
                 "SWIFT_VERSION": "6.0",
             ], debug: [
-                "CODE_SIGNING_ALLOWED": "NO"
+                // Sign + sandbox Debug (like Release) so a STABLE identity makes macOS remember the
+                // network/removable-volume privacy grant across launches. The sandbox relocates the
+                // app's data to its container, so the existing ~/Library/Application Support data
+                // (models, caches, projects) must be copied into the container once — see the
+                // one-time migration the user runs after `tuist generate` + first launch.
+                "CODE_SIGNING_ALLOWED": "YES",
+                "CODE_SIGN_STYLE": "Automatic",
+                "CODE_SIGN_IDENTITY": "Apple Development",
+                // The TEAM ID is the certificate's OU (65FBMF6CMD), NOT the parenthetical in the
+                // certificate name (94276EJ325 — that's the cert identifier). With the wrong value
+                // here, every `tuist generate` regenerated a team Xcode couldn't resolve and
+                // signing had to be re-picked by hand in Xcode, only to be stomped again.
+                "DEVELOPMENT_TEAM": "65FBMF6CMD",
+                "ENABLE_APP_SANDBOX": "YES",
             ], release: [
                 "CODE_SIGNING_ALLOWED": "YES",
                 "CODE_SIGN_IDENTITY": "Apple Distribution",

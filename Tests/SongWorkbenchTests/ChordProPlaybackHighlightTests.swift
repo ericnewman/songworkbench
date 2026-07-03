@@ -59,6 +59,11 @@ final class ChordProPlaybackHighlightTests: XCTestCase {
             style: .chord
         )
 
-        XCTAssertNil(context.highlight(forLyricOrdinal: 0))
+        // Past the segment end the last line stays active through the instrumental outro.
+        XCTAssertEqual(
+            context.highlight(forLyricOrdinal: 0),
+            ChordProLinePlaybackHighlight(wordRange: 13..<17, chordLabels: ["C"])
+        )
+        XCTAssertNil(context.highlight(forLyricOrdinal: 1))
     }
 }

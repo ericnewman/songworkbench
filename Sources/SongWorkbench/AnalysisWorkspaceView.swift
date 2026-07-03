@@ -5,58 +5,90 @@ struct AnalysisWorkspaceView: View {
     @State private var showReplacementConfirmation = false
     @State private var showReferenceLyrics = false
     @State private var showLiveCapture = false
+    /// Collapsed/expanded state of the card, persisted across launches. The header row (with
+    /// its disclosure triangle) is always visible; the controls and stage rows fold away.
+    @AppStorage("songAnalysisCardExpanded") private var isExpanded = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label("Song Analysis", systemImage: "waveform.badge.magnifyingglass")
-                    .font(.swDisplay(15, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                Button {
+                    withAnimation(.snappy) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.swTextSecondary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        Label("Song Analysis", systemImage: "waveform.badge.magnifyingglass")
+                            .font(.swDisplay(15, weight: .semibold))
+                            .foregroundStyle(Color.swTextPrimary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isExpanded ? "Collapse Song Analysis" : "Expand Song Analysis")
                 Spacer()
                 ModelPackagesView(model: model)
             }
 
-            Picker("Transcription", selection: $model.transcriptionMode) {
-                Text("Fast Draft").tag(TranscriptionMode.fastDraft)
-                Text("Balanced Draft").tag(TranscriptionMode.balancedDraft)
-                Text("Accuracy").tag(TranscriptionMode.accuracy)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            if isExpanded {
+                Picker("Transcription", selection: $model.transcriptionMode) {
+                    Text("Fast Draft").tag(TranscriptionMode.fastDraft)
+                    Text("Balanced Draft").tag(TranscriptionMode.balancedDraft)
+                    Text("Accuracy").tag(TranscriptionMode.accuracy)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
 
-            HStack {
-                if model.isSongAnalysisRunning {
-                    Button("Analyzing Song...", systemImage: "sparkles") {}
-                        .disabled(true)
-                } else {
-                    Button("Analyze Song", systemImage: "sparkles") {
-                        beginAnalysis()
+                if model.transcriptionMode == .accuracy {
+                    HStack(spacing: 8) {
+                        Text("Decode speed")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Slider(value: $model.accuracyDecodeSpeed, in: 0.75...1.0, step: 0.05)
+                        Text(
+                            model.accuracyDecodeSpeed >= 0.999
+                                ? "Off"
+                                : "\(Int((model.accuracyDecodeSpeed * 100).rounded()))%"
+                        )
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, alignment: .trailing)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.selectedSong == nil)
+                    .help(
+                        "Slows the vocals (pitch preserved) before Whisper to help fast or dense "
+                            + "singing; timestamps are mapped back. 100% = off. Changing this "
+                            + "re-transcribes on the next Analyze.")
                 }
-                Button("Reference Lyrics", systemImage: "text.alignleft") {
-                    showReferenceLyrics = true
-                }
-                .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
-                Button("Live Capture", systemImage: "dot.radiowaves.left.and.right") {
-                    showLiveCapture = true
-                }
-                .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
-                .help("Detect chords in real time from a loopback device, mic, or another app.")
-                if !model.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(Color.swMint)
-                        .help("Lyrics are aligned to your reference text")
-                }
-                Spacer()
-            }
 
-            VStack(alignment: .leading, spacing: 9) {
-                ForEach(SongAnalysisStage.allCases, id: \.self) { stage in
-                    stageRow(stage)
+                HStack {
+                    Button("Reference Lyrics", systemImage: "text.alignleft") {
+                        showReferenceLyrics = true
+                    }
+                    .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+                    Button("Live Capture", systemImage: "dot.radiowaves.left.and.right") {
+                        showLiveCapture = true
+                    }
+                    .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+                    .help(
+                        "Detect chords in real time from a loopback device, mic, or another app.")
+                    if !model.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                    {
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundStyle(Color.swMint)
+                            .help("Lyrics are aligned to your reference text")
+                    }
+                    Spacer()
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(SongAnalysisStage.allCases, id: \.self) { stage in
+                        stageRow(stage)
+                    }
                 }
             }
         }
@@ -124,14 +156,6 @@ struct AnalysisWorkspaceView: View {
         }
     }
 
-    private func beginAnalysis() {
-        if model.requiresChordProReplacementConfirmation {
-            showReplacementConfirmation = true
-        } else {
-            model.analyzeSelectedSong()
-        }
-    }
-
     private func stageTitle(_ stage: SongAnalysisStage) -> String {
         switch stage {
         case .separation: "Stems"
@@ -162,6 +186,43 @@ struct AnalysisWorkspaceView: View {
         guard let provenance = record?.provenance else { return "" }
         let completion = provenance.completedAt.formatted(date: .abbreviated, time: .shortened)
         return "\(provenance.engineIdentifier) \(provenance.engineVersion) • \(completion)"
+    }
+}
+
+/// The header Analyze action (lives in `SongActionsCard`, upper right of the main window).
+/// Carries the same replace-confirmation flow the card's button had; progress is still
+/// presented by `AnalysisWorkspaceView`'s model-driven sheet, so it appears no matter who
+/// starts analysis.
+struct AnalyzeSongButton: View {
+    @ObservedObject var model: AppModel
+    @State private var showReplacementConfirmation = false
+
+    var body: some View {
+        Button {
+            if model.requiresChordProReplacementConfirmation {
+                showReplacementConfirmation = true
+            } else {
+                model.analyzeSelectedSong()
+            }
+        } label: {
+            if model.isSongAnalysisRunning {
+                Label("Analyzing…", systemImage: "sparkles")
+            } else {
+                Label("Analyze Song", systemImage: "sparkles")
+            }
+        }
+        .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+        .help("Run the full analysis pipeline on the selected song")
+        .alert("Replace Existing ChordPro?", isPresented: $showReplacementConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Replace", role: .destructive) {
+                model.analyzeSelectedSong(replaceExistingChordPro: true)
+            }
+        } message: {
+            Text(
+                "The current ChordPro was reviewed or imported manually. Replacement creates a new draft."
+            )
+        }
     }
 }
 

@@ -130,9 +130,11 @@ final class StemPlaybackService: ObservableObject {
         else { return nil }
         buffer.frameLength = totalFrames
         for index in 0..<Int(totalFrames) { channel[index] = 0 }
-        // A short enveloped 1 kHz blip on each beat.
+        // A short enveloped 1 kHz blip on each beat. The click uses a UNIFORM grid (median period,
+        // phase-locked to the detected beats) so it's perfectly steady even when the onset-derived
+        // beat times jitter.
         let clickFrames = Int(0.03 * sampleRate)
-        for beat in beatTimes {
+        for beat in uniformBeatGrid(from: beatTimes, duration: duration) {
             let startIndex = Int(beat * sampleRate)
             guard startIndex >= 0, startIndex < Int(totalFrames) else { continue }
             for offset in 0..<clickFrames {
@@ -144,6 +146,37 @@ final class StemPlaybackService: ObservableObject {
             }
         }
         return buffer
+    }
+
+    /// Converts the (possibly jittery, onset-derived) beat times into a perfectly periodic grid:
+    /// the median inter-beat interval as the period, phase-anchored to the first detected beat, and
+    /// extended both directions to cover [0, duration]. This makes the click track totally
+    /// consistent while staying aligned to the song's tempo and downbeat phase. Falls back to the
+    /// input when there aren't enough beats to estimate a period.
+    private static func uniformBeatGrid(
+        from beatTimes: [TimeInterval], duration: TimeInterval
+    ) -> [TimeInterval] {
+        let sorted = beatTimes.sorted()
+        guard sorted.count >= 2 else { return beatTimes }
+        var intervals: [TimeInterval] = []
+        for index in 1..<sorted.count { intervals.append(sorted[index] - sorted[index - 1]) }
+        intervals.sort()
+        let period = intervals[intervals.count / 2]  // median
+        guard period > 0.05 else { return beatTimes }  // sanity: ignore degenerate spacing
+
+        let anchor = sorted[0]
+        var grid: [TimeInterval] = []
+        var time = anchor
+        while time >= 0 {  // backfill toward the start
+            grid.append(time)
+            time -= period
+        }
+        time = anchor + period
+        while time <= duration {  // forward to the end
+            grid.append(time)
+            time += period
+        }
+        return grid.sorted()
     }
 
     private func scheduleClick(from time: TimeInterval) {
@@ -314,19 +347,18 @@ final class StemPlaybackService: ObservableObject {
         guard
             let referenceKind,
             let player = players[referenceKind],
-            let file = files[referenceKind],
-            let renderTime = player.lastRenderTime,
-            let playerTime = player.playerTime(forNodeTime: renderTime)
+            let elapsed = PlayerClock.elapsedSeconds(player)
         else { return }
 
-        let elapsed = Double(playerTime.sampleTime) / file.processingFormat.sampleRate
+        // PlayerClock divides sampleTime by the player's OWN timebase (its output-bus
+        // rate), which is correct regardless of the file's sample rate.
         currentTime = min(scheduledStartTime + elapsed, duration)
     }
 
     private func startTimer() {
         stopTimer()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
                 self?.updatePlaybackMeters()
             }
         }

@@ -6,12 +6,133 @@ enum PlaybackSource: Equatable, Sendable {
     case stemMix
 }
 
+/// Pure lyric-line join/split transforms (character-range arithmetic on `TimedLyricSegment`), split
+/// out from `AppModel` so they can be unit-tested without the view/model.
+enum LyricLineEdit {
+    /// `first` followed by `next` joined into one line: text concatenated with a space, `next`'s
+    /// per-word timings re-indexed past the join, span covering both.
+    static func merged(_ first: TimedLyricSegment, _ next: TimedLyricSegment) -> TimedLyricSegment {
+        let joined = first.text + " " + next.text
+        let offset = first.text.count + 1
+        let shifted = next.words.map { word in
+            TimedLyricWord(
+                text: word.text, start: word.start, end: word.end,
+                characterRange: (word.characterRange.lowerBound + offset)..<(word.characterRange
+                    .upperBound + offset))
+        }
+        return TimedLyricSegment(
+            start: min(first.start, next.start),
+            end: max(first.end, next.end),
+            text: joined,
+            words: first.words + shifted)
+    }
+
+    /// `segment` broken in two at its largest internal word gap, or `nil` if it has < 2 words or no
+    /// usable split point. Each half's word character-ranges are re-indexed into its own text.
+    static func split(_ segment: TimedLyricSegment) -> (TimedLyricSegment, TimedLyricSegment)? {
+        let words = segment.words
+        guard words.count >= 2 else { return nil }
+        var splitAt = 1
+        var widestGap = -TimeInterval.infinity
+        for k in 1..<words.count where words[k].start - words[k - 1].end > widestGap {
+            widestGap = words[k].start - words[k - 1].end
+            splitAt = k
+        }
+        let chars = Array(segment.text)
+        let cut = words[splitAt].characterRange.lowerBound
+        guard cut > 0, cut < chars.count else { return nil }
+        let firstWords = Array(words[0..<splitAt])
+        let secondWords = words[splitAt...].map { word in
+            TimedLyricWord(
+                text: word.text, start: word.start, end: word.end,
+                characterRange: (word.characterRange.lowerBound - cut)..<(word.characterRange
+                    .upperBound - cut))
+        }
+        let first = TimedLyricSegment(
+            start: segment.start, end: firstWords.last?.end ?? segment.start,
+            text: String(chars[0..<cut]).trimmingCharacters(in: .whitespaces), words: firstWords)
+        let second = TimedLyricSegment(
+            start: secondWords.first?.start ?? segment.end, end: segment.end,
+            text: String(chars[cut...]), words: secondWords)
+        return (first, second)
+    }
+}
+
+/// Flags lyric lines that look like mis-splits / mis-timings, for review in the editor. Uses a
+/// probable line length (the median line's beats) and the beat grid: a line far off the typical
+/// length, or whose onset sits well off any beat, is suspect. Pure so it can be unit-tested.
+enum LyricLineDiagnostics {
+    /// Reason strings keyed by segment id. Empty without a tempo or with too few lines to judge.
+    static func suspectReasons(
+        _ segments: [TimedLyricSegment], beatTimes: [TimeInterval], tempo: Double?
+    ) -> [TimedLyricSegment.ID: String] {
+        guard let tempo, tempo > 0, segments.count >= 4 else { return [:] }
+        let beatDuration = 60.0 / tempo
+        guard beatDuration > 0 else { return [:] }
+        let lengths = segments.map { max(0, ($0.end - $0.start) / beatDuration) }.sorted()
+        let median = lengths[lengths.count / 2]
+        guard median > 0 else { return [:] }
+        let sortedBeats = beatTimes.sorted()
+        func fmt(_ value: Double) -> String { String(format: "%.1f", value) }
+        var result: [TimedLyricSegment.ID: String] = [:]
+        for segment in segments {
+            var reasons: [String] = []
+            let length = max(0, (segment.end - segment.start) / beatDuration)
+            if length < max(2.0, median * 0.45) {
+                reasons.append("short — \(fmt(length)) beats vs ~\(fmt(median)) typical")
+            } else if length > median * 1.9 {
+                reasons.append("long — \(fmt(length)) beats vs ~\(fmt(median)) typical")
+            }
+            if let nearest = sortedBeats.min(by: {
+                abs($0 - segment.start) < abs($1 - segment.start)
+            }) {
+                let off = abs(nearest - segment.start) / beatDuration
+                if off > 0.3 { reasons.append("starts \(fmt(off)) beat off the grid") }
+            }
+            if !reasons.isEmpty {
+                result[segment.id] = "Possible mis-split — " + reasons.joined(separator: "; ")
+            }
+        }
+        return result
+    }
+}
+
+/// Type-to-select matching for the song list. Pure and case/diacritic-insensitive so it can be
+/// unit-tested independently of the view.
+enum SongTypeahead {
+    /// The first song whose title begins with `prefix` (case- and diacritic-insensitive, surrounding
+    /// whitespace trimmed). Returns `nil` for an empty prefix or when nothing matches.
+    static func firstMatch(prefix: String, in songs: [Song]) -> Song? {
+        let needle =
+            prefix
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .trimmingCharacters(in: .whitespaces)
+        guard !needle.isEmpty else { return nil }
+        return songs.first { song in
+            song.title
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                .hasPrefix(needle)
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var songs: [Song] = []
     @Published var selectedSongID: Song.ID?
     @Published private(set) var waveform: WaveformEnvelope?
     @Published private(set) var isLoadingWaveform = false
+    /// Detected singing intervals on the vocals stem, overlaid on the waveform so vocal-activity
+    /// detection can be evaluated (and later used to correct lyric timing). Empty when no stem.
+    @Published private(set) var vocalActivityIntervals: [ClosedRange<TimeInterval>] = []
+    /// A waveform envelope of the isolated vocals stem (finer-grained than the song waveform), used
+    /// to render a per-lyric-line audio strip so word↔voice alignment is directly visible. `nil`
+    /// when the song has no vocals stem (the preview falls back to the full-mix `waveform`).
+    @Published private(set) var vocalWaveform: WaveformEnvelope?
+    /// Per-stem waveform envelopes, one lane per available stem, in a fixed display order. Rendered
+    /// as stacked lanes beneath the full-mix waveform so each instrument's energy lines up with the
+    /// mix on a shared time axis. Empty when the song has no separated stems.
+    @Published private(set) var stemWaveforms: [(kind: StemKind, envelope: WaveformEnvelope)] = []
     @Published private(set) var projectErrorMessage: String?
     @Published private(set) var isExporting = false
     @Published private(set) var exportProgress = 0.0
@@ -48,6 +169,15 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published var beatTimes: [TimeInterval] = [] {
+        didSet { persistSelectedAnalysis() }
+    }
+    /// Full audio duration from transcription (seconds), for intro/outro timeline bounds.
+    @Published var sourceDuration: TimeInterval? {
+        didSet { persistSelectedAnalysis() }
+    }
+    /// Sung spans the ASR produced no words for (audit RC-4); flags timeline rows so
+    /// "instrumental" sections that actually contain vocals can be surfaced.
+    @Published var untranscribedVocalRegions: [ClosedRange<TimeInterval>] = [] {
         didSet { persistSelectedAnalysis() }
     }
     @Published var bassNotes: [BassNoteObservation] = [] {
@@ -96,6 +226,21 @@ final class AppModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(
                 transcriptionMode.rawValue, forKey: AppModel.transcriptionModeDefaultsKey)
+        }
+    }
+    static let accuracyDecodeSpeedDefaultsKey = "accuracyDecodeSpeed"
+    /// Pitch-preserved playback-speed factor applied to the vocals stem before Whisper (Accuracy)
+    /// transcription. < 1 slows the audio, which can improve recognition of fast / dense singing;
+    /// 1.0 disables it. Timestamps are mapped back to real time afterward. Persisted; the UI bounds
+    /// it to 0.75–1.0.
+    @Published var accuracyDecodeSpeed: Double = {
+        let stored = UserDefaults.standard.double(forKey: AppModel.accuracyDecodeSpeedDefaultsKey)
+        return stored == 0 ? 0.85 : stored
+    }()
+    {
+        didSet {
+            UserDefaults.standard.set(
+                accuracyDecodeSpeed, forKey: AppModel.accuracyDecodeSpeedDefaultsKey)
         }
     }
     @Published private(set) var songAnalysisProgress: SongAnalysisPipelineProgress?
@@ -198,6 +343,8 @@ final class AppModel: ObservableObject {
     private var lastOpenedBySongID: [Song.ID: Date] = [:]
     private var saveTask: Task<Void, Never>?
     private var waveformTask: Task<Void, Never>?
+    private var vocalActivityTask: Task<Void, Never>?
+    private var stemWaveformsTask: Task<Void, Never>?
     private var exportTask: Task<Void, Never>?
     private var analysisControlTask: Task<Void, Never>?
     private var analysisMonitorTask: Task<Void, Never>?
@@ -270,6 +417,8 @@ final class AppModel: ObservableObject {
     isolated deinit {
         saveTask?.cancel()
         waveformTask?.cancel()
+        vocalActivityTask?.cancel()
+        stemWaveformsTask?.cancel()
         exportTask?.cancel()
         analysisControlTask?.cancel()
         analysisMonitorTask?.cancel()
@@ -308,8 +457,18 @@ final class AppModel: ObservableObject {
         activePlaybackSource == .stemMix ? stemPlayback.currentTime : playback.currentTime
     }
 
+    /// Playhead clock for lyric line highlight and the waveform — identical to audible playback
+    /// (no ChordPro render-only timing offset).
+    var lyricHighlightTime: TimeInterval { activePlaybackTime }
+
     var activePlaybackDuration: TimeInterval {
         activePlaybackSource == .stemMix ? stemPlayback.duration : playback.duration
+    }
+
+    /// Duration for lyric/chord timeline axes: prefer stored transcription length, else playback.
+    var timelineDuration: TimeInterval {
+        if let sourceDuration, sourceDuration > 0 { return sourceDuration }
+        return activePlaybackDuration
     }
 
     var isActivePlaybackPlaying: Bool {
@@ -548,6 +707,91 @@ final class AppModel: ObservableObject {
             completion?(false)
             return
         }
+        // Detection-only guard for cloud-stored sources (iCloud / Google Drive / network or
+        // removable volumes): such files are often online-only/dataless or refuse a direct
+        // open() with EPERM, which otherwise produces a silent no-stems analysis. Verify the
+        // source is readable first; on failure surface a clear, actionable message (and kick
+        // off an iCloud download) and abort so nothing is half-written — the user retries once
+        // the file is available.
+        isSongAnalysisRunning = true
+        songAnalysisProgress = SongAnalysisPipelineProgress(
+            stage: nil, completedStages: 0, totalStages: stages.count,
+            stageFraction: 0, message: "Checking source file")
+        let sourceURL = song.url
+        Task { [weak self] in
+            let availability = await Task.detached(priority: .userInitiated) {
+                AppModel.sourceAvailability(of: sourceURL)
+            }.value
+            guard let self else { return }
+            switch availability {
+            case .available:
+                self.beginAnalysis(
+                    for: song, stages: stages,
+                    replaceExistingChordPro: replaceExistingChordPro,
+                    modeOverride: modeOverride, completion: completion)
+            case .unavailable(let message):
+                self.isSongAnalysisRunning = false
+                self.projectErrorMessage = message
+                completion?(false)
+            }
+        }
+    }
+
+    private enum SourceAvailability: Sendable {
+        case available
+        case unavailable(String)
+    }
+
+    /// Detects whether a source audio file can actually be read right now. Cloud-provider files
+    /// (iCloud, Google Drive, network/removable volumes) are frequently online-only/dataless or
+    /// refuse a direct `open()` with EPERM; analyzing them silently yields no stems. Runs off the
+    /// main actor.
+    nonisolated private static func sourceAvailability(of url: URL) -> SourceAvailability {
+        let name = url.lastPathComponent
+        // iCloud: if the item exists but isn't downloaded, request the download and ask the user
+        // to retry once it lands.
+        if let values = try? url.resourceValues(forKeys: [
+            .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]), values.isUbiquitousItem == true {
+            if values.ubiquitousItemDownloadingStatus != .current {
+                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                return .unavailable(
+                    "“\(name)” is stored in iCloud and isn’t downloaded yet. I’ve started "
+                        + "downloading it — once it finishes, run Analyze again.")
+            }
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            _ = try handle.read(upToCount: 1)
+            return .available
+        } catch {
+            let nsError = error as NSError
+            let isPermission =
+                (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(EPERM))
+                || (nsError.domain == NSCocoaErrorDomain
+                    && nsError.code == NSFileReadNoPermissionError)
+            if isPermission {
+                return .unavailable(
+                    "“\(name)” couldn’t be opened (operation not permitted). It looks like it’s on "
+                        + "a cloud or removable volume that isn’t available right now. Make it "
+                        + "available offline (or copy it to a local folder) and try Analyze again.")
+            }
+            return .unavailable(
+                "“\(name)” couldn’t be read: \(error.localizedDescription) Make sure the file is "
+                    + "available locally and try Analyze again.")
+        }
+    }
+
+    private func beginAnalysis(
+        for song: Song,
+        stages: Set<SongAnalysisStage>,
+        replaceExistingChordPro: Bool = false,
+        modeOverride: TranscriptionMode? = nil,
+        completion: ((_ cancelled: Bool) -> Void)? = nil
+    ) {
         let songID = song.id
         let existingDocument = analysisBySongID[songID] ?? SongAnalysisDocument()
         isSongAnalysisRunning = true
@@ -566,7 +810,8 @@ final class AppModel: ObservableObject {
             transcriptionMode: modeOverride ?? transcriptionMode,
             existingDocument: existingDocument,
             chordProReplacementPolicy: replaceExistingChordPro
-                ? .replaceExisting : .preserveExisting
+                ? .replaceExisting : .preserveExisting,
+            transcriptionDecodeRate: min(max(accuracyDecodeSpeed, 0.75), 1.0)
         )
         analysisCoordinator.run(
             request: request,
@@ -585,6 +830,14 @@ final class AppModel: ObservableObject {
                     analysisBySongID[songID] = result.document
                     if selectedSongID == songID {
                         applyAnalysis(result.document)
+                        // A fresh analysis may have just produced the stems; the
+                        // waveform-derived state (stem lanes + vocal-activity overlay)
+                        // is otherwise only loaded in select(), so refresh it here or a
+                        // newly analyzed song shows an empty stem panel until reselected.
+                        if let song = selectedSong {
+                            loadVocalActivity(for: song)
+                            loadStemWaveforms(for: song)
+                        }
                     }
                     // Always persist the freshly computed analysis (applyAnalysis only
                     // persists when it detects a migration change, which a fresh result
@@ -623,17 +876,113 @@ final class AppModel: ObservableObject {
         let imported = SongImportPolicy.songs(from: candidates)
         if imported.isEmpty, !urls.isEmpty {
             projectErrorMessage = "No supported audio files were found."
+            return
         } else if imported.count < candidates.count {
             projectErrorMessage = "Some files use unsupported audio formats."
         }
-        let existingIDs = Set(songs.map(\.id))
-        songs.append(contentsOf: imported.filter { !existingIDs.contains($0.id) })
-        songs.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-
-        if selectedSongID == nil, let first = imported.first {
-            select(first)
+        // Copy each source into local app storage and import the LOCAL copy, so analysis never
+        // depends on a cloud provider (iCloud / Google Drive) that serves online-only files or
+        // refuses a direct open() with EPERM. iCloud items are downloaded first. A single
+        // deliberate import is auto-selected; bulk/folder imports only auto-select when nothing
+        // is selected yet.
+        let selectImmediately = urls.count == 1
+        Task { [weak self] in
+            guard let self else { return }
+            var localizedSongs: [Song] = []
+            var firstFailure: String?
+            for song in imported {
+                switch await AppModel.localizedSource(for: song.url) {
+                case .success(let localURL):
+                    localizedSongs.append(Song(url: localURL))
+                case .failure(let reason):
+                    if firstFailure == nil { firstFailure = reason }
+                }
+            }
+            let existingIDs = Set(self.songs.map(\.id))
+            let newSongs = localizedSongs.filter { !existingIDs.contains($0.id) }
+            self.songs.append(contentsOf: newSongs)
+            self.songs.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            if let first = newSongs.first, selectImmediately || self.selectedSongID == nil {
+                self.select(first)
+            }
+            if let firstFailure { self.projectErrorMessage = firstFailure }
+            self.scheduleSave()
         }
-        scheduleSave()
+    }
+
+    /// Local directory holding imported source copies, so analysis operates on files the app can
+    /// always read regardless of any originating cloud provider.
+    nonisolated private static func localSourcesDirectory() -> URL? {
+        guard
+            let appSupport = try? FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false)
+        else { return nil }
+        return
+            appSupport
+            .appendingPathComponent("SongWorkbench", isDirectory: true)
+            .appendingPathComponent("Sources", isDirectory: true)
+    }
+
+    private enum LocalizedSourceOutcome: Sendable {
+        case success(URL)
+        case failure(String)
+    }
+
+    /// Returns a LOCAL, readable URL for an imported source: the file is copied into the app's
+    /// local Sources directory (materializing an iCloud item first) so later analysis never has to
+    /// open the original cloud path. Files already inside the local Sources directory are returned
+    /// as-is. Runs off the main actor.
+    nonisolated private static func localizedSource(for url: URL) async -> LocalizedSourceOutcome {
+        let fileManager = FileManager.default
+        let name = url.lastPathComponent
+        guard let sourcesDirectory = localSourcesDirectory() else {
+            return .failure("Couldn’t locate local storage for imported songs.")
+        }
+        // Already a local copy — nothing to do.
+        if url.standardizedFileURL.path.hasPrefix(sourcesDirectory.standardizedFileURL.path) {
+            return .success(url)
+        }
+        // Materialize an iCloud item before copying (online-only files can't be read directly).
+        if let values = try? url.resourceValues(forKeys: [
+            .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]), values.isUbiquitousItem == true,
+            values.ubiquitousItemDownloadingStatus != .current
+        {
+            try? fileManager.startDownloadingUbiquitousItem(at: url)
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if let status = try? url.resourceValues(
+                    forKeys: [.ubiquitousItemDownloadingStatusKey]
+                ).ubiquitousItemDownloadingStatus, status == .current {
+                    break
+                }
+            }
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        // Key the destination folder by the resolved original path so re-importing the same file
+        // reuses the copy instead of duplicating it.
+        let identifier = SHA256.hash(
+            data: Data(url.standardizedFileURL.resolvingSymlinksInPath().path.utf8)
+        ).map { String(format: "%02x", $0) }.joined()
+        let destinationDirectory = sourcesDirectory.appendingPathComponent(
+            identifier, isDirectory: true)
+        let destination = destinationDirectory.appendingPathComponent(name)
+        do {
+            try fileManager.createDirectory(
+                at: destinationDirectory, withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: destination.path) {
+                return .success(destination)
+            }
+            try fileManager.copyItem(at: url, to: destination)
+            return .success(destination)
+        } catch {
+            return .failure(
+                "“\(name)” couldn’t be copied to local storage: \(error.localizedDescription) "
+                    + "If it’s in iCloud or Google Drive, make it available offline and re-import.")
+        }
     }
 
     /// Loads the Music library on first open of the picker. Reads happen off the
@@ -677,10 +1026,9 @@ final class AppModel: ObservableObject {
             musicLibraryNotice = "“\(item.title)” can't be opened. \(reason)"
             return false
         }
+        // importSongs copies the track into local storage and auto-selects a single import, so the
+        // song's final id is the LOCAL copy's — no post-hoc select by the original URL is needed.
         importSongs(from: [url])
-        if let song = songs.first(where: { $0.id == Song(url: url).id }) {
-            select(song)
-        }
         musicLibraryNotice = nil
         isMusicLibraryPickerPresented = false
         return true
@@ -727,7 +1075,31 @@ final class AppModel: ObservableObject {
         applySettings(settingsBySongID[song.id] ?? PracticeSettings())
         applyAnalysis(analysisBySongID[song.id] ?? SongAnalysisDocument())
         loadWaveform(for: song)
+        loadVocalActivity(for: song)
+        loadStemWaveforms(for: song)
         scheduleSave()
+    }
+
+    private var typeaheadBuffer = ""
+    private var typeaheadLastKeyAt = Date.distantPast
+
+    /// Type-to-select: selects the first song whose title starts with the accumulating typed prefix.
+    /// Characters typed within `resetInterval` extend the current prefix; a longer pause (or an
+    /// extended prefix that matches nothing) restarts from the new character. Returns true when the
+    /// keystroke selected/matched a song (so the caller can mark it handled).
+    @discardableResult
+    func typeToSelect(_ characters: String, resetInterval: TimeInterval = 0.8) -> Bool {
+        let now = Date()
+        if now.timeIntervalSince(typeaheadLastKeyAt) > resetInterval { typeaheadBuffer = "" }
+        typeaheadLastKeyAt = now
+        for candidate in [typeaheadBuffer + characters, characters] {
+            if let match = SongTypeahead.firstMatch(prefix: candidate, in: songs) {
+                typeaheadBuffer = candidate
+                if match.id != selectedSongID { select(match) }
+                return true
+            }
+        }
+        return false
     }
 
     private func resetSelectedSongProgressState() {
@@ -758,6 +1130,13 @@ final class AppModel: ObservableObject {
         waveformTask = nil
         waveform = nil
         isLoadingWaveform = false
+        vocalActivityTask?.cancel()
+        vocalActivityTask = nil
+        vocalActivityIntervals = []
+        vocalWaveform = nil
+        stemWaveformsTask?.cancel()
+        stemWaveformsTask = nil
+        stemWaveforms = []
     }
 
     private func clearSelectedSongState() {
@@ -768,6 +1147,7 @@ final class AppModel: ObservableObject {
         selectedSongID = nil
         loopRegion = nil
         lyricSegments = []
+        untranscribedVocalRegions = []
         chordEvents = []
         chordProSource = ""
         estimatedBPM = nil
@@ -1020,6 +1400,17 @@ final class AppModel: ObservableObject {
         stemPlayback.apply(stemMixer)
     }
 
+    /// True when the mixer differs from its default state (any gain, mute, or solo changed).
+    var isStemMixerModified: Bool {
+        stemMixer != StemMixerModel()
+    }
+
+    /// Resets every stem's gain/mute/solo to defaults and applies it to live playback.
+    func resetStemMixer() {
+        stemMixer = StemMixerModel()
+        stemPlayback.apply(stemMixer)
+    }
+
     func exportStemMix(to destinationURL: URL) {
         guard let stemFiles else { return }
         exportTask?.cancel()
@@ -1068,6 +1459,33 @@ final class AppModel: ObservableObject {
         for index in offsets.sorted(by: >) {
             lyricSegments.remove(at: index)
         }
+    }
+
+    /// Manual line join: merge a lyric line with the one that follows it in time (for a phrase the
+    /// analysis split in two). Text is concatenated with a space, per-word timings are preserved and
+    /// re-indexed, and the span covers both. The `lyricSegments` didSet rebuilds the chart + saves.
+    func mergeLyricSegmentWithNext(_ id: TimedLyricSegment.ID) {
+        let sorted = lyricSegments.sorted { $0.start < $1.start }
+        guard let pos = sorted.firstIndex(where: { $0.id == id }), pos + 1 < sorted.count else {
+            return
+        }
+        let first = sorted[pos]
+        let next = sorted[pos + 1]
+        let merged = LyricLineEdit.merged(first, next)
+        lyricSegments.removeAll { $0.id == first.id || $0.id == next.id }
+        lyricSegments.append(merged)
+        lyricSegments.sort { $0.start < $1.start }
+    }
+
+    /// Manual line split: break a lyric line into two at its largest internal word gap (the most
+    /// likely place a run-on line should break). No-op for a line with fewer than two words.
+    func splitLyricSegment(_ id: TimedLyricSegment.ID) {
+        guard let index = lyricSegments.firstIndex(where: { $0.id == id }),
+            let (first, second) = LyricLineEdit.split(lyricSegments[index])
+        else { return }
+        lyricSegments.remove(at: index)
+        lyricSegments.append(contentsOf: [first, second])
+        lyricSegments.sort { $0.start < $1.start }
     }
 
     func addChordEvent(at time: TimeInterval? = nil, chord: String = "C") {
@@ -1237,6 +1655,8 @@ final class AppModel: ObservableObject {
         chordProSource = analysis.chordProSource
         estimatedBPM = analysis.estimatedBPM
         beatTimes = analysis.beatTimes
+        sourceDuration = analysis.sourceDuration
+        untranscribedVocalRegions = analysis.untranscribedVocalRegions
         bassNotes = analysis.bassNotes
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
@@ -1294,7 +1714,9 @@ final class AppModel: ObservableObject {
         guard !isApplyingAnalysis, let selectedSongID else { return }
         analysisBySongID[selectedSongID] = SongAnalysisDocument(
             lyrics: lyricSegments,
+            untranscribedVocalRegions: untranscribedVocalRegions,
             referenceLyrics: referenceLyrics,
+            sourceDuration: sourceDuration,
             chords: chordEvents,
             chordProSource: chordProSource,
             estimatedBPM: estimatedBPM,
@@ -1333,6 +1755,40 @@ final class AppModel: ObservableObject {
         try? store.saveBlocking(makeDocument())
     }
 
+    /// Cached `SongTimeline` for the CURRENT `chordProSource`, or `nil` when the previewed
+    /// source is not the generated draft (user-edited/reviewed charts) — callers must then fall
+    /// back to source-derived behavior instead of trusting row numbers that may not match.
+    ///
+    /// Validity is proven, not assumed: the timeline is used only when rebuilding the draft from
+    /// the current analysis reproduces `chordProSource` byte-for-byte, so timeline row N is
+    /// exactly the preview's numbered musical line N (audit RC-2's single alignment routine).
+    private var timelineCache: (source: String, timeline: SongTimeline)?
+    func songTimelineForPreview() -> SongTimeline? {
+        guard !chordProSource.isEmpty else { return nil }
+        if let cached = timelineCache, cached.source == chordProSource {
+            return cached.timeline
+        }
+        guard let song = selectedSong else { return nil }
+        let result = chordProBuilder.buildResult(
+            ChordProDraftInput(
+                title: song.title,
+                tempo: estimatedBPM,
+                lyrics: lyricSegments,
+                chords: chordEvents,
+                confidenceThreshold: chordConfidenceThreshold,
+                beatTimes: beatTimes,
+                sourceDuration: sourceDuration,
+                untranscribedVocalRegions: untranscribedVocalRegions,
+                estimatedKey: estimatedKey
+            ))
+        guard result.source == chordProSource else {
+            timelineCache = nil
+            return nil
+        }
+        timelineCache = (chordProSource, result.timeline)
+        return result.timeline
+    }
+
     private func rebuildGeneratedChordProDraft() {
         guard
             let song = selectedSong,
@@ -1349,7 +1805,9 @@ final class AppModel: ObservableObject {
                 lyrics: lyricSegments,
                 chords: chordEvents,
                 confidenceThreshold: chordConfidenceThreshold,
-                beatTimes: beatTimes
+                beatTimes: beatTimes,
+                sourceDuration: sourceDuration,
+                estimatedKey: estimatedKey
             ))
         if var record = analysisStageRecords[.chordPro], var provenance = record.provenance {
             provenance.configurationIdentifier = chordProConfigurationIdentifier
@@ -1397,6 +1855,74 @@ final class AppModel: ObservableObject {
         .appendingPathComponent("Analysis", isDirectory: true)
         .appendingPathComponent("Stems", isDirectory: true)
         .appendingPathComponent(identifier, isDirectory: true)
+    }
+
+    /// Computes vocal-activity intervals from the current song's vocals stem (off the main actor)
+    /// for the waveform overlay. No-op when the song has no separated vocals stem.
+    private func loadVocalActivity(for song: Song) {
+        vocalActivityTask?.cancel()
+        vocalActivityIntervals = []
+        vocalWaveform = nil
+        guard let vocalsURL = stemFiles?.vocals else { return }
+        vocalActivityTask = Task { [weak self] in
+            guard let self else { return }
+            let accessing = vocalsURL.startAccessingSecurityScopedResource()
+            defer { if accessing { vocalsURL.stopAccessingSecurityScopedResource() } }
+            let intervals =
+                (try? await audioAnalysisService.vocalActivityIntervals(url: vocalsURL)) ?? []
+            let envelope = try? await waveformAnalyzer.analyze(
+                url: vocalsURL, targetSampleCount: 4_000)
+            guard !Task.isCancelled, selectedSongID == song.id else { return }
+            vocalActivityIntervals = intervals
+            vocalWaveform = envelope
+        }
+    }
+
+    /// Computes a waveform envelope for each available stem (off the main actor) so the waveform
+    /// panel can render one lane per instrument beneath the full mix. Lanes are produced in a fixed
+    /// display order; missing stems are skipped. No-op when the song has no separated stems.
+    private func loadStemWaveforms(for song: Song) {
+        stemWaveformsTask?.cancel()
+        stemWaveforms = []
+        let stems = stemFiles
+        guard stems != nil else {
+            // Diagnostic: separation reported success but no stem references reached the model —
+            // the stem panel will be empty for a reason the user can't otherwise see.
+            if analysisBySongID[song.id]?.stageRecords[.separation]?.state == .succeeded {
+                projectErrorMessage =
+                    "Separation succeeded but its stem files aren’t linked to this song "
+                    + "(no stem references). Re-run Analyze to regenerate them."
+            }
+            return
+        }
+        stemWaveformsTask = Task { [weak self] in
+            guard let self else { return }
+            let order: [StemKind] = [.vocals, .drums, .bass, .guitar, .piano, .other]
+            var lanes: [(kind: StemKind, envelope: WaveformEnvelope)] = []
+            var firstFailure: String?
+            for kind in order {
+                guard let url = stems?[kind] else { continue }
+                if Task.isCancelled { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let envelope = try await waveformAnalyzer.analyze(
+                        url: url, targetSampleCount: 1_200)
+                    lanes.append((kind: kind, envelope: envelope))
+                } catch {
+                    if firstFailure == nil {
+                        firstFailure = "\(url.lastPathComponent): \(error.localizedDescription)"
+                    }
+                }
+            }
+            guard !Task.isCancelled, selectedSongID == song.id else { return }
+            stemWaveforms = lanes
+            // Diagnostic: stems are referenced but none could be read (e.g. the files are
+            // missing/unreadable). Surface why instead of silently showing an empty panel.
+            if lanes.isEmpty, let firstFailure {
+                projectErrorMessage = "Stem waveforms couldn’t be read — \(firstFailure)"
+            }
+        }
     }
 
     private func loadWaveform(for song: Song) {
