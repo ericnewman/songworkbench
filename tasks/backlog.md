@@ -104,8 +104,17 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
    already rendered these directives with a distinct `.section` style predating this fix —
    this was the last piece needed for correct rendering. (todo.md: 2026-07-02 evening
    "Still open")
-7. **B5: `x_` round-trip custom directives** — carrier for timing data the ChordPro spec
-   can't natively hold. (same)
+7. [x] **B5: `x_` round-trip custom directives** (86843a3) — scoped to CHORD timing only
+   (confirmed with Eric; word/section timing left out). Emits `{x_chord_times:
+   <t>:<label>;...}` immediately before every row/line carrying chord events (inline lyric
+   chords, bar-aligned chord-only rows, the untimed chord grid), the only place an exact
+   chord timestamp is written into the `.cho` TEXT itself. `ChordProChordTimeCarrier` reads
+   them back losslessly (proven by round-trip tests) — but is NOT wired into any import path;
+   reconstructing a live `SongTimeline`/chord-editing timeline from recovered entries is a
+   separate, larger decision, left for a future item if needed. `x_` directives are already
+   safe passthrough for both this app's parser and spec-compliant foreign tools (confirmed
+   before implementing — no parser changes required). (todo.md: 2026-07-02 evening "Still
+   open"; original design note at todo.md:469-470)
 8. **C1: Reference-lyrics-first workflow** — surface pasting real lyrics as the primary path
    for original songs, not a secondary sheet. (same)
 

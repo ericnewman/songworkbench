@@ -830,3 +830,45 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   `swift format lint --strict --recursive Sources Tests` clean.
 - Still open in Batch B: B5 x_ round-trip custom directives (#7), C1 reference-lyrics-
   first workflow (#8).
+
+## 2026-07-03 (batch B, worktree) — Backlog #7 (B5) done, scoped to chord timing only
+- Scope decision: B5's backlog stub was a vague one-liner. Checked the old design note
+  (line 469-470 above: "parse the generated chart → rebuild per-bar chord map → compare
+  against the persisted chord timeline within one beat tolerance") and confirmed with Eric
+  before implementing — chord timing only, not word-level lyric timing or section/beat-grid
+  timing (those would be bigger, separate lifts).
+- [x] B5 x_chord_times carrier (86843a3): `ChordProDraftBuilder` emits `{x_chord_times:
+      <t>:<label>;...}` directives immediately before every rendered row/line that carries
+      chord events — inline lyric-line chords, bar-aligned chord-only rows (B2), and the
+      untimed chord grid. Each entry is an exact `time:label` pair (3-decimal seconds), the
+      only place a chord's exact timestamp is ever written into the `.cho` TEXT itself
+      (elsewhere a chord's position only ever encodes time approximately — proportional
+      character offset, or a bar/beat grid cell — with the real timestamp living only in the
+      separate in-memory `SongTimeline`/analysis cache).
+- Added `ChordProChordTimeCarrier`, a small pure parser that reads the directives back out
+  losslessly — the round-trip proof the backlog item asked for. Deliberately NOT wired into
+  any import path: turning recovered entries into a live `SongTimeline`/chord-editing
+  timeline is a separate, larger decision (confidence thresholds, reconciling with cached
+  analysis, etc.) — left for a future item if actually needed.
+- Confirmed before implementing (no parser changes required): `x_` is the ChordPro
+  convention for app-specific extensions other tools should ignore; `ChordProParser` already
+  stores any `{...}` line verbatim regardless of key, and `ChordProPreviewDocument`'s
+  directive dispatcher already falls back to an opaque `.directive` case for unrecognized
+  keys.
+- `InstrumentalRowLine` gained a `chords: [RenderableChordEvent]` field (marked
+  `fileprivate` — its type is `private`, so the internal struct's property needs matching
+  access) carrying the real events rendered in that row, excluding synthetic sustain-hold
+  repeats that reuse a symbol with no new timestamp — this is what the directive is built
+  from, not re-derived from the rendered text (which can't disambiguate a real chord change
+  from a sustain repeat).
+- Updated 4 existing exact-match golden tests for the new directive line; added 4 new tests
+  (inline-line round-trip, multi-site round-trip as a subsequence check across intro/lyric/
+  outro, omitted-when-no-chords, and a `ChordProDocument` parse/export round-trip proving
+  safe opaque passthrough).
+- Verified via real Xcode build + full test suite (434 tests, +4 from the new tests): 422
+  passed, 6 failed — all 6 match the known pre-existing flaky-test family (container
+  temp-path/Song-lookup timing), including one new flaky manifestation in `LiveCaptureTests`
+  this run with the identical failure signature as the others (`XCTUnwrap failed: expected
+  non-nil value of type 'Song'`) — same root cause, unrelated to this change. Zero failures
+  in `ChordProDraftBuilderTests` (30/30). `swift format lint --strict` clean.
+- Batch B remaining: C1 reference-lyrics-first workflow (#8).
