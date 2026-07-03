@@ -54,9 +54,58 @@ final class ChordProDraftBuilderTests: XCTestCase {
             beatTimes: []
         )
         let doc = ChordProDraftBuilder().build(input)
-        XCTAssertTrue(doc.contains("{comment: Verse 1}"), doc)
-        XCTAssertTrue(doc.contains("{comment: Chorus}"), doc)
-        XCTAssertTrue(doc.contains("{comment: Verse 2}"), doc)
+        XCTAssertTrue(doc.contains("{start_of_verse: Verse 1}"), doc)
+        XCTAssertTrue(doc.contains("{start_of_chorus}"), doc)
+        XCTAssertTrue(doc.contains("{start_of_verse: Verse 2}"), doc)
+        // Four sections total (Verse 1, Chorus, Verse 2, Chorus — the big gap before "Drinks
+        // start..." splits the two chorus occurrences into separate sections); every opened
+        // section must be closed, none left dangling.
+        XCTAssertEqual(doc.components(separatedBy: "{start_of_verse").count - 1, 2)
+        XCTAssertEqual(doc.components(separatedBy: "{end_of_verse}").count - 1, 2)
+        XCTAssertEqual(doc.components(separatedBy: "{start_of_chorus}").count - 1, 2)
+        XCTAssertEqual(doc.components(separatedBy: "{end_of_chorus}").count - 1, 2)
+    }
+
+    /// Regression: a same-section instrumental gap (bars-based threshold) must not fragment
+    /// one continuous verse into two directive blocks — only a genuine new
+    /// `SongStructureAnalyzer` section may close/open `{start_of_verse}`/`{start_of_chorus}`.
+    /// The two gap thresholds are independent (bars vs. `SongStructureAnalyzer`'s flat 4s
+    /// `sectionGap`), so a fast tempo can put ≥4 bars inside well under 4 seconds — beats every
+    /// 0.2s (300 BPM) put ~4.5 bars in a 3.5s gap, enough to trigger the gap-based
+    /// "Instrumental" comment line while staying under the analyzer's 4s section-split gap, so
+    /// both lines must stay inside the SAME open verse.
+    func testSectionDirectivesStayOpenAcrossAnInstrumentalGapWithinOneSection() {
+        // Dense beats give plenty of margin over the 4-bar threshold regardless of the exact
+        // counting convention at the window edges; what's under test is the 3.8s gap (< the
+        // analyzer's 4.0s sectionGap) between the first two lines, alongside a comfortably
+        // ≥4-bar count. A third, textually-unrelated line after a real (>=4s) gap gives the
+        // song a second section, since a single-section clip gets no directives at all
+        // (`vocalSections.count >= 2` gate) — the property under test is that the first two
+        // lines share ONE open verse, not that directives exist at all.
+        let beats = stride(from: 0.0, through: 20.0, by: 0.1).map { $0 }
+        let input = ChordProDraftInput(
+            title: "One Verse",
+            tempo: 300,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "First line of the verse"),
+                TimedLyricSegment(start: 5.8, end: 7.8, text: "Second line of the same verse"),
+                TimedLyricSegment(start: 15, end: 17, text: "A totally different later verse"),
+            ],
+            chords: [],
+            beatTimes: beats
+        )
+        let doc = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(doc.contains("{comment: Instrumental"), doc)
+        XCTAssertEqual(doc.components(separatedBy: "{start_of_verse").count - 1, 2, doc)
+        XCTAssertEqual(doc.components(separatedBy: "{end_of_verse}").count - 1, 2, doc)
+        // The instrumental gap must sit INSIDE the first verse's block, not split it: both of
+        // its lines appear before that verse's single close directive.
+        guard let firstClose = doc.range(of: "{end_of_verse}") else {
+            return XCTFail("no {end_of_verse} found in:\n\(doc)")
+        }
+        let beforeFirstClose = doc[doc.startIndex..<firstClose.lowerBound]
+        XCTAssertTrue(beforeFirstClose.contains("First line of the verse"))
+        XCTAssertTrue(beforeFirstClose.contains("Second line of the same verse"))
     }
 
     func testShortGapDoesNotInsertInterludeComment() {

@@ -118,11 +118,18 @@ struct ChordProDraftBuilder: Sendable {
             return TrailingLyricTailPruner.substantiveLineStart(line) < cutoff - 0.02
         }
         let vocalSections = SongStructureAnalyzer().vocalSections(for: bodyLyrics)
-        let sectionLabelByStart =
+        let sectionByStart: [TimeInterval: SongStructureAnalyzer.VocalSection] =
             vocalSections.count >= 2
             ? Dictionary(
-                vocalSections.map { ($0.start, $0.label) }, uniquingKeysWith: { first, _ in first })
+                vocalSections.map { ($0.start, $0) }, uniquingKeysWith: { first, _ in first })
             : [:]
+        // Open ChordPro section directive (B4), closed either when the next section starts or at
+        // the end of the lyric pass. Kept separate from the gap-based Intro/Instrumental comments
+        // below: those use a different threshold (bars, not `SongStructureAnalyzer`'s seconds-based
+        // `sectionGap`) and can legitimately fall INSIDE one continuous verse/chorus, so only a
+        // genuine new `sectionByStart` entry may close/open a section — never the generic gap
+        // comment, or a same-section instrumental breath would wrongly fragment the section.
+        var openSection: SongStructureAnalyzer.SectionKind?
         let chords = input.chords.compactMap { event -> RenderableChordEvent? in
             guard event.confidence.map({ $0 >= input.confidenceThreshold }) ?? true else {
                 return nil
@@ -201,12 +208,16 @@ struct ChordProDraftBuilder: Sendable {
                 lines.append("")
             }
             var isSectionStart = index == 0 || gapBars >= 4
-            if let sectionLabel = sectionLabelByStart[segment.start],
+            if let section = sectionByStart[segment.start],
                 !(tailCutoff.map {
                     TrailingLyricTailPruner.substantiveLineStart(segment) >= $0 - 0.02
                 } ?? false)
             {
-                lines.append("{comment: \(directiveValue(sectionLabel))}")
+                if let openSection {
+                    lines.append(sectionDirective(closing: openSection))
+                }
+                lines.append(sectionDirective(opening: section))
+                openSection = section.kind
                 isSectionStart = true
             }
             let ownChords = chords.filter {
@@ -245,6 +256,10 @@ struct ChordProDraftBuilder: Sendable {
                 kind: .lyric(ordinal: index),
                 start: segment.start, end: segment.end,
                 chordTimes: segmentChords.map(\.time))
+        }
+        // Close whatever section is still open once the lyric pass ends (before any outro).
+        if let openSection {
+            lines.append(sectionDirective(closing: openSection))
         }
 
         // Trailing chords after the last lyric line (an outro) belong to no segment;
@@ -362,6 +377,24 @@ struct ChordProDraftBuilder: Sendable {
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "{", with: "(")
             .replacingOccurrences(of: "}", with: ")")
+    }
+
+    /// Opening ChordPro section directive (B4). Verses carry their number as the directive's
+    /// label argument (`{start_of_verse: Verse 2}`); choruses stay unlabeled/generic
+    /// (`{start_of_chorus}`) — same "every chorus recurrence is just Chorus, no number"
+    /// behavior `SongStructureAnalyzer` already had before this directive existed.
+    private func sectionDirective(opening section: SongStructureAnalyzer.VocalSection) -> String {
+        switch section.kind {
+        case .verse: return "{start_of_verse: \(directiveValue(section.label))}"
+        case .chorus: return "{start_of_chorus}"
+        }
+    }
+
+    private func sectionDirective(closing kind: SongStructureAnalyzer.SectionKind) -> String {
+        switch kind {
+        case .verse: return "{end_of_verse}"
+        case .chorus: return "{end_of_chorus}"
+        }
     }
 
     private func formattedTempo(_ tempo: Double) -> String {
