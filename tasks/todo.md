@@ -803,3 +803,30 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   comments on `legacyBeatBall`, `chordOnlyLineOffset`, and `trailingChordOnlyLineOffset`
   naming `songTimelineForPreview()` as the trigger, so this doesn't get re-flagged as
   cleanup-able. No test changes needed (no dead code existed to remove tests for).
+
+## 2026-07-03 (batch B, worktree) — Backlog #5 (B2) + #6 (B4) done
+- [x] B2 bar-aligned chord-only rows (eb9c3c7): chord-only lines now render as
+      pipe-delimited bars on the song's `MeasureGrid` (`| [C] | [F] | [G] | [C] |`)
+      instead of proportional-time-spaced tokens; single sustained chord across
+      multiple bars renders as one bare symbol per bar, no dots.
+- [x] B4 section directives (f54ad61): `ChordProDraftBuilder` now emits real
+      `{start_of_verse: Verse N}` / `{start_of_chorus}` / `{end_of_verse}` /
+      `{end_of_chorus}` directives around each `SongStructureAnalyzer` vocal section,
+      replacing the old plain `{comment: <label>}` line. Choruses stay unlabeled on
+      every recurrence (existing "no numbering for repeats" behavior preserved). Open/
+      close is keyed only off the analyzer's seconds-based section boundaries
+      (`sectionByStart`), never the separate bars-based `gapBars >= 4` threshold that
+      drives the generic Intro/Instrumental comment lines — the two thresholds are
+      independent (seconds vs. tempo-relative bars) and can diverge at fast tempos, so
+      keying off the wrong one would fragment one continuous verse/chorus whenever an
+      instrumental breath crosses the bars threshold without crossing an actual section
+      boundary. `ChordProPreviewDocument.previewBlock(forDirective:)` already parsed
+      these directives with a distinct `.section` render style predating this fix, so
+      this was the last piece needed for correct header rendering.
+- Verified both via real Xcode build + full test suite (Mac, not the sandbox — no Swift
+  toolchain here): 419 passed, 5 failed, all 5 the known pre-existing flaky tests
+  (`AppModelTests` x4, `MusicLibraryAppModelTests` x1 — container temp-path/UUID and
+  thread-QoS timing, unrelated). `ChordProDraftBuilderTests` 26/26 passing.
+  `swift format lint --strict --recursive Sources Tests` clean.
+- Still open in Batch B: B5 x_ round-trip custom directives (#7), C1 reference-lyrics-
+  first workflow (#8).

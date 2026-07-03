@@ -90,10 +90,20 @@ Touches: WorkspaceEditorsView.swift, AudioPlaybackService/StemPlaybackService, S
 ## Batch B — ChordPro chart-quality (sequential within batch)
 Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-export code.
 
-5. **B2: Bar-aligned chord-only rows** — real barlines (`| C# | F# . | Ab | C# |`) instead
-   of the current loose spacing. (todo.md: 2026-07-02 evening "Still open")
-6. **B4: Section directives** — `{start_of_verse N}` / `{start_of_chorus}` etc., plus keep
-   existing repeat marking. (same)
+5. [x] **B2: Bar-aligned chord-only rows** (eb9c3c7) — chord-only rows (intro/instrumental/
+   outro) now render as pipe-delimited bars on the song's `MeasureGrid`
+   (`| [C] | [F] | [G] | [C] |`) instead of proportional-time-spaced tokens. (todo.md:
+   2026-07-02 evening "Still open")
+6. [x] **B4: Section directives** (f54ad61) — real `{start_of_verse: Verse N}` /
+   `{start_of_chorus}` / `{end_of_verse}` / `{end_of_chorus}` directives around each
+   `SongStructureAnalyzer` vocal section, replacing the old plain `{comment: <label>}` line;
+   choruses stay unlabeled on every recurrence (no numbering), matching existing behavior.
+   Keyed only off the analyzer's seconds-based section boundaries, never the separate
+   bars-based instrumental-gap threshold, so a same-section instrumental breath can't
+   fragment one verse/chorus into multiple directive blocks. `ChordProPreviewDocument`
+   already rendered these directives with a distinct `.section` style predating this fix —
+   this was the last piece needed for correct rendering. (todo.md: 2026-07-02 evening
+   "Still open")
 7. **B5: `x_` round-trip custom directives** — carrier for timing data the ChordPro spec
    can't natively hold. (same)
 8. **C1: Reference-lyrics-first workflow** — surface pasting real lyrics as the primary path
