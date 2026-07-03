@@ -71,7 +71,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 name: "MIT",
                 url: URL(string: "https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE")
             ),
-            engineVersion: "6"
+            engineVersion: "7"
         )
         self.runtime = runtime ?? WhisperCPPRuntime(modelURL: modelURL, useGPU: useGPU)
     }
@@ -420,7 +420,7 @@ enum WhisperCPPRepetitionFilter {
         _ transcript: WhisperCPPTranscript,
         phraseLength: Int = 6,
         maximumOccurrences: Int = 3,
-        horizon: TimeInterval = 30
+        maximumInterveningWords: Int = 2
     ) -> WhisperCPPTranscript {
         guard phraseLength > 0, maximumOccurrences > 0 else { return transcript }
         let orderedTokens = transcript.segments.flatMap(\.tokens).sorted {
@@ -442,20 +442,29 @@ enum WhisperCPPRepetitionFilter {
         }
         guard normalizedTokens.count >= phraseLength else { return transcript }
 
-        // First over-repeated phrase: the point where a length-`phraseLength` phrase
-        // recurs more than `maximumOccurrences` times within `horizon` seconds.
-        var occurrences: [String: [TimeInterval]] = [:]
+        // A hallucination loop is a decoder stuck re-emitting the same phrase instead of
+        // decoding new audio: the repeats sit back-to-back with (near) no other words
+        // between them. A genuinely repeated chorus/hook (e.g. a song's title line) always
+        // has whole verses of distinct words between recurrences, so it never builds a
+        // "packed" run here even if it recurs dozens of times over the whole song. Tracking
+        // word-index adjacency (rather than a fixed time window) also makes this invariant
+        // to decode-rate rescaling (see the 0.85x slow-decode retry above).
+        var runLength: [String: Int] = [:]
+        var runEndIndex: [String: Int] = [:]
         var cutoffTime: TimeInterval?
         var offendingPhrase: String?
         for end in (phraseLength - 1)..<normalizedTokens.count {
             let start = end - (phraseLength - 1)
             let phrase = normalizedTokens[start...end].joined(separator: " ")
-            let tokenStart = orderedTokens[sourceIndices[end]].start
-            var times = occurrences[phrase, default: []]
-            times.append(tokenStart)
-            times.removeAll { tokenStart - $0 > horizon }
-            occurrences[phrase] = times
-            if times.count > maximumOccurrences {
+            if let previousEnd = runEndIndex[phrase],
+                start - previousEnd - 1 <= maximumInterveningWords
+            {
+                runLength[phrase, default: 1] += 1
+            } else {
+                runLength[phrase] = 1
+            }
+            runEndIndex[phrase] = end
+            if runLength[phrase]! > maximumOccurrences {
                 cutoffTime = orderedTokens[sourceIndices[start]].start
                 offendingPhrase = phrase
                 break
@@ -464,17 +473,24 @@ enum WhisperCPPRepetitionFilter {
 
         guard let cutoffTime, let offendingPhrase else { return transcript }
 
-        // Find where the runaway repetition of the offending phrase ends, so that
-        // distinct content AFTER the loop is preserved rather than truncated. We
-        // drop only the loop region [cutoffTime, resumeTime); the first
-        // `maximumOccurrences` copies (before cutoff) and any later distinct
-        // content (at/after resume) are kept.
+        // Find where the runaway repetition ends, so distinct content after the loop is
+        // preserved rather than truncated. Extend only through the contiguous packed run
+        // that triggered the cutoff -- stop at the first gap of real content so a later,
+        // legitimately-spaced repeat of the same short phrase is never swept into the cut.
         var resumeTime = cutoffTime
+        var previousMatchEnd: Int?
         for end in (phraseLength - 1)..<normalizedTokens.count {
             let start = end - (phraseLength - 1)
-            if normalizedTokens[start...end].joined(separator: " ") == offendingPhrase {
-                resumeTime = max(resumeTime, orderedTokens[sourceIndices[end]].end)
+            guard normalizedTokens[start...end].joined(separator: " ") == offendingPhrase else {
+                continue
             }
+            let tokenStart = orderedTokens[sourceIndices[start]].start
+            guard tokenStart >= cutoffTime else { continue }
+            if let previousMatchEnd, start - previousMatchEnd - 1 > maximumInterveningWords {
+                break
+            }
+            resumeTime = max(resumeTime, orderedTokens[sourceIndices[end]].end)
+            previousMatchEnd = end
         }
 
         let keep: (WhisperCPPTranscriptToken) -> Bool = {

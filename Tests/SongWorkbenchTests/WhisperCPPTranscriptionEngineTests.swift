@@ -194,7 +194,86 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
 
         XCTAssertTrue(result.text.contains("bridge still matters"))
         XCTAssertEqual(result.segments.flatMap(\.tokens).last?.text, "matters")
-        XCTAssertEqual(result.engine.engineVersion, "6")
+        XCTAssertEqual(result.engine.engineVersion, "7")
+    }
+
+    /// Regression test for the real "Good friends and a beer or two" bug: a song whose
+    /// title/hook is a genuinely repeated chorus line, sung more than `maximumOccurrences`
+    /// times across the song, must NOT be treated as a hallucination loop. Each recurrence
+    /// here is separated by a distinct verse line, exactly as in a real song -- only a
+    /// hallucination loop (repeats with nothing else in between) should ever be cut.
+    func testGenuinelyRepeatedChorusHookIsNotTreatedAsALoop() {
+        let hook = [" good", " friends", " and", " a", " beer", " or", " two"]
+        let verseLines = [
+            [" no", " plans", " no", " problem"],
+            [" call", " everybody", " till", " the", " party's", " on"],
+            [" we", " always", " all", " get", " alone"],
+            [" walk", " on", " in", " and", " get", " lit", " up"],
+            [" turning", " it", " up", " till", " we", " all", " smile"],
+        ]
+        var tokens: [WhisperCPPTranscriptToken] = []
+        var t = 0.0
+        func append(_ words: [String]) {
+            for word in words {
+                tokens.append(
+                    WhisperCPPTranscriptToken(text: word, start: t, end: t + 0.4, confidence: 0.85)
+                )
+                t += 0.5
+            }
+        }
+        // Four choruses (more than maximumOccurrences=3), each preceded by a distinct verse
+        // line so the hook never repeats back-to-back with nothing in between.
+        for verse in verseLines.prefix(4) {
+            append(verse)
+            append(hook)
+        }
+        let source = WhisperCPPTranscript(
+            text: tokens.map(\.text).joined(),
+            duration: t,
+            languageCode: "en",
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: tokens.map(\.text).joined(), start: 0, end: t, tokens: tokens)
+            ]
+        )
+
+        let filtered = WhisperCPPRepetitionFilter.filter(source)
+
+        XCTAssertEqual(filtered.segments.flatMap(\.tokens).count, tokens.count)
+        XCTAssertEqual(filtered.text, source.text)
+    }
+
+    /// A true stuck-decoder loop with only filler between repeats (no distinct verse
+    /// content) must still be caught, even if the repeats aren't perfectly adjacent.
+    func testLoopWithMinorFillerBetweenRepeatsIsStillRemoved() {
+        let phrase = [" oh", " take", " me", " where", " we", " belong"]
+        var tokens: [WhisperCPPTranscriptToken] = []
+        var t = 0.0
+        func append(_ words: [String]) {
+            for word in words {
+                tokens.append(
+                    WhisperCPPTranscriptToken(text: word, start: t, end: t + 0.4, confidence: 0.7)
+                )
+                t += 0.5
+            }
+        }
+        for _ in 0..<5 {
+            append(phrase)
+            append([" yeah"])  // single filler word between repeats, still a loop
+        }
+        let source = WhisperCPPTranscript(
+            text: tokens.map(\.text).joined(),
+            duration: t,
+            languageCode: "en",
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: tokens.map(\.text).joined(), start: 0, end: t, tokens: tokens)
+            ]
+        )
+
+        let filtered = WhisperCPPRepetitionFilter.filter(source)
+
+        XCTAssertLessThan(filtered.segments.flatMap(\.tokens).count, tokens.count)
     }
 
     func testAccuracyEngineCollapsesRunawayRepetitionLoop() async throws {
