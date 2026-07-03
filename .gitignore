@@ -9,3 +9,6 @@ Derived/
 *.xcworkspace/xcuserdata/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/
 **/.swiftpm/xcode/xcuserdata/
+.swiftpm/xcode/
+SongWorkbench.xcodeproj/project.xcworkspace/xcuserdata/
+.claude/
