@@ -22,9 +22,12 @@ Touches: WorkspaceEditorsView.swift, AudioPlaybackService/StemPlaybackService, S
 2. [x] **PlaybackClock protocol unification (3d)** (589f31e) — `PlaybackClock` protocol +
    `AppModel.activeClock`; view no longer picks between the two playback services directly.
    (todo.md: SongTimeline plan, Phase 3d)
-3. **Word-highlight lead: make rate-aware** — fixed 0.45s lead is wrong off 1.0x tempo;
-   should scale as `0.45s / tempoRate`. Small, isolated math fix. (todo.md: 2026-06-27 Phase
-   1 item D)
+3. [x] **Word-highlight lead: make rate-aware** — MOOT, no code change: commit 91e700c
+   (2026-07-03, predates this batch) already retired the fixed lead entirely
+   (`highlightLeadSeconds` 0.45 → 0) once word timings were pinned to real vocal-stem
+   energy, which is what made the old lead necessary. Scaling a lead that's now always 0
+   by `1/tempoRate` is still 0 — nothing left to do. Checked before implementing rather
+   than adding dead rate-scaling code. (todo.md: 2026-06-27 Phase 1 item D)
 4. **Q2: per-word onset snapping** — snap word.start to the nearest true vocal onset via a
    new `VocalWordOnsetAligner`. Builds on #3. (todo.md: 2026-07-01 "Vocal-energy alignment")
 15. **Split the ChordPro tab: restore a true ChordPro view + a new Review/Annotate tab.**
