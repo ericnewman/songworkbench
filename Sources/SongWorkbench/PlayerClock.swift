@@ -1,6 +1,23 @@
 import AVFoundation
 import Foundation
 
+/// Common transport surface shared by `AudioPlaybackService` (the original recording) and
+/// `StemPlaybackService` (the separated stem mix). `AppModel.activeClock` resolves to
+/// whichever one backs `activePlaybackSource`, so call sites that mean "act on whichever is
+/// currently active" go through this protocol instead of re-deriving
+/// `activePlaybackSource == .stemMix ? stemPlayback.x : playback.x` at every call site. Not to
+/// be confused with `PlayerClock` below, which is unrelated sample-time arithmetic used
+/// inside both services' `currentTime` implementations.
+@MainActor
+protocol PlaybackClock: AnyObject {
+    var currentTime: TimeInterval { get }
+    var duration: TimeInterval { get }
+    var isPlaying: Bool { get }
+    func play()
+    func pause()
+    func seek(to time: TimeInterval)
+}
+
 /// Single source of truth for reading an `AVAudioPlayerNode`'s elapsed playback time.
 ///
 /// `playerTime.sampleTime` is expressed in the timebase of the player's OUTPUT BUS —

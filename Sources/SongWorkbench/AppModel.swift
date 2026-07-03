@@ -481,17 +481,23 @@ final class AppModel: ObservableObject {
         return chordProReviewState == .reviewed || !existingWasGenerated
     }
 
-    var activePlaybackTime: TimeInterval {
-        activePlaybackSource == .stemMix ? stemPlayback.currentTime : playback.currentTime
+    /// The playback service currently backing `activePlaybackSource`. Every "act on whichever
+    /// is active" call site should read/write through this instead of re-deriving
+    /// `activePlaybackSource == .stemMix ? stemPlayback.x : playback.x`. Code that legitimately
+    /// needs both services by name (e.g. the source hand-off in `toggleRecordingPlayback`/
+    /// `toggleStemPlayback`, which pauses the outgoing one and seeks the incoming one) is
+    /// exempt — it is inherently about the two named services, not "the active one."
+    var activeClock: any PlaybackClock {
+        activePlaybackSource == .stemMix ? stemPlayback : playback
     }
+
+    var activePlaybackTime: TimeInterval { activeClock.currentTime }
 
     /// Playhead clock for lyric line highlight and the waveform — identical to audible playback
     /// (no ChordPro render-only timing offset).
     var lyricHighlightTime: TimeInterval { activePlaybackTime }
 
-    var activePlaybackDuration: TimeInterval {
-        activePlaybackSource == .stemMix ? stemPlayback.duration : playback.duration
-    }
+    var activePlaybackDuration: TimeInterval { activeClock.duration }
 
     /// Duration for lyric/chord timeline axes: prefer stored transcription length, else playback.
     var timelineDuration: TimeInterval {
@@ -499,9 +505,7 @@ final class AppModel: ObservableObject {
         return activePlaybackDuration
     }
 
-    var isActivePlaybackPlaying: Bool {
-        activePlaybackSource == .stemMix ? stemPlayback.isPlaying : playback.isPlaying
-    }
+    var isActivePlaybackPlaying: Bool { activeClock.isPlaying }
 
     var canAnalyzeAccompaniment: Bool {
         guard let stemFiles else { return false }
@@ -595,12 +599,7 @@ final class AppModel: ObservableObject {
     }
 
     func seekActivePlayback(to time: TimeInterval) {
-        switch activePlaybackSource {
-        case .recording:
-            playback.seek(to: time)
-        case .stemMix:
-            stemPlayback.seek(to: time)
-        }
+        activeClock.seek(to: time)
     }
 
     func skipActivePlayback(by interval: TimeInterval) {

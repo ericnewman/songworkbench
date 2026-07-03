@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class StemPlaybackService: ObservableObject {
+final class StemPlaybackService: ObservableObject, PlaybackClock {
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var isPlaying = false

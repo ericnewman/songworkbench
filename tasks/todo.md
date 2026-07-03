@@ -711,6 +711,24 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   directives, C1 reference-first workflow, phrase-structure grouper, Lyric Blending,
   legacy ball-heuristic deletion.
 
+## 2026-07-03 (batch A, worktree) — Backlog #1 audited, #2 PlaybackClock unification done
+- [x] #1 Delete legacy ball-heuristic code: audited the pre-SongTimeline fallback ball math;
+  it's still load-bearing for user-edited charts (the one case `songTimelineForPreview`
+  falls back to), so nothing was safe to delete. No code change, just confirmed.
+- [x] #2 PlaybackClock protocol unification (3d): added `PlaybackClock` protocol
+  (PlayerClock.swift) that `AudioPlaybackService`/`StemPlaybackService` conform to with no
+  body changes (their currentTime/duration/isPlaying/play/pause/seek surfaces already
+  matched exactly). `AppModel.activeClock` resolves to whichever backs
+  `activePlaybackSource`; `activePlaybackTime`/`activePlaybackDuration`/
+  `isActivePlaybackPlaying`/`seekActivePlayback` now delegate through it instead of each
+  repeating the `activePlaybackSource == .stemMix ? … : …` branch.
+  `PlaybackProgressSlider.activeDuration` (the one real view-level violation) now reads
+  `model.activePlaybackDuration`. `toggleRecordingPlayback`/`toggleStemPlayback` left as-is
+  — they need both services by name for the source hand-off, not "the active one."
+  New test `testActiveClockResolvesToTheCorrectConcreteServiceForBothSources`. Verified on
+  the Mac (temporarily applied to the main checkout to reuse its open Xcode session): 416
+  passed (prior baseline +1), same 5 pre-existing unrelated failures, 0 regressions.
+
 ## 2026-07-03 (later) — Repetition filter deleting real repeated chorus lines
 - Live bug: "Good friends and a beer or two" (Accuracy/Whisper) stopped transcribing
   mid-song, several vocal lines missing (amber "vocals — not transcribed" badges).
@@ -764,3 +782,24 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
 - Note: harmony runs BEFORE transcription finishes on fresh songs? No — stage order is
   separation → transcription → harmony, so lyrics are present; on stage RETRY of harmony
   alone the persisted lyrics are used. Consensus is a no-op when lyrics are empty.
+
+## 2026-07-03 — Backlog #1: legacy ball-heuristic deletion, audited (nothing unsafe to delete)
+- Traced every ball-position code path in `WorkspaceEditorsView.swift`: `beatBallInput`
+  branches on `model.songTimelineForPreview()` — non-nil (generated/un-edited chart) goes
+  to `timelineBeatBall` (row-window, RC-2 fixed); nil goes to `legacyBeatBall`/
+  `outroBeatBall`, which is the ONLY thing already named "legacy" in this file.
+  `songTimelineForPreview()` (AppModel.swift) returns nil precisely when the rebuilt draft
+  doesn't match `chordProSource` byte-for-byte — i.e. reviewed/user-edited charts — so
+  `legacyBeatBall` is a live, reachable, still-necessary fallback, not dead code.
+- `chordOnlyLineOffset`/`trailingChordOnlyLineOffset` (the RC-2 whole-gap-window helpers)
+  are called ONLY from `legacyBeatBall`'s call sites inside `beatBallValue`'s non-timeline
+  branch — still reachable, same reason.
+- `ballPosition`/`rhythmicBallPosition` (monospace/rhythmic renderers) and `BouncingBall`
+  itself are shared by BOTH the timeline and legacy paths (they consume the already-resolved
+  `BeatBallInput`/`LineBeatBall`, not source text) — not legacy-specific, still fully live.
+  `beatDotValue`/`chordOnlyLineWindow` (Beat Dots overlay) are an independent feature, not
+  part of the ball heuristic at all (confirmed no shared state with `beatBallInput`).
+- Conclusion: nothing safe to delete. Left the code as-is; added explicit "KEEP THIS" doc
+  comments on `legacyBeatBall`, `chordOnlyLineOffset`, and `trailingChordOnlyLineOffset`
+  naming `songTimelineForPreview()` as the trigger, so this doesn't get re-flagged as
+  cleanup-able. No test changes needed (no dead code existed to remove tests for).
