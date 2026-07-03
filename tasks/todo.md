@@ -783,6 +783,7 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   separation → transcription → harmony, so lyrics are present; on stage RETRY of harmony
   alone the persisted lyrics are used. Consensus is a no-op when lyrics are empty.
 
+<<<<<<< HEAD
 ## 2026-07-03 — Backlog #1: legacy ball-heuristic deletion, audited (nothing unsafe to delete)
 - Traced every ball-position code path in `WorkspaceEditorsView.swift`: `beatBallInput`
   branches on `model.songTimelineForPreview()` — non-nil (generated/un-edited chart) goes
@@ -915,3 +916,27 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   lint --strict` clean.
 - **Batch B complete**: #5 (B2), #6 (B4), #7 (B5), #8 (C1) all done. Ready to merge to `main`
   once confirmed with Eric (same check-in pattern as Batch A's merge).
+
+## 2026-07-03 — Chord EVENT-time rigor audit (backlog #10)
+- Built the rigorous chroma-change-point comparison the 2026-07-02 evening crude-flux
+  audit flagged as missing: `ChromaChangePointDetector` (frame-to-frame cosine distance
+  over `ChromaVector`s, median+6×scaled-MAD adaptive threshold, no smoothing — smoothing
+  turned out to bias clean step-function detections by ~half a window with no robustness
+  gain) + `ChordChangePointAudit` (same signed-median/median-abs/hit-rate metric shape as
+  the crude audit, but against genuine harmonic change-points instead of any broadband
+  onset). `Sources/SongWorkbench/ChromaChangePointDetector.swift`.
+- 14 synthetic-data unit tests (`ChromaChangePointDetectorTests.swift`): exact detection on
+  clean step functions, zero false positives on repeated same-chord strums, correct
+  detection under jitter (30 seeded trials + a 16-bar/15-change progression), correct
+  detection of shared-note chord changes (C→Am) that a broadband onset detector cannot see,
+  degenerate-input handling. No compiler available in this sandbox — algorithm was
+  independently re-derived in Python and stress-tested there first; caught 2 real bugs
+  (threshold collapse on near-silent data, under-scaled MAD letting jitter through) before
+  they reached the Swift file.
+- No bundled real-audio fixture or chroma dump exists in `Tests/` for "There's a party goin
+  on" — no new real numbers reported; running this against the real song still needs a
+  human in Xcode. Methodological takeaway either way: the earlier crude "+10ms / 100ms
+  median / 63% within 150ms" numbers are an upper bound, not a confirmed read — dense onsets
+  (941 of them) make SOME onset likely near most chord events whether or not it's the real
+  change, so the old metric can't fully distinguish a correct chart from a lucky one.
+  Write-up: `.scratch/chord-event-timing-audit.md`.
