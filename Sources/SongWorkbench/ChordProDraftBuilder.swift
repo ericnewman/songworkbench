@@ -155,6 +155,10 @@ struct ChordProDraftBuilder: Sendable {
         // Typical bars per sung line — used to break a long instrumental section into rows of a
         // familiar length instead of one very wide line that runs off the right edge.
         let typicalBars = typicalLyricBars(lyrics, input: input)
+        // B2: bar-aligned chord-only rows reuse the SAME MeasureGrid/DownbeatEstimator machinery
+        // the fixed-measure-grid preview work already built, so a chord-only row's bars line up
+        // with the same downbeats the rest of the chart resolves to — not a separate spacing model.
+        let measureGrid = self.measureGrid(for: input, chords: chords)
 
         for (index, segment) in lyrics.enumerated() {
             let gapStart = index > 0 ? lyrics[index - 1].end : 0
@@ -178,7 +182,7 @@ struct ChordProDraftBuilder: Sendable {
                 if !gapChords.isEmpty {
                     for row in instrumentalRows(
                         gapChords, start: gapStart, end: segment.start,
-                        gapBars: gapBars, typicalBars: typicalBars)
+                        gapBars: gapBars, typicalBars: typicalBars, grid: measureGrid)
                     {
                         lines.append(row.text)
                         if !row.text.isEmpty {
@@ -256,7 +260,7 @@ struct ChordProDraftBuilder: Sendable {
                 for row in instrumentalRows(
                     outroChords, start: lastLyricEnd, end: songEnd,
                     gapBars: bars(from: lastLyricEnd, to: songEnd, input: input),
-                    typicalBars: typicalBars)
+                    typicalBars: typicalBars, grid: measureGrid)
                 {
                     lines.append(row.text)
                     if !row.text.isEmpty {
@@ -413,7 +417,8 @@ struct ChordProDraftBuilder: Sendable {
         start: TimeInterval,
         end: TimeInterval,
         gapBars: Double,
-        typicalBars: Double
+        typicalBars: Double,
+        grid: MeasureGrid?
     ) -> [InstrumentalRowLine] {
         // Rows of ~typicalBars, capped so a very long/sparse span (e.g. a padded outro) can't
         // explode into dozens of rows. The cap is generous because rows are now lyric-line
@@ -422,7 +427,7 @@ struct ChordProDraftBuilder: Sendable {
         guard count > 1, end > start else {
             return [
                 InstrumentalRowLine(
-                    text: chordOnlyLine(chords, start: start, end: end),
+                    text: chordOnlyLine(chords, start: start, end: end, grid: grid),
                     start: start, end: end,
                     chordTimes: chords.map(\.time).sorted())
             ]
@@ -443,22 +448,174 @@ struct ChordProDraftBuilder: Sendable {
             carried = sliceChords.last ?? carried
             rows.append(
                 InstrumentalRowLine(
-                    text: chordOnlyLine(sliceChords, start: sliceStart, end: sliceEnd),
+                    text: chordOnlyLine(sliceChords, start: sliceStart, end: sliceEnd, grid: grid),
                     start: sliceStart, end: sliceEnd,
                     chordTimes: sliceChords.map(\.time).sorted()))
         }
         return rows
     }
 
-    /// A chord-only line (no lyric) for intro and instrumental-break chords.
-    /// Spacing follows event timing so longer rests remain visible in the chart.
+    /// The whole-song measure grid used to bar-align chord-only rows (B2), built from the SAME
+    /// beat/tempo data the fixed-measure-grid preview work already derives its grid from — no new
+    /// spacing model. `beatsPerBar` is fixed at 4, matching the chart's own `{time: 4/4}` (B1) and
+    /// every other bar computation in this file (`LyricSectionDeriver.bars` divides by 4
+    /// unconditionally) — unlike the live preview, the builder has no lyric-line-onset spacing
+    /// signal independent of the lyrics themselves to run `estimateBeatsPerBar` on, and chord-change
+    /// timing is too irregular a proxy for phrase-period detection (harmony changes wherever the
+    /// song calls for it, not at a consistent bar-multiple cadence like sung-line starts do).
+    /// `barPhase` IS estimated from the chord onsets: chord changes still cluster near downbeats in
+    /// most pop/rock harmony, so `DownbeatEstimator.barPhase` gets a legitimate (if weaker than
+    /// vocal-onset) signal for which beat is beat 1. Falls back to synthesized uniform beats from
+    /// `tempo` when no beat grid was detected, matching the `BouncingBall.beats(in:_:beatTimes:bpm:)`
+    /// precedent elsewhere in this codebase. `nil` when neither beats nor a tempo are available
+    /// (untimed songs keep the old proportional spacing).
+    private func measureGrid(
+        for input: ChordProDraftInput, chords: [RenderableChordEvent]
+    ) -> MeasureGrid? {
+        guard let bpm = input.tempo, bpm > 0 else { return nil }
+        let onsets = chords.map(\.time)
+        let beatTimes: [TimeInterval]
+        if !input.beatTimes.isEmpty {
+            beatTimes = input.beatTimes
+        } else {
+            // Synthesize a uniform grid spanning the song so bar math still works without
+            // detected beats — same fallback `BouncingBall` uses for the ball's beat pulses.
+            let end = resolvedSongDuration(input: input, fallback: (onsets.max() ?? 0) + 1)
+            let beatLength = 60.0 / bpm
+            guard beatLength > 0, end > 0 else { return nil }
+            beatTimes = stride(from: 0.0, through: end, by: beatLength).map { $0 }
+        }
+        guard !beatTimes.isEmpty else { return nil }
+        let beatsPerBar = 4
+        let barPhase = DownbeatEstimator.barPhase(
+            beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
+        let grid = MeasureGrid(
+            beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: barPhase)
+        return grid.isUsable ? grid : nil
+    }
+
+    /// A chord-only line (no lyric) for intro and instrumental-break chords, rendered as
+    /// pipe-delimited bars on the song's shared `MeasureGrid` — e.g. `| C# | F# . | Ab | C# |`.
+    /// Each `|...|` cell is one bar. A bar that holds a single chord for its whole duration (either
+    /// newly stated there or simply sustained from an earlier bar) renders as just that one symbol
+    /// — no dots, matching how a chart writes an unchanging chord straight through several bars
+    /// (`| C# | C# |`, not `| C# | . |`). `.` only appears WITHIN a bar that has more than one
+    /// chord change in it, marking the beat where a chord keeps holding after its own symbol already
+    /// appeared earlier in that same bar. Chords are snapped to their nearest beat slot, so a chord
+    /// that doesn't land exactly on the grid (e.g. a slightly early/late detected onset) still
+    /// renders cleanly on the bar it musically belongs to instead of desyncing the columns.
+    ///
+    /// Falls back to the old proportional-space `[Chord]` layout when there's no usable grid (no
+    /// tempo and no detected beats) — an untimed song has no bars to align to.
+    private func chordOnlyLine(
+        _ chords: [RenderableChordEvent],
+        start: TimeInterval,
+        end: TimeInterval,
+        grid: MeasureGrid?
+    ) -> String {
+        guard !chords.isEmpty else { return "" }
+        guard let grid, grid.isUsable else {
+            return legacyChordOnlyLine(chords, start: start, end: end)
+        }
+        let sorted = chords.sorted {
+            if $0.time == $1.time { return $0.label < $1.label }
+            return $0.time < $1.time
+        }
+
+        let beatsPerBar = grid.beatsPerBar
+        // The FIRST downbeat at or before `start` (floor to the enclosing bar — NOT the nearest
+        // downbeat, which can round forward past a pickup) through the first downbeat at or after
+        // the later of `end` / the last chord (so a trailing chord on the row's end boundary still
+        // gets its own bar instead of being dropped).
+        let lastChordTime = sorted.last!.time
+        let startDownbeat = floorDownbeatIndex(grid: grid, atTime: start)
+        let endBeatIndex = grid.beatIndex(atTime: max(end, lastChordTime))
+        var endDownbeat = floorDownbeatIndex(grid: grid, beatIndex: endBeatIndex)
+        if Double(endDownbeat) < endBeatIndex { endDownbeat += beatsPerBar }
+        if endDownbeat <= startDownbeat { endDownbeat = startDownbeat + beatsPerBar }
+
+        // Assign each chord to its nearest beat index (an off-grid onset still snaps onto the
+        // bar/beat it musically belongs to rather than desyncing the columns). A fast passing run
+        // (several chords within one beat slot, e.g. a chromatic walk-up) keeps EVERY label rather
+        // than letting the last one silently overwrite the rest — they render together as adjacent
+        // symbols in that one slot (chart order preserved), so no detected chord is ever dropped.
+        var chordByBeat: [Int: [String]] = [:]
+        for chord in sorted {
+            let beat = Int(grid.beatIndex(atTime: chord.time).rounded())
+            chordByBeat[beat, default: []].append(chord.label)
+        }
+
+        var bars: [String] = []
+        // The chord sounding as of the start of the CURRENT bar being rendered — carried across
+        // bars so a sustain shows the right symbol even in a bar with no chord change of its own.
+        var activeLabel: String?
+        var barBeat = startDownbeat
+        while barBeat < endDownbeat {
+            let beatsInBar = (0..<beatsPerBar).map { barBeat + $0 }
+            // A bar holds ONE symbol, no dots, when the only chord sounding in it is already active
+            // on (or before) the bar's downbeat and nothing else changes mid-bar — the common case
+            // of a chord simply continuing through a bar. Dots only appear when a chord change
+            // lands AFTER the downbeat (an off-beat-1 change), marking the beats it then holds
+            // through for the rest of that bar.
+            let changesAfterDownbeat = beatsInBar.dropFirst().filter { chordByBeat[$0] != nil }
+            if changesAfterDownbeat.isEmpty {
+                if let onDownbeat = chordByBeat[barBeat] {
+                    activeLabel = onDownbeat.last
+                    bars.append(onDownbeat.map { "[\($0)]" }.joined())
+                } else if let activeLabel {
+                    bars.append("[\(activeLabel)]")
+                } else {
+                    // No chord has sounded yet as of this bar (can happen at the START of a row
+                    // split from a longer instrumental span — B2's row splitting is time-, not
+                    // bar-, aligned, so a row's first bar can precede its first chord slightly).
+                    // Still emit a placeholder bar rather than silently dropping it: the row's bar
+                    // COUNT must stay truthful even when nothing is known to be sounding yet.
+                    bars.append(".")
+                }
+            } else {
+                // One or more changes after this bar's downbeat: show every change at its beat, and
+                // "." for every other beat (before the first change, carrying whatever was already
+                // active into the bar; after a change, marking the hold).
+                if let onDownbeat = chordByBeat[barBeat]?.last { activeLabel = onDownbeat }
+                var cells: [String] = []
+                for beat in beatsInBar {
+                    if let labels = chordByBeat[beat] {
+                        cells.append(labels.map { "[\($0)]" }.joined())
+                        activeLabel = labels.last
+                    } else {
+                        cells.append(".")
+                    }
+                }
+                bars.append(cells.joined(separator: " "))
+            }
+            barBeat += beatsPerBar
+        }
+        guard !bars.isEmpty else { return "" }
+        return "| " + bars.joined(separator: " | ") + " |"
+    }
+
+    /// The downbeat beat-index at or before a song time — a FLOOR to the bar containing `time`
+    /// (unlike `MeasureGrid.nearestDownbeatIndex`, which rounds to the closest downbeat and can
+    /// land AFTER `time` for a late-bar pickup). Bar-enumeration needs floor semantics so the row's
+    /// first bar always contains its start time.
+    private func floorDownbeatIndex(grid: MeasureGrid, atTime time: TimeInterval) -> Int {
+        floorDownbeatIndex(grid: grid, beatIndex: grid.beatIndex(atTime: time))
+    }
+
+    private func floorDownbeatIndex(grid: MeasureGrid, beatIndex: Double) -> Int {
+        let bars = (beatIndex - Double(grid.barPhase)) / Double(grid.beatsPerBar)
+        return Int(bars.rounded(.down)) * grid.beatsPerBar + grid.barPhase
+    }
+
+    /// The pre-B2 proportional-time chord-only line, kept as the fallback for songs with no usable
+    /// beat/tempo grid to bar-align to.
     ///
     /// The preview renders each chord at `column × characterWidth`, where `column`
     /// is the count of literal spaces preceding it. A chord label occupies
     /// `label.count` columns, so the gap to the next chord must clear the previous
     /// label plus at least one blank column — otherwise multi-character symbols
     /// (e.g. "C#", "D#") overlap the next chord and render as "C#A".
-    private func chordOnlyLine(
+    private func legacyChordOnlyLine(
         _ chords: [RenderableChordEvent],
         start: TimeInterval,
         end: TimeInterval
