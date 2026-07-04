@@ -973,3 +973,40 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
 - **Batch C item #10 done.** Next: backlog #9 Phase 1 (`LyricPhraseGrouper`, bar-period
   re-segmentation) per Eric's "Proceed with Phase 1" instruction — design doc and both open
   questions already resolved (`.scratch/PRD-phrase-structure-lyric-grouper.md`).
+
+## 2026-07-04 — Phrase-structure lyric grouper Phase 1 (backlog #9)
+- Built `LyricPhraseGrouper` per PRD §3.2-3.3: per-`SongStructureAnalyzer`-vocal-section
+  bar-period detection (candidates 2/4/8 bars, autocorrelation of the per-bar chord-label
+  sequence built via `MeasureGrid`/`DownbeatEstimator` — same construction
+  `ChordProDraftBuilder.measureGrid(for:chords:)` uses), 0.75 confidence floor, >=2 full
+  periods of evidence required. Qualifying sections re-cut at the nearest real inter-word
+  gap to each computed phrase boundary (never mid-word, never inventing/dropping a word).
+- Chorus-determinism guard (PRD §4) implemented literally: all `.chorus`-kind sections share
+  ONE period value (whichever occurrence scored highest confidence), applied to every
+  occurrence via its own local bar-aligned origin — so two sung passes of the same chorus
+  with jittery ASR timings still land on matching relative cut points. Regression test
+  confirms `SongStructureAnalyzer.vocalSections` still flags both occurrences `.chorus`
+  after regrouping.
+- Bounded by the same caps `TimedLyricGroupingConfiguration` uses for ASR lines (15s / 32
+  tokens) — a computed cell exceeding either rejects the WHOLE section rather than emitting
+  a degenerate line. No-ops on missing beat/tempo/chord data, low confidence, or a section
+  with no per-word data (older analyses) — matches every §4 guard.
+- Wired into `AppModel.applyAnalysis` as an unconditional post-pass immediately after
+  `TimedLyricSegmentGrouper.regroup`. **Reconciles the PRD §6 versioning question**: Eric had
+  approved "fold a chords-digest into the lyric stage version," but re-reading
+  `applyAnalysis` while implementing showed `regroup` already runs unconditionally on every
+  load with no version-tag gating at all (cheap + pure + idempotent). Following that SAME
+  pattern for `LyricPhraseGrouper` achieves the intended outcome (a harmony-only
+  re-analysis's new chords get picked up next time the song opens) for free, with no new
+  digest/version-tag plumbing — simpler than the originally-approved answer while satisfying
+  the same intent. Documented in the commit message rather than adding unneeded staleness
+  tracking.
+- 7 unit tests (`LyricPhraseGrouperTests.swift`): missing-data no-op, low-confidence no-op,
+  clean 4-bar-period re-segmentation, never-merges-across-a-section-boundary, no-per-word-data
+  fallback, line-length-cap rejection, and the chorus-determinism regression.
+- Verified: `swift format lint --strict` clean; targeted `xcodebuild test` — 7/7 new tests
+  pass; full suite — only the pre-existing known-flaky baseline (`AppModelTests` x4,
+  `MusicLibraryAppModelTests` x1), zero new failures. `project.pbxproj` regenerated via
+  `tuist generate --no-open`.
+- **Phase 1 done.** Phase 2 (rhyme/syllable refinement) stays deferred pending real-song
+  evaluation, per the PRD.

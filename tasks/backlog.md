@@ -128,17 +128,25 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
 ## Batch C — Independent features (parallelizable with A and B, and with each other via separate worktrees)
 
 9. **Phrase-structure lyric grouper** — rhyme/syllable/bar-period aware line grouping
-   (`LyricPhraseGrouper`), replacing purely ASR-timing-driven grouping. Design doc written
-   2026-07-04: `.scratch/PRD-phrase-structure-lyric-grouper.md` — a POST-PASS (transcription
-   and harmony run concurrently, so beat/chord data isn't available inside the transcription
-   stage itself), scoped to Phase 1 (bar-period re-segmentation only) first; Phase 2
-   (rhyme/syllable refinement, needs new linguistic subsystem weight — no such code exists
-   yet) deferred pending real-song evaluation of Phase 1. Both open questions answered by
-   Eric 2026-07-04: proceed with Phase 1 now; versioning folds a chords-digest into the
-   lyric stage version (see doc §6 — note the unconditional-post-pass pattern
-   `TimedLyricSegmentGrouper.regroup` already uses may make the digest unnecessary in
-   practice; worth reconciling before/while implementing). Phase 1 implementation not yet
-   started. (todo.md: 2026-07-01, original approved sketch at todo.md:374-395)
+   (`LyricPhraseGrouper`), replacing purely ASR-timing-driven grouping. Design doc:
+   `.scratch/PRD-phrase-structure-lyric-grouper.md`. **Phase 1 (bar-period re-segmentation)
+   done 2026-07-04**: `LyricPhraseGrouper.swift` detects a repeating chord-per-bar period
+   (2/4/8 bars, autocorrelation, 0.75 confidence floor, >=2 full periods required) per
+   `SongStructureAnalyzer` vocal section, re-cuts each qualifying section's words at the
+   nearest real inter-word gap to each phrase boundary. Chorus-determinism guard: all
+   chorus occurrences share one shared period so repeats stay structurally identical and
+   chorus detection doesn't regress. Bounded by the same 15s/32-token line caps ASR grouping
+   uses; no-ops on missing data, low confidence, or missing per-word data. Wired as an
+   unconditional post-pass in `AppModel.applyAnalysis` right after
+   `TimedLyricSegmentGrouper.regroup` — this ALSO resolves the doc's §6 versioning question:
+   rather than folding a chords-digest into the lyric stage version (the originally-approved
+   answer), it follows the same always-rerun pattern `regroup` already uses, so a
+   harmony-only re-analysis is picked up automatically with no digest/version-tag plumbing.
+   7 unit tests incl. the chorus-determinism regression. Verified via real `xcodebuild test`:
+   7/7 new tests pass, full suite shows only the pre-existing known-flaky baseline, zero new
+   failures. Phase 2 (rhyme/syllable refinement) remains deferred pending real-song
+   evaluation of Phase 1. (todo.md: 2026-07-01, original approved sketch at
+   todo.md:374-395)
 10. **Chord event-timing rigor audit** — current nearest-onset accuracy metric is
     self-flagged "weak" (941-onset guitar-stem test); needs a real chroma-flux
     change-point comparison. `ChromaChangePointDetector` + `ChordChangePointAudit` built
