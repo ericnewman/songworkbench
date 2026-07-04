@@ -232,7 +232,10 @@ struct AnalyzeSongButton: View {
     }
 }
 
-private struct ReferenceLyricsSheet: View {
+/// Not `private`: also presented from the Lyrics tab's reference-lyrics prompt banner (C1,
+/// backlog #8) via `TimedLyricsEditor` in `WorkspaceEditorsView.swift`, not just from this
+/// view's own "Reference Lyrics" button — same sheet, two entry points.
+struct ReferenceLyricsSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var draft = ""

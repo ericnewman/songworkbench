@@ -62,6 +62,7 @@
 		718C3E2ACF067CE0B213A8DE /* MusicLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 121B8B9FF8651A3647580810 /* MusicLibrary.swift */; };
 		77A733CC726B6BDC1CE83356 /* BassLineDiagnosticTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5BA833B407B9281B77873CC /* BassLineDiagnosticTests.swift */; };
 		796B5DD669A24FC2D58F70B6 /* WhisperFramework in Frameworks */ = {isa = PBXBuildFile; productRef = A5F0ABE9453A746C369A6802 /* WhisperFramework */; };
+		7C9531218EB46DD3A0A50E38 /* ReferenceLyricsPromptPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7A92E08CE3B8DF213856279 /* ReferenceLyricsPromptPolicyTests.swift */; };
 		84237FF90988601693913AE7 /* LiveCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB83073E59E9F4FBC358C68F /* LiveCaptureView.swift */; };
 		843F568C33EE86141BA91C1D /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D396DED1CBF9C01AFF44588A /* ContentView.swift */; };
 		87716148DC9D9C311E68B6EF /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BE336612727AC129F0E2E95 /* ModelCatalog.swift */; };
@@ -226,6 +227,7 @@
 		9B7B749E7E1F5CB21D36B750 /* StemSeparation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemSeparation.swift; sourceTree = "<group>"; };
 		9CA5CB47E8A9B6021E645661 /* KeyAwareChordFiltering.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyAwareChordFiltering.swift; sourceTree = "<group>"; };
 		A6E88139F0249FEA595F0DDD /* AudioAnalysisTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioAnalysisTests.swift; sourceTree = "<group>"; };
+		A7A92E08CE3B8DF213856279 /* ReferenceLyricsPromptPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceLyricsPromptPolicyTests.swift; sourceTree = "<group>"; };
 		A7DF81C66633761377D62A71 /* LiveCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveCapture.swift; sourceTree = "<group>"; };
 		A80FCA9932C8811CF3868ECE /* MusicalKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicalKeyTests.swift; sourceTree = "<group>"; };
 		AACBB5B9B55AA7CF37C85ABA /* TuistBundle+SongWorkbench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TuistBundle+SongWorkbench.swift"; sourceTree = "<group>"; };
@@ -453,6 +455,7 @@
 				F75074DAB6C18528264BE0FC /* PitchShiftTests.swift */,
 				FD3FFDBAF2F5ABEA1AFFC208 /* PlayerClockTests.swift */,
 				8864F69E9E6D8284C4A348E4 /* PracticeWorkspaceTests.swift */,
+				A7A92E08CE3B8DF213856279 /* ReferenceLyricsPromptPolicyTests.swift */,
 				00B489533DD2A53ADC6224C4 /* SeparationCachingPolicyTests.swift */,
 				1ABE13A8BDBF3949FAF87B88 /* SongAnalysisPipelineTests.swift */,
 				E145971CB054928A52323E70 /* SongImportPolicyTests.swift */,
@@ -728,6 +731,7 @@
 				87E3B6EB6119FC946E6AF32A /* PitchShiftTests.swift in Sources */,
 				EF4C0B4B2D388420A3E7D8B5 /* PlayerClockTests.swift in Sources */,
 				D44B213835D94F67B396D318 /* PracticeWorkspaceTests.swift in Sources */,
+				7C9531218EB46DD3A0A50E38 /* ReferenceLyricsPromptPolicyTests.swift in Sources */,
 				5DA7BB9CF3C12EE2DF4E2CFB /* SeparationCachingPolicyTests.swift in Sources */,
 				F93D9E296BEC1826E531BF50 /* SongAnalysisPipelineTests.swift in Sources */,
 				A9A4E383B21925DE800CA42E /* SongImportPolicyTests.swift in Sources */,

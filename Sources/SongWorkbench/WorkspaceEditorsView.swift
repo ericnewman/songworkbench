@@ -287,6 +287,14 @@ private struct TimedLyricsEditor: View {
     @State private var showPlainText = false
     /// Whether to show the review flags on suspect (possible mis-split) lines. Off by default.
     @AppStorage("showSuspectLineFlags") private var showSuspectFlags = false
+    /// C1 (backlog #8): reference-lyrics-first prompt banner state. Presents the SAME
+    /// `ReferenceLyricsSheet` `AnalysisWorkspaceView`'s "Reference Lyrics" button does — this is
+    /// just a second, more discoverable entry point where a user actually reviews lyrics, not a
+    /// separate feature.
+    @State private var showReferenceLyrics = false
+    /// Session-only dismissal, keyed by song so switching to a different un-referenced song
+    /// shows the prompt again rather than staying dismissed forever after the first song.
+    @State private var dismissedReferenceBannerForSongID: Song.ID?
 
     init(model: AppModel) {
         self.model = model
@@ -346,6 +354,16 @@ private struct TimedLyricsEditor: View {
         return rows
     }
 
+    /// C1: show the reference-lyrics prompt when this song has transcribed lyrics to review,
+    /// no reference text is set yet, and the user hasn't dismissed it this session for THIS song.
+    private var shouldShowReferenceLyricsPrompt: Bool {
+        ReferenceLyricsPromptPolicy.shouldPrompt(
+            referenceLyrics: model.referenceLyrics,
+            hasLyricSegments: !model.lyricSegments.isEmpty,
+            selectedSongID: model.selectedSongID,
+            dismissedForSongID: dismissedReferenceBannerForSongID)
+    }
+
     /// Playhead shared with the waveform (`ContentView` uses `activePlaybackTime`).
     private var playheadTime: TimeInterval { model.lyricHighlightTime }
 
@@ -378,6 +396,12 @@ private struct TimedLyricsEditor: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if shouldShowReferenceLyricsPrompt {
+                ReferenceLyricsPromptBanner(
+                    pasteAction: { showReferenceLyrics = true },
+                    dismissAction: { dismissedReferenceBannerForSongID = model.selectedSongID }
+                )
+            }
             HStack {
                 Text("Timestamped Lyrics")
                     .font(.swDisplay(15, weight: .semibold))
@@ -509,6 +533,9 @@ private struct TimedLyricsEditor: View {
             }
         }
         .padding()
+        .sheet(isPresented: $showReferenceLyrics) {
+            ReferenceLyricsSheet(model: model)
+        }
     }
 
     /// The lyrics as plain read-only paragraphs: section headers and one line per segment, with a
@@ -548,6 +575,64 @@ private struct TimedLyricsEditor: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(Color.swSurface, in: Capsule())
+    }
+}
+
+/// Pure gating logic for the Lyrics tab's reference-lyrics prompt banner (C1, backlog #8),
+/// factored out of `TimedLyricsEditor.shouldShowReferenceLyricsPrompt` so it's directly unit
+/// testable without standing up the view's `@ObservedObject`/`@State` machinery. Not `private`
+/// so `SongWorkbenchTests` can call it via `@testable import`.
+enum ReferenceLyricsPromptPolicy {
+    static func shouldPrompt(
+        referenceLyrics: String,
+        hasLyricSegments: Bool,
+        selectedSongID: Song.ID?,
+        dismissedForSongID: Song.ID?
+    ) -> Bool {
+        guard let selectedSongID, hasLyricSegments else { return false }
+        guard referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return dismissedForSongID != selectedSongID
+    }
+}
+
+/// C1 (backlog #8): a lightweight, dismissible prompt shown at the top of the Lyrics tab —
+/// where a user actually notices ASR mistakes — for songs with no reference lyrics set yet.
+/// Makes pasting real lyrics (when they exist, e.g. a cover) the discoverable/primary path
+/// instead of a small button buried in the collapsible Song Analysis card. That original
+/// button + sheet stay as-is; this just opens the SAME `ReferenceLyricsSheet` from a second,
+/// better-placed entry point.
+private struct ReferenceLyricsPromptBanner: View {
+    let pasteAction: () -> Void
+    let dismissAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "text.alignleft")
+                .foregroundStyle(Color.swAccent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Have the real lyrics for this song?")
+                    .font(.swDisplay(12, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
+                Text("Paste them for perfectly accurate words and line breaks.")
+                    .font(.caption)
+                    .foregroundStyle(Color.swTextSecondary)
+            }
+            Spacer()
+            Button("Paste Lyrics", action: pasteAction)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            Button("Dismiss", systemImage: "xmark", action: dismissAction)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help(
+                    "Hide this prompt for this song (you can still use Reference Lyrics in the "
+                        + "Song Analysis card).")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.swAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
