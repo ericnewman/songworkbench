@@ -128,19 +128,38 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
 ## Batch C — Independent features (parallelizable with A and B, and with each other via separate worktrees)
 
 9. **Phrase-structure lyric grouper** — rhyme/syllable/bar-period aware line grouping
-   (`LyricPhraseGrouper`), replacing purely ASR-timing-driven grouping. Design doc written
-   2026-07-04: `.scratch/PRD-phrase-structure-lyric-grouper.md` — a POST-PASS (transcription
-   and harmony run concurrently, so beat/chord data isn't available inside the transcription
-   stage itself), scoped to Phase 1 (bar-period re-segmentation only) first; Phase 2
-   (rhyme/syllable refinement, needs new linguistic subsystem weight — no such code exists
-   yet) deferred pending real-song evaluation of Phase 1. Two open questions for Eric before
-   Phase 1 starts (doc §8): the two-stage-dependency versioning approach, and confirming the
-   Phase 1/Phase 2 split. Not yet implemented — awaiting go-ahead on the design.
-   (todo.md: 2026-07-01, original approved sketch at todo.md:374-395)
+   (`LyricPhraseGrouper`), replacing purely ASR-timing-driven grouping. Design doc:
+   `.scratch/PRD-phrase-structure-lyric-grouper.md`. **Phase 1 (bar-period re-segmentation)
+   done 2026-07-04**: `LyricPhraseGrouper.swift` detects a repeating chord-per-bar period
+   (2/4/8 bars, autocorrelation, 0.75 confidence floor, >=2 full periods required) per
+   `SongStructureAnalyzer` vocal section, re-cuts each qualifying section's words at the
+   nearest real inter-word gap to each phrase boundary. Chorus-determinism guard: all
+   chorus occurrences share one shared period so repeats stay structurally identical and
+   chorus detection doesn't regress. Bounded by the same 15s/32-token line caps ASR grouping
+   uses; no-ops on missing data, low confidence, or missing per-word data. Wired as an
+   unconditional post-pass in `AppModel.applyAnalysis` right after
+   `TimedLyricSegmentGrouper.regroup` — this ALSO resolves the doc's §6 versioning question:
+   rather than folding a chords-digest into the lyric stage version (the originally-approved
+   answer), it follows the same always-rerun pattern `regroup` already uses, so a
+   harmony-only re-analysis is picked up automatically with no digest/version-tag plumbing.
+   7 unit tests incl. the chorus-determinism regression. Verified via real `xcodebuild test`:
+   7/7 new tests pass, full suite shows only the pre-existing known-flaky baseline, zero new
+   failures. Phase 2 (rhyme/syllable refinement) remains deferred pending real-song
+   evaluation of Phase 1. (todo.md: 2026-07-01, original approved sketch at
+   todo.md:374-395)
 10. **Chord event-timing rigor audit** — current nearest-onset accuracy metric is
     self-flagged "weak" (941-onset guitar-stem test); needs a real chroma-flux
-    change-point comparison. Investigation + maybe a scoring script, likely no product code
-    change. (todo.md: 2026-07-02 evening)
+    change-point comparison. `ChromaChangePointDetector` + `ChordChangePointAudit` built
+    (frame-to-frame cosine distance, median+6xMAD adaptive threshold, min-spacing de-bounce).
+    Verified 2026-07-04 via real `xcodebuild test` on the Mac toolchain (superseding the
+    prior sandbox-only Python cross-check, which had missed a genuine test bug — see below):
+    all 14 tests pass, full suite shows only the pre-existing known-flaky baseline
+    (AppModelTests x4, MusicLibraryAppModelTests x1), zero new failures. Fixed one test bug
+    found by the real build (`testIgnoresRepeatedStrumsOfTheSameChordSameNotes`: synthetic
+    frame times built with a hand-rolled `while time < X { time += 0.05 }` loop drifted a
+    full hop from float accumulation over 60 iterations; switched to the existing
+    frame-count-based `syntheticFrames` helper). Detector implementation itself needed no
+    change. Done. (todo.md: 2026-07-02 evening)
 11. **Lyric Blending feature** — drop the Fast/Balanced/Accuracy picker, always run all 3
     models, open a per-song "Lyric Blend" window, stack 3 candidates per time window in 3
     colors, user picks best per row, blended selection persists as official lyrics. Biggest

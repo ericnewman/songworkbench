@@ -783,6 +783,7 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   separation → transcription → harmony, so lyrics are present; on stage RETRY of harmony
   alone the persisted lyrics are used. Consensus is a no-op when lyrics are empty.
 
+<<<<<<< HEAD
 ## 2026-07-03 — Backlog #1: legacy ball-heuristic deletion, audited (nothing unsafe to delete)
 - Traced every ball-position code path in `WorkspaceEditorsView.swift`: `beatBallInput`
   branches on `model.songTimelineForPreview()` — non-nil (generated/un-edited chart) goes
@@ -915,3 +916,97 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   lint --strict` clean.
 - **Batch B complete**: #5 (B2), #6 (B4), #7 (B5), #8 (C1) all done. Ready to merge to `main`
   once confirmed with Eric (same check-in pattern as Batch A's merge).
+
+## 2026-07-03 — Chord EVENT-time rigor audit (backlog #10)
+- Built the rigorous chroma-change-point comparison the 2026-07-02 evening crude-flux
+  audit flagged as missing: `ChromaChangePointDetector` (frame-to-frame cosine distance
+  over `ChromaVector`s, median+6×scaled-MAD adaptive threshold, no smoothing — smoothing
+  turned out to bias clean step-function detections by ~half a window with no robustness
+  gain) + `ChordChangePointAudit` (same signed-median/median-abs/hit-rate metric shape as
+  the crude audit, but against genuine harmonic change-points instead of any broadband
+  onset). `Sources/SongWorkbench/ChromaChangePointDetector.swift`.
+- 14 synthetic-data unit tests (`ChromaChangePointDetectorTests.swift`): exact detection on
+  clean step functions, zero false positives on repeated same-chord strums, correct
+  detection under jitter (30 seeded trials + a 16-bar/15-change progression), correct
+  detection of shared-note chord changes (C→Am) that a broadband onset detector cannot see,
+  degenerate-input handling. No compiler available in this sandbox — algorithm was
+  independently re-derived in Python and stress-tested there first; caught 2 real bugs
+  (threshold collapse on near-silent data, under-scaled MAD letting jitter through) before
+  they reached the Swift file.
+- No bundled real-audio fixture or chroma dump exists in `Tests/` for "There's a party goin
+  on" — no new real numbers reported; running this against the real song still needs a
+  human in Xcode. Methodological takeaway either way: the earlier crude "+10ms / 100ms
+  median / 63% within 150ms" numbers are an upper bound, not a confirmed read — dense onsets
+  (941 of them) make SOME onset likely near most chord events whether or not it's the real
+  change, so the old metric can't fully distinguish a correct chart from a lucky one.
+  Write-up: `.scratch/chord-event-timing-audit.md`.
+
+## 2026-07-04 — Chord event-timing rigor audit (backlog #10), real-build verification + fix
+- Ran the real `xcodebuild test` (on-Mac toolchain, not the sandbox Python re-derivation) for
+  the first time against this item and it caught a genuine bug the earlier sandbox-only
+  verification missed: `testIgnoresRepeatedStrumsOfTheSameChordSameNotes` failed with
+  `XCTAssertEqualWithAccuracy failed: ("3.049999999999997") is not equal to ("3.0")`.
+- Root cause was in the TEST, not `ChromaChangePointDetector`: the test built its synthetic
+  frames with a hand-rolled `while time < 3.0 { time += 0.05 }` loop. Repeatedly adding 0.05
+  as a `Double` drifts by a full hop after 60 iterations (0.05 isn't exactly representable in
+  binary floating point) — confirmed in Python (`while time < 3.0: time += 0.05` runs 61
+  times, ending at `time = 3.049999999999997`). So the test generated 61 C-major frames
+  instead of 60, and the first G-major frame landed at ~3.05, not 3.0. Read the detector
+  implementation to confirm it reports `sorted[i + 1].timestamp` verbatim (no interpolation,
+  no off-by-one) — it's correct as written; no product code change needed.
+- Fix: rewrote the test to build frames via the existing frame-count-based `syntheticFrames`
+  helper (`(chord, duration)` segments, integer `frameCount`), matching every other
+  strict-accuracy (`0.000_001`) test in the file, instead of a parallel hand-rolled loop with
+  a latent bug.
+- Verified: `swift format lint --strict --recursive Sources Tests` clean; targeted
+  `xcodebuild test -only-testing:SongWorkbenchTests/ChromaChangePointDetectorTests
+  -only-testing:SongWorkbenchTests/ChordChangePointAuditTests` — 14/14 pass; full
+  `xcodebuild test` suite — only the pre-existing known-flaky baseline (`AppModelTests` x4,
+  `MusicLibraryAppModelTests.testOpeningLocalLibraryTrackAddsAndSelectsSong`), zero new
+  failures. `project.pbxproj` also regenerated via `tuist generate --no-open` — the prior
+  commit's pbxproj was missing the Sources/Tests file-reference entries for this item's two
+  new files.
+- Takeaway validated: this is exactly the kind of bug that only shows up under a real Swift
+  compiler/test run — the sandbox's independent Python re-derivation could confirm the
+  *algorithm* but not this specific test-data construction bug. Backlog #10 is now done with
+  real verification, not just algorithmic cross-check.
+- **Batch C item #10 done.** Next: backlog #9 Phase 1 (`LyricPhraseGrouper`, bar-period
+  re-segmentation) per Eric's "Proceed with Phase 1" instruction — design doc and both open
+  questions already resolved (`.scratch/PRD-phrase-structure-lyric-grouper.md`).
+
+## 2026-07-04 — Phrase-structure lyric grouper Phase 1 (backlog #9)
+- Built `LyricPhraseGrouper` per PRD §3.2-3.3: per-`SongStructureAnalyzer`-vocal-section
+  bar-period detection (candidates 2/4/8 bars, autocorrelation of the per-bar chord-label
+  sequence built via `MeasureGrid`/`DownbeatEstimator` — same construction
+  `ChordProDraftBuilder.measureGrid(for:chords:)` uses), 0.75 confidence floor, >=2 full
+  periods of evidence required. Qualifying sections re-cut at the nearest real inter-word
+  gap to each computed phrase boundary (never mid-word, never inventing/dropping a word).
+- Chorus-determinism guard (PRD §4) implemented literally: all `.chorus`-kind sections share
+  ONE period value (whichever occurrence scored highest confidence), applied to every
+  occurrence via its own local bar-aligned origin — so two sung passes of the same chorus
+  with jittery ASR timings still land on matching relative cut points. Regression test
+  confirms `SongStructureAnalyzer.vocalSections` still flags both occurrences `.chorus`
+  after regrouping.
+- Bounded by the same caps `TimedLyricGroupingConfiguration` uses for ASR lines (15s / 32
+  tokens) — a computed cell exceeding either rejects the WHOLE section rather than emitting
+  a degenerate line. No-ops on missing beat/tempo/chord data, low confidence, or a section
+  with no per-word data (older analyses) — matches every §4 guard.
+- Wired into `AppModel.applyAnalysis` as an unconditional post-pass immediately after
+  `TimedLyricSegmentGrouper.regroup`. **Reconciles the PRD §6 versioning question**: Eric had
+  approved "fold a chords-digest into the lyric stage version," but re-reading
+  `applyAnalysis` while implementing showed `regroup` already runs unconditionally on every
+  load with no version-tag gating at all (cheap + pure + idempotent). Following that SAME
+  pattern for `LyricPhraseGrouper` achieves the intended outcome (a harmony-only
+  re-analysis's new chords get picked up next time the song opens) for free, with no new
+  digest/version-tag plumbing — simpler than the originally-approved answer while satisfying
+  the same intent. Documented in the commit message rather than adding unneeded staleness
+  tracking.
+- 7 unit tests (`LyricPhraseGrouperTests.swift`): missing-data no-op, low-confidence no-op,
+  clean 4-bar-period re-segmentation, never-merges-across-a-section-boundary, no-per-word-data
+  fallback, line-length-cap rejection, and the chorus-determinism regression.
+- Verified: `swift format lint --strict` clean; targeted `xcodebuild test` — 7/7 new tests
+  pass; full suite — only the pre-existing known-flaky baseline (`AppModelTests` x4,
+  `MusicLibraryAppModelTests` x1), zero new failures. `project.pbxproj` regenerated via
+  `tuist generate --no-open`.
+- **Phase 1 done.** Phase 2 (rhyme/syllable refinement) stays deferred pending real-song
+  evaluation, per the PRD.

@@ -1687,8 +1687,23 @@ final class AppModel: ObservableObject {
         // Migrate older analyses to the current line-grouping rules from each segment's
         // stored word timings (no re-transcription). Idempotent for already-current lyrics.
         let regroupedLyrics = TimedLyricSegmentGrouper.regroup(analysis.lyrics)
-        let lyricsRegrouped = regroupedLyrics != analysis.lyrics
-        lyricSegments = regroupedLyrics
+        // Bar-period-aware re-segmentation (backlog #9 Phase 1) — a further post-pass over
+        // already-grouped lines, run here (not inside TranscriptionStage) because it needs
+        // BOTH finished lyrics and finished harmony, and those two stages run concurrently
+        // (see `.scratch/PRD-phrase-structure-lyric-grouper.md` §2). Unconditional on every
+        // load, exactly like `TimedLyricSegmentGrouper.regroup` above: it's pure/idempotent and
+        // reads whatever chords/beats currently sit in the document, so a harmony-only
+        // re-analysis is picked up automatically the next time the song is opened — no
+        // chords-digest/version-tag plumbing needed (the PRD §6 versioning question is resolved
+        // by following this existing unconditional-post-pass pattern rather than adding new
+        // staleness tracking).
+        let phraseGroupedLyrics = LyricPhraseGrouper.regroup(
+            regroupedLyrics,
+            beatTimes: analysis.beatTimes,
+            tempo: analysis.estimatedBPM,
+            chords: analysis.chords)
+        let lyricsRegrouped = phraseGroupedLyrics != analysis.lyrics
+        lyricSegments = phraseGroupedLyrics
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
