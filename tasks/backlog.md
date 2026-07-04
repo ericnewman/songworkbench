@@ -90,14 +90,40 @@ Touches: WorkspaceEditorsView.swift, AudioPlaybackService/StemPlaybackService, S
 ## Batch B — ChordPro chart-quality (sequential within batch)
 Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-export code.
 
-5. **B2: Bar-aligned chord-only rows** — real barlines (`| C# | F# . | Ab | C# |`) instead
-   of the current loose spacing. (todo.md: 2026-07-02 evening "Still open")
-6. **B4: Section directives** — `{start_of_verse N}` / `{start_of_chorus}` etc., plus keep
-   existing repeat marking. (same)
-7. **B5: `x_` round-trip custom directives** — carrier for timing data the ChordPro spec
-   can't natively hold. (same)
-8. **C1: Reference-lyrics-first workflow** — surface pasting real lyrics as the primary path
-   for original songs, not a secondary sheet. (same)
+5. [x] **B2: Bar-aligned chord-only rows** (eb9c3c7) — chord-only rows (intro/instrumental/
+   outro) now render as pipe-delimited bars on the song's `MeasureGrid`
+   (`| [C] | [F] | [G] | [C] |`) instead of proportional-time-spaced tokens. (todo.md:
+   2026-07-02 evening "Still open")
+6. [x] **B4: Section directives** (f54ad61) — real `{start_of_verse: Verse N}` /
+   `{start_of_chorus}` / `{end_of_verse}` / `{end_of_chorus}` directives around each
+   `SongStructureAnalyzer` vocal section, replacing the old plain `{comment: <label>}` line;
+   choruses stay unlabeled on every recurrence (no numbering), matching existing behavior.
+   Keyed only off the analyzer's seconds-based section boundaries, never the separate
+   bars-based instrumental-gap threshold, so a same-section instrumental breath can't
+   fragment one verse/chorus into multiple directive blocks. `ChordProPreviewDocument`
+   already rendered these directives with a distinct `.section` style predating this fix —
+   this was the last piece needed for correct rendering. (todo.md: 2026-07-02 evening
+   "Still open")
+7. [x] **B5: `x_` round-trip custom directives** (86843a3) — scoped to CHORD timing only
+   (confirmed with Eric; word/section timing left out). Emits `{x_chord_times:
+   <t>:<label>;...}` immediately before every row/line carrying chord events (inline lyric
+   chords, bar-aligned chord-only rows, the untimed chord grid), the only place an exact
+   chord timestamp is written into the `.cho` TEXT itself. `ChordProChordTimeCarrier` reads
+   them back losslessly (proven by round-trip tests) — but is NOT wired into any import path;
+   reconstructing a live `SongTimeline`/chord-editing timeline from recovered entries is a
+   separate, larger decision, left for a future item if needed. `x_` directives are already
+   safe passthrough for both this app's parser and spec-compliant foreign tools (confirmed
+   before implementing — no parser changes required). (todo.md: 2026-07-02 evening "Still
+   open"; original design note at todo.md:469-470)
+8. [x] **C1: Reference-lyrics-first workflow** (bdf8906) — scoped to relocating discoverability,
+   not the import flow (confirmed with Eric: prompting during import would add friction to
+   every original song, the majority case with no reference available — cuts against #15's
+   sibling design note). Added a persistent, dismissible `ReferenceLyricsPromptBanner` at the
+   top of the Lyrics tab (where a user actually notices ASR mistakes) offering the same
+   `ReferenceLyricsSheet` the Song Analysis card's small button already opened — two entry
+   points, one sheet. Dismissal is session-only, keyed per song, via `ReferenceLyricsPromptPolicy`
+   (pure, unit-tested gating logic). (todo.md: 2026-07-02 evening "Still open"; original phrasing
+   at todo.md:463-464)
 
 ## Batch C — Independent features (parallelizable with A and B, and with each other via separate worktrees)
 

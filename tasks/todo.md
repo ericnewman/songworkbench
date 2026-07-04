@@ -803,3 +803,115 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   comments on `legacyBeatBall`, `chordOnlyLineOffset`, and `trailingChordOnlyLineOffset`
   naming `songTimelineForPreview()` as the trigger, so this doesn't get re-flagged as
   cleanup-able. No test changes needed (no dead code existed to remove tests for).
+
+## 2026-07-03 (batch B, worktree) — Backlog #5 (B2) + #6 (B4) done
+- [x] B2 bar-aligned chord-only rows (eb9c3c7): chord-only lines now render as
+      pipe-delimited bars on the song's `MeasureGrid` (`| [C] | [F] | [G] | [C] |`)
+      instead of proportional-time-spaced tokens; single sustained chord across
+      multiple bars renders as one bare symbol per bar, no dots.
+- [x] B4 section directives (f54ad61): `ChordProDraftBuilder` now emits real
+      `{start_of_verse: Verse N}` / `{start_of_chorus}` / `{end_of_verse}` /
+      `{end_of_chorus}` directives around each `SongStructureAnalyzer` vocal section,
+      replacing the old plain `{comment: <label>}` line. Choruses stay unlabeled on
+      every recurrence (existing "no numbering for repeats" behavior preserved). Open/
+      close is keyed only off the analyzer's seconds-based section boundaries
+      (`sectionByStart`), never the separate bars-based `gapBars >= 4` threshold that
+      drives the generic Intro/Instrumental comment lines — the two thresholds are
+      independent (seconds vs. tempo-relative bars) and can diverge at fast tempos, so
+      keying off the wrong one would fragment one continuous verse/chorus whenever an
+      instrumental breath crosses the bars threshold without crossing an actual section
+      boundary. `ChordProPreviewDocument.previewBlock(forDirective:)` already parsed
+      these directives with a distinct `.section` render style predating this fix, so
+      this was the last piece needed for correct header rendering.
+- Verified both via real Xcode build + full test suite (Mac, not the sandbox — no Swift
+  toolchain here): 419 passed, 5 failed, all 5 the known pre-existing flaky tests
+  (`AppModelTests` x4, `MusicLibraryAppModelTests` x1 — container temp-path/UUID and
+  thread-QoS timing, unrelated). `ChordProDraftBuilderTests` 26/26 passing.
+  `swift format lint --strict --recursive Sources Tests` clean.
+- Still open in Batch B: B5 x_ round-trip custom directives (#7), C1 reference-lyrics-
+  first workflow (#8).
+
+## 2026-07-03 (batch B, worktree) — Backlog #7 (B5) done, scoped to chord timing only
+- Scope decision: B5's backlog stub was a vague one-liner. Checked the old design note
+  (line 469-470 above: "parse the generated chart → rebuild per-bar chord map → compare
+  against the persisted chord timeline within one beat tolerance") and confirmed with Eric
+  before implementing — chord timing only, not word-level lyric timing or section/beat-grid
+  timing (those would be bigger, separate lifts).
+- [x] B5 x_chord_times carrier (86843a3): `ChordProDraftBuilder` emits `{x_chord_times:
+      <t>:<label>;...}` directives immediately before every rendered row/line that carries
+      chord events — inline lyric-line chords, bar-aligned chord-only rows (B2), and the
+      untimed chord grid. Each entry is an exact `time:label` pair (3-decimal seconds), the
+      only place a chord's exact timestamp is ever written into the `.cho` TEXT itself
+      (elsewhere a chord's position only ever encodes time approximately — proportional
+      character offset, or a bar/beat grid cell — with the real timestamp living only in the
+      separate in-memory `SongTimeline`/analysis cache).
+- Added `ChordProChordTimeCarrier`, a small pure parser that reads the directives back out
+  losslessly — the round-trip proof the backlog item asked for. Deliberately NOT wired into
+  any import path: turning recovered entries into a live `SongTimeline`/chord-editing
+  timeline is a separate, larger decision (confidence thresholds, reconciling with cached
+  analysis, etc.) — left for a future item if actually needed.
+- Confirmed before implementing (no parser changes required): `x_` is the ChordPro
+  convention for app-specific extensions other tools should ignore; `ChordProParser` already
+  stores any `{...}` line verbatim regardless of key, and `ChordProPreviewDocument`'s
+  directive dispatcher already falls back to an opaque `.directive` case for unrecognized
+  keys.
+- `InstrumentalRowLine` gained a `chords: [RenderableChordEvent]` field (marked
+  `fileprivate` — its type is `private`, so the internal struct's property needs matching
+  access) carrying the real events rendered in that row, excluding synthetic sustain-hold
+  repeats that reuse a symbol with no new timestamp — this is what the directive is built
+  from, not re-derived from the rendered text (which can't disambiguate a real chord change
+  from a sustain repeat).
+- Updated 4 existing exact-match golden tests for the new directive line; added 4 new tests
+  (inline-line round-trip, multi-site round-trip as a subsequence check across intro/lyric/
+  outro, omitted-when-no-chords, and a `ChordProDocument` parse/export round-trip proving
+  safe opaque passthrough).
+- Verified via real Xcode build + full test suite (434 tests, +4 from the new tests): 422
+  passed, 6 failed — all 6 match the known pre-existing flaky-test family (container
+  temp-path/Song-lookup timing), including one new flaky manifestation in `LiveCaptureTests`
+  this run with the identical failure signature as the others (`XCTUnwrap failed: expected
+  non-nil value of type 'Song'`) — same root cause, unrelated to this change. Zero failures
+  in `ChordProDraftBuilderTests` (30/30). `swift format lint --strict` clean.
+- Batch B remaining: C1 reference-lyrics-first workflow (#8).
+
+## 2026-07-03 (batch B, worktree) — Backlog #8 (C1) done, Batch B complete
+- Scope decision (AskUserQuestion, confirmed with Eric before implementing): relocate the
+  existing "paste real lyrics" feature's discoverability into the Lyrics tab as a persistent
+  banner, rather than prompting during import — prompting on every import would add friction
+  to the common original-song case with no reference lyrics available at all, cutting against
+  the sibling design note on backlog #15 ("most of this catalog is original songs with no
+  ground truth").
+- [x] C1 reference-lyrics prompt banner (bdf8906): `ReferenceLyricsSheet`
+      (`AnalysisWorkspaceView.swift`) made non-private so it can be presented from a second
+      entry point; new `ReferenceLyricsPromptBanner` shown at the top of `TimedLyricsEditor`
+      (`WorkspaceEditorsView.swift`) when a song has lyrics to review, no reference text is set,
+      and the user hasn't dismissed it THIS session for THIS song. New
+      `ReferenceLyricsPromptPolicy` enum factors the gating logic out of the view for direct
+      unit testing (7 new tests in `ReferenceLyricsPromptPolicyTests.swift`).
+- First backlog item this session to add a genuinely NEW Swift file — required `tuist generate
+  --no-open` to regenerate `project.pbxproj` (SongWorkbench is a Tuist project; Xcode builds
+  from the committed pbxproj file list, not a live glob of `Sources/`/`Tests/` — see
+  [[songworkbench-tuist-project]]). Regenerated in the MAIN checkout (with the worktree's
+  changed/new files copied in), then copied the resulting `project.pbxproj` into the worktree
+  before reverting main back to clean — same copy-in/verify/revert/commit-in-worktree pattern
+  used for every build+test verification this session, just extended to also carry back the
+  regenerated project file. Git worktree operations must still go through the sandbox (its
+  `.git/worktrees/<name>` metadata has sandbox-only paths baked in), but `tuist generate` /
+  `xcodebuild` must run for real on macOS, which the sandbox can't do — so this two-sided
+  dance is unavoidable for any commit that adds/removes a file.
+- Verification workflow upgrade: discovered a `desktop-commander` MCP gives REAL shell access
+  on Eric's Mac (not the sandbox) — `xcodebuild test -workspace SongWorkbench.xcworkspace
+  -scheme SongWorkbench -destination 'platform=macOS' -quiet` ran the full suite in ~47s and
+  printed a clean "Failing tests:" list directly, versus several minutes of screenshot/click
+  round-trips through Xcode's GUI (Product > Test, Report Navigator, Test Navigator scrolling)
+  used for every prior verification this session. Use this for all remaining batches/items —
+  it's strictly faster and less error-prone than driving the Xcode UI via computer-use.
+- Verified: `xcodebuild test` — failing tests were exactly `AppModelTests`
+  (`testImportDuringRestoreIsMergedInsteadOfDiscarded`, `testRecentSongsFollowSelectionOrder`,
+  `testRemovingSelectedSongPreservesSourceFileSelectsNeighborAndPersists`,
+  `testSelectingDifferentSongResetsSelectedSongProgress`) and
+  `MusicLibraryAppModelTests.testOpeningLocalLibraryTrackAddsAndSelectsSong` — the same known
+  pre-existing flaky family seen every run this session, none touching this change. Zero
+  failures in `ReferenceLyricsPromptPolicyTests` or any file this item touched. `swift format
+  lint --strict` clean.
+- **Batch B complete**: #5 (B2), #6 (B4), #7 (B5), #8 (C1) all done. Ready to merge to `main`
+  once confirmed with Eric (same check-in pattern as Batch A's merge).
