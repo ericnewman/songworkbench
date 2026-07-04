@@ -1074,3 +1074,61 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   real blend on a song with 2+ transcription models installed, and confirming ChordPro
   regenerates correctly all still need a human at the Mac. Everything else (data model,
   clustering algorithm, wiring, persistence path) is code-complete and unit-tested.
+
+## 2026-07-04: Backlog #15 Phase 1 — split ChordPro tab
+- Design doc: `.scratch/PRD-chordpro-tab-split.md`. Confirmed 3 open decisions with Eric via
+  AskUserQuestion before implementing (segment-level lyric confidence over per-word
+  threading; relocate the existing interactive view unchanged rather than a deeper chrome
+  refactor; keep the new per-line/per-event `accepted` flag independent of the existing
+  whole-song review-state gating) — this item touches a heavily-tuned interactive view
+  (bouncing ball/beat dots/waveform, several past sessions' worth of tuning) and adds new
+  schema fields, so it warranted a check-in even under the "minimal pauses" working mode.
+- `EditorTab.chordPro` now renders a brand-new `ChordProReadOnlyView`
+  (`ChordProReadOnlyView.swift`): builds `ChordProPreviewDocument` directly from the raw
+  `.cho` source (same `ChordProDocument(parsing:).transposed(by:)` call `ChordProAppPreview`
+  already used) and renders chord-over-lyric text only — no waveform, ball, beat dots, or
+  playback highlight. Chord column placement (chords positioned at their recorded character
+  column, padded with spaces, later chords pushed past an overlapping earlier one) is
+  factored into a standalone `ChordRowStringBuilder` enum so it's unit-testable without
+  SwiftUI (4 new tests in `ChordRowStringBuilderTests.swift`).
+- All of the EXISTING interactive chrome (`ChordProTabEditor`/`ChordProAppPreview`/
+  `ChordProPreviewBlockView`/`ChordProPreviewLineView`, ~800 lines) moved AS-IS to a new
+  `EditorTab.review` tab (`ChordProReviewTab`) — deliberately not touched internally, since
+  extracting/recomposing its overlay chrome was assessed as materially higher regression risk
+  than relocating it whole. Below it, a new `ChordProReviewAnnotationsPanel` lists every
+  lyric line and chord event (sorted by time), tinted by a 3-tier confidence read
+  (low <0.4 / medium <0.7 / high, `Color.swCoral`/`swAmber`/clear), with an inline
+  `TextField` to correct the text/chord and an Accept checkbox — reusing the same direct
+  `$model.lyricSegments[index]`/`$model.chordEvents[index]` binding pattern
+  `TimedLyricsEditor`/`ChordTimelineEditor` already use, so edits flow through the existing
+  `didSet` → rebuild-ChordPro-draft → persist pipeline with no new plumbing.
+- Schema (v9 → v10, additive/optional, no migration): `TimedLyricSegment.confidence: Float?`
+  — the MEAN of the line's constituent ASR tokens' own `confidence` values, computed right
+  at `TimedLyricSegmentGrouper.group`'s existing token→line grouping boundary (the tokens are
+  already in hand there; no new data source needed). `TimedLyricSegment.accepted: Bool` and
+  `EditableChordEvent.accepted: Bool`, both defaulting `false`. `EditableChordEvent` didn't
+  previously have a custom `Codable` implementation (synthesized only) — added one (matching
+  `TimedLyricSegment`'s existing pattern) so old JSON missing `accepted` still decodes via
+  `decodeIfPresent(...) ?? false` instead of failing to decode the non-optional field.
+- Confidence is `nil` wherever a line was rebuilt by a pass that doesn't carry per-token
+  confidence forward: `TimedLyricSegmentGrouper.regroup` (synthesizes tokens with
+  `confidence: nil` from stored words, which don't carry confidence), `LyricPhraseGrouper`'s
+  bar-period re-cuts (only when it actually re-segments a section — untouched sections keep
+  their original confidence), and `ReferenceLyricAligner` (no ASR confidence applies to
+  user-provided reference text). Accepted as a Phase 1 scope cut per Eric's confirmed
+  decision (segment-level granularity, not full per-word threading) — flagged in the PRD as
+  a Phase 2 candidate if line-level coloring proves too coarse in practice.
+- Verified via real `xcodebuild test` (Mac, `tuist generate` + build/test workflow): ran the
+  full suite 3 times. Tests touching this change (`TranscriptionTests` incl. 2 new confidence
+  tests, `ChordRowStringBuilderTests`, `LyricBlendRowBuilderTests`, `ChordProDraftBuilderTests`,
+  `ChordProHighlightDeriverTests`, `ChordProPlaybackHighlightTests`, `ChordTimelineDecoderTests`,
+  `LyricPhraseGrouperTests`, and the rest of the suite excluding the two flaky classes) passed
+  deterministically every run. `AppModelTests`/`MusicLibraryAppModelTests` failed with a
+  DIFFERENT subset of tests failing on each of the 3 runs with byte-identical code — confirmed
+  pre-existing flaky-timing-test baseline (see `tasks/lessons.md` / memory), not a regression;
+  none of the failing tests touch ChordPro, lyrics, chords, or `EditorTab`.
+- Committed `4612da2` on `backlog/chordpro-tab-split`; merged to `main`.
+- **Not yet manually verified in the running app** — clicking through the new Review tab's
+  Accept checkboxes and confidence tinting on a real analyzed song still needs a human at the
+  Mac. Everything else (data model, grouping-time confidence computation, view split, chord
+  column placement) is code-complete and unit-tested.

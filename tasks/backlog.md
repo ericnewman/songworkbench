@@ -41,12 +41,34 @@ Touches: WorkspaceEditorsView.swift, AudioPlaybackService/StemPlaybackService, S
    to choose an onset-detection design (he picked "new energy-onset detector"), then found
    the code already existed with exactly that design. Backlog checklist was stale, not the
    product. (todo.md: 2026-07-01 "Vocal-energy alignment")
-15. **Split the ChordPro tab: restore a true ChordPro view + a new Review/Annotate tab.**
-    Not previously tracked anywhere (todo.md, memory.md, EditorTab enum all checked — this
-    was a verbal/undiscovered requirement until 2026-07-03 chat). Numbered 15 (not
-    inserted as "5" etc.) to avoid renumbering already-referenced items; placed in Batch A
-    because it touches the same file (`WorkspaceEditorsView.swift`) as items 1-4, so it's
-    sequenced after #4.
+15. [x] **Split the ChordPro tab: restore a true ChordPro view + a new Review/Annotate tab**
+    (4612da2) — **Phase 1 done 2026-07-04.** `EditorTab.chordPro` now renders the new
+    `ChordProReadOnlyView`: a spec-exact, read-only chord-over-lyric render built straight
+    from `ChordProPreviewDocument.blocks`, no waveform/ball/beat-dots/highlight (chord
+    column placement extracted into standalone, unit-tested `ChordRowStringBuilder`). All
+    of the existing overlay chrome (`ChordProTabEditor`/`ChordProAppPreview`) moved AS-IS,
+    unchanged, to a new `EditorTab.review` tab, with a new `ChordProReviewAnnotationsPanel`
+    below it: every lyric line and chord event tinted by confidence (low/medium/high tiers),
+    inline correction field, per-line/per-event Accept checkbox. `TimedLyricSegment` gained
+    `confidence: Float?` (mean of the line's ASR token confidences at grouping time —
+    segment-level, not per-word) and `accepted: Bool`; `EditableChordEvent` gained
+    `accepted: Bool`. Both additive, schema v9→v10, no migration needed. `accepted` is
+    deliberately independent of the existing whole-song `lyricReviewState`/
+    `chordReviewState` "Mark Reviewed" gating (confirmed with Eric). 3 design decisions
+    (lyric-confidence granularity, view-split risk approach, review-state independence)
+    were confirmed with Eric via AskUserQuestion before implementing, since this touches a
+    heavily-tuned interactive view and adds new schema — see
+    `.scratch/PRD-chordpro-tab-split.md` for the full write-up and the deferred Phase 2
+    ideas (true per-word confidence threading; auto-deriving whole-song review state).
+    Verified via real `xcodebuild test`: all tests touching this change pass
+    deterministically across 3 runs; `AppModelTests`/`MusicLibraryAppModelTests` showed a
+    DIFFERENT failing subset on each of the 3 runs with identical code — confirmed
+    pre-existing flakiness, not a regression (none of those tests touch ChordPro/lyrics/
+    chords/EditorTab). Not previously tracked anywhere (todo.md, memory.md, EditorTab enum
+    all checked — this was a verbal/undiscovered requirement until 2026-07-03 chat).
+    Numbered 15 (not inserted as "5" etc.) to avoid renumbering already-referenced items;
+    placed in Batch A because it touches the same file (`WorkspaceEditorsView.swift`) as
+    items 1-4, so it's sequenced after #4.
 
     Eric's own framing (2026-07-03), verbatim intent — read this before designing anything:
     > Because these are original recordings, there is no definitive reference set of lyrics
