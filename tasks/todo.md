@@ -1132,3 +1132,42 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   Accept checkboxes and confidence tinting on a real analyzed song still needs a human at the
   Mac. Everything else (data model, grouping-time confidence computation, view split, chord
   column placement) is code-complete and unit-tested.
+
+## 2026-07-04: Bass Note row in Review tab + stem-separation truncation fix
+- Bug reported by Eric: "Current Analysis did not complete vocal transcription for the whole
+  ending parts of the song." Diagnosed using LIVE cached data on his Mac (not guessed): pulled
+  `~/Library/Containers/com.local.SongWorkbench/.../songs/*.json` and
+  `.../Caches/SongWorkbench/Analysis/*.json`. For "Good friends and a beer or two.mp3"
+  (225.621375s), persisted lyrics stopped at 197.72s; the untranscribedVocalRegions audit only
+  flagged a small [198.54, 200.06] gap, NOT the real ~20s gap to the true ending — because that
+  audit consumes the same already-truncated voiced intervals. Checked every cached raw
+  transcription pass for this song across whisper.cpp Accuracy, Parakeet Fast Draft, and
+  Parakeet Balanced Draft, across multiple independent analysis runs: all three engines
+  independently reported the vocals-stem `sourceDuration` as ~204.56-207.36s, never the true
+  225.62s — proving the separated STEM FILE ITSELF was short, upstream of all transcription.
+- Root cause: `CoreMLStemSeparationEngine.loadStereoFloatAudio`'s resample path called
+  `AVAudioConverter.convert(to:error:withInputFrom:)` exactly once and trusted that single
+  call's output as complete — not guaranteed for a resample (internal priming/latency can need
+  multiple pulls to fully drain). Fixed with a `drainConverter` loop that pulls until
+  `.endOfStream`. Bumped `ONNXSixStemSeparationEngine`'s engineVersion 2->3 (the only separation
+  engine actually instantiated in production; it composes `CoreMLStemSeparationEngine` for this
+  exact path) to invalidate every previously-cached, possibly-truncated stem across the whole
+  library — matches this project's existing convention for cache-poisoning fixes (see the
+  repetition-filter engineVersion 6->7 bump, backlog #21).
+- New regression test: a 48kHz fixture (nearly all real sources need resampling) asserts the
+  44.1kHz output stem lands within 50 frames of the exact expected duration.
+- Feature (requested alongside): optional Bass Note row in the Review tab
+  (`ChordProReviewAnnotationsPanel`) — a new `@AppStorage("reviewShowBassNotes")` display
+  toggle (off by default, disabled with no bass notes detected) shows each lyric line's
+  in-window bass notes, in `StemKind.bass.laneColor`, above the line — reusing the same
+  `model.bassNotes` data the Bass Notes tab's ChordPro draft already reads, not a new detection
+  pass. New standalone `BassNoteRowFormatter` (mirrors `ChordRowStringBuilder`'s testable-logic
+  pattern), 5 unit tests.
+- Verified via real `xcodebuild test`: full suite (excl. known-flaky `AppModelTests`/
+  `MusicLibraryAppModelTests`) green across 3 runs; new tests individually confirmed passing.
+  Committed `f98b312` on `fix/bass-note-review-and-separation-truncation`, merged to `main`
+  (`2294a17`), `tuist generate` clean (no drift).
+- **Practical note for Eric**: because of the engineVersion bump, the NEXT time any song is
+  (re-)analyzed, its stems will be regenerated from scratch (one-time cost per song) rather than
+  reused from the now-invalidated cache — this is intentional and needed to actually get the
+  fixed, full-length stem for "Good friends and a beer or two" and any other song that hit this.
