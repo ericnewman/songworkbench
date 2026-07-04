@@ -964,15 +964,21 @@ final class AppModel: ObservableObject {
             // The song may have been removed from the library while these passes ran.
             guard self.analysisBySongID[songID] != nil else { return }
 
-            let rows = LyricBlendRowBuilder.buildRows(
+            let freshRows = LyricBlendRowBuilder.buildRows(
                 fastDraft: lyricsByMode[.fastDraft] ?? [],
                 balancedDraft: lyricsByMode[.balancedDraft] ?? [],
                 accuracy: lyricsByMode[.accuracy] ?? [])
             // Nothing to blend (e.g. every other mode's pass failed) — don't open a blend window
             // with only one column and nothing to pick between.
-            guard rows.contains(where: { $0.candidates.count > 1 }) else { return }
+            guard freshRows.contains(where: { $0.candidates.count > 1 }) else { return }
 
             var updated = self.analysisBySongID[songID] ?? primaryDocument
+            // Carry forward any manual override/mode pick from the PREVIOUS blend rows onto
+            // whichever freshly-built row now occupies the same time window — otherwise a
+            // re-analysis silently discards a user's correction, which is exactly what a
+            // consistently-misheard-lyric override exists to survive.
+            let rows = LyricBlendRowBuilder.reconciled(
+                newRows: freshRows, against: updated.lyricBlendRows)
             updated.lyricBlendRows = rows
             updated.lyrics = LyricBlendRowBuilder.effectiveLyrics(from: rows)
             self.analysisBySongID[songID] = updated
@@ -1033,6 +1039,20 @@ final class AppModel: ObservableObject {
     func applyLyricBlendSelection(rowID: UUID, mode: TranscriptionMode) {
         guard let index = lyricBlendRows.firstIndex(where: { $0.id == rowID }) else { return }
         lyricBlendRows[index].selectedMode = mode
+        lyricSegments = LyricBlendRowBuilder.effectiveLyrics(from: lyricBlendRows)
+    }
+
+    /// Records a manual override for one Lyric Blend row — a "4th candidate" the user types in
+    /// for a line that's consistently misheard by every transcription mode. An override takes
+    /// precedence over every ASR candidate (`LyricBlendRow.effectiveText`), and — unlike a mode
+    /// pick alone — is explicitly carried forward across re-analysis by
+    /// `LyricBlendRowBuilder.reconciled` in `runLyricBlendPasses`, so it survives the rows being
+    /// rebuilt from scratch. Passing whitespace-only or empty text clears the override (falls
+    /// back to the mode pick/default candidate), rather than persisting a blank line.
+    func applyLyricBlendOverride(rowID: UUID, text: String) {
+        guard let index = lyricBlendRows.firstIndex(where: { $0.id == rowID }) else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        lyricBlendRows[index].overrideText = trimmed.isEmpty ? nil : text
         lyricSegments = LyricBlendRowBuilder.effectiveLyrics(from: lyricBlendRows)
     }
 

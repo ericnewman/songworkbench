@@ -75,16 +75,78 @@ enum LyricBlendRowBuilder {
         return LyricBlendRow(start: start, end: end, candidates: candidates, selectedMode: nil)
     }
 
-    /// The "official" lyric lines implied by the CURRENT state of `rows` — each row's
-    /// `effectiveCandidate` becomes one `TimedLyricSegment`, using that candidate's own per-word
-    /// timings so playback highlighting stays accurate to whichever mode's line won. This is what
-    /// `AppModel` writes back to `document.lyrics` after every blend pick (and right after the 3
-    /// passes first complete, before the user has picked anything).
+    /// The "official" lyric lines implied by the CURRENT state of `rows` — each row's manual
+    /// `overrideText` if set, else its `effectiveCandidate`, becomes one `TimedLyricSegment`. A
+    /// candidate's own per-word timings are used so playback highlighting stays accurate to
+    /// whichever mode's line won; an override has no per-word data of its own, so its segment
+    /// gets no `words` (playback falls back to interpolation across the row's span, same as any
+    /// other manually-typed/edited lyric line). This is what `AppModel` writes back to
+    /// `document.lyrics` after every blend pick or override edit (and right after the 3 passes
+    /// first complete, before the user has picked anything).
     static func effectiveLyrics(from rows: [LyricBlendRow]) -> [TimedLyricSegment] {
         rows.compactMap { row -> TimedLyricSegment? in
+            if let overrideText = row.overrideText {
+                let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return TimedLyricSegment(start: row.start, end: row.end, text: trimmed)
+                }
+            }
             guard let candidate = row.effectiveCandidate() else { return nil }
             return TimedLyricSegment(
                 start: row.start, end: row.end, text: candidate.text, words: candidate.words)
         }.sorted { $0.start < $1.start }
+    }
+
+    /// Carries a user's `overrideText` and `selectedMode` forward from `oldRows` onto whichever
+    /// `newRows` occupies the same time window, so a manual correction (or a blend pick) survives
+    /// a fresh transcription pass rebuilding the rows from scratch — without this, every
+    /// re-analysis would silently discard both, since `buildRows` always starts from a clean
+    /// slate. Matched by the greatest time-window OVERLAP; if a boundary shifted just enough that
+    /// no row truly overlaps, falls back to the closest start time within a tight tolerance so
+    /// unrelated rows never match. A new row with nothing close enough in `oldRows` (e.g. its
+    /// section didn't exist before) is left exactly as freshly built.
+    static func reconciled(
+        newRows: [LyricBlendRow], against oldRows: [LyricBlendRow]
+    ) -> [LyricBlendRow] {
+        guard !oldRows.isEmpty else { return newRows }
+        return newRows.map { newRow in
+            guard let match = bestMatchingRow(for: newRow, in: oldRows) else { return newRow }
+            var reconciledRow = newRow
+            if let overrideText = match.overrideText,
+                !overrideText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                reconciledRow.overrideText = overrideText
+            }
+            if let selectedMode = match.selectedMode {
+                reconciledRow.selectedMode = selectedMode
+            }
+            return reconciledRow
+        }
+    }
+
+    /// The old row whose `[start, end]` window overlaps `newRow`'s the most, or — if none
+    /// actually overlap — the closest by start time within 0.75s (a re-transcription can nudge a
+    /// line's boundaries by a fraction of a second without it being a different line). `nil` when
+    /// nothing old is close enough to confidently be "the same" line.
+    private static func bestMatchingRow(
+        for newRow: LyricBlendRow, in oldRows: [LyricBlendRow]
+    ) -> LyricBlendRow? {
+        let overlapping = oldRows.compactMap {
+            old -> (row: LyricBlendRow, overlap: TimeInterval)? in
+            let overlapStart = max(old.start, newRow.start)
+            let overlapEnd = min(old.end, newRow.end)
+            let overlap = overlapEnd - overlapStart
+            guard overlap > 0 else { return nil }
+            return (old, overlap)
+        }
+        if let best = overlapping.max(by: { $0.overlap < $1.overlap }) { return best.row }
+
+        guard
+            let closest = oldRows.min(by: {
+                abs($0.start - newRow.start) < abs($1.start - newRow.start)
+            }),
+            abs(closest.start - newRow.start) <= 0.75
+        else { return nil }
+        return closest
     }
 }

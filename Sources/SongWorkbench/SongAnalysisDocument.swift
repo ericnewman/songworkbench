@@ -37,11 +37,20 @@ struct LyricBlendRow: Identifiable, Codable, Equatable, Sendable {
     /// so callers fall back to `LyricBlendRow.effectiveCandidate`'s default-mode preference
     /// instead of leaving the row without text.
     var selectedMode: TranscriptionMode?
+    /// A user-authored correction for a consistently misheard line — a "4th candidate" that
+    /// isn't tied to any transcription mode. `nil`/empty means no override is set. When present,
+    /// it takes precedence over every ASR candidate (see `effectiveText`), and it survives a
+    /// fresh transcription pass rebuilding the rows from scratch: `LyricBlendRowBuilder
+    /// .reconciled` carries it forward onto whichever newly-built row occupies the same time
+    /// window, matched by start/end overlap.
+    var overrideText: String? = nil
 
     /// The candidate currently in effect for this row: the user's `selectedMode` if they've
     /// chosen one (and it still has a candidate), else the first available candidate in
     /// `preferenceOrder`, else whichever candidate exists at all. `nil` only when the row somehow
     /// has zero candidates (shouldn't happen — `LyricBlendRowBuilder` never emits an empty row).
+    /// Does NOT consider `overrideText` — see `effectiveText` for the text actually used for
+    /// playback/export, which checks the override first.
     func effectiveCandidate(
         preferenceOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
     ) -> LyricBlendCandidate? {
@@ -52,6 +61,19 @@ struct LyricBlendRow: Identifiable, Codable, Equatable, Sendable {
             if let match = candidates.first(where: { $0.mode == mode }) { return match }
         }
         return candidates.first
+    }
+
+    /// The text actually used for playback/export: the user's `overrideText` if set (trimmed,
+    /// non-empty), else `effectiveCandidate()`'s text. `nil` only when there's no override and no
+    /// candidate at all.
+    func effectiveText(
+        preferenceOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+    ) -> String? {
+        if let overrideText {
+            let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return effectiveCandidate(preferenceOrder: preferenceOrder)?.text
     }
 }
 
@@ -214,7 +236,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     // 9: added lyricBlendRows (Lyric Blending feature, backlog #11).
     // 10: added TimedLyricSegment.confidence/.accepted and EditableChordEvent.accepted
     //     (Review tab, backlog #15). All optional/defaulted, so no migration is required.
-    static let currentSchemaVersion = 10
+    // 11: added LyricBlendRow.overrideText (manual per-line correction, takes precedence over
+    //     every ASR candidate and survives re-analysis). Optional, no migration required.
+    static let currentSchemaVersion = 11
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
