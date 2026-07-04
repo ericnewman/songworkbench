@@ -18,12 +18,18 @@ struct SongWorkbenchApp: App {
                 ) { _ in
                     model.flushPendingSave()
                 }
+                .modifier(LyricBlendAutoOpen(model: model))
         }
         Window("About \(AboutInfo.appName)", id: "about") {
             AboutView()
                 .preferredColorScheme(.dark)
         }
         .windowResizability(.contentSize)
+        Window("Lyric Blend", id: "lyricBlend") {
+            LyricBlendView(model: model)
+                .preferredColorScheme(.dark)
+        }
+        .defaultSize(width: 720, height: 640)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 AboutCommandButton()
@@ -94,6 +100,22 @@ private struct AboutCommandButton: View {
     var body: some View {
         Button("About \(AboutInfo.appName)") {
             openWindow(id: "about")
+        }
+    }
+}
+
+/// Auto-opens the "Lyric Blend" window once `model.lyricBlendReadySongID` is set (backlog #11:
+/// "on analysis complete, open a new Lyric Blend window for the selected song"). Resets the
+/// signal immediately after opening so it doesn't re-fire if the same song is re-selected later.
+private struct LyricBlendAutoOpen: ViewModifier {
+    @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onChange(of: model.lyricBlendReadySongID) { _, newValue in
+            guard newValue != nil else { return }
+            openWindow(id: "lyricBlend")
+            model.lyricBlendReadySongID = nil
         }
     }
 }

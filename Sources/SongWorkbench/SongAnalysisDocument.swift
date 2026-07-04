@@ -11,6 +11,50 @@ struct TimedLyricWord: Codable, Equatable, Sendable {
     var characterRange: Range<Int>
 }
 
+/// One transcription mode's candidate text for a `LyricBlendRow`'s time window (backlog #11,
+/// Lyric Blending). `words` carries that mode's own per-word timings for the window, used if this
+/// candidate is chosen (so playback highlighting stays word-accurate regardless of which mode's
+/// candidate wins).
+struct LyricBlendCandidate: Identifiable, Codable, Equatable, Sendable {
+    var id = UUID()
+    var mode: TranscriptionMode
+    var text: String
+    var words: [TimedLyricWord] = []
+}
+
+/// One time window across the song where at least one transcription mode produced a line, with
+/// every mode's candidate for that window stacked together so the user can pick the best one
+/// (backlog #11, Lyric Blending). Rows are model-agnostic: their boundaries come from clustering
+/// all 3 modes' line starts together, not from any single mode's own line breaks — see
+/// `LyricBlendRowBuilder`.
+struct LyricBlendRow: Identifiable, Codable, Equatable, Sendable {
+    var id = UUID()
+    var start: TimeInterval
+    var end: TimeInterval
+    var candidates: [LyricBlendCandidate]
+    /// The mode the user picked for this row. `nil` until the user makes a choice — the
+    /// EFFECTIVE lyrics (what actually plays/exports) still need a candidate before that point,
+    /// so callers fall back to `LyricBlendRow.effectiveCandidate`'s default-mode preference
+    /// instead of leaving the row without text.
+    var selectedMode: TranscriptionMode?
+
+    /// The candidate currently in effect for this row: the user's `selectedMode` if they've
+    /// chosen one (and it still has a candidate), else the first available candidate in
+    /// `preferenceOrder`, else whichever candidate exists at all. `nil` only when the row somehow
+    /// has zero candidates (shouldn't happen — `LyricBlendRowBuilder` never emits an empty row).
+    func effectiveCandidate(
+        preferenceOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+    ) -> LyricBlendCandidate? {
+        if let selectedMode, let match = candidates.first(where: { $0.mode == selectedMode }) {
+            return match
+        }
+        for mode in preferenceOrder {
+            if let match = candidates.first(where: { $0.mode == mode }) { return match }
+        }
+        return candidates.first
+    }
+}
+
 struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     var start: TimeInterval
@@ -117,10 +161,18 @@ struct AnalysisStageRecord: Codable, Equatable, Sendable {
 struct SongAnalysisDocument: Codable, Equatable, Sendable {
     // 7: added sourceDuration (full audio length for lyric/chord timeline bounds).
     // 8: added untranscribedVocalRegions (sung spans the ASR produced no words for).
-    static let currentSchemaVersion = 8
+    // 9: added lyricBlendRows (Lyric Blending feature, backlog #11).
+    static let currentSchemaVersion = 9
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
+    /// Per-time-window candidate lines from every transcription mode that produced one, for the
+    /// "Lyric Blend" picker (backlog #11). `lyrics` above always reflects the CURRENT effective
+    /// blend (each row's `selectedMode` candidate, defaulting to accuracy) — this array is the
+    /// raw material the blend UI presents, not a second source of truth for playback/ChordPro,
+    /// which always read `lyrics`. Empty for songs analyzed before this feature, or when only one
+    /// transcription engine was installed at analysis time (nothing to blend).
+    var lyricBlendRows: [LyricBlendRow] = []
     /// Sung regions (strict-VAD voiced) that have NO transcribed words — chorus tails, ad-libs,
     /// outro vocals the ASR missed (audit RC-4). Consumers must not label these Instrumental.
     var untranscribedVocalRegions: [ClosedRange<TimeInterval>] = []
@@ -147,6 +199,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case lyrics
+        case lyricBlendRows
         case untranscribedVocalRegions
         case referenceLyrics
         case sourceDuration
@@ -168,6 +221,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     init(
         schemaVersion: Int = currentSchemaVersion,
         lyrics: [TimedLyricSegment] = [],
+        lyricBlendRows: [LyricBlendRow] = [],
         untranscribedVocalRegions: [ClosedRange<TimeInterval>] = [],
         referenceLyrics: String = "",
         sourceDuration: TimeInterval? = nil,
@@ -187,6 +241,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     ) {
         self.schemaVersion = schemaVersion
         self.lyrics = lyrics
+        self.lyricBlendRows = lyricBlendRows
         self.untranscribedVocalRegions = untranscribedVocalRegions
         self.referenceLyrics = referenceLyrics
         self.sourceDuration = sourceDuration
@@ -211,6 +266,8 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
             ?? Self.currentSchemaVersion
         lyrics = try container.decodeIfPresent([TimedLyricSegment].self, forKey: .lyrics) ?? []
+        lyricBlendRows =
+            try container.decodeIfPresent([LyricBlendRow].self, forKey: .lyricBlendRows) ?? []
         untranscribedVocalRegions =
             try container.decodeIfPresent(
                 [ClosedRange<TimeInterval>].self, forKey: .untranscribedVocalRegions) ?? []

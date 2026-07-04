@@ -160,10 +160,21 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
     full hop from float accumulation over 60 iterations; switched to the existing
     frame-count-based `syntheticFrames` helper). Detector implementation itself needed no
     change. Done. (todo.md: 2026-07-02 evening)
-11. **Lyric Blending feature** — drop the Fast/Balanced/Accuracy picker, always run all 3
-    models, open a per-song "Lyric Blend" window, stack 3 candidates per time window in 3
-    colors, user picks best per row, blended selection persists as official lyrics. Biggest
-    standalone item in this batch. (todo.md: 2026-06-27 Phase 2, reconfirmed open
+11. **Lyric Blending feature** — done 2026-07-04. Dropped the Fast/Balanced/Accuracy picker;
+    every full analysis always attempts every installed mode. `LyricBlendRowBuilder` clusters
+    each mode's lines into model-agnostic time-window rows (`LyricBlendCandidate`/
+    `LyricBlendRow`, schema v9); `AppModel.runLyricBlendPasses` re-runs the non-primary modes
+    sequentially after the main analysis (transcription-only, harmony/chords carried through);
+    new `Window("Lyric Blend", id: "lyricBlend")` + `LyricBlendView` stacks each mode's
+    candidate in its own color (reusing Theme.swift tokens), auto-opens via
+    `lyricBlendReadySongID` on analysis complete. `applyLyricBlendSelection` rebuilds the
+    official lyrics from every row's pick, reusing the existing `lyricSegments` persist/rebuild
+    path. Scope cut: bulk "Re-analyze All Songs" does NOT run the extra blend passes
+    (tripling cost for the whole library is a bigger tradeoff than one song). 7 unit tests on
+    the pure row builder. Verified via real `xcodebuild build`+`test`: clean build, 7/7 new
+    tests pass, full suite only the known-flaky baseline, zero new failures. NOT yet manually
+    verified in the running app (needs a human at the Mac with 2+ transcription models
+    installed to click through a real blend). (todo.md: 2026-06-27 Phase 2, reconfirmed open
     2026-07-02 evening)
 
 ## Batch D — Live Capture (own worktree; gated on real hardware, see note)

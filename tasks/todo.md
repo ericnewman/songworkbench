@@ -1010,3 +1010,67 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   `tuist generate --no-open`.
 - **Phase 1 done.** Phase 2 (rhyme/syllable refinement) stays deferred pending real-song
   evaluation, per the PRD.
+
+## 2026-07-04 — Lyric Blending feature (backlog #11)
+- Own worktree (`.worktrees/lyricBlending`, branch `backlog/lyric-blending`), independent of
+  Batch C. Implemented directly (no design-doc gate this time, per Eric's "minimal pauses"
+  instruction) — scope followed the already-recorded Phase-2 sketch + the already-answered
+  "G. Model-settings question" (don't expose raw engine params; the blend IS the tuning).
+- Data model: `LyricBlendCandidate` (one mode's text + words for a row) / `LyricBlendRow`
+  (a time window, every mode's candidate, optional `selectedMode`, `effectiveCandidate()`
+  falling back accuracy > balanced > fast). `SongAnalysisDocument.lyricBlendRows`, schema
+  v8 -> v9. `document.lyrics` always mirrors the row list's CURRENT effective picks.
+- `LyricBlendRowBuilder` (pure): clusters each mode's own lines by proximity to a row's
+  ANCHOR time (not chained to the last-added line, to bound drift), joins multiple same-mode
+  lines in one row into a single candidate, `effectiveLyrics(from:)` rebuilds the official
+  `[TimedLyricSegment]` array. 7 unit tests.
+- Pipeline-orchestration decision: rather than restructuring `SongAnalysisPipeline`'s internal
+  stage-loop concurrency (risky — deeply threaded through cancellation/progress code) to run
+  3 transcription modes as sibling `async let` tasks, the 2 non-primary modes are re-run
+  SEQUENTIALLY at the `AppModel` call-site via 2 extra `.transcription`-only pipeline
+  requests reusing the primary analysis's already-populated document (so harmony/chords/stems
+  are untouched, not redone). Sequential (not concurrent) because
+  `SongAnalysisCoordinator.run` cancels any in-flight run — overlapping calls would cancel
+  each other. This is a materially lower-risk, much smaller diff than touching
+  `SongAnalysisPipeline` itself, at the cost of the 2 extra passes running one after another
+  instead of in parallel — acceptable tradeoff for a first cut; can revisit if the added wall
+  time (per song, once, after the primary result is already usable) matters in practice.
+- Primary-mode selection is now dynamic (`AppModel.primaryTranscriptionMode`): prefers
+  Accuracy, then Balanced, then Fast Draft, among whatever's actually INSTALLED — avoids a
+  regression for users who only have the Parakeet (Fast/Balanced) model and not Whisper, who
+  would otherwise see every analysis fail with "install the Accuracy model." Removed the old
+  `transcriptionMode` `UserDefaults`-backed picker property and the `modeOverride`/per-song
+  stored-mode plumbing in `reanalyzeAllSongs` entirely — both are meaningless now that mode
+  is no longer a user choice.
+- UI: new singleton `Window("Lyric Blend", id: "lyricBlend")` scene (modeled on the existing
+  About-window pattern; there's no prior per-song/value-parameterized window in the app) +
+  `LyricBlendView` (rows stack each mode's candidate in its own color — reused
+  `Theme.swift`'s existing `swAccent`/`swViolet`/`swAmber` tokens rather than inventing new
+  ones — tappable, selected one gets a checkmark + glow, blank gap between rows).
+  `LyricBlendAutoOpen` view modifier opens it when `AppModel.lyricBlendReadySongID` is set,
+  matching the spec's "on analysis complete, open a new Lyric Blend window."
+- Deliberate design simplification: the Blend window always tracks the CURRENTLY SELECTED
+  song's live `@Published` state (`lyricBlendRows`/`lyricSegments`), not a value bound to
+  whichever song ID it was opened for — `analysisBySongID` is a plain cache dict, not
+  `@Published`, so a per-song window bound to a non-selected song's cached document wouldn't
+  update reactively anyway. Simpler and avoids that whole reactivity gap; documented as an
+  intentional tradeoff (a window left open while switching songs will follow the switch).
+- `applyLyricBlendSelection(rowID:mode:)` rebuilds `lyricSegments` from
+  `LyricBlendRowBuilder.effectiveLyrics` and lets that property's EXISTING `didSet` (ChordPro
+  rebuild + persist) do the rest — no parallel persistence path.
+- Scope cut, called out explicitly rather than silently decided: `reanalyzeAllSongs` (bulk
+  re-analyze) does NOT run the extra blend passes — 3x transcription cost across the whole
+  library is a materially bigger tradeoff than the single-song case and deserves its own
+  decision if wanted. Re-selecting a song and running Analyze on it individually populates
+  its blend candidates as normal.
+- Removed the segmented Fast/Balanced/Accuracy picker from `AnalysisWorkspaceView`; the
+  decode-speed slider (previously shown only when Accuracy was the picked mode) is now always
+  shown since Accuracy always runs whenever it's installed.
+- Verified: `swift format lint --strict` clean; `xcodebuild build` — clean; targeted
+  `xcodebuild test` — 7/7 new `LyricBlendRowBuilderTests` pass; full suite — only the
+  pre-existing known-flaky baseline (`AppModelTests` x4, `MusicLibraryAppModelTests` x1),
+  zero new failures. `project.pbxproj` regenerated via `tuist generate --no-open`.
+- **Not yet manually verified in the running app** — opening the window, clicking through a
+  real blend on a song with 2+ transcription models installed, and confirming ChordPro
+  regenerates correctly all still need a human at the Mac. Everything else (data model,
+  clustering algorithm, wiring, persistence path) is code-complete and unit-tested.
