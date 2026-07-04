@@ -2,10 +2,11 @@ import Foundation
 
 /// Re-segments already-grouped lyric lines using the song's REPEATING bar-period phrase structure,
 /// so verse/chorus lines read as musically even, bar-aligned phrases instead of purely following
-/// ASR silence/capitalization cues (`TimedLyricSegmentGrouper`'s domain). This is Stage 1
-/// ("bar-period re-segmentation only") of the phased design in
-/// `.scratch/PRD-phrase-structure-lyric-grouper.md`; Stage 2 (rhyme/syllable refinement) is a
-/// later, separate phase.
+/// ASR silence/capitalization cues (`TimedLyricSegmentGrouper`'s domain). Implements both phases
+/// of the design in `.scratch/PRD-phrase-structure-lyric-grouper.md`: Stage 1 places each phrase
+/// boundary at the nearest real word gap to `section start + k * period`; Stage 2 (§3.4) then
+/// nudges that boundary to a nearby real word gap (via `RhymeSyllableScorer`) when doing so
+/// produces a better end-rhyme + syllable-count match to the section's other phrase cells.
 ///
 /// Must run as a POST-PASS, strictly AFTER both `TimedLyricSegmentGrouper.regroup` and harmony
 /// analysis finish (see `AppModel.applyAnalysis`) — `TranscriptionStage` and `HarmonyStage` run as
@@ -37,6 +38,18 @@ enum LyricPhraseGrouper {
         /// degenerate over-long line.
         var maximumLineDuration: TimeInterval
         var maximumLineTokens: Int
+        /// Stage 2 (PRD §3.4) on/off switch. When `false`, behavior is exactly Stage 1 (nearest-
+        /// in-time snap only) — kept as an explicit knob for rollback/testing, not because Stage 2
+        /// is unsafe: it never moves a boundary further than `nudgeWindowInBeats`, never crosses a
+        /// neighboring cell's fence, and only moves at all when scored strictly better (PRD §4
+        /// guards all still apply; see `RhymeSyllableScorer`).
+        var refinementEnabled: Bool
+        /// How far from Stage 1's computed boundary (in beats) Stage 2 is allowed to search for a
+        /// better-scoring real word gap. Bounded by `maxSnapDistance` regardless of this value.
+        var nudgeWindowInBeats: Double
+        /// Rhyme/syllable weighting + minimum-improvement threshold passed straight through to
+        /// `RhymeSyllableScorer.selectBoundary`.
+        var rhymeSyllableConfiguration: RhymeSyllableScorer.Configuration
 
         init(
             candidatePeriodsInBars: [Int] = [4, 8, 2],
@@ -44,7 +57,10 @@ enum LyricPhraseGrouper {
             minimumFullPeriods: Int = 2,
             beatsPerBar: Int = 4,
             maximumLineDuration: TimeInterval = 15,
-            maximumLineTokens: Int = 32
+            maximumLineTokens: Int = 32,
+            refinementEnabled: Bool = true,
+            nudgeWindowInBeats: Double = 1,
+            rhymeSyllableConfiguration: RhymeSyllableScorer.Configuration = .init()
         ) {
             self.candidatePeriodsInBars = candidatePeriodsInBars
             self.minimumConfidence = minimumConfidence
@@ -52,6 +68,9 @@ enum LyricPhraseGrouper {
             self.beatsPerBar = max(beatsPerBar, 1)
             self.maximumLineDuration = max(maximumLineDuration, 0)
             self.maximumLineTokens = max(maximumLineTokens, 1)
+            self.refinementEnabled = refinementEnabled
+            self.nudgeWindowInBeats = max(nudgeWindowInBeats, 0)
+            self.rhymeSyllableConfiguration = rhymeSyllableConfiguration
         }
     }
 
@@ -63,7 +82,8 @@ enum LyricPhraseGrouper {
         beatTimes: [TimeInterval],
         tempo: Double?,
         chords: [EditableChordEvent],
-        configuration: Configuration = .init()
+        configuration: Configuration = .init(),
+        rhymeDetector: RhymeDetector = .shared
     ) -> [TimedLyricSegment] {
         guard let bpm = tempo, bpm > 0, !beatTimes.isEmpty, !chords.isEmpty, !lyrics.isEmpty else {
             return lyrics
@@ -182,7 +202,7 @@ enum LyricPhraseGrouper {
             result.append(
                 contentsOf: resegmented(
                     lines: lines, periodInBars: decision.period, barRange: barRange, grid: grid,
-                    configuration: configuration))
+                    configuration: configuration, rhymeDetector: rhymeDetector))
         }
         return result.sorted { $0.start < $1.start }
     }
@@ -207,15 +227,18 @@ enum LyricPhraseGrouper {
 
     /// Re-cuts a section's lines into one new line per phrase-period cell: takes the union of
     /// every word already in the section's lines and re-cuts at the word GAP nearest each computed
-    /// phrase boundary (`section start + k * period`, in bars), never mid-word. Only ever re-cuts
-    /// at REAL existing silences between words already present — it cannot resurrect material an
-    /// earlier gate removed, and it cannot re-merge words across a section boundary (`lines` here
-    /// is always exactly one section's own lines). Falls back to `lines` unchanged whenever no
-    /// safe cut is found, a section has no per-word data, or a resulting cell would violate the
-    /// existing line-length caps.
+    /// phrase boundary (`section start + k * period`, in bars), never mid-word — Stage 1. Stage 2
+    /// (PRD §3.4) then nudges each of those boundaries to a nearby real word gap when it scores
+    /// better on end-rhyme + syllable-count match to the section's OTHER cells (`RhymeSyllableScorer`),
+    /// bounded so it can never cross into a neighboring cell (see the fence logic below). Only ever
+    /// re-cuts at REAL existing silences between words already present — it cannot resurrect
+    /// material an earlier gate removed, and it cannot re-merge words across a section boundary
+    /// (`lines` here is always exactly one section's own lines). Falls back to `lines` unchanged
+    /// whenever no safe cut is found, a section has no per-word data, or a resulting cell would
+    /// violate the existing line-length caps.
     private static func resegmented(
         lines: [TimedLyricSegment], periodInBars: Int, barRange: (start: Int, end: Int),
-        grid: MeasureGrid, configuration: Configuration
+        grid: MeasureGrid, configuration: Configuration, rhymeDetector: RhymeDetector
     ) -> [TimedLyricSegment] {
         let words = lines.flatMap(\.words).sorted { $0.start < $1.start }
         guard !words.isEmpty, lines.allSatisfy({ !$0.words.isEmpty }) else { return lines }
@@ -229,27 +252,130 @@ enum LyricPhraseGrouper {
         }
         guard !boundaryTimes.isEmpty else { return lines }
 
-        // Snap each computed boundary to the nearest REAL inter-word gap (the midpoint between two
-        // consecutive words), so a cut never lands mid-word. A boundary with no gap within half a
-        // period of it is dropped — nothing there to cut at (e.g. a long melisma spanning it).
+        func gapMidpoint(_ i: Int) -> TimeInterval { (words[i].end + words[i + 1].start) / 2 }
+
+        func cellWords(from startExclusive: Int, through endInclusive: Int) -> ArraySlice<
+            TimedLyricWord
+        > {
+            words[(startExclusive + 1)...endInclusive]
+        }
+
+        // Stage 1: snap each computed boundary to the nearest REAL inter-word gap (the midpoint
+        // between two consecutive words), so a cut never lands mid-word. A boundary with no gap
+        // within half a period of it is dropped — nothing there to cut at (e.g. a long melisma
+        // spanning it).
         let periodSeconds = Double(periodInBeats) * grid.beatLength
         let maxSnapDistance = periodSeconds / 2
-        var cutAfterWordIndices = Set<Int>()
+        var baselineIndices: [Int?] = []
         for boundary in boundaryTimes {
             var bestIndex: Int?
             var bestDistance = TimeInterval.infinity
             for i in 0..<(words.count - 1) {
-                let gapMidpoint = (words[i].end + words[i + 1].start) / 2
-                let distance = abs(gapMidpoint - boundary)
+                let distance = abs(gapMidpoint(i) - boundary)
                 if distance < bestDistance {
                     bestDistance = distance
                     bestIndex = i
                 }
             }
-            if let bestIndex, bestDistance <= maxSnapDistance {
-                cutAfterWordIndices.insert(bestIndex)
+            baselineIndices.append(bestDistance <= maxSnapDistance ? bestIndex : nil)
+        }
+        guard baselineIndices.contains(where: { $0 != nil }) else { return lines }
+
+        // Stage 2: nudge each baseline cut toward whichever nearby real word gap reads as the more
+        // even phrase, using the OTHER already-placed cells (by baseline position) as the sibling
+        // reference for end-rhyme + syllable-count similarity. Candidate search for boundary N is
+        // strictly fenced between boundary (N-1)'s and (N+1)'s BASELINE cuts (never the post-nudge
+        // value), which guarantees cells stay strictly ordered and non-overlapping no matter how
+        // any individual boundary gets nudged.
+        var finalIndices = baselineIndices
+        if configuration.refinementEnabled, baselineIndices.compactMap({ $0 }).count >= 2 {
+            // Every baseline cell, tagged with which boundary (if any) produced its cut. The
+            // TRAILING cell — the words after the last real cut, running to the end of the
+            // section's words — is never "produced" by any boundary (there's no cut after it), so
+            // it's tagged `nil` and therefore always counts as a sibling for every boundary's own
+            // decision (it is never the cell being decided). Without this, the last phrase in the
+            // section would never inform any nudge decision, even though it's as much a sibling
+            // line as any other.
+            func allCellsWithProducingBoundary() -> [(
+                ending: String, syllables: Int, boundary: Int?
+            )] {
+                var cells: [(ending: String, syllables: Int, boundary: Int?)] = []
+                var previous = -1
+                for (index, cut) in baselineIndices.enumerated() {
+                    guard let cut else { continue }
+                    let cell = cellWords(from: previous, through: cut)
+                    cells.append(
+                        (cell.last!.text, SyllableCounter.count(inWords: cell.map(\.text)), index))
+                    previous = cut
+                }
+                if previous < words.count - 1 {
+                    let trailing = cellWords(from: previous, through: words.count - 1)
+                    cells.append(
+                        (
+                            trailing.last!.text,
+                            SyllableCounter.count(inWords: trailing.map(\.text)), nil
+                        ))
+                }
+                return cells
+            }
+
+            func siblingEndingsExcluding(_ skipBoundary: Int) -> (
+                endings: [String], syllables: [Int]
+            ) {
+                let others = allCellsWithProducingBoundary().filter { $0.boundary != skipBoundary }
+                return (others.map(\.ending), others.map(\.syllables))
+            }
+
+            let nudgeWindow = min(
+                maxSnapDistance, configuration.nudgeWindowInBeats * grid.beatLength)
+            var previousFence = -1
+            for (boundaryIndex, boundary) in boundaryTimes.enumerated() {
+                guard let baselineCut = baselineIndices[boundaryIndex] else { continue }
+                defer { previousFence = baselineCut }
+                let nextFence =
+                    baselineIndices[(boundaryIndex + 1)...].compactMap { $0 }.first
+                    ?? (words.count - 1)
+                // No room between the fences to consider any alternative to the baseline cut.
+                guard nextFence > previousFence + 1 else { continue }
+
+                func candidate(at i: Int) -> RhymeSyllableScorer.Candidate {
+                    let cell = cellWords(from: previousFence, through: i)
+                    return RhymeSyllableScorer.Candidate(
+                        wordIndex: i, endingWord: cell.last!.text,
+                        syllableCount: SyllableCounter.count(inWords: cell.map(\.text)),
+                        distanceFromComputedBoundary: abs(gapMidpoint(i) - boundary))
+                }
+
+                // The baseline cut is ALWAYS included, regardless of the nudge window — it is by
+                // definition the globally-nearest gap, so it is always the minimum-distance
+                // candidate and the scorer's safe fallback is always available.
+                var candidates = [candidate(at: baselineCut)]
+                for i in (previousFence + 1)..<nextFence
+                where i != baselineCut && i < words.count - 1 {
+                    guard abs(gapMidpoint(i) - boundary) <= nudgeWindow else { continue }
+                    candidates.append(candidate(at: i))
+                }
+
+                let (endings, syllables) = siblingEndingsExcluding(boundaryIndex)
+                if let chosen = RhymeSyllableScorer.selectBoundary(
+                    among: candidates, siblingEndings: endings, siblingSyllableCounts: syllables,
+                    rhymeDetector: rhymeDetector,
+                    configuration: configuration.rhymeSyllableConfiguration)
+                {
+                    finalIndices[boundaryIndex] = chosen.wordIndex
+                }
             }
         }
+
+        let finalCutValues = finalIndices.compactMap { $0 }
+        // Defensive safety net: Stage 2's fencing should make this unreachable, but if two nudged
+        // boundaries ever collided or inverted order, fall back to the unmodified Stage 1 cuts
+        // rather than emit a corrupted cut set.
+        let collided =
+            Set(finalCutValues).count != finalCutValues.count
+            || zip(finalCutValues, finalCutValues.dropFirst()).contains { $0 >= $1 }
+        let cutAfterWordIndices =
+            collided ? Set(baselineIndices.compactMap { $0 }) : Set(finalCutValues)
         guard !cutAfterWordIndices.isEmpty else { return lines }
 
         var cells: [[TimedLyricWord]] = []
