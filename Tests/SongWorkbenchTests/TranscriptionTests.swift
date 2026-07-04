@@ -57,6 +57,27 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(grouped, TimedLyricSegmentGrouper.group(tokens: tokens))
     }
 
+    func testGroupingAveragesTokenConfidenceIntoTheLineSegment() {
+        // backlog #15: the Review tab colors lines by confidence, computed as the mean of the
+        // line's own tokens' confidence at grouping time (not carried at the word level yet).
+        let tokens = [
+            token("hello", 0.0, 0.4, confidence: 0.9),
+            token("world", 0.5, 0.9, confidence: 0.7),
+        ]
+        let grouped = TimedLyricSegmentGrouper.group(tokens: tokens)
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertEqual(grouped[0].confidence ?? -1, 0.8, accuracy: 0.0001)
+    }
+
+    func testGroupingLeavesConfidenceNilWhenNoTokenReportsOne() {
+        // The common case in these tests: the default `token(...)` helper passes no confidence,
+        // matching engines/paths that never report per-token confidence.
+        let tokens = [token("hello", 0.0, 0.4), token("world", 0.5, 0.9)]
+        let grouped = TimedLyricSegmentGrouper.group(tokens: tokens)
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertNil(grouped[0].confidence)
+    }
+
     func testRegroupReSplitsStoredSegmentsUsingCurrentRules() {
         // A single stored segment that merged two lines (an old over-merge); its words
         // carry the capitalization + timing needed to re-split into two lines.
