@@ -201,4 +201,99 @@ final class LyricPhraseGrouperTests: XCTestCase {
             chorusSections.count, 2,
             "both chorus occurrences must still be recognized as chorus blocks after regrouping")
     }
+
+    // MARK: - Stage 2: rhyme/syllable nudge (PRD §3.4)
+
+    /// A 12-bar/3-cell section (period 4 bars) where the globally-nearest word gap to the SECOND
+    /// boundary (16s) would end the middle cell on "quickly" (no rhyme with either sibling, wrong
+    /// syllable count), but a real word gap 0.2s farther away — still well inside the 1-beat (0.5s)
+    /// nudge window — ends it on "night" instead, which rhymes with both the first cell's "light"
+    /// and the trailing cell's "sight" and matches their syllable count. Hand-timed (not built from
+    /// `eightBarChorusWords`) specifically to engineer that ordering.
+    private func nudgeFixtureWords() -> [TimedLyricWord] {
+        [
+            word("morning", start: 0.2, end: 1.2),
+            word("comes", start: 2.2, end: 3.2),
+            word("with", start: 4.2, end: 5.2),
+            word("light", start: 6.2, end: 7.2),
+            word("singing", start: 8.2, end: 9.2),
+            word("every", start: 10.2, end: 11.2),
+            word("single", start: 12.2, end: 13.2),
+            word("quickly", start: 15.0, end: 15.7),
+            word("night", start: 16.0, end: 16.3),
+            word("day", start: 16.4, end: 17.0),
+            word("breaks", start: 18.2, end: 19.2),
+            word("the", start: 20.2, end: 21.2),
+            word("sight", start: 22.2, end: 23.2),
+        ]
+    }
+
+    private func nudgeFixtureChords() -> [EditableChordEvent] {
+        let pattern = ["C", "G", "Am", "F"]
+        return (0..<12).map { i in chordEvent(pattern[i % 4], at: Double(i) * 2.0) }
+    }
+
+    /// Rhyme table for the fixture: "light"/"night"/"sight" share a rhyme key, "quickly" does not
+    /// (and isn't given a competing match to anything).
+    private func nudgeFixtureRhymeDetector() -> RhymeDetector {
+        RhymeDetector(
+            table: RhymeDetector.parseTable(
+                """
+                light\tAY T
+                night\tAY T
+                sight\tAY T
+                quickly\tIH K L IY
+                """))
+    }
+
+    func testStage2NudgesTheBoundaryToABetterRhymingSyllableMatchingWordGap() {
+        let input = [line(nudgeFixtureWords())]
+
+        let result = LyricPhraseGrouper.regroup(
+            input, beatTimes: uniformBeatTimes(bpm: 120, bars: 12), tempo: 120,
+            chords: nudgeFixtureChords(), rhymeDetector: nudgeFixtureRhymeDetector())
+
+        XCTAssertEqual(result.count, 3, "expected 3 phrase cells (2 boundaries)")
+        XCTAssertEqual(result[0].text, "morning comes with light")
+        XCTAssertEqual(
+            result[1].text, "singing every single quickly night",
+            "nudged to end on the rhyming/syllable-matching \"night\", not the nearer \"quickly\"")
+        XCTAssertEqual(result[2].text, "day breaks the sight")
+        // Every original word preserved exactly once — a nudge only relocates the cut, never drops
+        // or duplicates a word.
+        XCTAssertEqual(
+            result.flatMap(\.words).map(\.text), nudgeFixtureWords().map(\.text))
+    }
+
+    func testStage2DisabledKeepsStage1sNearestInTimeBoundaryUnchanged() {
+        let input = [line(nudgeFixtureWords())]
+
+        let result = LyricPhraseGrouper.regroup(
+            input, beatTimes: uniformBeatTimes(bpm: 120, bars: 12), tempo: 120,
+            chords: nudgeFixtureChords(), configuration: .init(refinementEnabled: false),
+            rhymeDetector: nudgeFixtureRhymeDetector())
+
+        XCTAssertEqual(result.count, 3)
+        XCTAssertEqual(
+            result[1].text, "singing every single quickly",
+            "with Stage 2 disabled, the middle cell keeps Stage 1's nearest-in-time cut")
+        XCTAssertEqual(result[2].text, "night day breaks the sight")
+    }
+
+    func testStage2KeepsBaselineWhenOnlySyllableEvidenceIsAvailable() {
+        // Empty rhyme table: with no rhyme signal, whole-LINE syllable-count similarity to the
+        // sibling median is the only thing left to judge candidates by — and extending the cut to
+        // include "night" makes the line LONGER (9 -> 10 syllables), moving it FARTHER from the
+        // sibling median (6, from the 6- and 4-syllable "light"/"sight" cells) than the shorter
+        // baseline cut already sits. So syllable evidence alone does NOT favor this particular
+        // nudge — confirming the main nudge test's result is driven by the RHYME signal, not an
+        // accidental syllable-count coincidence.
+        let input = [line(nudgeFixtureWords())]
+
+        let result = LyricPhraseGrouper.regroup(
+            input, beatTimes: uniformBeatTimes(bpm: 120, bars: 12), tempo: 120,
+            chords: nudgeFixtureChords(), rhymeDetector: RhymeDetector(table: [:]))
+
+        XCTAssertEqual(result[1].text, "singing every single quickly")
+    }
 }

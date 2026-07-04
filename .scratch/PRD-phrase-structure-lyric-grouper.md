@@ -253,3 +253,58 @@ items #10 and #11.
 2. Confirm Phase 1 (bar-period only) is the right scope to ship first, with Phase 2
    explicitly deferred pending real-song evaluation — matches the "Stage 1 now, Stage 2
    later" framing above, but worth confirming before committing.
+
+---
+
+## 9. Review — Phase 2 done (2026-07-04, own worktree `backlog/phrase-grouper-phase2`)
+
+Eric asked to proceed with Phase 2 directly (ahead of the "wait for real-song evaluation"
+recommendation in §7) and confirmed the rhyme-detection approach: **bundled phonetic table**
+(CMUdict-derived), not the orthographic-suffix heuristic.
+
+- `Resources/cmudict_rhyme.tsv` (126,052 entries, 2.4 MB): word → rhyme part (phonemes from the
+  last PRIMARY-stressed vowel to the end, stress digits stripped), derived from
+  `cmudict.dict` (cmusphinx/cmudict, Carnegie Mellon University, BSD-style license — full notice
+  in the file header). Only the first-listed pronunciation per word is kept; variant markers like
+  `word(2)` fold into the base word.
+- `SyllableCounter` (new, pure): vowel-cluster + silent-trailing-"e" heuristic, no bundled data.
+  §5's predicted ~85-90% accuracy confirmed against a curated word list; one known miss
+  ("smile" → 2, not 1) is locked in by an explicit test rather than silently accepted.
+- `RhymeDetector` (new, pure lookup + `Bundle.main`-backed `.shared` singleton): `rhymePart(for:)`,
+  `rhymes(_:_:)`, and `bestRhymeScore(for:against:)` — the last distinguishes "confirmed non-rhyme"
+  (`0.0`) from "no evidence" (`nil`, when either word is out-of-vocabulary) so Stage 2 never lets
+  missing data masquerade as a real signal. Degrades to an empty table (never crashes) if the
+  bundled resource is missing/unreadable, including inside the unit-test host (which has no app
+  bundle to read `Resources/` from).
+- `RhymeSyllableScorer` (new, pure): given Stage 1's boundary and a caller-supplied set of nearby
+  real word-gap candidates (plus the section's OTHER cells' endings/syllable counts as siblings),
+  picks the best-scoring candidate — weighted end-rhyme (0.6) + syllable-count similarity to the
+  sibling median (0.4), only moving away from the nearest-in-time candidate when it clears a
+  `minimumImprovement` margin (0.05 default). Ties, missing sibling data, or a total absence of
+  rhyme/syllable signal all keep Stage 1's own choice.
+- Wired into `LyricPhraseGrouper.resegmented`: Stage 1's per-boundary nearest-gap snap is computed
+  first (unchanged), then Stage 2 nudges each boundary independently within a `nudgeWindowInBeats`
+  (1 beat default, bounded by the existing half-period max-snap-distance) window, fenced strictly
+  between the neighboring boundaries' BASELINE (not post-nudge) cuts — guarantees cells stay
+  ordered/non-overlapping regardless of how any individual boundary moves. A defensive collision/
+  inversion check falls back to the unmodified Stage 1 cut set if that invariant were ever
+  violated (should be unreachable given the fencing, kept as a belt-and-suspenders net). The
+  trailing cell (after the last real cut, running to the section's end) is always included as a
+  sibling for every OTHER boundary's decision, even though it never has a decision of its own.
+- New `LyricPhraseGrouper.Configuration` fields: `refinementEnabled` (default `true`),
+  `nudgeWindowInBeats` (default `1`), `rhymeSyllableConfiguration`. `regroup` gained a
+  `rhymeDetector: RhymeDetector = .shared` parameter — existing call sites (incl.
+  `AppModel.applyAnalysis`) are unaffected by the new defaults.
+- **No version-tag bump needed.** `LyricPhraseGrouper.regroup` is still the same unconditional
+  post-pass Phase 1 already made version-tag-free (§6 resolved by "always rerun," not by digest
+  plumbing) — Phase 2 is new logic inside the SAME always-rerun call, so every song picks it up
+  automatically the next time it's opened, with zero additional plumbing.
+- Tests: `SyllableCounterTests` (6), `RhymeDetectorTests` (11), `RhymeSyllableScorerTests` (7),
+  plus 3 new `LyricPhraseGrouperTests` integration cases on a hand-timed 3-cell fixture proving:
+  (a) Stage 2 nudges to a farther-but-better-scoring real word gap using the full rhyme+syllable
+  table, (b) `refinementEnabled: false` reproduces exactly Stage 1's original cut, (c) syllable
+  evidence ALONE (empty rhyme table) is sufficient to nudge, isolating that signal from rhyme.
+  All existing Phase 1 tests are unaffected because every one of their fixtures has exactly one
+  internal boundary per section (Stage 2's `>= 2 boundaries` gate keeps it a no-op there).
+- Verification: see `tasks/todo.md` "Phrase-structure lyric grouper Phase 2" entry for the real
+  `xcodebuild test` results (Mac toolchain, via Desktop Commander).
