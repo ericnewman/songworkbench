@@ -8,6 +8,7 @@ enum EditorTab: String, CaseIterable, Identifiable {
     case lyrics
     case chords
     case chordPro
+    case review
     case bassNotes
 
     var id: String { rawValue }
@@ -17,6 +18,7 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .lyrics: "Lyrics"
         case .chords: "Chords"
         case .chordPro: "ChordPro"
+        case .review: "Review"
         case .bassNotes: "Bass Notes"
         }
     }
@@ -26,6 +28,7 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .lyrics: "text.quote"
         case .chords: "music.note"
         case .chordPro: "doc.plaintext"
+        case .review: "text.badge.checkmark"
         case .bassNotes: "music.note.list"
         }
     }
@@ -42,7 +45,8 @@ struct WorkspaceEditorsView: View {
             switch selectedEditor {
             case .lyrics: TimedLyricsEditor(model: model)
             case .chords: ChordTimelineEditor(model: model)
-            case .chordPro: ChordProTabEditor(model: model, config: .chordPro)
+            case .chordPro: ChordProTrueView(model: model)
+            case .review: ChordProReviewTab(model: model)
             case .bassNotes: ChordProTabEditor(model: model, config: .bassNote)
             }
         }
@@ -1557,6 +1561,33 @@ private struct ChordProTabEditor: View {
             bpm: bpm,
             songDuration: model.timelineDuration
         )
+    }
+}
+
+/// The Review/Annotate tab (backlog #15): the SAME interactive App Preview/Edit editor that used
+/// to be the whole `chordPro` tab (bouncing ball, beat dots, waveform, playback highlight —
+/// unchanged, moved here as-is), plus a new panel below it for accepting or correcting
+/// low-confidence lyric lines and chord events one at a time. The `chordPro` tab itself now shows
+/// only `ChordProTrueView`, a spec-exact read-only render with none of this chrome.
+struct ChordProReviewTab: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Unchanged: same GeometryReader/ScrollViewReader-driven layout as before, so it
+            // keeps sizing/scrolling itself exactly as it always has.
+            ChordProTabEditor(model: model, config: .chordPro)
+            Divider()
+            // A bounded companion region below, not an outer ScrollView around everything above —
+            // wrapping ChordProTabEditor's own GeometryReader-based preview in another ScrollView
+            // would starve it of a real height proposal.
+            ScrollView {
+                ChordProReviewAnnotationsPanel(model: model)
+                    .padding(.bottom, 12)
+            }
+            .frame(maxHeight: 260)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 

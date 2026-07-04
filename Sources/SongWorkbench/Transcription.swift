@@ -345,9 +345,19 @@ enum TimedLyricSegmentGrouper {
                 start: start,
                 end: end,
                 text: text,
-                words: words(from: tokens, layout: layout)
+                words: words(from: tokens, layout: layout),
+                confidence: averageConfidence(of: tokens)
             )
         }
+    }
+
+    /// Mean of the tokens' own confidence values (backlog #15, Review tab color-coding). `nil`
+    /// when the engine reported no per-token confidence at all (e.g. a synthesized-token pass
+    /// like `regroup`'s re-grouping of already-grouped lyrics).
+    private static func averageConfidence(of tokens: [TimedTranscriptionToken]) -> Float? {
+        let values = tokens.compactMap(\.confidence)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Float(values.count)
     }
 
     /// Aggregates the placed tokens into words (maximal runs of tokens joined WITHOUT a

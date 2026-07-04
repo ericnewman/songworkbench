@@ -63,6 +63,14 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
     /// Per-word timings within `text`. Empty for documents saved before word timings
     /// were preserved; callers fall back to interpolation in that case.
     var words: [TimedLyricWord] = []
+    /// Average ASR token confidence for this line (backlog #15, Review tab color-coding).
+    /// `nil` for documents analyzed before this field existed, for lines rebuilt by a
+    /// re-segmentation pass that can't attribute a single confidence to the new cut (e.g.
+    /// `LyricPhraseGrouper`), and for reference-lyric-aligned lines (no ASR confidence to carry).
+    var confidence: Float?
+    /// Whether the user has explicitly accepted this line in the Review tab (backlog #15).
+    /// Purely additive to the existing whole-song `lyricReviewState` — does not affect it.
+    var accepted: Bool = false
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -70,6 +78,8 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         case end
         case text
         case words
+        case confidence
+        case accepted
     }
 
     init(
@@ -77,13 +87,17 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         start: TimeInterval,
         end: TimeInterval,
         text: String,
-        words: [TimedLyricWord] = []
+        words: [TimedLyricWord] = [],
+        confidence: Float? = nil,
+        accepted: Bool = false
     ) {
         self.id = id
         self.start = start
         self.end = end
         self.text = text
         self.words = words
+        self.confidence = confidence
+        self.accepted = accepted
     }
 
     init(from decoder: Decoder) throws {
@@ -93,6 +107,8 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         end = try container.decode(TimeInterval.self, forKey: .end)
         text = try container.decode(String.self, forKey: .text)
         words = try container.decodeIfPresent([TimedLyricWord].self, forKey: .words) ?? []
+        confidence = try container.decodeIfPresent(Float.self, forKey: .confidence)
+        accepted = try container.decodeIfPresent(Bool.self, forKey: .accepted) ?? false
     }
 }
 
@@ -101,6 +117,40 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
     var time: TimeInterval
     var chord: String
     var confidence: Float?
+    /// Whether the user has explicitly accepted this chord event in the Review tab (backlog #15).
+    /// Purely additive to the existing whole-song `chordReviewState` — does not affect it.
+    var accepted: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case time
+        case chord
+        case confidence
+        case accepted
+    }
+
+    init(
+        id: UUID = UUID(),
+        time: TimeInterval,
+        chord: String,
+        confidence: Float? = nil,
+        accepted: Bool = false
+    ) {
+        self.id = id
+        self.time = time
+        self.chord = chord
+        self.confidence = confidence
+        self.accepted = accepted
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        time = try container.decode(TimeInterval.self, forKey: .time)
+        chord = try container.decode(String.self, forKey: .chord)
+        confidence = try container.decodeIfPresent(Float.self, forKey: .confidence)
+        accepted = try container.decodeIfPresent(Bool.self, forKey: .accepted) ?? false
+    }
 }
 
 enum AnalysisReviewState: String, Codable, Equatable, Sendable {
@@ -162,7 +212,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     // 7: added sourceDuration (full audio length for lyric/chord timeline bounds).
     // 8: added untranscribedVocalRegions (sung spans the ASR produced no words for).
     // 9: added lyricBlendRows (Lyric Blending feature, backlog #11).
-    static let currentSchemaVersion = 9
+    // 10: added TimedLyricSegment.confidence/.accepted and EditableChordEvent.accepted
+    //     (Review tab, backlog #15). All optional/defaulted, so no migration is required.
+    static let currentSchemaVersion = 10
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
