@@ -183,8 +183,10 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         for old in oldSegments {
             let oldWindow = min(old.start, old.end)...max(old.start, old.end)
             let overlap =
-                max(0, min(freshWindow.upperBound, oldWindow.upperBound)
-                    - max(freshWindow.lowerBound, oldWindow.lowerBound))
+                max(
+                    0,
+                    min(freshWindow.upperBound, oldWindow.upperBound)
+                        - max(freshWindow.lowerBound, oldWindow.lowerBound))
             if overlap > 0, best == nil || overlap > best!.overlap {
                 best = (old, overlap)
             }
