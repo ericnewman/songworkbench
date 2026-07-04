@@ -9,7 +9,6 @@ enum EditorTab: String, CaseIterable, Identifiable {
     case chords
     case chordPro
     case review
-    case bassNotes
 
     var id: String { rawValue }
 
@@ -19,7 +18,6 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .chords: "Chords"
         case .chordPro: "ChordPro"
         case .review: "Review"
-        case .bassNotes: "Bass Notes"
         }
     }
 
@@ -29,7 +27,6 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .chords: "music.note"
         case .chordPro: "doc.plaintext"
         case .review: "text.badge.checkmark"
-        case .bassNotes: "music.note.list"
         }
     }
 }
@@ -47,7 +44,6 @@ struct WorkspaceEditorsView: View {
             case .chords: ChordTimelineEditor(model: model)
             case .chordPro: ChordProTrueView(model: model)
             case .review: ChordProReviewTab(model: model)
-            case .bassNotes: ChordProTabEditor(model: model, config: .bassNote)
             }
         }
         .padding(12)
@@ -1686,49 +1682,95 @@ private struct ChordProAppPreview: View {
     private var gutterSeconds: TimeInterval { beatLengthSeconds * 2 }
 
     /// Accent energy at each beat, sampled from drums + bass stems (a short window around the beat
-    /// to catch the transient). Empty when neither stem is available.
-    private var beatStrengths: [Double] {
-        guard !beatTimes.isEmpty else { return [] }
-        let envelopes = [drumsEnvelope, bassEnvelope].compactMap { $0 }
-            .filter { $0.duration > 0 && !$0.peaks.isEmpty }
-        guard !envelopes.isEmpty else { return [] }
-        let half = beatLengthSeconds > 0 ? beatLengthSeconds * 0.25 : 0.1
-        return beatTimes.map { beat in
-            var strength = 0.0
-            for env in envelopes {
-                let count = env.peaks.count
-                let lo = max(0, Int(((beat - half) / env.duration) * Double(count)))
-                let hi = min(
-                    count, max(lo + 1, Int(((beat + half) / env.duration) * Double(count))))
-                var peak = 0.0
-                for i in lo..<hi { peak = max(peak, Double(env.peaks[i])) }
-                strength += peak
-            }
-            return strength
-        }
+    /// to catch the transient) — CACHED (see `gridDependencyKey`/`refreshGrid()` below). This scan
+    /// is O(beats × envelopes × window-samples): recomputing it as a plain computed property made
+    /// the WHOLE view redo it on every 30-60Hz playback tick even though it only depends on static
+    /// analysis data, never on the playhead — the actual cause of the CPU-during-playback /
+    /// laggy-ball-and-highlight report (playback CPU/lag investigation). Empty until the first
+    /// `.onChange(initial: true)` fires, and whenever a real dependency changes.
+    @State private var beatStrengths: [Double] = []
+
+    /// The detected bar phase — CACHED alongside `beatStrengths` for the same reason.
+    @State private var barPhase: Int = 0
+
+    /// The shared measure grid — CACHED alongside `beatStrengths` for the same reason.
+    @State private var measureGrid: MeasureGrid?
+
+    /// Every input `beatStrengths`/`barPhase`/`measureGrid` actually depend on. Recomputing this
+    /// key itself is cheap (array/optional equality, not a beat-by-envelope scan), so comparing it
+    /// every tick to decide whether a refresh is needed is a huge net win over recomputing the
+    /// grid itself every tick.
+    private struct GridDependencyKey: Equatable {
+        let beatTimes: [TimeInterval]
+        let bpm: Double?
+        let drumsEnvelope: WaveformEnvelope?
+        let bassEnvelope: WaveformEnvelope?
+        let lyricLineWords: [[TimedLyricWord]]
     }
 
-    /// The detected bar phase (which beat index is a downbeat). Prefers the drum/bass accent cue
-    /// (reliable regardless of where the vocal enters); falls back to lyric first-word onsets when
-    /// the accent signal is weak or absent. Zero when there's no usable grid.
-    private var barPhase: Int {
-        guard !beatTimes.isEmpty, bpm != nil else { return 0 }
-        let strengths = beatStrengths
+    private var gridDependencyKey: GridDependencyKey {
+        GridDependencyKey(
+            beatTimes: beatTimes, bpm: bpm, drumsEnvelope: drumsEnvelope,
+            bassEnvelope: bassEnvelope, lyricLineWords: lyricLineWords)
+    }
+
+    /// Recomputes `beatStrengths`/`barPhase`/`measureGrid` from scratch — the ORIGINAL logic these
+    /// three properties used to run inline on every render, now run only when `gridDependencyKey`
+    /// actually changes (see the `.onChange` in `body`).
+    private func refreshGrid() {
+        guard !beatTimes.isEmpty else {
+            beatStrengths = []
+            barPhase = 0
+            measureGrid = nil
+            return
+        }
+        let envelopes = [drumsEnvelope, bassEnvelope].compactMap { $0 }
+            .filter { $0.duration > 0 && !$0.peaks.isEmpty }
+        let strengths: [Double]
+        if envelopes.isEmpty {
+            strengths = []
+        } else {
+            let half = beatLengthSeconds > 0 ? beatLengthSeconds * 0.25 : 0.1
+            strengths = beatTimes.map { beat in
+                var strength = 0.0
+                for env in envelopes {
+                    let count = env.peaks.count
+                    let lo = max(0, Int(((beat - half) / env.duration) * Double(count)))
+                    let hi = min(
+                        count, max(lo + 1, Int(((beat + half) / env.duration) * Double(count))))
+                    var peak = 0.0
+                    for i in lo..<hi { peak = max(peak, Double(env.peaks[i])) }
+                    strength += peak
+                }
+                return strength
+            }
+        }
+        beatStrengths = strengths
+
+        guard bpm != nil else {
+            barPhase = 0
+            measureGrid = nil
+            return
+        }
+        let resolvedBarPhase: Int
         if DownbeatEstimator.downbeatConfidence(beatStrengths: strengths, beatsPerBar: beatsPerBar)
             >= 0.08
         {
-            return DownbeatEstimator.barPhase(beatStrengths: strengths, beatsPerBar: beatsPerBar)
+            resolvedBarPhase = DownbeatEstimator.barPhase(
+                beatStrengths: strengths, beatsPerBar: beatsPerBar)
+        } else {
+            let onsets = lyricLineWords.compactMap { $0.first?.start }
+            resolvedBarPhase = DownbeatEstimator.barPhase(
+                beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
         }
-        let onsets = lyricLineWords.compactMap { $0.first?.start }
-        return DownbeatEstimator.barPhase(
-            beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
-    }
+        barPhase = resolvedBarPhase
 
-    /// The shared measure grid, or nil when there's no tempo / beats.
-    private var measureGrid: MeasureGrid? {
-        guard let bpm, bpm > 0, !beatTimes.isEmpty else { return nil }
-        return MeasureGrid(
-            beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: barPhase)
+        guard let bpm, bpm > 0 else {
+            measureGrid = nil
+            return
+        }
+        measureGrid = MeasureGrid(
+            beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: resolvedBarPhase)
     }
 
     /// Whether the vocal entrances actually sit on the beat grid. When they do, metric downbeat
@@ -2002,6 +2044,10 @@ private struct ChordProAppPreview: View {
             }
         }
         .accessibilityIdentifier("chordpro-app-preview")
+        // Recompute the measure grid/beat-strength cache only when its real inputs change — NOT
+        // on every playback tick (see `refreshGrid()`'s doc comment: this is the fix for the
+        // CPU-during-playback / laggy-ball-and-highlight report).
+        .onChange(of: gridDependencyKey, initial: true) { _, _ in refreshGrid() }
     }
 
     private var previewResult: Result<ChordProPreviewDocument, Error> {

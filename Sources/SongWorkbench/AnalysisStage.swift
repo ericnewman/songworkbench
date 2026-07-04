@@ -379,8 +379,15 @@ struct TranscriptionStage: AnalysisStageRunning {
                 segmentsForGrouping = TranscriptionOnsetCorrection.preparedSegments(
                     segmentsForGrouping, droppingAfter: vocalOffset)
             }
+            // Drop bare clock/timestamp tokens ("0:00", "00:00", ...) BEFORE the silence gate: a
+            // well-documented Whisper hallucination that isn't always isolated by silence on both
+            // sides (sometimes stitched onto the end of an otherwise-real line), so it needs a
+            // content-based rule rather than relying on TranscriptionSilenceGate's isolation
+            // heuristic to catch it.
+            let timestampFiltered = TimestampHallucinationFilter.filtered(
+                segmentsForGrouping.flatMap(\.tokens))
             let gatedTokens = TranscriptionSilenceGate.filtered(
-                segmentsForGrouping.flatMap(\.tokens),
+                timestampFiltered,
                 sourceDuration: sourceDuration > 0 ? sourceDuration : nil)
             // Respect the transcriber's segment boundaries as line breaks: Whisper segments per
             // sung line (with ~zero word gaps), so without this its lines run on; Parakeet emits a

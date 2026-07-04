@@ -357,7 +357,12 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
 
     private func startTimer() {
         stopTimer()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        // 30Hz, not 60Hz — see the matching comment in AudioPlaybackService.startTimer(): every
+        // tick republishes `currentTime`, which forces the ChordPro chart's whole body (measure
+        // grid, waveform slicing, chord layout) to re-evaluate even though none of that depends on
+        // the playhead. Halving the rate halves that redundant work; stem meters read fine at 30Hz
+        // (real VU meters commonly update in the 15-30Hz range).
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.updatePlaybackMeters()
             }
