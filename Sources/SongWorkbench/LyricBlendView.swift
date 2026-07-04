@@ -16,9 +16,15 @@ struct LyricBlendView: View {
                     emptyState
                 } else {
                     ForEach(model.lyricBlendRows) { row in
-                        LyricBlendRowView(row: row) { mode in
-                            model.applyLyricBlendSelection(rowID: row.id, mode: mode)
-                        }
+                        LyricBlendRowView(
+                            row: row,
+                            onSelect: { mode in
+                                model.applyLyricBlendSelection(rowID: row.id, mode: mode)
+                            },
+                            onOverrideChange: { text in
+                                model.applyLyricBlendOverride(rowID: row.id, text: text)
+                            }
+                        )
                     }
                 }
             }
@@ -35,8 +41,8 @@ struct LyricBlendView: View {
                 .font(.swDisplay(20, weight: .semibold))
                 .lineLimit(1)
             Text(
-                "Pick the best line per row from every transcription mode. Your choice becomes "
-                    + "the official lyrics."
+                "Pick the best line per row from every transcription mode, or type your own "
+                    + "correction — an override always wins and survives re-analysis."
             )
             .font(.callout)
             .foregroundStyle(Color.swTextSecondary)
@@ -57,9 +63,31 @@ struct LyricBlendView: View {
 private struct LyricBlendRowView: View {
     let row: LyricBlendRow
     let onSelect: (TranscriptionMode) -> Void
+    let onOverrideChange: (String) -> Void
+
+    /// Local editing draft. Seeded from `row.overrideText` on first appearance; kept in sync with
+    /// external changes (e.g. a re-analysis reconciling this row's override) via `onChange` below,
+    /// since a `@State` initial value is only applied once for a given view identity.
+    @State private var overrideDraft: String
+
+    init(
+        row: LyricBlendRow, onSelect: @escaping (TranscriptionMode) -> Void,
+        onOverrideChange: @escaping (String) -> Void
+    ) {
+        self.row = row
+        self.onSelect = onSelect
+        self.onOverrideChange = onOverrideChange
+        _overrideDraft = State(initialValue: row.overrideText ?? "")
+    }
+
+    /// An active, non-empty override always wins — no ASR candidate is "the effective one" while
+    /// it's set, so none of the three candidate buttons show a checkmark.
+    private var hasActiveOverride: Bool {
+        !(row.overrideText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private var effectiveMode: TranscriptionMode? {
-        row.effectiveCandidate()?.mode
+        hasActiveOverride ? nil : row.effectiveCandidate()?.mode
     }
 
     var body: some View {
@@ -71,8 +99,44 @@ private struct LyricBlendRowView: View {
                 ForEach(row.candidates) { candidate in
                     candidateButton(candidate)
                 }
+                overrideField
             }
         }
+        .onChange(of: row.overrideText) { _, newValue in
+            let newText = newValue ?? ""
+            if newText != overrideDraft { overrideDraft = newText }
+        }
+    }
+
+    /// The "4th candidate": a free-text field for a correction that isn't tied to any
+    /// transcription mode. Typing here takes effect immediately (same direct-binding pattern the
+    /// Review tab's lyric/chord text fields already use) and takes precedence over every ASR
+    /// candidate above, surviving re-analysis (`LyricBlendRowBuilder.reconciled`).
+    private var overrideField: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(Color.swMint).frame(width: 8, height: 8)
+            TextField("Type a correction...", text: $overrideDraft)
+                .textFieldStyle(.plain)
+                .font(.body)
+                .foregroundStyle(Color.swMint)
+                .onChange(of: overrideDraft) { _, newValue in
+                    onOverrideChange(newValue)
+                }
+            if hasActiveOverride {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.swMint)
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hasActiveOverride ? Color.swMint.opacity(0.14) : Color.clear)
+        )
+        .swAccentHoverBorder(cornerRadius: 8)
+        .shadow(
+            color: hasActiveOverride ? Color.swMint.opacity(0.5) : .clear,
+            radius: hasActiveOverride ? 8 : 0)
     }
 
     private var timeLabel: String {

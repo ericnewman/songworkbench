@@ -128,4 +128,116 @@ final class LyricBlendRowBuilderTests: XCTestCase {
         XCTAssertEqual(lyrics.map(\.text), ["fast line", "second accurate line"])
         XCTAssertEqual(lyrics.map(\.start), [0, 2])
     }
+
+    // MARK: - Manual override ("4th candidate")
+
+    func testEffectiveTextPrefersOverrideOverEverySelectedCandidate() {
+        var row = LyricBlendRow(
+            start: 0, end: 1,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "misheard line")],
+            selectedMode: .accuracy)
+        row.overrideText = "the correct line"
+
+        XCTAssertEqual(row.effectiveText(), "the correct line")
+        // effectiveCandidate() itself is unaffected — it never considers the override.
+        XCTAssertEqual(row.effectiveCandidate()?.text, "misheard line")
+    }
+
+    func testEffectiveTextIgnoresWhitespaceOnlyOverride() {
+        var row = LyricBlendRow(
+            start: 0, end: 1,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "fallback line")],
+            selectedMode: nil)
+        row.overrideText = "   "
+
+        XCTAssertEqual(row.effectiveText(), "fallback line")
+    }
+
+    func testEffectiveLyricsUsesOverrideTextWithNoWords() {
+        var row = LyricBlendRow(
+            start: 5, end: 6,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "wrong")],
+            selectedMode: nil)
+        row.overrideText = "right"
+
+        let lyrics = LyricBlendRowBuilder.effectiveLyrics(from: [row])
+
+        XCTAssertEqual(lyrics.map(\.text), ["right"])
+        XCTAssertEqual(lyrics.first?.words, [])
+    }
+
+    func testReconciledCarriesOverrideForwardOntoTheOverlappingNewRow() {
+        var oldRow = LyricBlendRow(
+            start: 10, end: 11,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "old asr guess")])
+        oldRow.overrideText = "my correction"
+        oldRow.selectedMode = .fastDraft
+
+        // A fresh re-analysis rebuilt the row with a new id and a slightly shifted window, but
+        // it's clearly still "the same line".
+        let newRow = LyricBlendRow(
+            start: 10.1, end: 11.05,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "new asr guess")])
+
+        let reconciled = LyricBlendRowBuilder.reconciled(newRows: [newRow], against: [oldRow])
+
+        XCTAssertEqual(reconciled.count, 1)
+        XCTAssertEqual(reconciled[0].overrideText, "my correction")
+        XCTAssertEqual(reconciled[0].selectedMode, .fastDraft)
+        // The new row's own id/candidates are otherwise untouched.
+        XCTAssertEqual(reconciled[0].id, newRow.id)
+        XCTAssertEqual(reconciled[0].candidates.map(\.text), ["new asr guess"])
+    }
+
+    func testReconciledFallsBackToNearestStartWhenWindowsDoNotOverlap() {
+        var oldRow = LyricBlendRow(
+            start: 20.0, end: 20.4,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "old")])
+        oldRow.overrideText = "kept override"
+
+        // No true overlap (old ends at 20.4, new starts at 20.5), but well within tolerance.
+        let newRow = LyricBlendRow(
+            start: 20.5, end: 21.0,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "new")])
+
+        let reconciled = LyricBlendRowBuilder.reconciled(newRows: [newRow], against: [oldRow])
+
+        XCTAssertEqual(reconciled[0].overrideText, "kept override")
+    }
+
+    func testReconciledLeavesNewRowUntouchedWhenNothingOldIsClose() {
+        var oldRow = LyricBlendRow(
+            start: 0, end: 1, candidates: [LyricBlendCandidate(mode: .accuracy, text: "old")])
+        oldRow.overrideText = "should not leak"
+
+        // Far away in time — a genuinely different line (e.g. a new verse the old analysis
+        // didn't have).
+        let newRow = LyricBlendRow(
+            start: 100, end: 101, candidates: [LyricBlendCandidate(mode: .accuracy, text: "new")])
+
+        let reconciled = LyricBlendRowBuilder.reconciled(newRows: [newRow], against: [oldRow])
+
+        XCTAssertNil(reconciled[0].overrideText)
+    }
+
+    func testReconciledWithNoOldRowsReturnsNewRowsUnchanged() {
+        let newRow = LyricBlendRow(
+            start: 0, end: 1, candidates: [LyricBlendCandidate(mode: .accuracy, text: "new")])
+
+        let reconciled = LyricBlendRowBuilder.reconciled(newRows: [newRow], against: [])
+
+        XCTAssertEqual(reconciled, [newRow])
+    }
+
+    func testReconciledDoesNotCarryForwardAnEmptyOldOverride() {
+        let oldRow = LyricBlendRow(
+            start: 0, end: 1, candidates: [LyricBlendCandidate(mode: .accuracy, text: "old")])
+        // overrideText defaults to nil — nothing to carry forward.
+        let newRow = LyricBlendRow(
+            start: 0.05, end: 1.0, candidates: [LyricBlendCandidate(mode: .accuracy, text: "new")])
+
+        let reconciled = LyricBlendRowBuilder.reconciled(newRows: [newRow], against: [oldRow])
+
+        XCTAssertNil(reconciled[0].overrideText)
+    }
 }
