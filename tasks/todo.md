@@ -872,3 +872,46 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   non-nil value of type 'Song'`) — same root cause, unrelated to this change. Zero failures
   in `ChordProDraftBuilderTests` (30/30). `swift format lint --strict` clean.
 - Batch B remaining: C1 reference-lyrics-first workflow (#8).
+
+## 2026-07-03 (batch B, worktree) — Backlog #8 (C1) done, Batch B complete
+- Scope decision (AskUserQuestion, confirmed with Eric before implementing): relocate the
+  existing "paste real lyrics" feature's discoverability into the Lyrics tab as a persistent
+  banner, rather than prompting during import — prompting on every import would add friction
+  to the common original-song case with no reference lyrics available at all, cutting against
+  the sibling design note on backlog #15 ("most of this catalog is original songs with no
+  ground truth").
+- [x] C1 reference-lyrics prompt banner (bdf8906): `ReferenceLyricsSheet`
+      (`AnalysisWorkspaceView.swift`) made non-private so it can be presented from a second
+      entry point; new `ReferenceLyricsPromptBanner` shown at the top of `TimedLyricsEditor`
+      (`WorkspaceEditorsView.swift`) when a song has lyrics to review, no reference text is set,
+      and the user hasn't dismissed it THIS session for THIS song. New
+      `ReferenceLyricsPromptPolicy` enum factors the gating logic out of the view for direct
+      unit testing (7 new tests in `ReferenceLyricsPromptPolicyTests.swift`).
+- First backlog item this session to add a genuinely NEW Swift file — required `tuist generate
+  --no-open` to regenerate `project.pbxproj` (SongWorkbench is a Tuist project; Xcode builds
+  from the committed pbxproj file list, not a live glob of `Sources/`/`Tests/` — see
+  [[songworkbench-tuist-project]]). Regenerated in the MAIN checkout (with the worktree's
+  changed/new files copied in), then copied the resulting `project.pbxproj` into the worktree
+  before reverting main back to clean — same copy-in/verify/revert/commit-in-worktree pattern
+  used for every build+test verification this session, just extended to also carry back the
+  regenerated project file. Git worktree operations must still go through the sandbox (its
+  `.git/worktrees/<name>` metadata has sandbox-only paths baked in), but `tuist generate` /
+  `xcodebuild` must run for real on macOS, which the sandbox can't do — so this two-sided
+  dance is unavoidable for any commit that adds/removes a file.
+- Verification workflow upgrade: discovered a `desktop-commander` MCP gives REAL shell access
+  on Eric's Mac (not the sandbox) — `xcodebuild test -workspace SongWorkbench.xcworkspace
+  -scheme SongWorkbench -destination 'platform=macOS' -quiet` ran the full suite in ~47s and
+  printed a clean "Failing tests:" list directly, versus several minutes of screenshot/click
+  round-trips through Xcode's GUI (Product > Test, Report Navigator, Test Navigator scrolling)
+  used for every prior verification this session. Use this for all remaining batches/items —
+  it's strictly faster and less error-prone than driving the Xcode UI via computer-use.
+- Verified: `xcodebuild test` — failing tests were exactly `AppModelTests`
+  (`testImportDuringRestoreIsMergedInsteadOfDiscarded`, `testRecentSongsFollowSelectionOrder`,
+  `testRemovingSelectedSongPreservesSourceFileSelectsNeighborAndPersists`,
+  `testSelectingDifferentSongResetsSelectedSongProgress`) and
+  `MusicLibraryAppModelTests.testOpeningLocalLibraryTrackAddsAndSelectsSong` — the same known
+  pre-existing flaky family seen every run this session, none touching this change. Zero
+  failures in `ReferenceLyricsPromptPolicyTests` or any file this item touched. `swift format
+  lint --strict` clean.
+- **Batch B complete**: #5 (B2), #6 (B4), #7 (B5), #8 (C1) all done. Ready to merge to `main`
+  once confirmed with Eric (same check-in pattern as Batch A's merge).

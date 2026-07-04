@@ -115,8 +115,15 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
    safe passthrough for both this app's parser and spec-compliant foreign tools (confirmed
    before implementing — no parser changes required). (todo.md: 2026-07-02 evening "Still
    open"; original design note at todo.md:469-470)
-8. **C1: Reference-lyrics-first workflow** — surface pasting real lyrics as the primary path
-   for original songs, not a secondary sheet. (same)
+8. [x] **C1: Reference-lyrics-first workflow** (bdf8906) — scoped to relocating discoverability,
+   not the import flow (confirmed with Eric: prompting during import would add friction to
+   every original song, the majority case with no reference available — cuts against #15's
+   sibling design note). Added a persistent, dismissible `ReferenceLyricsPromptBanner` at the
+   top of the Lyrics tab (where a user actually notices ASR mistakes) offering the same
+   `ReferenceLyricsSheet` the Song Analysis card's small button already opened — two entry
+   points, one sheet. Dismissal is session-only, keyed per song, via `ReferenceLyricsPromptPolicy`
+   (pure, unit-tested gating logic). (todo.md: 2026-07-02 evening "Still open"; original phrasing
+   at todo.md:463-464)
 
 ## Batch C — Independent features (parallelizable with A and B, and with each other via separate worktrees)
 
