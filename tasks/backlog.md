@@ -128,8 +128,15 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
 ## Batch C — Independent features (parallelizable with A and B, and with each other via separate worktrees)
 
 9. **Phrase-structure lyric grouper** — rhyme/syllable/bar-period aware line grouping
-   (`LyricPhraseGrouper`), replacing purely ASR-timing-driven grouping. New subsystem, no
-   Review section exists yet — fully unstarted. (todo.md: 2026-07-01)
+   (`LyricPhraseGrouper`), replacing purely ASR-timing-driven grouping. Design doc written
+   2026-07-04: `.scratch/PRD-phrase-structure-lyric-grouper.md` — a POST-PASS (transcription
+   and harmony run concurrently, so beat/chord data isn't available inside the transcription
+   stage itself), scoped to Phase 1 (bar-period re-segmentation only) first; Phase 2
+   (rhyme/syllable refinement, needs new linguistic subsystem weight — no such code exists
+   yet) deferred pending real-song evaluation of Phase 1. Two open questions for Eric before
+   Phase 1 starts (doc §8): the two-stage-dependency versioning approach, and confirming the
+   Phase 1/Phase 2 split. Not yet implemented — awaiting go-ahead on the design.
+   (todo.md: 2026-07-01, original approved sketch at todo.md:374-395)
 10. **Chord event-timing rigor audit** — current nearest-onset accuracy metric is
     self-flagged "weak" (941-onset guitar-stem test); needs a real chroma-flux
     change-point comparison. Investigation + maybe a scoring script, likely no product code
