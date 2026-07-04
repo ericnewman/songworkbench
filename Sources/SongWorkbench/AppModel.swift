@@ -145,6 +145,25 @@ final class AppModel: ObservableObject {
             persistSelectedAnalysis()
         }
     }
+    /// Per-time-window candidate lines from every transcription mode, for the "Lyric Blend"
+    /// window (backlog #11). Mirrors `document.lyricBlendRows` for the SELECTED song, the same
+    /// way `lyricSegments` mirrors `document.lyrics` — see `applyLyricBlendSelection` and
+    /// `LyricBlendRowBuilder`. No `didSet` of its own: callers that change a row's
+    /// `selectedMode` always also reassign `lyricSegments` from
+    /// `LyricBlendRowBuilder.effectiveLyrics`, which is what actually triggers the existing
+    /// rebuild/persist pipeline above.
+    @Published private(set) var lyricBlendRows: [LyricBlendRow] = []
+    /// The song ID whose Lyric Blend candidates just finished computing — a view observes this
+    /// to auto-open the "Lyric Blend" window once, per the backlog #11 spec ("on analysis
+    /// complete, open a new Lyric Blend window"). Consumers should reset it to `nil` after
+    /// opening the window so re-selecting the song later doesn't re-trigger it.
+    @Published var lyricBlendReadySongID: Song.ID?
+    /// True while the two non-primary transcription modes are running in the background after a
+    /// full analysis, to populate Lyric Blend candidates. The primary analysis has ALREADY
+    /// finished and `document.lyrics`/ChordPro are fully usable during this window — this flag is
+    /// purely informational (e.g. a small "Preparing lyric blend…" indicator), never a gate on
+    /// other UI.
+    @Published private(set) var isComputingLyricBlend = false
     /// User-provided reference lyrics. Persisted; the next analysis aligns these exact words/lines
     /// to the ASR timings. Call `applyReferenceLyrics()` to re-run alignment from the cached audio.
     @Published var referenceLyrics = "" {
@@ -245,16 +264,6 @@ final class AppModel: ObservableObject {
         }
         if isLoadingWaveform { return "Loading waveform…" }
         return nil
-    }
-    static let transcriptionModeDefaultsKey = "transcriptionMode"
-    @Published var transcriptionMode: TranscriptionMode =
-        UserDefaults.standard.string(forKey: AppModel.transcriptionModeDefaultsKey)
-        .flatMap(TranscriptionMode.init(rawValue:)) ?? .fastDraft
-    {
-        didSet {
-            UserDefaults.standard.set(
-                transcriptionMode.rawValue, forKey: AppModel.transcriptionModeDefaultsKey)
-        }
     }
     static let accuracyDecodeSpeedDefaultsKey = "accuracyDecodeSpeed"
     /// Pitch-preserved playback-speed factor applied to the vocals stem before Whisper (Accuracy)
@@ -663,8 +672,34 @@ final class AppModel: ObservableObject {
         runAnalysis(
             for: song,
             stages: Set(SongAnalysisStage.allCases),
-            replaceExistingChordPro: replaceExistingChordPro
+            replaceExistingChordPro: replaceExistingChordPro,
+            runLyricBlend: true
         )
+    }
+
+    /// Transcription modes whose engine is currently installed — used to pick the primary mode
+    /// and to decide which Lyric Blend passes (backlog #11) are worth attempting. Reflects
+    /// `modelPackageStatuses`, which the model-package manager keeps current.
+    private var availableTranscriptionModes: Set<TranscriptionMode> {
+        var modes: Set<TranscriptionMode> = []
+        if case .installed = modelPackageStatuses[ModelCatalog.parakeetFastDraft.id] {
+            modes.insert(.fastDraft)
+            modes.insert(.balancedDraft)
+        }
+        if case .installed = modelPackageStatuses[ModelCatalog.whisperAccuracy.id] {
+            modes.insert(.accuracy)
+        }
+        return modes
+    }
+
+    /// The mode used for a song's OFFICIAL lyrics/ChordPro before any Lyric Blend pick — prefers
+    /// Accuracy (best quality), then Balanced, then Fast Draft, falling back to Accuracy when
+    /// nothing is installed yet so the existing "install the model" error still surfaces exactly
+    /// as it does today. There is no more user-facing mode picker (backlog #11 drops it in favor
+    /// of always running every installed mode and letting the blend UI be the tuning).
+    private var primaryTranscriptionMode: TranscriptionMode {
+        let available = availableTranscriptionModes
+        return LyricBlendRowBuilder.modeOrder.first { available.contains($0) } ?? .accuracy
     }
 
     /// Re-aligns the lyrics to the audio from the current `referenceLyrics` by re-running the
@@ -692,8 +727,15 @@ final class AppModel: ObservableObject {
     /// disk cache makes this cheap where possible: already-separated songs skip the slow stem
     /// separation (cache hit), and transcription/harmony re-run from their cached raw results to
     /// pick up grouping/chord improvements. Songs never analyzed before get a full first-time
-    /// analysis (including separation). Each song keeps its own transcription mode (a song analyzed
-    /// in Accuracy is re-analyzed in Accuracy); never-analyzed songs use the current mode.
+    /// analysis (including separation). Every song always uses the same dynamic primary-mode
+    /// selection (see `primaryTranscriptionMode`) — there's no more per-song remembered mode now
+    /// that mode is no longer a user choice (backlog #11).
+    ///
+    /// Deliberately does NOT run Lyric Blend's extra passes here — tripling transcription cost
+    /// for the WHOLE library on every bulk re-analyze is a much bigger cost/UX tradeoff than the
+    /// single-song case and deserves its own decision if wanted later. Re-selecting a song after
+    /// a bulk re-analyze and running Analyze again on it individually will populate its blend
+    /// candidates.
     func reanalyzeAllSongs() {
         guard !isSongAnalysisRunning else { return }
         reanalyzeNext(in: songs, total: songs.count)
@@ -706,14 +748,9 @@ final class AppModel: ObservableObject {
         }
         reanalyzeAllStatus = ReanalyzeAllStatus(
             index: total - queue.count + 1, total: total, title: song.title)
-        let storedModeRaw =
-            analysisBySongID[song.id]?
-            .stageRecords[.transcription]?.provenance?.configurationIdentifier
-        let storedMode = storedModeRaw.flatMap(TranscriptionMode.init(rawValue:))
         runAnalysis(
             for: song,
-            stages: Set(SongAnalysisStage.allCases),
-            modeOverride: storedMode
+            stages: Set(SongAnalysisStage.allCases)
         ) { [weak self] cancelled in
             guard let self, !cancelled else {
                 self?.reanalyzeAllStatus = nil
@@ -727,7 +764,7 @@ final class AppModel: ObservableObject {
         for song: Song,
         stages: Set<SongAnalysisStage>,
         replaceExistingChordPro: Bool = false,
-        modeOverride: TranscriptionMode? = nil,
+        runLyricBlend: Bool = false,
         completion: ((_ cancelled: Bool) -> Void)? = nil
     ) {
         guard !stages.isEmpty else {
@@ -755,7 +792,7 @@ final class AppModel: ObservableObject {
                 self.beginAnalysis(
                     for: song, stages: stages,
                     replaceExistingChordPro: replaceExistingChordPro,
-                    modeOverride: modeOverride, completion: completion)
+                    runLyricBlend: runLyricBlend, completion: completion)
             case .unavailable(let message):
                 self.isSongAnalysisRunning = false
                 self.projectErrorMessage = message
@@ -816,7 +853,7 @@ final class AppModel: ObservableObject {
         for song: Song,
         stages: Set<SongAnalysisStage>,
         replaceExistingChordPro: Bool = false,
-        modeOverride: TranscriptionMode? = nil,
+        runLyricBlend: Bool = false,
         completion: ((_ cancelled: Bool) -> Void)? = nil
     ) {
         let songID = song.id
@@ -834,7 +871,7 @@ final class AppModel: ObservableObject {
             outputDirectory: analysisOutputDirectory(for: songID),
             title: song.title,
             stages: stages,
-            transcriptionMode: modeOverride ?? transcriptionMode,
+            transcriptionMode: primaryTranscriptionMode,
             existingDocument: existingDocument,
             chordProReplacementPolicy: replaceExistingChordPro
                 ? .replaceExisting : .preserveExisting,
@@ -875,6 +912,9 @@ final class AppModel: ObservableObject {
                     if !result.wasCancelled {
                         projectErrorMessage = nil
                     }
+                    if runLyricBlend, !result.wasCancelled, stages.contains(.transcription) {
+                        runLyricBlendPasses(for: song, primaryDocument: result.document)
+                    }
                 case .failure(let error):
                     isSongAnalysisRunning = false
                     cancelled = error is CancellationError
@@ -886,6 +926,114 @@ final class AppModel: ObservableObject {
                 completion?(cancelled)
             }
         )
+    }
+
+    /// After a full analysis completes, independently re-runs transcription in the OTHER
+    /// installed modes (whichever of Fast/Balanced/Accuracy weren't the primary mode) so the
+    /// "Lyric Blend" window has real candidates from every available mode (backlog #11). Runs
+    /// sequentially, not concurrently: `SongAnalysisCoordinator` cancels any in-flight run when
+    /// `.run` is called again, so a second overlapping call here would cancel the first. Each
+    /// pass only requests `.transcription`, so harmony/chords/stems already in `primaryDocument`
+    /// are carried through untouched, and each pass's own per-mode cache key (`AnalysisStage`)
+    /// makes an unchanged-audio re-blend cheap on a later analysis. A mode whose model isn't
+    /// installed, or a pass that fails for any reason, is skipped — Lyric Blending degrades to
+    /// fewer candidates rather than disturbing the analysis that already succeeded.
+    private func runLyricBlendPasses(for song: Song, primaryDocument: SongAnalysisDocument) {
+        let songID = song.id
+        let available = availableTranscriptionModes
+        let primaryMode = primaryTranscriptionMode
+        let otherModes = LyricBlendRowBuilder.modeOrder.filter {
+            $0 != primaryMode && available.contains($0)
+        }
+        guard !otherModes.isEmpty else { return }
+
+        isComputingLyricBlend = true
+        Task { [weak self] in
+            guard let self else { return }
+            var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
+                primaryMode: primaryDocument.lyrics
+            ]
+            for mode in otherModes {
+                if let segments = await self.runSingleTranscriptionPass(
+                    for: song, mode: mode, existingDocument: primaryDocument)
+                {
+                    lyricsByMode[mode] = segments
+                }
+            }
+            self.isComputingLyricBlend = false
+            // The song may have been removed from the library while these passes ran.
+            guard self.analysisBySongID[songID] != nil else { return }
+
+            let rows = LyricBlendRowBuilder.buildRows(
+                fastDraft: lyricsByMode[.fastDraft] ?? [],
+                balancedDraft: lyricsByMode[.balancedDraft] ?? [],
+                accuracy: lyricsByMode[.accuracy] ?? [])
+            // Nothing to blend (e.g. every other mode's pass failed) — don't open a blend window
+            // with only one column and nothing to pick between.
+            guard rows.contains(where: { $0.candidates.count > 1 }) else { return }
+
+            var updated = self.analysisBySongID[songID] ?? primaryDocument
+            updated.lyricBlendRows = rows
+            updated.lyrics = LyricBlendRowBuilder.effectiveLyrics(from: rows)
+            self.analysisBySongID[songID] = updated
+            if self.selectedSongID == songID {
+                self.applyAnalysis(updated)
+            }
+            self.scheduleSave()
+            self.lyricBlendReadySongID = songID
+        }
+    }
+
+    /// Runs ONE transcription-only pass in `mode` via the coordinator, returning its resulting
+    /// lyric lines (or `nil` on failure/cancellation) without touching any other published
+    /// analysis state — the caller decides what to do with the result. Used by
+    /// `runLyricBlendPasses` to gather each non-primary mode's candidate.
+    private func runSingleTranscriptionPass(
+        for song: Song, mode: TranscriptionMode, existingDocument: SongAnalysisDocument
+    ) async -> [TimedLyricSegment]? {
+        await withCheckedContinuation { continuation in
+            let request = SongAnalysisPipelineRequest(
+                sourceURL: song.url,
+                outputDirectory: analysisOutputDirectory(for: song.id),
+                title: song.title,
+                stages: [.transcription],
+                transcriptionMode: mode,
+                existingDocument: existingDocument,
+                chordProReplacementPolicy: .preserveExisting,
+                transcriptionDecodeRate: min(max(accuracyDecodeSpeed, 0.75), 1.0)
+            )
+            analysisCoordinator.run(
+                request: request,
+                onStatuses: { [weak self] statuses in
+                    for (id, status) in statuses { self?.modelPackageStatuses[id] = status }
+                },
+                onProgress: { _ in },
+                onFinish: { outcome in
+                    switch outcome {
+                    case .success(let result):
+                        continuation.resume(
+                            returning: result.wasCancelled ? nil : result.document.lyrics)
+                    case .failure:
+                        continuation.resume(returning: nil)
+                    }
+                }
+            )
+        }
+    }
+
+    /// Records the user's pick for one Lyric Blend row (backlog #11) and rebuilds the effective
+    /// lyrics from every row's current pick (this row's new one, every other row's existing pick
+    /// or its default) for the CURRENTLY SELECTED song — the Lyric Blend window always reflects
+    /// the selected song's live, reactive `lyricBlendRows`/`lyricSegments` rather than being
+    /// pinned to whichever song it was opened for (deliberately simpler than a per-song window:
+    /// `analysisBySongID` is a plain cache, not `@Published`, so a window bound to a
+    /// non-selected song's cached document wouldn't update live anyway). Goes through the same
+    /// `lyricSegments` `didSet` every other lyric edit uses, so ChordPro regeneration and
+    /// persistence stay consistent.
+    func applyLyricBlendSelection(rowID: UUID, mode: TranscriptionMode) {
+        guard let index = lyricBlendRows.firstIndex(where: { $0.id == rowID }) else { return }
+        lyricBlendRows[index].selectedMode = mode
+        lyricSegments = LyricBlendRowBuilder.effectiveLyrics(from: lyricBlendRows)
     }
 
     func retryAnalysisStage(_ stage: SongAnalysisStage) {
@@ -1704,6 +1852,7 @@ final class AppModel: ObservableObject {
             chords: analysis.chords)
         let lyricsRegrouped = phraseGroupedLyrics != analysis.lyrics
         lyricSegments = phraseGroupedLyrics
+        lyricBlendRows = analysis.lyricBlendRows
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
@@ -1768,6 +1917,7 @@ final class AppModel: ObservableObject {
         guard !isApplyingAnalysis, let selectedSongID else { return }
         analysisBySongID[selectedSongID] = SongAnalysisDocument(
             lyrics: lyricSegments,
+            lyricBlendRows: lyricBlendRows,
             untranscribedVocalRegions: untranscribedVocalRegions,
             referenceLyrics: referenceLyrics,
             sourceDuration: sourceDuration,

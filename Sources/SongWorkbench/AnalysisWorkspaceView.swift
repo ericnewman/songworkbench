@@ -35,34 +35,28 @@ struct AnalysisWorkspaceView: View {
             }
 
             if isExpanded {
-                Picker("Transcription", selection: $model.transcriptionMode) {
-                    Text("Fast Draft").tag(TranscriptionMode.fastDraft)
-                    Text("Balanced Draft").tag(TranscriptionMode.balancedDraft)
-                    Text("Accuracy").tag(TranscriptionMode.accuracy)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                if model.transcriptionMode == .accuracy {
-                    HStack(spacing: 8) {
-                        Text("Decode speed")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(value: $model.accuracyDecodeSpeed, in: 0.75...1.0, step: 0.05)
-                        Text(
-                            model.accuracyDecodeSpeed >= 0.999
-                                ? "Off"
-                                : "\(Int((model.accuracyDecodeSpeed * 100).rounded()))%"
-                        )
-                        .font(.caption.monospacedDigit())
+                // No more Fast/Balanced/Accuracy picker (backlog #11, Lyric Blending): every
+                // analysis now runs every installed transcription mode, and the "Lyric Blend"
+                // window is how the user chooses between them per line — see
+                // `AppModel.primaryTranscriptionMode`/`runLyricBlendPasses`.
+                HStack(spacing: 8) {
+                    Text("Decode speed")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .frame(width: 34, alignment: .trailing)
-                    }
-                    .help(
-                        "Slows the vocals (pitch preserved) before Whisper to help fast or dense "
-                            + "singing; timestamps are mapped back. 100% = off. Changing this "
-                            + "re-transcribes on the next Analyze.")
+                    Slider(value: $model.accuracyDecodeSpeed, in: 0.75...1.0, step: 0.05)
+                    Text(
+                        model.accuracyDecodeSpeed >= 0.999
+                            ? "Off"
+                            : "\(Int((model.accuracyDecodeSpeed * 100).rounded()))%"
+                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .trailing)
                 }
+                .help(
+                    "Slows the vocals (pitch preserved) before Whisper to help fast or dense "
+                        + "singing; timestamps are mapped back. 100% = off. Changing this "
+                        + "re-transcribes on the next Analyze.")
 
                 HStack {
                     // Compact re-run right where the settings live, so changing the
