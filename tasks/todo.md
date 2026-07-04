@@ -1171,3 +1171,44 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   (re-)analyzed, its stems will be regenerated from scratch (one-time cost per song) rather than
   reused from the now-invalidated cache — this is intentional and needed to actually get the
   fixed, full-length stem for "Good friends and a beer or two" and any other song that hit this.
+
+## 2026-07-04: Lyric Blend manual override ("4th candidate")
+
+- Requested by Eric: "we should be able to edit a 4th version of the line as an override for a
+  consistently misheard lyric - these overrides should then take precedence even if the song is
+  re-analyzed."
+- `LyricBlendRow.overrideText: String?` (schema v10 -> v11, additive, no migration). New
+  `effectiveText(preferenceOrder:)` returns the trimmed override when set/non-empty, else falls
+  through to `effectiveCandidate()`'s text — `effectiveCandidate()` itself is untouched, so it
+  never considers the override and existing callers/tests are unaffected.
+  `LyricBlendRowBuilder.effectiveLyrics` now checks the override first, producing a segment with
+  no `words` (an override has no per-word ASR timing, same as any manually-edited lyric line —
+  playback falls back to interpolation across the row's span).
+- Core design problem: `AppModel.runLyricBlendPasses` always rebuilt `lyricBlendRows` FROM
+  SCRATCH on every re-analysis (`LyricBlendRowBuilder.buildRows` has no memory of prior state),
+  so an override would otherwise vanish the moment the song was re-analyzed. Fixed with new
+  `LyricBlendRowBuilder.reconciled(newRows:against:)`: carries a row's `overrideText` forward
+  onto whichever freshly-built row occupies the same time window, matched by greatest
+  start/end-window overlap (falling back to nearest start within 0.75s if a boundary shift left
+  no true overlap). Wired into `runLyricBlendPasses` right before the fresh rows replace the old
+  ones.
+- Incidental fix discovered while designing the above: a user's mode PICK (`selectedMode`, from
+  the existing blend-selection feature) was *also* being silently discarded on every
+  re-analysis — an existing, previously-undocumented gap, since nothing carried it forward
+  either. Same `reconciled` mechanism now fixes both with no extra code.
+- `LyricBlendView`: each row gets a 4th, mint-colored free-text field below the three mode
+  candidates. Typing updates immediately via `AppModel.applyLyricBlendOverride(rowID:text:)`
+  (empty/whitespace clears the override rather than persisting a blank line). An active override
+  shows its own checkmark and suppresses the checkmark on all three candidate buttons, since the
+  override unconditionally wins.
+- 7 new unit tests (`LyricBlendRowBuilderTests`): override precedence, whitespace-only override
+  ignored, override segment has no words, reconciliation by overlap / nearest-start fallback /
+  no-match / no-old-rows / empty-override-not-leaked.
+- Verified via real `xcodebuild test`: full suite (excl. known-flaky `AppModelTests`/
+  `MusicLibraryAppModelTests`) green across 2 runs (one incidental `StemPlaybackServiceTests`
+  failure on the first run reproduced as a pass both in isolation and on immediate rerun — same
+  parallel-timing flakiness class as the documented `AppModelTests` flake, not a regression: this
+  change touches only Lyric Blend files, nothing in playback/stems). All 15
+  `LyricBlendRowBuilderTests` (8 existing + 7 new) individually confirmed passing. No new/removed
+  files, so no `tuist generate` needed. Committed `0d09af1` on `feature/lyric-blend-override`,
+  merged to `main` (`2e608f3`).
