@@ -9,16 +9,21 @@ struct ONNXSixStemSeparationEngine: StemSeparationEngine, Sendable {
 
     let metadata: StemSeparationEngineMetadata
 
+    // engineVersion 2 -> 3: fixes a real bug where `CoreMLStemSeparationEngine`'s single-shot
+    // `AVAudioConverter` resample could under-drain and silently return audio shorter than the
+    // source (reproduced: a 225.6s song's separated vocals stem measured ~205s, truncating the
+    // last ~20s of every transcription pass with no error surfaced). The version bump forces
+    // every previously-cached (possibly truncated) stem to be regenerated rather than reused.
     static let cpuMetadata = StemSeparationEngineMetadata(
         engineIdentifier: "onnxruntime-cpu-htdemucs-6s",
-        engineVersion: "2",
+        engineVersion: "3",
         modelIdentifier: "htdemucs-6s-onnx",
         modelVersion: "125b3e0"
     )
 
     static let coreMLMetadata = StemSeparationEngineMetadata(
         engineIdentifier: "onnxruntime-coreml-htdemucs-6s",
-        engineVersion: "2",
+        engineVersion: "3",
         modelIdentifier: "htdemucs-6s-onnx",
         modelVersion: "125b3e0"
     )

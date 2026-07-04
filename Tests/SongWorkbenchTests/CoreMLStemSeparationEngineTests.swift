@@ -66,10 +66,60 @@ final class CoreMLStemSeparationEngineTests: XCTestCase {
             })
     }
 
-    private func writeStereoFixture(to url: URL, frameCount: Int) throws {
+    /// Regression test for a real bug: `loadStereoFloatAudio`'s resample path used to call
+    /// `AVAudioConverter.convert(to:error:withInputFrom:)` exactly once and treat that single
+    /// call's output as the whole answer. A resample is not guaranteed to fully drain in one
+    /// pull (internal priming/latency), so the separated stem could come out measurably SHORTER
+    /// than the source with no error — reproduced on a real 225.6s song whose separated vocals
+    /// stem measured only ~205s, silently truncating the last ~20s of every transcription pass.
+    /// This fixture is written at 48kHz (source formats are rarely already 44.1kHz stereo
+    /// Float32, so nearly every real separation goes through the resample path this exercises)
+    /// and asserts the 44.1kHz output stem is NOT short of its expected duration.
+    func testSeparationOfNonMatchingSampleRateDoesNotTruncateTheTail() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.wav")
+        let sourceFrameCount = 96_000
+        try writeStereoFixture(to: sourceURL, frameCount: sourceFrameCount, sampleRate: 48_000)
+        let outputURL = directory.appendingPathComponent("stems", isDirectory: true)
+        let engine = CoreMLStemSeparationEngine(
+            predictor: QuarterMixStemPredictor(),
+            segmentFrames: 4_000,
+            overlapFrames: 400
+        )
+
+        let result = try await engine.separate(
+            request: StemSeparationRequest(inputURL: sourceURL, outputDirectory: outputURL)
+        ) { _ in }
+
+        // 96,000 frames @ 48kHz is exactly 2.0s; the 44.1kHz equivalent is exactly 88,200 frames.
+        let expectedFrames: AVAudioFramePosition = 88_200
+        let tolerance: AVAudioFramePosition = 50
+        for kind in result.stems.availableKinds {
+            guard let stemURL = result.stems[kind] else { continue }
+            let file = try AVAudioFile(forReading: stemURL)
+            XCTAssertEqual(file.fileFormat.sampleRate, 44_100)
+            let length: AVAudioFramePosition = file.length
+            let lowerBound = expectedFrames - tolerance
+            let upperBound = expectedFrames + tolerance
+            // A handful of frames of edge/rounding slack is fine; the bug this guards against
+            // dropped roughly 10% of the audio (thousands of frames on a real song), not a few.
+            let message =
+                "\(kind.rawValue) stem length \(length) not within "
+                + "\(lowerBound)...\(upperBound) of the expected \(expectedFrames) frames"
+            XCTAssertGreaterThan(length, lowerBound, message)
+            XCTAssertLessThan(length, upperBound, message)
+        }
+    }
+
+    private func writeStereoFixture(
+        to url: URL, frameCount: Int, sampleRate: Double = 44_100
+    ) throws {
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: 44_100,
+            sampleRate: sampleRate,
             channels: 2,
             interleaved: false
         )!

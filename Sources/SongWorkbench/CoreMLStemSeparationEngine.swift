@@ -412,40 +412,82 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         }
         try file.read(into: input)
 
-        let output: AVAudioPCMBuffer
         if inputFormat == targetFormat {
-            output = input
-        } else {
-            let ratio = sampleRate / inputFormat.sampleRate
-            let outputCapacity = AVAudioFrameCount(ceil(Double(input.frameLength) * ratio)) + 1
+            guard let channels = input.floatChannelData else {
+                throw CoreMLStemSeparationError.unsupportedAudio
+            }
+            let frameCount = Int(input.frameLength)
+            return StereoAudio(channels: [
+                Array(UnsafeBufferPointer(start: channels[0], count: frameCount)),
+                Array(UnsafeBufferPointer(start: channels[1], count: frameCount)),
+            ])
+        }
+
+        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+            throw CoreMLStemSeparationError.unsupportedAudio
+        }
+        let ratio = sampleRate / inputFormat.sampleRate
+        let outputCapacity = AVAudioFrameCount(ceil(Double(input.frameLength) * ratio)) + 1
+        let inputProvider = AudioConverterInputProvider(buffer: input)
+        return try StereoAudio(
+            channels: drainConverter(
+                converter, inputProvider: inputProvider, chunkCapacity: outputCapacity))
+    }
+
+    /// Repeatedly pulls from `converter` until it reports `.endOfStream`, appending each pass's
+    /// output. A single `convert(to:error:withInputFrom:)` call is NOT guaranteed to fully drain
+    /// a resample in one pass — sample-rate conversion can have internal priming/latency that
+    /// needs several pulls to flush even after all input has been supplied — so treating one
+    /// call's `frameLength` as "the whole answer" (the previous implementation) could silently
+    /// return audio shorter than the real source, with everything downstream (chunking, ASR)
+    /// faithfully processing that short buffer with no error ever surfaced. Reproduced on a real
+    /// song: the separated vocals stem measured ~205s against a 225.6s source, truncating the
+    /// last ~20s of transcription with no error and no "untranscribed vocals" flag (that audit
+    /// reads the same, already-shortened, voiced intervals).
+    private static func drainConverter(
+        _ converter: AVAudioConverter,
+        inputProvider: AudioConverterInputProvider,
+        chunkCapacity: AVAudioFrameCount
+    ) throws -> [[Float]] {
+        var left: [Float] = []
+        var right: [Float] = []
+        // Bails out rather than looping forever if the converter ever reports "more to come"
+        // while producing nothing, pass after pass.
+        var consecutiveEmptyHaveData = 0
+
+        while true {
             guard
-                let converted = AVAudioPCMBuffer(
-                    pcmFormat: targetFormat,
-                    frameCapacity: outputCapacity
-                ),
-                let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+                let chunk = AVAudioPCMBuffer(
+                    pcmFormat: converter.outputFormat, frameCapacity: chunkCapacity)
             else {
                 throw CoreMLStemSeparationError.unsupportedAudio
             }
             var conversionError: NSError?
-            let inputProvider = AudioConverterInputProvider(buffer: input)
-            let status = converter.convert(to: converted, error: &conversionError) { _, flag in
+            let status = converter.convert(to: chunk, error: &conversionError) { _, flag in
                 inputProvider.next(status: flag)
             }
             if let conversionError { throw conversionError }
             guard status != .error else {
                 throw CoreMLStemSeparationError.unsupportedAudio
             }
-            output = converted
+
+            let count = Int(chunk.frameLength)
+            if count > 0, let channels = chunk.floatChannelData {
+                left.append(contentsOf: UnsafeBufferPointer(start: channels[0], count: count))
+                right.append(contentsOf: UnsafeBufferPointer(start: channels[1], count: count))
+            }
+
+            if status == .endOfStream { break }
+            if status == .haveData, count == 0 {
+                consecutiveEmptyHaveData += 1
+                guard consecutiveEmptyHaveData < 8 else {
+                    throw CoreMLStemSeparationError.unsupportedAudio
+                }
+            } else {
+                consecutiveEmptyHaveData = 0
+            }
         }
-        guard let channels = output.floatChannelData else {
-            throw CoreMLStemSeparationError.unsupportedAudio
-        }
-        let frameCount = Int(output.frameLength)
-        return StereoAudio(channels: [
-            Array(UnsafeBufferPointer(start: channels[0], count: frameCount)),
-            Array(UnsafeBufferPointer(start: channels[1], count: frameCount)),
-        ])
+        return [left, right]
     }
 }
 

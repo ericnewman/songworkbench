@@ -123,6 +123,24 @@ enum ChordRowStringBuilder {
     }
 }
 
+/// Formats detected bass notes for the Review tab's optional bass-note row (backlog: Bass Note
+/// display). A standalone (non-view) type so the windowing/formatting logic is unit-testable
+/// without SwiftUI, mirroring `ChordRowStringBuilder`.
+enum BassNoteRowFormatter {
+    /// Bass notes within `window`, pitch-named and joined in onset order — e.g. "E · A · D".
+    /// `nil` when nothing falls in the window, so callers can skip rendering the row entirely.
+    static func label(
+        for bassNotes: [BassNoteObservation], inWindow window: ClosedRange<TimeInterval>
+    ) -> String? {
+        let notes =
+            bassNotes
+            .filter { window.contains($0.timestamp) }
+            .sorted { $0.timestamp < $1.timestamp }
+        guard !notes.isEmpty else { return nil }
+        return notes.map { BassNoteNaming.name(forMidiNote: $0.midiNote) }.joined(separator: " · ")
+    }
+}
+
 /// The `chordPro` tab's chrome: just a title, transpose (a real ChordPro concept — transposing
 /// changes what chords the .cho file itself displays) and export, wrapping the read-only render.
 /// Deliberately has none of `ChordProTabEditor`'s Edit/Source toggle, Import, JustChords, or Mark
@@ -226,6 +244,11 @@ private enum ReviewConfidenceTier {
 /// Eric's confirmed decision to keep them independent for this first pass.
 struct ChordProReviewAnnotationsPanel: View {
     @ObservedObject var model: AppModel
+    /// Display option (persisted like the other View-menu toggles): shows a bass-note row, in
+    /// the same lane color the waveform panel uses for the bass stem, above each lyric line's
+    /// time window. Off by default — most songs won't have bass detected yet, and the extra
+    /// row adds visual noise once they do.
+    @AppStorage("reviewShowBassNotes") private var showBassNotes = false
 
     private var sortedLyricIndices: [Int] {
         model.lyricSegments.indices.sorted {
@@ -241,9 +264,21 @@ struct ChordProReviewAnnotationsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Review & Annotate")
-                .font(.swDisplay(15, weight: .semibold))
-                .foregroundStyle(Color.swTextPrimary)
+            HStack {
+                Text("Review & Annotate")
+                    .font(.swDisplay(15, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
+                Spacer()
+                Toggle("Bass Notes", isOn: $showBassNotes)
+                    .toggleStyle(.checkbox)
+                    .font(.swDisplay(11))
+                    .disabled(model.bassNotes.isEmpty)
+                    .help(
+                        model.bassNotes.isEmpty
+                            ? "Run Tempo & Chords to detect a bass line first."
+                            : "Show the detected bass note above each lyric line's time window."
+                    )
+            }
             Text(
                 "Original recordings have no reference chart, so lines and chords below are "
                     + "color-coded by how confident the analysis was — tinted rows are worth a "
@@ -292,23 +327,42 @@ struct ChordProReviewAnnotationsPanel: View {
         }
     }
 
+    /// Bass notes (already-detected `BassNoteObservation`s, same data the Bass Notes tab's
+    /// ChordPro draft is built from) whose timestamp falls within this lyric line's time window,
+    /// formatted for display — e.g. "E · A · D".
+    private func bassNoteLabel(forLyricIndex index: Int) -> String? {
+        guard showBassNotes, !model.bassNotes.isEmpty else { return nil }
+        let segment = model.lyricSegments[index]
+        let window = min(segment.start, segment.end)...max(segment.start, segment.end)
+        return BassNoteRowFormatter.label(for: model.bassNotes, inWindow: window)
+    }
+
     private func lyricRow(index: Int) -> some View {
         let tier = ReviewConfidenceTier(model.lyricSegments[index].confidence)
-        return HStack(spacing: 8) {
-            Text(timeLabel(model.lyricSegments[index].start))
-                .font(.swMono(10))
-                .foregroundStyle(Color.swTextSecondary)
-                .frame(width: 44, alignment: .trailing)
-            if let label = tier.label {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(tier.tint)
-                    .help(label)
+        let bassLabel = bassNoteLabel(forLyricIndex: index)
+        return VStack(alignment: .leading, spacing: 2) {
+            if let bassLabel {
+                Text(bassLabel)
+                    .font(.swMono(10))
+                    .foregroundStyle(StemKind.bass.laneColor)
+                    .padding(.leading, 52)
             }
-            TextField("Lyric", text: $model.lyricSegments[index].text)
-            Toggle("Accept", isOn: $model.lyricSegments[index].accepted)
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-                .help("Mark this line accepted")
+            HStack(spacing: 8) {
+                Text(timeLabel(model.lyricSegments[index].start))
+                    .font(.swMono(10))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .frame(width: 44, alignment: .trailing)
+                if let label = tier.label {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(tier.tint)
+                        .help(label)
+                }
+                TextField("Lyric", text: $model.lyricSegments[index].text)
+                Toggle("Accept", isOn: $model.lyricSegments[index].accepted)
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+                    .help("Mark this line accepted")
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
