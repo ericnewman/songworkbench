@@ -7,7 +7,7 @@ struct SongWorkbenchApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(model: model)
-                .frame(minWidth: 1_100, minHeight: 650)
+                .frame(minWidth: 1_300, minHeight: 650)
                 .background(Color.swCanvas.ignoresSafeArea())
                 .foregroundStyle(Color.swTextPrimary)
                 .tint(Color.swAccent)
@@ -20,6 +20,12 @@ struct SongWorkbenchApp: App {
                 }
                 .modifier(LyricBlendAutoOpen(model: model))
         }
+        // Explicit initial size so the window opens wide enough, on first launch, to show all 3
+        // main sections of `PlayerView.mainColumns` at once (fixed-width song sidebar + the
+        // flexible editor column + the stem-mix rail) without the user having to drag it wider —
+        // the old `minWidth: 1_100` floor left the flexible editor column only ~410pt once the
+        // ~690pt of fixed columns/spacing/padding around it were subtracted.
+        .defaultSize(width: 1_540, height: 900)
         Window("About \(AboutInfo.appName)", id: "about") {
             AboutView()
                 .preferredColorScheme(.dark)
