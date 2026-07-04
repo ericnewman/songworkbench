@@ -71,18 +71,16 @@ final class ChromaChangePointDetectorTests: XCTestCase {
         // The same chord "re-struck" every 0.5s should look identical frame-to-frame (chroma is
         // pitch content, not onset energy), so no change-points fire within the sustain — only
         // the single real chord change at 3s should be detected.
+        //
+        // Uses `syntheticFrames` (integer frame counts) rather than a hand-rolled
+        // `while time < 3.0 { time += 0.05 }` loop: repeatedly adding 0.05 as a Double drifts
+        // by one whole hop after 60 iterations (0.05 is not exactly representable in binary
+        // floating point), so a manual loop here previously produced 61 C-major frames and a
+        // reported change-point of 3.049999999999997 instead of 3.0 — a bug in the test's
+        // synthetic data, not in the detector.
         let cMajor = triad(root: 0, third: 4)
         let gMajor = triad(root: 7, third: 4)
-        var frames: [ChromaVector] = []
-        var time: TimeInterval = 0
-        while time < 3.0 {
-            frames.append(ChromaVector(timestamp: time, values: cMajor))
-            time += 0.05
-        }
-        while time < 6.0 {
-            frames.append(ChromaVector(timestamp: time, values: gMajor))
-            time += 0.05
-        }
+        let frames = syntheticFrames(segments: [(cMajor, 3.0), (gMajor, 3.0)])
 
         let changePoints = ChromaChangePointDetector.changePoints(frames: frames)
 
