@@ -1212,3 +1212,70 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   `LyricBlendRowBuilderTests` (8 existing + 7 new) individually confirmed passing. No new/removed
   files, so no `tuist generate` needed. Committed `0d09af1` on `feature/lyric-blend-override`,
   merged to `main` (`2e608f3`).
+
+## 2026-07-04: Phrase-structure lyric grouper Phase 2 (backlog #9)
+
+- Eric asked to proceed straight to Phase 2 (ahead of the PRD's "wait for real-song
+  evaluation" recommendation) and confirmed the rhyme-detection approach: bundled phonetic
+  table (CMUdict-derived), not an orthographic-suffix heuristic.
+- New `Resources/cmudict_rhyme.tsv`: word -> rhyme part (phonemes from the last
+  PRIMARY-stressed vowel to the end, stress digits stripped), derived from `cmudict.dict`
+  (cmusphinx/cmudict, Carnegie Mellon University, BSD-style license, notice retained in the
+  file header). 126,052 entries, first-listed pronunciation only.
+- New `SyllableCounter` (pure vowel-cluster + silent-trailing-"e" heuristic, no bundled
+  data) and `RhymeDetector` (pure lookup + `Bundle.main`-backed `.shared` singleton;
+  `bestRhymeScore` distinguishes `nil` "no evidence" from `0.0` "confirmed non-rhyme" so an
+  out-of-vocabulary word never masquerades as a signal; degrades to an empty table rather
+  than crashing when the bundle resource is missing, including inside the unit-test host).
+- New `RhymeSyllableScorer`: given Stage 1's boundary and nearby real word-gap candidates
+  plus the section's OTHER cells as siblings, picks the best-scoring candidate — weighted
+  end-rhyme (0.6) + whole-LINE syllable-count similarity to the sibling median (0.4) — only
+  moving away from the nearest-in-time candidate past a `minimumImprovement` margin (0.05
+  default).
+- Wired into `LyricPhraseGrouper.resegmented`: Stage 1's per-boundary nearest-gap snap runs
+  first unchanged, then Stage 2 nudges each boundary independently within a
+  `nudgeWindowInBeats` (1 beat default) window, fenced strictly between the NEIGHBORING
+  boundaries' BASELINE (not post-nudge) cuts so cells can never cross or overlap regardless
+  of how any individual boundary moves; a defensive collision/inversion check falls back to
+  the unmodified Stage 1 cut set (should be unreachable given the fencing, kept as a
+  belt-and-suspenders net). The trailing cell (after the last real cut, running to the
+  section's end) is always included as a sibling for every OTHER boundary's decision, even
+  though it never gets a decision of its own.
+- New `LyricPhraseGrouper.Configuration` fields (`refinementEnabled` default `true`,
+  `nudgeWindowInBeats` default `1`, `rhymeSyllableConfiguration`); `regroup()` gained a
+  defaulted `rhymeDetector: RhymeDetector = .shared` parameter — the existing
+  `AppModel.applyAnalysis` call site needed zero changes, and Phase 1's "no version-tag
+  bump" resolution still holds (same always-rerun post-pass, new logic inside it).
+- Tests: `SyllableCounterTests` (6), `RhymeDetectorTests` (11), `RhymeSyllableScorerTests`
+  (7), plus 3 new `LyricPhraseGrouperTests` integration cases on a hand-timed 3-cell fixture
+  proving: the nudge happens with real rhyme+syllable evidence, `refinementEnabled: false`
+  reproduces exactly Stage 1's cut, and syllable evidence alone (empty rhyme table) does
+  NOT favor this particular nudge (confirms the main test's result is rhyme-driven, not a
+  syllable-count coincidence) — caught during design that "syllable similarity" naturally
+  means whole-line totals, not just the ending word's count, which flipped an earlier draft
+  of that third test's expectation before it ever reached the real build.
+- Real `xcodebuild test` caught a genuine bug the design/sandbox review missed:
+  `RhymeDetector.parseTable` split on a bare `"\n"` `Character`, which silently fails to
+  split CRLF-terminated text at all, since Swift represents `"\r\n"` as ONE grapheme
+  cluster, not two characters — a test using `\r\n` line endings got a table of size 0.
+  Fixed with `split(whereSeparator:)` using `\.isNewline` (correctly handles LF/CR/CRLF).
+  Also caught an argument-order compile error (`rhymeDetector:` before `configuration:` at
+  a call site, which Swift rejects since labeled arguments must appear in declaration
+  order) — neither of these would have been caught without a real compiler.
+- Verified via real `xcodebuild test` (Mac toolchain, via Desktop Commander): targeted new
+  suites pass; full suite run twice — only the pre-existing known-flaky baseline
+  (`AppModelTests`, `MusicLibraryAppModelTests`; the exact failing subset differed between
+  the two runs on identical code, confirming flakiness rather than a regression), zero new
+  failures. `swift format lint --strict` clean (after an auto-format pass + one manual
+  line-length fix). `tuist generate` regenerated the pbxproj for the 7 new files.
+- Own worktree `backlog/phrase-grouper-phase2`. Committed `ad5aa19`, merged to `main`
+  `973b1d9`.
+- Notable friction (environment, not code): the sandbox's git repeatedly left stale lock
+  files (`index.lock`, `HEAD.lock`, ref locks) it couldn't unlink due to a permission quirk
+  on this session's bind-mounted `.git`, blocking every subsequent git command until the
+  lock was removed from the REAL Mac side (via Desktop Commander) immediately before the
+  next sandbox git command, with zero intervening git calls (even a read-only `git status`
+  recreated a fresh stale lock). The final merge itself was done directly on the Mac
+  checkout instead of through the worktree, since the worktree's own `.git` metadata has
+  sandbox-only paths baked in (per `songworkbench-verify-on-mac` memory) but the shared
+  object database is visible fine from the main checkout on either side.

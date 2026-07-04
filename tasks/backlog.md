@@ -166,9 +166,27 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
    harmony-only re-analysis is picked up automatically with no digest/version-tag plumbing.
    7 unit tests incl. the chorus-determinism regression. Verified via real `xcodebuild test`:
    7/7 new tests pass, full suite shows only the pre-existing known-flaky baseline, zero new
-   failures. Phase 2 (rhyme/syllable refinement) remains deferred pending real-song
-   evaluation of Phase 1. (todo.md: 2026-07-01, original approved sketch at
-   todo.md:374-395)
+   failures. (todo.md: 2026-07-01, original approved sketch at todo.md:374-395)
+   **Phase 2 (rhyme/syllable refinement) done 2026-07-04** (own worktree
+   `backlog/phrase-grouper-phase2`, merged `973b1d9`): built ahead of the "wait for
+   real-song evaluation" recommendation, per Eric's direct request. Bundled-phonetic-table
+   rhyme detection confirmed as the approach (vs. an orthographic heuristic). New
+   `Resources/cmudict_rhyme.tsv` (CMUdict-derived word->rhyme-part lookup, 126,052 entries),
+   `SyllableCounter` (vowel-cluster heuristic), `RhymeDetector` (OOV-safe lookup +
+   `Bundle.main`-backed `.shared`), `RhymeSyllableScorer` (picks the best-scoring nearby real
+   word gap by end-rhyme + whole-line syllable-count similarity to sibling cells, fenced so
+   it can never cross a neighboring cell, defaulting to Stage 1's own choice on ties/missing
+   evidence). `LyricPhraseGrouper.Configuration` gains `refinementEnabled`/
+   `nudgeWindowInBeats`/`rhymeSyllableConfiguration`; `regroup()` gains a defaulted
+   `rhymeDetector` parameter — no call-site changes needed, no version-tag bump needed (same
+   always-rerun post-pass Phase 1 already established). 24 new unit/integration tests.
+   Verified via real `xcodebuild test`: all new tests pass, full suite (2 runs) shows only
+   the pre-existing known-flaky baseline (varies by run, confirmed not a regression), zero
+   new failures; `swift format lint --strict` clean. Fixed a real bug the actual build
+   caught: `RhymeDetector.parseTable` splitting on a bare `"\n"` `Character` silently failed
+   on CRLF text (Swift represents `"\r\n"` as one grapheme cluster) — switched to
+   `split(whereSeparator:)` with `isNewline`. (`.scratch/PRD-phrase-structure-lyric-grouper.md`
+   §9 has full implementation notes.)
 10. **Chord event-timing rigor audit** — current nearest-onset accuracy metric is
     self-flagged "weak" (941-onset guitar-stem test); needs a real chroma-flux
     change-point comparison. `ChromaChangePointDetector` + `ChordChangePointAudit` built
