@@ -133,14 +133,25 @@ Touches: ChordProDraftBuilder.swift, ChordProTextRenderer.swift, and chart-expor
    and harmony run concurrently, so beat/chord data isn't available inside the transcription
    stage itself), scoped to Phase 1 (bar-period re-segmentation only) first; Phase 2
    (rhyme/syllable refinement, needs new linguistic subsystem weight — no such code exists
-   yet) deferred pending real-song evaluation of Phase 1. Two open questions for Eric before
-   Phase 1 starts (doc §8): the two-stage-dependency versioning approach, and confirming the
-   Phase 1/Phase 2 split. Not yet implemented — awaiting go-ahead on the design.
-   (todo.md: 2026-07-01, original approved sketch at todo.md:374-395)
+   yet) deferred pending real-song evaluation of Phase 1. Both open questions answered by
+   Eric 2026-07-04: proceed with Phase 1 now; versioning folds a chords-digest into the
+   lyric stage version (see doc §6 — note the unconditional-post-pass pattern
+   `TimedLyricSegmentGrouper.regroup` already uses may make the digest unnecessary in
+   practice; worth reconciling before/while implementing). Phase 1 implementation not yet
+   started. (todo.md: 2026-07-01, original approved sketch at todo.md:374-395)
 10. **Chord event-timing rigor audit** — current nearest-onset accuracy metric is
     self-flagged "weak" (941-onset guitar-stem test); needs a real chroma-flux
-    change-point comparison. Investigation + maybe a scoring script, likely no product code
-    change. (todo.md: 2026-07-02 evening)
+    change-point comparison. `ChromaChangePointDetector` + `ChordChangePointAudit` built
+    (frame-to-frame cosine distance, median+6xMAD adaptive threshold, min-spacing de-bounce).
+    Verified 2026-07-04 via real `xcodebuild test` on the Mac toolchain (superseding the
+    prior sandbox-only Python cross-check, which had missed a genuine test bug — see below):
+    all 14 tests pass, full suite shows only the pre-existing known-flaky baseline
+    (AppModelTests x4, MusicLibraryAppModelTests x1), zero new failures. Fixed one test bug
+    found by the real build (`testIgnoresRepeatedStrumsOfTheSameChordSameNotes`: synthetic
+    frame times built with a hand-rolled `while time < X { time += 0.05 }` loop drifted a
+    full hop from float accumulation over 60 iterations; switched to the existing
+    frame-count-based `syntheticFrames` helper). Detector implementation itself needed no
+    change. Done. (todo.md: 2026-07-02 evening)
 11. **Lyric Blending feature** — drop the Fast/Balanced/Accuracy picker, always run all 3
     models, open a per-song "Lyric Blend" window, stack 3 candidates per time window in 3
     colors, user picks best per row, blended selection persists as official lyrics. Biggest

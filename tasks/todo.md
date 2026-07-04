@@ -940,3 +940,36 @@ rest-marker rendering; unrecognized-vocals row style; keep raw text editor as-is
   (941 of them) make SOME onset likely near most chord events whether or not it's the real
   change, so the old metric can't fully distinguish a correct chart from a lucky one.
   Write-up: `.scratch/chord-event-timing-audit.md`.
+
+## 2026-07-04 — Chord event-timing rigor audit (backlog #10), real-build verification + fix
+- Ran the real `xcodebuild test` (on-Mac toolchain, not the sandbox Python re-derivation) for
+  the first time against this item and it caught a genuine bug the earlier sandbox-only
+  verification missed: `testIgnoresRepeatedStrumsOfTheSameChordSameNotes` failed with
+  `XCTAssertEqualWithAccuracy failed: ("3.049999999999997") is not equal to ("3.0")`.
+- Root cause was in the TEST, not `ChromaChangePointDetector`: the test built its synthetic
+  frames with a hand-rolled `while time < 3.0 { time += 0.05 }` loop. Repeatedly adding 0.05
+  as a `Double` drifts by a full hop after 60 iterations (0.05 isn't exactly representable in
+  binary floating point) — confirmed in Python (`while time < 3.0: time += 0.05` runs 61
+  times, ending at `time = 3.049999999999997`). So the test generated 61 C-major frames
+  instead of 60, and the first G-major frame landed at ~3.05, not 3.0. Read the detector
+  implementation to confirm it reports `sorted[i + 1].timestamp` verbatim (no interpolation,
+  no off-by-one) — it's correct as written; no product code change needed.
+- Fix: rewrote the test to build frames via the existing frame-count-based `syntheticFrames`
+  helper (`(chord, duration)` segments, integer `frameCount`), matching every other
+  strict-accuracy (`0.000_001`) test in the file, instead of a parallel hand-rolled loop with
+  a latent bug.
+- Verified: `swift format lint --strict --recursive Sources Tests` clean; targeted
+  `xcodebuild test -only-testing:SongWorkbenchTests/ChromaChangePointDetectorTests
+  -only-testing:SongWorkbenchTests/ChordChangePointAuditTests` — 14/14 pass; full
+  `xcodebuild test` suite — only the pre-existing known-flaky baseline (`AppModelTests` x4,
+  `MusicLibraryAppModelTests.testOpeningLocalLibraryTrackAddsAndSelectsSong`), zero new
+  failures. `project.pbxproj` also regenerated via `tuist generate --no-open` — the prior
+  commit's pbxproj was missing the Sources/Tests file-reference entries for this item's two
+  new files.
+- Takeaway validated: this is exactly the kind of bug that only shows up under a real Swift
+  compiler/test run — the sandbox's independent Python re-derivation could confirm the
+  *algorithm* but not this specific test-data construction bug. Backlog #10 is now done with
+  real verification, not just algorithmic cross-check.
+- **Batch C item #10 done.** Next: backlog #9 Phase 1 (`LyricPhraseGrouper`, bar-period
+  re-segmentation) per Eric's "Proceed with Phase 1" instruction — design doc and both open
+  questions already resolved (`.scratch/PRD-phrase-structure-lyric-grouper.md`).
