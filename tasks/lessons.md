@@ -135,3 +135,32 @@ suspect an upstream value silently defaulting to zero/empty behind an unrelated 
 re-checking the fix's own formula. And once one property in a tightly-coupled layout
 (width/position/text) is changed to a new coordinate space, audit every SIBLING property that
 assumed the OLD coordinate space still holds.
+
+## 2026-07-05 — Don't trust a doc comment's justification for a shortcut; verify against the code
+**Mistake:** `ChordProDraftBuilder.measureGrid` hard-coded `beatsPerBar = 4` with a doc comment
+implying the builder had no lyric-onset signal independent of the lyrics themselves — but
+`lyrics: [TimedLyricSegment]` was already a parameter in that very function, exactly like the
+live preview (`WorkspaceEditorsView`) already used to estimate 3/4/5/6 via
+`DownbeatEstimator.estimateBeatsPerBar`. The comment's claim was simply false.
+**Rule:** A comment explaining WHY a shortcut is "necessary" is a claim, not a fact — check it
+against the actual function scope before accepting the shortcut.
+
+## 2026-07-05 — `ChordProDraftBuilder` test fixtures need real `words:` and can't hand-derive bar-pipe strings
+**Mistake:** Built a `ChordProDraftBuilderTests` fixture with several short `TimedLyricSegment`
+lines (default `words: []`) before an instrumental outro. `TrailingLyricTailPruner
+.tailLooksDegenerate` treats `words.count <= 2` as an ASR-hallucination blip, so it silently
+pruned the trailing lines from `bodyLyrics`, shifting `lastLyricEnd` and the outro's start time
+out from under the test — the assertion failed for a reason unrelated to the fix under test.
+Separately, hand-computing the expected `"| [C] | [F] | ... |"` bar-pipe string from
+`beatsPerBar` alone was unreliable: `instrumentalRows`' row-splitting math
+(`typicalLyricBars`/`LyricSectionDeriver.bars`) uses its OWN hard-coded 4-beat-per-bar
+conversion independent of the real `MeasureGrid.beatsPerBar`, and `DownbeatEstimator.barPhase`
+re-fits bar boundaries to the given chord onsets — so even a "clearly wrong" grid can still
+render a clean-looking bar-pipe string by accident (confirmed empirically: a 2-onset case
+rendered identically under both beatsPerBar 4 and 5).
+**Rule:** Give `ChordProDraftBuilder` test fixtures ≥3 dummy `words` per line whenever the test
+needs several short, closely-timed lyric lines followed by a real instrumental gap. Prefer a
+DIFFERENTIAL assertion (same chords/timing; vary only the signal under test — e.g. lyric-line
+spacing — and assert the output differs) over a hand-derived exact-match string, and always
+empirically confirm a new regression test actually fails when the fix is reverted before
+trusting it.

@@ -38,9 +38,19 @@ struct ChordTimelineDecoder: Sendable {
         from analysis: SongAudioAnalysis,
         key: MusicalKey?,
         bassNotes: [BassNoteObservation] = [],
-        instrumentOnsets: [TimeInterval] = []
+        instrumentOnsets: [TimeInterval] = [],
+        // Overrides `analysis.beat?.beatTimes` when the caller has a BETTER grid — AnalysisStage
+        // phase-locks the harmony engine's tempo estimate to the drums stem's real onsets
+        // (`resolvedBeatTimes`) AFTER `analysis` is produced, and passes that here. Decoding
+        // window labels/onset-discounts on the harmony engine's own uncorrected grid while every
+        // downstream consumer (snap, duration filter, chorus consensus, ChordPro, playback) uses
+        // the drum-locked grid meant windows here could straddle real beats slightly differently
+        // than where everything else thinks the beats fall. `nil` (the default, and every
+        // existing caller/test) preserves the old behavior exactly.
+        beatTimes explicitBeatTimes: [TimeInterval]? = nil
     ) -> [EditableChordEvent] {
-        guard let beatTimes = analysis.beat?.beatTimes, beatTimes.count >= 2 else {
+        let beatTimes = explicitBeatTimes ?? (analysis.beat?.beatTimes ?? [])
+        guard beatTimes.count >= 2 else {
             // No usable beat grid: fall back to the window-voting reducer (2s windows).
             return ChordEventReducer().events(from: analysis)
         }

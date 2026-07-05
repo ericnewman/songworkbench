@@ -615,7 +615,7 @@ struct HarmonyStage: AnalysisStageRunning {
                 engine: AnalysisEngineVersion(
                     identifier: harmonyEngine.metadata.identifier,
                     version: harmonyEngine.metadata.version
-                        + "|reduce-14-bass-snap"
+                        + "|reduce-15-resolved-beatgrid"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -675,7 +675,11 @@ struct HarmonyStage: AnalysisStageRunning {
                     from: result,
                     key: estimatedKey,
                     bassNotes: detectedBassNotes ?? context.document.bassNotes,
-                    instrumentOnsets: instrumentOnsets + bassCues
+                    instrumentOnsets: instrumentOnsets + bassCues,
+                    // Decode on the SAME drum-locked grid every downstream consumer (snap,
+                    // duration filter, consensus, ChordPro, playback) uses — not the harmony
+                    // engine's own pre-lock estimate embedded in `result`.
+                    beatTimes: resolvedBeatTimes
                 ),
                 bassNotes: detectedBassNotes ?? []
             )

@@ -1259,6 +1259,23 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertLessThan(out[0].words[1].start, out[0].words[1].end)
     }
 
+    func testVocalWordOnsetAlignerNeverStacksTwoWordsOnTheSameOnset() {
+        // Regression: BOTH words snap to the identical nearest onset (0.90) — a plain
+        // "nondecreasing" floor previously let the second word land at EXACTLY the first
+        // word's time (0.90 == 0.90), stacking their anchors and inflating onset-corroboration
+        // scores for candidates whose words bunch near one energy burst. Every word's onset
+        // must now be STRICTLY later than the previous one.
+        let segment = TimedLyricSegment(
+            start: 1.0, end: 1.9, text: "a b",
+            words: [
+                TimedLyricWord(text: "a", start: 1.00, end: 1.40, characterRange: 0..<1),
+                TimedLyricWord(text: "b", start: 1.50, end: 1.90, characterRange: 2..<3),
+            ])
+        let out = VocalWordOnsetAligner.snapped(
+            [segment], toOnsets: [0.90], tolerance: 0.7)
+        XCTAssertGreaterThan(out[0].words[1].start, out[0].words[0].start)
+    }
+
     // MARK: - StrandedLeadingWordRepairer
 
     private func oceansSegment() -> TimedLyricSegment {

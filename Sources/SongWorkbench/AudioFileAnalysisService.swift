@@ -897,14 +897,23 @@ enum VocalWordSpanNormalizer {
 /// run on the vocals stem), so words — and everything anchored to them (the ChordPro word layout,
 /// the per-line waveform strip, the bouncing ball, and chords placed over words) — sit on the
 /// actual vocal energy instead of the ASR's approximate onset. Non-destructive: word/segment count,
-/// order, and text are preserved; only onset times move, never before the previous word (times stay
-/// nondecreasing), and never past a word's own end. Each segment's `start`/`end` are re-derived from
-/// its snapped words. Returns the input unchanged when `onsets` is empty.
+/// order, and text are preserved; only onset times move, never before the previous word by less
+/// than `minimumWordGap` (so adjacent words can never land on the exact same onset — see below),
+/// and never past a word's own end. Each segment's `start`/`end` are re-derived from its snapped
+/// words. Returns the input unchanged when `onsets` is empty.
 enum VocalWordOnsetAligner {
     static func snapped(
         _ segments: [TimedLyricSegment],
         toOnsets onsets: [TimeInterval],
-        tolerance: TimeInterval = 0.15
+        tolerance: TimeInterval = 0.15,
+        // Two adjacent ASR words both within `tolerance` of the SAME onset (a common case:
+        // several short words land inside one energy burst) previously both snapped to that
+        // identical onset time — a floor of merely "nondecreasing" lets equal-to-previous
+        // through. Stacked word anchors then render on top of each other and inflate
+        // onset-corroboration scores (every stacked word counts as a separate "onset match"
+        // for what is really one burst). Enforcing a minimum gap keeps every word's onset
+        // distinct while staying far below any real syllable duration.
+        minimumWordGap: TimeInterval = 0.02
     ) -> [TimedLyricSegment] {
         guard !onsets.isEmpty, !segments.isEmpty else { return segments }
         let sortedOnsets = onsets.sorted()
@@ -920,8 +929,9 @@ enum VocalWordOnsetAligner {
                     nearest = onset
                 }
                 var newStart = abs(nearest - time) <= tolerance ? nearest : time
-                // Keep word order (nondecreasing) and a positive duration.
-                newStart = max(newStart, floor)
+                // Keep word order STRICTLY increasing (never equal to the previous word,
+                // never decreasing) and a positive duration.
+                newStart = max(newStart, floor + minimumWordGap)
                 if words[wordIndex].end > words[wordIndex].start {
                     newStart = min(newStart, words[wordIndex].end - 0.01)
                 }

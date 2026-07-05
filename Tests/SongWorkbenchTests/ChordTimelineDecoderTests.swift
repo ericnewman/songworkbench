@@ -254,4 +254,30 @@ final class ChordTimelineDecoderTests: XCTestCase {
         let events = ChordTimelineDecoder().events(from: analysis, key: dbMajor)
         XCTAssertEqual(events.map(\.chord), ["C#", "F#"])
     }
+
+    func testExplicitBeatTimesOverridesAnalysisEmbeddedGrid() {
+        // Regression for the grid-mismatch finding: AnalysisStage decodes on its
+        // drum-locked `resolvedBeatTimes`, which can differ from the harmony engine's own
+        // `analysis.beat.beatTimes` embedded above. Genuine change C#→F# on the TRUE beats
+        // (0, 0.5, ... 4.0); `analysis` embeds a DECOY grid offset by a quarter beat, which
+        // would straddle every chord boundary and blur the windows if it were used instead.
+        var observations: [ChordObservation] = []
+        for beatIndex in 0..<4 {
+            let t = TimeInterval(beatIndex) * 0.5
+            observations.append(obs(t + 0.1, .cSharp, .major, 0.7))
+            observations.append(obs(t + 0.3, .cSharp, .major, 0.7))
+        }
+        for beatIndex in 4..<8 {
+            let t = TimeInterval(beatIndex) * 0.5
+            observations.append(obs(t + 0.1, .fSharp, .major, 0.7))
+            observations.append(obs(t + 0.3, .fSharp, .major, 0.7))
+        }
+        let trueBeats = (0...8).map { TimeInterval($0) * 0.5 }
+        let decoyBeats = trueBeats.map { $0 + 0.25 }
+        let events = ChordTimelineDecoder().events(
+            from: analysis(observations, beats: decoyBeats), key: dbMajor,
+            beatTimes: trueBeats)
+        XCTAssertEqual(events.map(\.chord), ["C#", "F#"])
+        XCTAssertEqual(events[1].time, 2.0, accuracy: 1e-9)
+    }
 }

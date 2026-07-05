@@ -443,6 +443,76 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertTrue(document.contains("| [C] | [F] | [G] | [C] |"), document)
     }
 
+    func testChordOnlyRowUsesEstimatedBeatsPerBarFromLyricSpacing() {
+        // Finding 3 regression: the live preview estimates beatsPerBar from lyric-line onset
+        // spacing (3/4/5/6 via DownbeatEstimator), but the generated ChordPro used to
+        // hard-code 4 regardless. Steady 120 BPM grid (0.5s/beat); five lyric-line onsets are
+        // spaced 5 beats (2.5s) apart -- a clean non-4/4 phrase the estimator should detect
+        // over its default. A 2-bar outro then holds one chord per 5-beat bar (2.5s each);
+        // with the old hard-coded 4-beat (2.0s) bar, F's 2.5s offset from C is 1.25 bars --
+        // not a bar boundary -- so it would NOT render as a clean one-chord-per-bar row.
+        //
+        // Each line carries 3 real `words` (>2 substantive tokens) so
+        // `TrailingLyricTailPruner` doesn't mistake this short-line fixture for a degenerate
+        // ASR tail hallucination and prune the last lines out of the outro boundary.
+        func line(_ start: TimeInterval, _ end: TimeInterval, _ text: String) -> TimedLyricSegment {
+            TimedLyricSegment(
+                start: start, end: end, text: text,
+                words: [
+                    TimedLyricWord(text: "a", start: start, end: start, characterRange: 0..<1),
+                    TimedLyricWord(text: "b", start: start, end: start, characterRange: 1..<2),
+                    TimedLyricWord(text: "c", start: start, end: start, characterRange: 2..<3),
+                ])
+        }
+        let beats = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        let input = ChordProDraftInput(
+            title: "Five Four Verse",
+            tempo: 120,
+            lyrics: [
+                line(0.0, 0.5, "First line here"),
+                line(2.5, 3.0, "Second line here"),
+                line(5.0, 5.5, "Third line here"),
+                line(7.5, 8.0, "Fourth line here"),
+                line(10.0, 12.5, "Fifth line here"),
+            ],
+            chords: [
+                EditableChordEvent(time: 12.5, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 15.0, chord: "F", confidence: 0.9),
+            ],
+            beatTimes: beats,
+            sourceDuration: 17.5
+        )
+        let document = ChordProDraftBuilder().build(input)
+
+        // Control: the SAME outro chords, but preceding lyric lines spaced 4 beats (2.0s)
+        // apart instead of 5 -- consistent with the old hard-coded default, so the estimator
+        // has no reason to deviate from it. Everything else (outro start/chords/duration,
+        // per-line word count, beat grid) is identical, isolating the lyric-spacing signal as
+        // the only difference between the two builds.
+        let fourBeatInput = ChordProDraftInput(
+            title: "Five Four Verse",
+            tempo: 120,
+            lyrics: [
+                line(0.0, 0.5, "First line here"),
+                line(2.0, 2.5, "Second line here"),
+                line(4.0, 4.5, "Third line here"),
+                line(6.0, 6.5, "Fourth line here"),
+                line(8.0, 12.5, "Fifth line here"),
+            ],
+            chords: input.chords,
+            beatTimes: beats,
+            sourceDuration: 17.5
+        )
+        let controlDocument = ChordProDraftBuilder().build(fourBeatInput)
+        let outro = { (doc: String) in doc.components(separatedBy: "{comment: Outro}").last ?? "" }
+        XCTAssertNotEqual(
+            outro(document), outro(controlDocument),
+            "Changing only the lyric-line spacing (5 beats/line vs 4) should change the "
+                + "estimated beatsPerBar and thus the rendered outro bar grid, proving the "
+                + "builder wires lyric onsets into MeasureGrid instead of hard-coding 4.\n\n"
+                + "5-beat lyrics:\n\(document)\n\n4-beat lyrics:\n\(controlDocument)")
+    }
+
     func testChordOnlyRowMarksMidBarChordHoldWithContinuationDot() {
         // B2: a chord that changes AFTER a bar's downbeat (an off-beat-1 change) must show the
         // beats it then holds through as "." rather than a blank or a restated symbol — the

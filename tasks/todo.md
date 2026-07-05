@@ -160,16 +160,16 @@ margin on Flip Flops after re-analysis.
 ## Review: chord/vocal accuracy + timeline placement (2026-07-05)
 
 Findings:
-- [ ] Harmony decode still windows raw chroma on the harmony engine's original
+- [x] Harmony decode still windows raw chroma on the harmony engine's original
       `result.beat?.beatTimes`, even after deriving `resolvedBeatTimes` from
       drum onsets. This can pick labels and Viterbi switch discounts on a
       different grid than the one later used for snapping, duration filtering,
       chorus consensus, ChordPro, and playback.
-- [ ] `VocalWordOnsetAligner` lets multiple adjacent words snap to the same
+- [x] `VocalWordOnsetAligner` lets multiple adjacent words snap to the same
       vocal onset because it only enforces nondecreasing starts. This can stack
       word anchors/ball timing and inflate onset-corroboration scores for
       candidates whose words are bunched near one energy burst.
-- [ ] Generated ChordPro still hard-codes `beatsPerBar = 4`, while the live
+- [x] Generated ChordPro still hard-codes `beatsPerBar = 4`, while the live
       preview estimates 3/4/5/6 from lyric-line spacing. Non-4 phrase grids can
       therefore render and persist chord-only rows/barlines differently from the
       preview timeline.
@@ -179,6 +179,43 @@ Verification basis:
   `VocalWordOnsetAligner`, `ChordProDraftBuilder`, `WorkspaceEditorsView`,
   `MeasureGrid`, and associated tests. No implementation changes or test runs
   in this pass.
+
+### Fixes landed (2026-07-05, night)
+
+- **Harmony decode grid**: `ChordTimelineDecoder.events(from:key:bassNotes:instrumentOnsets:beatTimes:)`
+  gained an optional `beatTimes` override (defaults to the old embedded-grid
+  behavior when omitted, so every other caller is unaffected). `AnalysisStage`
+  now passes `resolvedBeatTimes` (the drum-locked grid) explicitly, so chord
+  decoding windows chroma on the SAME grid used downstream for snapping,
+  duration filtering, chorus consensus, ChordPro, and playback. Reducer/cache
+  stage tag bumped `"|reduce-14-bass-snap"` → `"|reduce-15-resolved-beatgrid"`
+  to force cached analyses to re-decode. Regression:
+  `testExplicitBeatTimesOverridesAnalysisEmbeddedGrid` (constructs a real chord
+  change on a "true" grid while the analysis embeds a decoy grid, asserts the
+  override wins).
+- **VocalWordOnsetAligner stacked anchors**: `snapped(_:toOnsets:tolerance:minimumWordGap:)`
+  gained a `minimumWordGap` (default 0.02s) and the nondecreasing clamp
+  (`>=`) became a strict `+ minimumWordGap` floor, so adjacent words can no
+  longer snap to the identical onset. Regression:
+  `testVocalWordOnsetAlignerNeverStacksTwoWordsOnTheSameOnset` (same two-word/
+  one-onset fixture as the existing nondecreasing test, strict `>` assertion).
+- **ChordPro hard-coded beatsPerBar**: `ChordProDraftBuilder.measureGrid` took
+  a `lyrics` parameter and now calls
+  `DownbeatEstimator.estimateBeatsPerBar(beatTimes:onsets:)` with the lyric-line
+  onsets — the same signal `WorkspaceEditorsView`'s live preview already uses —
+  instead of a literal `4`. The doc comment's original justification ("the
+  builder has no lyric-onset signal independent of the lyrics") was simply
+  wrong: `lyrics: [TimedLyricSegment]` was already in scope. Regression:
+  `testChordOnlyRowUsesEstimatedBeatsPerBarFromLyricSpacing` — a differential
+  test (proved to fail without the fix, by temporarily hardcoding `4` and
+  re-running) that builds the SAME outro chords twice, varying only whether
+  the preceding lyric lines are spaced 5 beats or 4 beats apart, and asserts
+  the rendered outro bar grid differs.
+- Suite: 586 tests, same pre-existing `AppModelTests`/`MusicLibraryTests`
+  environment failures (song-file-selection/persistence state, unrelated to
+  these 3 fixes) — none in `ChordTimelineDecoderTests`,
+  `ChordProDraftBuilderTests`, or the `VocalWordOnsetAligner` tests.
+  `swift format lint --strict -r Sources Tests` clean.
 
 ## Review: instrumental-row width bug + Rhythmic Spacing always-on (2026-07-05, evening)
 
