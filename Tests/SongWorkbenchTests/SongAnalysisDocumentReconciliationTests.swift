@@ -117,4 +117,46 @@ final class SongAnalysisDocumentReconciliationTests: XCTestCase {
         let notDragged = EditableChordEvent(time: 5.0, chord: "F")
         XCTAssertEqual(notDragged.effectiveTime, 5.0)
     }
+
+    // MARK: - EditableChordEvent.matching(rowTime:in:) (Review chart interactivity)
+
+    func testMatchingFindsTheExactRawTimeEvent() {
+        let target = EditableChordEvent(time: 12.0, chord: "Dm")
+        let events = [EditableChordEvent(time: 3.0, chord: "C"), target]
+
+        let match = EditableChordEvent.matching(rowTime: 12.0, in: events)
+
+        XCTAssertEqual(match?.id, target.id)
+    }
+
+    func testMatchingIgnoresManualTimeAndMatchesByRawTime() {
+        // A previously-dragged chord's manualTime must NOT be what rowTime is compared against —
+        // the row's authoritative time is always the RAW time the builder threaded through.
+        var dragged = EditableChordEvent(time: 8.0, chord: "Em")
+        dragged.manualTime = 20.0
+
+        let match = EditableChordEvent.matching(rowTime: 8.0, in: [dragged])
+
+        XCTAssertEqual(match?.id, dragged.id)
+    }
+
+    func testMatchingReturnsNilBeyondTolerance() {
+        let events = [EditableChordEvent(time: 8.0, chord: "Em")]
+
+        XCTAssertNil(EditableChordEvent.matching(rowTime: 8.5, in: events))
+        XCTAssertNotNil(EditableChordEvent.matching(rowTime: 8.005, in: events))
+    }
+
+    func testMatchingPicksTheNearestWhenMultipleAreWithinTolerance() {
+        let near = EditableChordEvent(time: 8.002, chord: "A")
+        let far = EditableChordEvent(time: 8.009, chord: "B")
+
+        let match = EditableChordEvent.matching(rowTime: 8.0, in: [far, near], tolerance: 0.01)
+
+        XCTAssertEqual(match?.id, near.id)
+    }
+
+    func testMatchingReturnsNilForEmptyEvents() {
+        XCTAssertNil(EditableChordEvent.matching(rowTime: 1, in: []))
+    }
 }

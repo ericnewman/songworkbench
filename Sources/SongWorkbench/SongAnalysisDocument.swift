@@ -273,6 +273,20 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
             return carried
         }
     }
+
+    /// Finds the real chord event a rendered chart chord corresponds to, given the RAW onset
+    /// time `SongTimeline.Row.chordTimes` recorded for it (Review chart interactivity, backlog
+    /// #15 Phase 2 remainder). That time is the literal `event.time` `ChordProDraftBuilder`
+    /// threaded into the chart, so matching by nearest raw `time` (never `effectiveTime`, so a
+    /// previous drag can't shift which event a chart chord resolves to) recovers the same event
+    /// even after it's been dragged/accepted. `tolerance` only guards against floating-point
+    /// drift — the times are otherwise expected to match exactly.
+    static func matching(
+        rowTime: TimeInterval, in events: [EditableChordEvent], tolerance: TimeInterval = 0.01
+    ) -> EditableChordEvent? {
+        events.filter { abs($0.time - rowTime) <= tolerance }
+            .min { abs($0.time - rowTime) < abs($1.time - rowTime) }
+    }
 }
 
 enum AnalysisReviewState: String, Codable, Equatable, Sendable {

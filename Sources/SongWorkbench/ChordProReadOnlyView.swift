@@ -200,7 +200,9 @@ struct ChordProTrueView: View {
 }
 
 /// Confidence tiers shared by the Review tab's lyric-line and chord-event rows (backlog #15).
-private enum ReviewConfidenceTier {
+/// Not `private`: reused directly by the interactive Review chart's tint (`WorkspaceEditorsView`
+/// — `ChordProPreviewLineView`/`ChordProPreviewBlockView`, backlog #15 Phase 2 remainder).
+enum ReviewConfidenceTier {
     case unknown
     case low
     case medium
@@ -240,6 +242,7 @@ private enum ReviewConfidenceTier {
 // The old "Review & Annotate" bottom panel (backlog #15 Phase 1) is gone (Phase 2
 // consolidation, per Eric: "the bottom panel isn't necessary... combined with the top panel").
 // Its bass-note row lives in ChordProAppPreview now (View menu's "Show Bass Notes" toggle,
-// WorkspaceEditorsView.swift). Its confidence-tint/accept/correct UX is still pending as the
-// next chart addition (task: drag/tint/accept/word-edit) — ReviewConfidenceTier below is kept
-// since that follow-up will reuse it directly.
+// WorkspaceEditorsView.swift). Its confidence-tint/accept/correct UX now lives directly in the
+// interactive Review chart (`ChordProAppPreview`/`ChordProPreviewBlockView`/
+// `ChordProPreviewLineView`, backlog #15 Phase 2 remainder), which reuses `ReviewConfidenceTier`
+// above.

@@ -378,6 +378,112 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
         XCTAssertTrue(restored.text.contains("bridge"))
     }
 
+    /// Regression test for the real "vocals stopped being inserted after line 50" bug: the old
+    /// safety valve only rescued an over-aggressive cut that landed in the FIRST HALF of the
+    /// song (`filteredEnd < raw.duration * 0.5`), so a false-positive loop detection past the
+    /// midpoint was never caught and everything after it silently vanished. This constructs a
+    /// cutoff deliberately past the midpoint with a lexically diverse (i.e. real-lyrics-looking)
+    /// dropped tail, and asserts it's still rescued.
+    func testRepetitionFilterSafetyValveRestoresRawWhenCutoffLandsPastMidpoint() {
+        let earlyVerse = (0..<20).map { " word\($0)" }
+        let lateDistinctLyrics = [
+            " the", " porch", " light", " flickers", " while", " crickets", " sing", " softly",
+            " about", " summer",
+        ]
+        var tokens: [WhisperCPPTranscriptToken] = []
+        var t = 0.0
+        func append(_ words: [String]) {
+            for word in words {
+                tokens.append(
+                    WhisperCPPTranscriptToken(text: word, start: t, end: t + 0.4, confidence: 0.85)
+                )
+                t += 0.5
+            }
+        }
+        append(earlyVerse)
+        let cutoffStart = t
+        append(lateDistinctLyrics)
+        let raw = WhisperCPPTranscript(
+            text: tokens.map(\.text).joined(),
+            duration: t + 1,
+            languageCode: "en",
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: tokens.map(\.text).joined(), start: 0, end: t, tokens: tokens)
+            ]
+        )
+        XCTAssertGreaterThan(
+            cutoffStart, raw.duration * 0.5,
+            "test setup must place the cutoff past the midpoint to exercise the fix")
+
+        // Simulate the filter over-aggressively cutting everything from `cutoffStart` onward —
+        // exactly what an over-eager loop-detector false positive would produce.
+        let keptTokens = tokens.filter { $0.start < cutoffStart }
+        let filtered = WhisperCPPTranscript(
+            text: keptTokens.map(\.text).joined(),
+            duration: raw.duration,
+            languageCode: raw.languageCode,
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: keptTokens.map(\.text).joined(), start: 0, end: cutoffStart,
+                    tokens: keptTokens)
+            ]
+        )
+
+        let restored = WhisperCPPTranscriptionEngine.repetitionFilteredOrRaw(
+            filtered: filtered, raw: raw)
+
+        XCTAssertTrue(restored.text.contains("crickets"))
+    }
+
+    /// The flip side of the above: a dropped tail that really IS just a hallucination loop on
+    /// repeat (low lexical diversity) must stay cut, regardless of where in the song it lands —
+    /// confirms the new diversity-based check doesn't over-correct into restoring real loops.
+    func testRepetitionFilterSafetyValveKeepsFilteredWhenDroppedTailIsARepeatingLoop() {
+        let earlyVerse = (0..<20).map { " word\($0)" }
+        let repeatedPhrase = [" oh", " take", " me", " where", " we", " belong"]
+        var tokens: [WhisperCPPTranscriptToken] = []
+        var t = 0.0
+        func append(_ words: [String]) {
+            for word in words {
+                tokens.append(
+                    WhisperCPPTranscriptToken(text: word, start: t, end: t + 0.4, confidence: 0.85)
+                )
+                t += 0.5
+            }
+        }
+        append(earlyVerse)
+        let cutoffStart = t
+        for _ in 0..<6 { append(repeatedPhrase) }
+        let raw = WhisperCPPTranscript(
+            text: tokens.map(\.text).joined(),
+            duration: t + 1,
+            languageCode: "en",
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: tokens.map(\.text).joined(), start: 0, end: t, tokens: tokens)
+            ]
+        )
+        let keptTokens = tokens.filter { $0.start < cutoffStart }
+        let filtered = WhisperCPPTranscript(
+            text: keptTokens.map(\.text).joined(),
+            duration: raw.duration,
+            languageCode: raw.languageCode,
+            segments: [
+                WhisperCPPTranscriptSegment(
+                    text: keptTokens.map(\.text).joined(), start: 0, end: cutoffStart,
+                    tokens: keptTokens)
+            ]
+        )
+
+        let restored = WhisperCPPTranscriptionEngine.repetitionFilteredOrRaw(
+            filtered: filtered, raw: raw)
+
+        XCTAssertFalse(
+            restored.text.contains("belong"),
+            "a genuine repeating loop must stay cut, not be restored")
+    }
+
     func testWhisperLanguageCodeMapsLocalePrefix() {
         XCTAssertEqual(WhisperCPPTranscriptionEngine.whisperLanguageCode(from: "en_US"), "en")
         XCTAssertEqual(WhisperCPPTranscriptionEngine.whisperLanguageCode(from: "de"), "de")

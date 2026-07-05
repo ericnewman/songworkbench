@@ -172,6 +172,71 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.lyricReviewState, .draft)
     }
 
+    // MARK: - Review chart interactivity (backlog #15 Phase 2 remainder)
+
+    func testToggleLyricAcceptedFlipsTheMatchingSegmentOnly() {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let target = TimedLyricSegment(start: 0, end: 1, text: "line one")
+        let other = TimedLyricSegment(start: 1, end: 2, text: "line two")
+        model.lyricSegments = [target, other]
+
+        model.toggleLyricAccepted(id: target.id)
+
+        XCTAssertTrue(model.lyricSegments[0].accepted)
+        XCTAssertFalse(model.lyricSegments[1].accepted)
+
+        model.toggleLyricAccepted(id: target.id)
+        XCTAssertFalse(model.lyricSegments[0].accepted)
+    }
+
+    func testToggleLyricAcceptedIsANoOpForAnUnknownID() {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.lyricSegments = [TimedLyricSegment(start: 0, end: 1, text: "line")]
+
+        model.toggleLyricAccepted(id: UUID())
+
+        XCTAssertFalse(model.lyricSegments[0].accepted)
+    }
+
+    func testSetLyricOverrideTextTrimsAndClearsOnBlank() {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let segment = TimedLyricSegment(start: 0, end: 1, text: "hallo werld")
+        model.lyricSegments = [segment]
+
+        model.setLyricOverrideText(id: segment.id, text: "  hello world  ")
+        XCTAssertEqual(model.lyricSegments[0].overrideText, "  hello world  ")
+        XCTAssertEqual(model.lyricSegments[0].effectiveText, "hello world")
+
+        model.setLyricOverrideText(id: segment.id, text: "   ")
+        XCTAssertNil(model.lyricSegments[0].overrideText)
+    }
+
+    func testToggleChordAcceptedFlipsTheMatchingEventOnly() {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let target = EditableChordEvent(time: 4, chord: "C")
+        let other = EditableChordEvent(time: 8, chord: "G")
+        model.chordEvents = [target, other]
+
+        model.toggleChordAccepted(id: target.id)
+
+        XCTAssertTrue(model.chordEvents[0].accepted)
+        XCTAssertFalse(model.chordEvents[1].accepted)
+    }
+
+    func testSetChordManualTimeSetsAndClearsTheDragOverride() {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let chord = EditableChordEvent(time: 4, chord: "C")
+        model.chordEvents = [chord]
+
+        model.setChordManualTime(id: chord.id, manualTime: 4.5)
+        XCTAssertEqual(model.chordEvents[0].manualTime, 4.5)
+        XCTAssertEqual(model.chordEvents[0].effectiveTime, 4.5)
+
+        model.setChordManualTime(id: chord.id, manualTime: nil)
+        XCTAssertNil(model.chordEvents[0].manualTime)
+        XCTAssertEqual(model.chordEvents[0].effectiveTime, 4)
+    }
+
     func testPlaybackSourceSwitchTransfersPositionAndPreventsDualPlayback() async throws {
         let songURL = try makeSilentWAV(frameCount: 16_000)
         let stemDirectory = try makeStemDirectory()
