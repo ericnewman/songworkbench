@@ -207,7 +207,13 @@ final class AudioPlaybackService: ObservableObject, PlaybackClock {
 
     private func startTimer() {
         stopTimer()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        // 30Hz, not 60Hz: every tick republishes `currentTime`, which drives the ChordPro chart's
+        // ball/highlight — a view whose body re-evaluates in full on every publish (backlog:
+        // playback CPU/lag investigation). Halving the tick rate halves that redundant work with
+        // no perceptible cost: word/beat highlight changes are never faster than ~100ms apart, so
+        // 33ms resolution is still smooth. This is a mitigation, not the real fix — the view still
+        // redoes O(song) work per tick; see WorkspaceEditorsView for the follow-up to memoize that.
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.updateCurrentTime()
             }

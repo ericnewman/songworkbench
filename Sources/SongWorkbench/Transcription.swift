@@ -1420,3 +1420,35 @@ enum TranscriptionSilenceGate {
         text.allSatisfy(\.isWhitespace)
     }
 }
+
+/// Drops tokens whose text is a bare clock/timestamp string (e.g. "0:00", "00:00", "1:23:45") —
+/// a well-documented Whisper hallucination distinct from the silence-island class
+/// `TranscriptionSilenceGate` targets: Whisper is trained on caption data that includes literal
+/// timestamps, and occasionally emits one verbatim as a "word" over quiet/ambiguous audio,
+/// sometimes stitched onto the end of an otherwise-real line rather than isolated by silence on
+/// both sides (so the silence-gate's isolation requirement doesn't catch it) — see the "line 9
+/// missing chords" investigation, where a hallucinated trailing "0:00" swallowed real chord
+/// changes into the wrong line. Content-based, not confidence-based: no real sung lyric is ever
+/// JUST a clock-format string with nothing else in the token, so this is safe to apply
+/// unconditionally rather than gated on confidence/duration/isolation like the silence gate
+/// (project convention is normally "don't drop low-confidence tokens, they're often real words
+/// just mistimed" — this is a different, narrower rule: the token's CONTENT is categorically
+/// never a lyric, independent of how confident or how long the model claims to have sung it).
+enum TimestampHallucinationFilter {
+    /// Matches a bare `H:MM`, `HH:MM`, or `H:MM:SS`-style token (optionally wrapped in
+    /// punctuation Whisper sometimes adds, e.g. "(0:00)") — never partial matches inside a real
+    /// word, since the whole trimmed token must match.
+    private static let pattern = #"^[\[\(]?\d{1,2}:\d{2}(:\d{2})?[\]\)]?$"#
+
+    static func isTimestampLike(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Filters the tokens, preserving order and every other property. No-op when nothing matches.
+    static func filtered(_ tokens: [TimedTranscriptionToken]) -> [TimedTranscriptionToken] {
+        guard tokens.contains(where: { isTimestampLike($0.text) }) else { return tokens }
+        return tokens.filter { !isTimestampLike($0.text) }
+    }
+}

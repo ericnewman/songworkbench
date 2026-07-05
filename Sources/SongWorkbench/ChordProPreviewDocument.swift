@@ -28,6 +28,21 @@ enum ChordProPreviewBlock: Equatable, Sendable {
 struct ChordProPreviewLine: Equatable, Sendable {
     let lyric: String
     let chords: [ChordProPreviewChord]
+
+    /// Whether `lyric` contains real sung words, as opposed to being blank (the classic
+    /// chord-only line, pre-B2) or built entirely from the bar-aligned grid layout's
+    /// separator characters (`ChordProDraftBuilder.chordOnlyLine` renders bars like
+    /// `| . | [C#] . [Ab] . |` — once the bracketed chords are stripped out as `.chord`
+    /// elements by the tokenizer, the remaining "lyric" text is just `|`/`.`/spaces, which
+    /// a plain "is it blank" check does NOT recognize as instrumental since `|`/`.` aren't
+    /// whitespace). Every "is this an instrumental/chord-only row" check in
+    /// `WorkspaceEditorsView.swift` (ordinal assignment, waveform strip color, monospace
+    /// width, the bouncing ball, beat dots, ...) must use this, or bar-aligned instrumental
+    /// rows silently lose their purple guitar/piano waveform strip and get miscounted as
+    /// sung lines.
+    var hasSungText: Bool {
+        lyric.contains { !$0.isWhitespace && $0 != "|" && $0 != "." }
+    }
 }
 
 struct ChordProPreviewChord: Equatable, Sendable {

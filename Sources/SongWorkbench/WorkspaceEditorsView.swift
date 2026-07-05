@@ -9,7 +9,6 @@ enum EditorTab: String, CaseIterable, Identifiable {
     case chords
     case chordPro
     case review
-    case bassNotes
 
     var id: String { rawValue }
 
@@ -19,7 +18,6 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .chords: "Chords"
         case .chordPro: "ChordPro"
         case .review: "Review"
-        case .bassNotes: "Bass Notes"
         }
     }
 
@@ -29,7 +27,6 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .chords: "music.note"
         case .chordPro: "doc.plaintext"
         case .review: "text.badge.checkmark"
-        case .bassNotes: "music.note.list"
         }
     }
 }
@@ -47,7 +44,6 @@ struct WorkspaceEditorsView: View {
             case .chords: ChordTimelineEditor(model: model)
             case .chordPro: ChordProTrueView(model: model)
             case .review: ChordProReviewTab(model: model)
-            case .bassNotes: ChordProTabEditor(model: model, config: .bassNote)
             }
         }
         .padding(12)
@@ -968,6 +964,11 @@ private struct ChordProTabEditor: View {
     @AppStorage("chordProBarlinesEnabled") private var barlinesEnabled = false
     @AppStorage("rhythmicSpacing") private var rhythmicSpacing = false
     @AppStorage("chordProShowWaveform") private var showWaveform = false
+    /// Shows a bass-note row above each lyric line in the chart (backlog #15 Phase 2
+    /// consolidation) — replaces the removed standalone Bass Notes tab and the old
+    /// Review-tab bottom panel's bass toggle. Off by default: most songs won't have bass
+    /// detected yet, and the extra row adds visual noise once they do.
+    @AppStorage("reviewShowBassNotes") private var showBassNotes = false
 
     /// Lyric segments sorted into the order the highlight/ball ordinals use (so ordinal N indexes
     /// the same line across words, windows, and highlight).
@@ -1036,6 +1037,8 @@ private struct ChordProTabEditor: View {
                     Toggle("Barlines", isOn: $barlinesEnabled)
                     Toggle("Rhythmic spacing", isOn: $rhythmicSpacing)
                     Toggle("Waveform", isOn: $showWaveform)
+                    Toggle("Show Bass Notes", isOn: $showBassNotes)
+                        .disabled(model.bassNotes.isEmpty)
                 } label: {
                     Label("View", systemImage: "eye")
                 }
@@ -1043,7 +1046,7 @@ private struct ChordProTabEditor: View {
                 .fixedSize()
                 .help(
                     "Show/hide the bouncing ball, beat dots, measure barlines, rhythmic spacing, "
-                        + "and the per-line waveform")
+                        + "the per-line waveform, and the detected bass note row")
                 Spacer()
                 if config.supportsMarkReviewed {
                     Button("Mark Reviewed", systemImage: "checkmark.seal") {
@@ -1123,7 +1126,9 @@ private struct ChordProTabEditor: View {
                             // character columns (nil-safe: empty for edited charts).
                             timelineChordTimesByLine: Dictionary(
                                 uniqueKeysWithValues: (model.songTimelineForPreview()?.rows ?? [])
-                                    .map { ($0.number, $0.chordTimes) })
+                                    .map { ($0.number, $0.chordTimes) }),
+                            bassNotes: model.bassNotes,
+                            showBassNotes: showBassNotes
                         )
                     }
                 }
@@ -1573,21 +1578,11 @@ struct ChordProReviewTab: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(spacing: 12) {
-            // Unchanged: same GeometryReader/ScrollViewReader-driven layout as before, so it
-            // keeps sizing/scrolling itself exactly as it always has.
-            ChordProTabEditor(model: model, config: .chordPro)
-            Divider()
-            // A bounded companion region below, not an outer ScrollView around everything above —
-            // wrapping ChordProTabEditor's own GeometryReader-based preview in another ScrollView
-            // would starve it of a real height proposal.
-            ScrollView {
-                ChordProReviewAnnotationsPanel(model: model)
-                    .padding(.bottom, 12)
-            }
-            .frame(maxHeight: 260)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // backlog #15 Phase 2 consolidation: the bottom "Review & Annotate" list panel is gone —
+        // bass notes, confidence tinting, and accept/correct now live directly in the chart
+        // itself (bass row: the View menu's "Show Bass Notes" toggle; tint/accept/drag/edit: see
+        // ChordProPreviewLineView). This tab is now just the interactive chart, full height.
+        ChordProTabEditor(model: model, config: .chordPro)
     }
 }
 
@@ -1668,6 +1663,21 @@ private struct ChordProAppPreview: View {
     /// Authoritative chord onset times per display line (from `SongTimeline` rows, chart
     /// order) — lets chords render at their REAL time instead of a column-derived guess.
     var timelineChordTimesByLine: [Int: [TimeInterval]] = [:]
+    /// Detected bass notes (backlog: Bass Note display consolidation) — shown as an optional row
+    /// above each lyric line when `showBassNotes` is on, replacing the standalone Bass Notes tab.
+    var bassNotes: [BassNoteObservation] = []
+    var showBassNotes = false
+
+    /// The detected bass note(s) sounding during a lyric line's time window, formatted for
+    /// display (e.g. "E · A · D") — `nil` when the toggle is off, there's no bass data, or
+    /// nothing falls in the window (mirrors the removed `ChordProReviewAnnotationsPanel`'s
+    /// `bassNoteLabel(forLyricIndex:)`, now computed per rendered row instead of a flat list).
+    private func bassLabel(forLyricOrdinal ordinal: Int?) -> String? {
+        guard showBassNotes, !bassNotes.isEmpty, let ordinal,
+            lyricLineWindows.indices.contains(ordinal)
+        else { return nil }
+        return BassNoteRowFormatter.label(for: bassNotes, inWindow: lyricLineWindows[ordinal])
+    }
 
     /// Beats per bar: 4/4 by default, but estimated from the lyric-line phrase structure so a
     /// song whose lines are consistently spaced by e.g. 5 detected beats (tactus found at a 5:4
@@ -1686,49 +1696,95 @@ private struct ChordProAppPreview: View {
     private var gutterSeconds: TimeInterval { beatLengthSeconds * 2 }
 
     /// Accent energy at each beat, sampled from drums + bass stems (a short window around the beat
-    /// to catch the transient). Empty when neither stem is available.
-    private var beatStrengths: [Double] {
-        guard !beatTimes.isEmpty else { return [] }
-        let envelopes = [drumsEnvelope, bassEnvelope].compactMap { $0 }
-            .filter { $0.duration > 0 && !$0.peaks.isEmpty }
-        guard !envelopes.isEmpty else { return [] }
-        let half = beatLengthSeconds > 0 ? beatLengthSeconds * 0.25 : 0.1
-        return beatTimes.map { beat in
-            var strength = 0.0
-            for env in envelopes {
-                let count = env.peaks.count
-                let lo = max(0, Int(((beat - half) / env.duration) * Double(count)))
-                let hi = min(
-                    count, max(lo + 1, Int(((beat + half) / env.duration) * Double(count))))
-                var peak = 0.0
-                for i in lo..<hi { peak = max(peak, Double(env.peaks[i])) }
-                strength += peak
-            }
-            return strength
-        }
+    /// to catch the transient) — CACHED (see `gridDependencyKey`/`refreshGrid()` below). This scan
+    /// is O(beats × envelopes × window-samples): recomputing it as a plain computed property made
+    /// the WHOLE view redo it on every 30-60Hz playback tick even though it only depends on static
+    /// analysis data, never on the playhead — the actual cause of the CPU-during-playback /
+    /// laggy-ball-and-highlight report (playback CPU/lag investigation). Empty until the first
+    /// `.onChange(initial: true)` fires, and whenever a real dependency changes.
+    @State private var beatStrengths: [Double] = []
+
+    /// The detected bar phase — CACHED alongside `beatStrengths` for the same reason.
+    @State private var barPhase: Int = 0
+
+    /// The shared measure grid — CACHED alongside `beatStrengths` for the same reason.
+    @State private var measureGrid: MeasureGrid?
+
+    /// Every input `beatStrengths`/`barPhase`/`measureGrid` actually depend on. Recomputing this
+    /// key itself is cheap (array/optional equality, not a beat-by-envelope scan), so comparing it
+    /// every tick to decide whether a refresh is needed is a huge net win over recomputing the
+    /// grid itself every tick.
+    private struct GridDependencyKey: Equatable {
+        let beatTimes: [TimeInterval]
+        let bpm: Double?
+        let drumsEnvelope: WaveformEnvelope?
+        let bassEnvelope: WaveformEnvelope?
+        let lyricLineWords: [[TimedLyricWord]]
     }
 
-    /// The detected bar phase (which beat index is a downbeat). Prefers the drum/bass accent cue
-    /// (reliable regardless of where the vocal enters); falls back to lyric first-word onsets when
-    /// the accent signal is weak or absent. Zero when there's no usable grid.
-    private var barPhase: Int {
-        guard !beatTimes.isEmpty, bpm != nil else { return 0 }
-        let strengths = beatStrengths
+    private var gridDependencyKey: GridDependencyKey {
+        GridDependencyKey(
+            beatTimes: beatTimes, bpm: bpm, drumsEnvelope: drumsEnvelope,
+            bassEnvelope: bassEnvelope, lyricLineWords: lyricLineWords)
+    }
+
+    /// Recomputes `beatStrengths`/`barPhase`/`measureGrid` from scratch — the ORIGINAL logic these
+    /// three properties used to run inline on every render, now run only when `gridDependencyKey`
+    /// actually changes (see the `.onChange` in `body`).
+    private func refreshGrid() {
+        guard !beatTimes.isEmpty else {
+            beatStrengths = []
+            barPhase = 0
+            measureGrid = nil
+            return
+        }
+        let envelopes = [drumsEnvelope, bassEnvelope].compactMap { $0 }
+            .filter { $0.duration > 0 && !$0.peaks.isEmpty }
+        let strengths: [Double]
+        if envelopes.isEmpty {
+            strengths = []
+        } else {
+            let half = beatLengthSeconds > 0 ? beatLengthSeconds * 0.25 : 0.1
+            strengths = beatTimes.map { beat in
+                var strength = 0.0
+                for env in envelopes {
+                    let count = env.peaks.count
+                    let lo = max(0, Int(((beat - half) / env.duration) * Double(count)))
+                    let hi = min(
+                        count, max(lo + 1, Int(((beat + half) / env.duration) * Double(count))))
+                    var peak = 0.0
+                    for i in lo..<hi { peak = max(peak, Double(env.peaks[i])) }
+                    strength += peak
+                }
+                return strength
+            }
+        }
+        beatStrengths = strengths
+
+        guard bpm != nil else {
+            barPhase = 0
+            measureGrid = nil
+            return
+        }
+        let resolvedBarPhase: Int
         if DownbeatEstimator.downbeatConfidence(beatStrengths: strengths, beatsPerBar: beatsPerBar)
             >= 0.08
         {
-            return DownbeatEstimator.barPhase(beatStrengths: strengths, beatsPerBar: beatsPerBar)
+            resolvedBarPhase = DownbeatEstimator.barPhase(
+                beatStrengths: strengths, beatsPerBar: beatsPerBar)
+        } else {
+            let onsets = lyricLineWords.compactMap { $0.first?.start }
+            resolvedBarPhase = DownbeatEstimator.barPhase(
+                beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
         }
-        let onsets = lyricLineWords.compactMap { $0.first?.start }
-        return DownbeatEstimator.barPhase(
-            beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
-    }
+        barPhase = resolvedBarPhase
 
-    /// The shared measure grid, or nil when there's no tempo / beats.
-    private var measureGrid: MeasureGrid? {
-        guard let bpm, bpm > 0, !beatTimes.isEmpty else { return nil }
-        return MeasureGrid(
-            beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: barPhase)
+        guard let bpm, bpm > 0 else {
+            measureGrid = nil
+            return
+        }
+        measureGrid = MeasureGrid(
+            beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: resolvedBarPhase)
     }
 
     /// Whether the vocal entrances actually sit on the beat grid. When they do, metric downbeat
@@ -1830,7 +1886,7 @@ private struct ChordProAppPreview: View {
             )
         }
         guard case .lyric(let line) = item.block, !line.chords.isEmpty,
-            !line.lyric.contains(where: { !$0.isWhitespace }),
+            !line.hasSungText,
             let lane = instrumentalLane,
             let window = chordOnlyLineWindow(for: item, in: document)
         else { return ([], 0, .swTextSecondary) }
@@ -1946,7 +2002,8 @@ private struct ChordProAppPreview: View {
                                             hasUntranscribedVocals: item.displayLineNumber
                                                 .map(untranscribedLineNumbers.contains) ?? false,
                                             rowChordTimes: item.displayLineNumber
-                                                .flatMap { timelineChordTimesByLine[$0] } ?? []
+                                                .flatMap { timelineChordTimesByLine[$0] } ?? [],
+                                            bassLabel: bassLabel(forLyricOrdinal: item.lyricOrdinal)
                                         )
                                         .id(item.offset)
                                     }
@@ -2002,6 +2059,10 @@ private struct ChordProAppPreview: View {
             }
         }
         .accessibilityIdentifier("chordpro-app-preview")
+        // Recompute the measure grid/beat-strength cache only when its real inputs change — NOT
+        // on every playback tick (see `refreshGrid()`'s doc comment: this is the fix for the
+        // CPU-during-playback / laggy-ball-and-highlight report).
+        .onChange(of: gridDependencyKey, initial: true) { _, _ in refreshGrid() }
     }
 
     private var previewResult: Result<ChordProPreviewDocument, Error> {
@@ -2021,7 +2082,7 @@ private struct ChordProAppPreview: View {
             // Only lines with real (non-whitespace) lyric text are lyric lines; chord-only
             // lines (intro/instrumental/outro) carry whitespace lyric and must not consume
             // an ordinal, or highlight/ball alignment shifts off the real lyrics.
-            if case .lyric(let line) = block, line.lyric.contains(where: { !$0.isWhitespace }) {
+            if case .lyric(let line) = block, line.hasSungText {
                 ordinal = lyricOrdinal
                 lyricOrdinal += 1
             } else {
@@ -2032,7 +2093,7 @@ private struct ChordProAppPreview: View {
             // headers, titles, metadata, and directives are not numbered.
             let displayNumber: Int?
             if case .lyric(let line) = block,
-                line.lyric.contains(where: { !$0.isWhitespace }) || !line.chords.isEmpty
+                line.hasSungText || !line.chords.isEmpty
             {
                 displayLine += 1
                 displayNumber = displayLine
@@ -2099,14 +2160,14 @@ private struct ChordProAppPreview: View {
         guard
             let lastLyricIndex = items.lastIndex(where: { item in
                 if case .lyric(let line) = item.block {
-                    return line.lyric.contains(where: { !$0.isWhitespace })
+                    return line.hasSungText
                 }
                 return false
             })
         else { return nil }
         for index in (lastLyricIndex + 1)..<items.count {
             if case .lyric(let line) = items[index].block, !line.chords.isEmpty,
-                !line.lyric.contains(where: { !$0.isWhitespace })
+                !line.hasSungText
             {
                 return items[index].offset
             }
@@ -2140,7 +2201,7 @@ private struct ChordProAppPreview: View {
                 index -= 1
                 continue  // skip directives like {comment: Intro}
             }
-            let hasText = line.lyric.contains(where: { !$0.isWhitespace })
+            let hasText = line.hasSungText
             if !line.chords.isEmpty, !hasText { return item.offset }  // chord-only line
             if hasText { return nil }  // reached a real lyric line first
             index -= 1  // blank separator line
@@ -2269,7 +2330,7 @@ private struct ChordProAppPreview: View {
         }
         // Chord-only line: dots over the instrumental section between lyrics.
         guard case .lyric(let line) = item.block, !line.chords.isEmpty,
-            !line.lyric.contains(where: { !$0.isWhitespace }),
+            !line.hasSungText,
             let window = chordOnlyLineWindow(for: item, in: document)
         else { return nil }
         return LineBeatBall(
@@ -2332,7 +2393,7 @@ private struct ChordProAppPreview: View {
             guard items.indices.contains(i), items[i].lyricOrdinal == nil,
                 case .lyric(let line) = items[i].block
             else { return false }
-            return !line.chords.isEmpty && !line.lyric.contains(where: { !$0.isWhitespace })
+            return !line.chords.isEmpty && !line.hasSungText
         }
         var runStart = index
         while isChordOnlyRow(runStart - 1) { runStart -= 1 }
@@ -2418,6 +2479,10 @@ private struct ChordProPreviewBlockView: View {
     var hasUntranscribedVocals = false
     /// Authoritative chord onset times for this row (chart order; empty when unavailable).
     var rowChordTimes: [TimeInterval] = []
+    /// Detected bass note(s) sounding during this row's window (e.g. "E · A · D"), shown above
+    /// the chord/lyric content when the View menu's "Show Bass Notes" toggle is on. `nil` for
+    /// non-lyric blocks or when there's nothing to show.
+    var bassLabel: String?
 
     var body: some View {
         // Bottom-aligned so the number sits on the words/waveform row of the line, not up on
@@ -2429,6 +2494,11 @@ private struct ChordProPreviewBlockView: View {
                 .frame(width: 22, alignment: .trailing)
                 .padding(.bottom, 3)
             VStack(alignment: .leading, spacing: 2) {
+                if let bassLabel {
+                    Text(bassLabel)
+                        .font(.swMono(10))
+                        .foregroundStyle(StemKind.bass.laneColor)
+                }
                 blockContent
                 if hasUntranscribedVocals {
                     Label(
@@ -2611,7 +2681,7 @@ private struct ChordProPreviewLineView: View {
     /// to the chord extent. Both the content frame and the strip use this single value so they
     /// always end at exactly the same x.
     private var monospaceWidth: CGFloat {
-        let lyricSample = line.lyric.contains(where: { !$0.isWhitespace }) ? line.lyric : " "
+        let lyricSample = line.hasSungText ? line.lyric : " "
         let lyricWidth = ceil(
             NSString(string: lyricSample).size(withAttributes: [.font: Self.lyricFont]).width)
         let chordExtent =
@@ -2621,7 +2691,7 @@ private struct ChordProPreviewLineView: View {
 
     /// An instrumental (chord-only) line: chords present, no sung lyric text.
     private var isInstrumentalLine: Bool {
-        !line.chords.isEmpty && !line.lyric.contains(where: { !$0.isWhitespace })
+        !line.chords.isEmpty && !line.hasSungText
     }
 
     /// The chord row's text extent, in characters (rightmost chord column + its name length).

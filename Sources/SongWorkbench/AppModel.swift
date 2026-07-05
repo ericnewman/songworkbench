@@ -891,9 +891,19 @@ final class AppModel: ObservableObject {
                 var cancelled = false
                 switch outcome {
                 case .success(let result):
-                    analysisBySongID[songID] = result.document
+                    // Carry forward any manual chord drag / lyric-line correction / accept flag
+                    // from the PREVIOUS analysis onto whichever freshly-detected segment/chord now
+                    // occupies the same time (backlog #15 Phase 2) — otherwise a re-analysis
+                    // silently discards edits made in the Review chart, defeating the whole point
+                    // of them surviving re-analysis.
+                    var document = result.document
+                    document.lyrics = TimedLyricSegment.reconciled(
+                        newSegments: document.lyrics, against: existingDocument.lyrics)
+                    document.chords = EditableChordEvent.reconciled(
+                        newEvents: document.chords, against: existingDocument.chords)
+                    analysisBySongID[songID] = document
                     if selectedSongID == songID {
-                        applyAnalysis(result.document)
+                        applyAnalysis(document)
                         // A fresh analysis may have just produced the stems; the
                         // waveform-derived state (stem lanes + vocal-activity overlay)
                         // is otherwise only loaded in select(), so refresh it here or a
@@ -980,7 +990,9 @@ final class AppModel: ObservableObject {
             let rows = LyricBlendRowBuilder.reconciled(
                 newRows: freshRows, against: updated.lyricBlendRows)
             updated.lyricBlendRows = rows
-            updated.lyrics = LyricBlendRowBuilder.effectiveLyrics(from: rows)
+            let oldLyrics = updated.lyrics
+            updated.lyrics = TimedLyricSegment.reconciled(
+                newSegments: LyricBlendRowBuilder.effectiveLyrics(from: rows), against: oldLyrics)
             self.analysisBySongID[songID] = updated
             if self.selectedSongID == songID {
                 self.applyAnalysis(updated)
@@ -1871,7 +1883,15 @@ final class AppModel: ObservableObject {
             tempo: analysis.estimatedBPM,
             chords: analysis.chords)
         let lyricsRegrouped = phraseGroupedLyrics != analysis.lyrics
-        lyricSegments = phraseGroupedLyrics
+        // Both regroup passes above rebuild plain `TimedLyricSegment`s straight from words, with
+        // no way to carry a per-line ANNOTATION through (`confidence` is deliberately allowed to
+        // be lost this way — see its doc comment — but `overrideText`/`accepted` are user-authored
+        // corrections from the Review chart and must survive every load, not just a fresh
+        // analysis, since this pipeline runs unconditionally even when nothing changed). Carry
+        // them forward from the STORED document's own lyrics (not the live in-memory
+        // `lyricSegments`, which may belong to whatever song was previously selected).
+        lyricSegments = TimedLyricSegment.reconciled(
+            newSegments: phraseGroupedLyrics, against: analysis.lyrics)
         lyricBlendRows = analysis.lyricBlendRows
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords

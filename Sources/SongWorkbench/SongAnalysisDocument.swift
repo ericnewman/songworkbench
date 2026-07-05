@@ -93,6 +93,14 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
     /// Whether the user has explicitly accepted this line in the Review tab (backlog #15).
     /// Purely additive to the existing whole-song `lyricReviewState` — does not affect it.
     var accepted: Bool = false
+    /// A user-authored correction typed directly into the Review chart (backlog #15 Phase 2
+    /// consolidation), mirroring `LyricBlendRow.overrideText`. `nil`/empty means no override.
+    /// When present, it — not `text` — is what displays/exports/plays, and it SURVIVES a fresh
+    /// re-analysis rebuilding `lyrics` from scratch: reconciliation (see
+    /// `TimedLyricSegment.reconciled(newSegments:against:)`) carries it forward onto whichever
+    /// freshly-built segment occupies the same time window, matched by start/end overlap — same
+    /// convention `LyricBlendRowBuilder.reconciled` already uses for lyric blend rows.
+    var overrideText: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -102,6 +110,7 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         case words
         case confidence
         case accepted
+        case overrideText
     }
 
     init(
@@ -111,7 +120,8 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         text: String,
         words: [TimedLyricWord] = [],
         confidence: Float? = nil,
-        accepted: Bool = false
+        accepted: Bool = false,
+        overrideText: String? = nil
     ) {
         self.id = id
         self.start = start
@@ -120,6 +130,7 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         self.words = words
         self.confidence = confidence
         self.accepted = accepted
+        self.overrideText = overrideText
     }
 
     init(from decoder: Decoder) throws {
@@ -131,6 +142,59 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         words = try container.decodeIfPresent([TimedLyricWord].self, forKey: .words) ?? []
         confidence = try container.decodeIfPresent(Float.self, forKey: .confidence)
         accepted = try container.decodeIfPresent(Bool.self, forKey: .accepted) ?? false
+        overrideText = try container.decodeIfPresent(String.self, forKey: .overrideText)
+    }
+
+    /// The text actually shown/exported/played: the user's `overrideText` if set (trimmed,
+    /// non-empty), else the raw transcribed `text`. Mirrors `LyricBlendRow.effectiveText`.
+    var effectiveText: String {
+        if let overrideText {
+            let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return text
+    }
+
+    /// Carries `overrideText`/`accepted` forward from a PRIOR analysis's segments onto a freshly
+    /// re-analyzed set, matched by greatest start/end-window overlap (falling back to nearest
+    /// start when no window overlaps at all) — same reconciliation convention
+    /// `LyricBlendRowBuilder.reconciled` already uses. Matching always compares the raw `start`/
+    /// `end` a fresh transcription produced, never a manually-edited value, so an edit never
+    /// poisons future reconciliation. Confidence/words/text always come from the NEW segment —
+    /// only the user's own annotations carry forward.
+    static func reconciled(
+        newSegments: [TimedLyricSegment], against oldSegments: [TimedLyricSegment]
+    ) -> [TimedLyricSegment] {
+        guard !oldSegments.isEmpty else { return newSegments }
+        return newSegments.map { fresh in
+            guard let match = bestMatch(for: fresh, in: oldSegments) else { return fresh }
+            var carried = fresh
+            carried.overrideText = match.overrideText
+            carried.accepted = match.accepted
+            return carried
+        }
+    }
+
+    private static func bestMatch(
+        for fresh: TimedLyricSegment, in oldSegments: [TimedLyricSegment]
+    ) -> TimedLyricSegment? {
+        let freshWindow = min(fresh.start, fresh.end)...max(fresh.start, fresh.end)
+        var best: (segment: TimedLyricSegment, overlap: TimeInterval)?
+        for old in oldSegments {
+            let oldWindow = min(old.start, old.end)...max(old.start, old.end)
+            let overlap =
+                max(
+                    0,
+                    min(freshWindow.upperBound, oldWindow.upperBound)
+                        - max(freshWindow.lowerBound, oldWindow.lowerBound))
+            if overlap > 0, best == nil || overlap > best!.overlap {
+                best = (old, overlap)
+            }
+        }
+        if let best { return best.segment }
+        // No time-window overlap at all (a boundary shifted completely past the old one) — fall
+        // back to nearest start, same as `LyricBlendRowBuilder.reconciled`'s fallback.
+        return oldSegments.min { abs($0.start - fresh.start) < abs($1.start - fresh.start) }
     }
 }
 
@@ -142,6 +206,12 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
     /// Whether the user has explicitly accepted this chord event in the Review tab (backlog #15).
     /// Purely additive to the existing whole-song `chordReviewState` — does not affect it.
     var accepted: Bool = false
+    /// A user-dragged position from the Review chart (backlog #15 Phase 2 consolidation). `nil`
+    /// means "use the detected `time`." Deliberately a FREE timestamp with no snapping (Eric's
+    /// confirmed decision) — dragging a chord drops it exactly where released. Kept separate from
+    /// `time` (rather than overwriting it) so reconciliation across a fresh re-analysis always has
+    /// the original DETECTED time to match against — see `reconciled(newEvents:against:)`.
+    var manualTime: TimeInterval? = nil
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -149,6 +219,7 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         case chord
         case confidence
         case accepted
+        case manualTime
     }
 
     init(
@@ -156,13 +227,15 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         time: TimeInterval,
         chord: String,
         confidence: Float? = nil,
-        accepted: Bool = false
+        accepted: Bool = false,
+        manualTime: TimeInterval? = nil
     ) {
         self.id = id
         self.time = time
         self.chord = chord
         self.confidence = confidence
         self.accepted = accepted
+        self.manualTime = manualTime
     }
 
     init(from decoder: Decoder) throws {
@@ -172,6 +245,33 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         chord = try container.decode(String.self, forKey: .chord)
         confidence = try container.decodeIfPresent(Float.self, forKey: .confidence)
         accepted = try container.decodeIfPresent(Bool.self, forKey: .accepted) ?? false
+        manualTime = try container.decodeIfPresent(TimeInterval.self, forKey: .manualTime)
+    }
+
+    /// The position actually used for display/drag interaction: the user's manually-dragged
+    /// `manualTime` if set, else the detected `time`. Reconciliation and anything comparing
+    /// against fresh detection output should keep using raw `time`, never this.
+    var effectiveTime: TimeInterval { manualTime ?? time }
+
+    /// Carries `manualTime`/`accepted` forward from a PRIOR analysis's chord events onto a
+    /// freshly re-detected set, matched by nearest DETECTED `time` (never `effectiveTime`, so a
+    /// drag never poisons future reconciliation) within `tolerance` seconds. Same convention as
+    /// `TimedLyricSegment.reconciled`.
+    static func reconciled(
+        newEvents: [EditableChordEvent], against oldEvents: [EditableChordEvent],
+        tolerance: TimeInterval = 0.75
+    ) -> [EditableChordEvent] {
+        guard !oldEvents.isEmpty else { return newEvents }
+        return newEvents.map { fresh in
+            guard
+                let match = oldEvents.filter({ abs($0.time - fresh.time) <= tolerance })
+                    .min(by: { abs($0.time - fresh.time) < abs($1.time - fresh.time) })
+            else { return fresh }
+            var carried = fresh
+            carried.manualTime = match.manualTime
+            carried.accepted = match.accepted
+            return carried
+        }
     }
 }
 
