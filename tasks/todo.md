@@ -256,5 +256,35 @@ Verification basis:
   `stat`-ing the actual running binary's mtime. See tasks/lessons.md. Pin
   `-derivedDataPath` going forward.
 
+## Fix: intro/outro bars rendering 2x too wide (2026-07-05, night)
+
+- **Regression from the same evening's instrumental-row-width fix** (Eric, live: "Intro and
+  outro bars are now twice as wide as they should be"), only now visible because that fix put
+  chord-only rows on the real-duration `pixelsPerSecond` axis for the first time — the
+  underlying bug existed before but was invisible under the old character-count sizing.
+- **Root cause**: `WorkspaceEditorsView.chordOnlyLineWindow` splits a multi-row
+  intro/instrumental/outro span into `1/rowCount` slices per row, counting `rowCount` by
+  scanning `items` for consecutive chord-only rows via raw adjacent-index checks
+  (`isChordOnlyRow(index - 1)` / `(index + 1)`). But `ChordProDraftBuilder` emits an
+  `{x_chord_times: ...}` directive immediately before EVERY chord-only row (B5 round-trip
+  carrier), so in `document.blocks`/`items` each row is actually 2 slots apart
+  (directive, row, directive, row, ...), not 1. The raw adjacent check hit the directive and
+  stopped immediately, collapsing every multi-row run to `rowCount == 1` — so each row
+  claimed the ENTIRE gap instead of its slice.
+- **Fix**: extracted the run-scan into a new, directly testable
+  `ChordProPreviewIndexing.chordOnlyRunPosition(in:at:)` (`WorkspaceEditorsView.swift`) that
+  walks past interleaved directive/comment blocks (anything that isn't a real sung lyric line
+  or the array edge) instead of stopping at the first non-adjacent slot, and counts
+  `position`/`rowCount` in actual-row hops rather than raw item-offset arithmetic (which would
+  still overcount once directives are skipped). `chordOnlyLineWindow` now calls this shared
+  function instead of inlining the (buggy) scan.
+- Regression: `testChordOnlyRunPositionCountsConsecutiveRowsAcrossInterleavedDirectives`
+  (3-row fixture mirroring the real directive/row/directive/row shape, asserts rowCount=3 and
+  positions 0/1/2 — confirmed to fail with rowCount=[1,1,1] when reverted to the naive
+  adjacent-index check) and `testChordOnlyRunPositionTreatsARealLyricLineAsARunBoundary` (two
+  separate 1-row breaks either side of a sung line must not fuse into one false run of 2).
+- Suite: 588 tests, same pre-existing `AppModelTests`/`MusicLibraryTests` environment
+  failures. Lint clean. App rebuilt (pinned `-derivedDataPath`) and relaunched.
+
 ---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details

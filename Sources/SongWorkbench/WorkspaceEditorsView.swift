@@ -2491,18 +2491,8 @@ private struct ChordProAppPreview: View {
         // A long instrumental span is emitted as several consecutive chord-only rows (see
         // ChordProDraftBuilder.instrumentalLines). Give each row an equal slice of the gap so their
         // widths and waveforms match that split, instead of every row spanning the whole gap.
-        func isChordOnlyRow(_ i: Int) -> Bool {
-            guard items.indices.contains(i), items[i].lyricOrdinal == nil,
-                case .lyric(let line) = items[i].block
-            else { return false }
-            return !line.chords.isEmpty && !line.hasSungText
-        }
-        var runStart = index
-        while isChordOnlyRow(runStart - 1) { runStart -= 1 }
-        var runEnd = index
-        while isChordOnlyRow(runEnd + 1) { runEnd += 1 }
-        let rowCount = max(1, runEnd - runStart + 1)
-        let position = index - runStart
+        let (rowCount, position) = ChordProPreviewIndexing.chordOnlyRunPosition(
+            in: items, at: index)
         let span = resolvedEnd - resolvedStart
         let sliceStart = resolvedStart + span * Double(position) / Double(rowCount)
         let sliceEnd = resolvedStart + span * Double(position + 1) / Double(rowCount)
@@ -2576,6 +2566,58 @@ enum ChordProPreviewIndexing {
                 displayLineNumber: displayNumber
             )
         }
+    }
+
+    /// True when `items[i]` is itself a chord-only (instrumental) row: has chords, no sung text.
+    static func isChordOnlyRow(_ items: [ChordProPreviewIndexedBlock], _ i: Int) -> Bool {
+        guard items.indices.contains(i), items[i].lyricOrdinal == nil,
+            case .lyric(let line) = items[i].block
+        else { return false }
+        return !line.chords.isEmpty && !line.hasSungText
+    }
+
+    /// This row's position within its run of consecutive chord-only rows, and the run's total
+    /// length — used to give a multi-row intro/instrumental/outro span an equal `1/rowCount`
+    /// slice of its time gap per row.
+    ///
+    /// A real sung lyric line ends the run; anything else in between — the
+    /// `{x_chord_times: ...}` directive `ChordProDraftBuilder` emits before EVERY chord-only
+    /// row, section/comment directives, blank lines — is not itself a row and must be stepped
+    /// over, not treated as a run-ending gap. A naive adjacent-index check
+    /// (`isChordOnlyRow(index - 1)`/`(index + 1)`) hits that directive immediately
+    /// preceding/following each row and stops there, collapsing every multi-row intro/outro to
+    /// `rowCount == 1` — so each row claimed the ENTIRE gap instead of its slice (reported:
+    /// "Intro and outro bars are now twice as wide as they should be").
+    static func chordOnlyRunPosition(
+        in items: [ChordProPreviewIndexedBlock], at index: Int
+    ) -> (rowCount: Int, position: Int) {
+        func isRunBoundary(_ i: Int) -> Bool {
+            guard items.indices.contains(i) else { return true }
+            if items[i].lyricOrdinal != nil { return true }
+            if case .lyric(let line) = items[i].block, line.hasSungText { return true }
+            return false
+        }
+        func adjacentChordOnlyRow(from i: Int, step: Int) -> Int? {
+            var probe = i + step
+            while items.indices.contains(probe) {
+                if isChordOnlyRow(items, probe) { return probe }
+                if isRunBoundary(probe) { return nil }
+                probe += step
+            }
+            return nil
+        }
+        var rowOffsets = [index]
+        var probeStart = index
+        while let prev = adjacentChordOnlyRow(from: probeStart, step: -1) {
+            rowOffsets.insert(prev, at: 0)
+            probeStart = prev
+        }
+        var probeEnd = index
+        while let next = adjacentChordOnlyRow(from: probeEnd, step: 1) {
+            rowOffsets.append(next)
+            probeEnd = next
+        }
+        return (max(1, rowOffsets.count), rowOffsets.firstIndex(of: index) ?? 0)
     }
 
     /// Review-pane display line number for each SUNG-lyric ordinal in `source` — the mapping

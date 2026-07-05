@@ -164,3 +164,22 @@ DIFFERENTIAL assertion (same chords/timing; vary only the signal under test — 
 spacing — and assert the output differs) over a hand-derived exact-match string, and always
 empirically confirm a new regression test actually fails when the fix is reverted before
 trusting it.
+
+## 2026-07-05 — A width fix can put a LATENT bug on-axis for the first time; re-audit adjacent scans, not just the new formula
+**Mistake (near-miss, caught live):** The evening's `instrumentalTimeWidth` fix (switching
+chord-only rows to `lineDuration * pixelsPerSecond`) was itself correct, but it made
+`chordOnlyLineWindow`'s multi-row slicing (`rowCount`/`position`) load-bearing for the first
+time — under the old character-count sizing, a wrong `rowCount` didn't visibly matter because
+row width didn't derive from the window slice at all. `rowCount` was ALREADY silently broken:
+it scanned `items` for consecutive chord-only rows via raw adjacent-index checks
+(`isChordOnlyRow(index - 1)`), but `ChordProDraftBuilder` interleaves an `{x_chord_times: ...}`
+directive immediately before every chord-only row, so real rows are 2 `items` slots apart, not
+1 — the scan hit the directive and stopped, collapsing every multi-row run to `rowCount == 1`
+(each row claiming the WHOLE gap). Reported live as "Intro and outro bars are now twice as
+wide" right after the width fix shipped and the app was rebuilt/relaunched for the first time.
+**Rule:** When a fix changes what a value is DERIVED FROM (character count → real duration,
+proportional → absolute, etc.), audit every UPSTREAM computation that value now depends on for
+the first time — a latent bug in one of them can look like a brand-new regression in the fix
+itself. Also: any "scan adjacent items for a run of X" loop must skip over items that aren't X
+and aren't a real boundary (directives, comments, blank lines) — a raw `index ± 1` check is
+almost always wrong once directives can be interleaved between the things being counted.
