@@ -68,9 +68,94 @@ Owner: `TrailingLyricTailPruner.lyricBodyEndBeforeInstrumentalTail`
       confirm final lyrics reach ~230s and chord event count rises with changes
       landing on onsets.
 
-## Review
+## Review (2026-07-05)
 
-(to be filled after implementation)
+Implemented, all in existing files (no tuist generate needed):
+- `ChordTimelineDecoder`: switchPenalty 2.0→1.5; new onset-aware per-window penalty
+  (×0.5 within 0.12s of an instrument onset); `decode(switchPenalties:)` +
+  back-compat constant overload; onsets plumbed from AnalysisStage (computed
+  before decode, reused for snap).
+- `ChordOnsetAligner.snap(beatTimes:minimumBeatFraction:)`: refuses snaps that
+  compress neighbours below 0.8 beat (sliver source eliminated; duration filter
+  now truly a safety net).
+- `TrailingLyricTailPruner`: `tailLooksDegenerate` (≤2 words or normalized dup)
+  gates the geometric body-end; `maxSignalTightening = 3.0` caps how far geometry
+  may tighten the VAD cutoff.
+- Stage tags bumped: `reduce-12-onset-viterbi`, `grouping-42-degenerate-tail-prune`
+  → next analysis re-reduces/re-groups from cached raw data, no re-chroma/re-ASR.
+- Tests: +2 decoder (onset excursion survives / far onsets don't discount),
+  +4 pruner/aligner (Settle Down kept, Key West hook kept, blip tail still cut,
+  no sub-beat snap sliver). Full suite 558 tests: only the 8 pre-existing
+  AppModelTests environment failures (identical on clean main, verified by stash).
+- swift format lint clean.
+
+Remaining to fully verify: re-analyze Settle Down / Key West in the app and
+confirm final lyrics reach ~230s and chord changes land on onsets.
+
+## Batch 2 review (2026-07-05, later)
+
+- **Bass notes positioned on the time axis**: `BassNoteRowFormatter.timedLabels`
+  (onset + name); `ChordProPreviewLineView.rowBassNotes` renders each note at
+  `rhythmicX(forTime:)` on its own 18px row between the ball/dot reserve and the
+  chords (collision-nudged like chords). Flush-left label kept only as
+  monospace/override fallback. +2 formatter tests.
+- **Duplicated preview lines (ball skips them)**: verified against persisted docs —
+  NOT a preview-builder bug. `LyricBlendRowBuilder.buildRows` clusters the 3
+  engines' lines with a 1.5s anchor window; engines timing the same line further
+  apart (Grass: 20.26 vs 24.90) produced two rows → two rendered lines.
+  Fix: `mergeCrossModeDuplicates` — merge adjacent clusters (≤8s apart) whose mode
+  sets are DISJOINT and normalized texts equal; real repeated hooks share a mode
+  and never merge. +3 tests. Also `ReferenceLyricAligner` now drops pasted-site
+  timestamp tokens/lines ("0:00" junk, Flip Flops). +1 test. Existing docs clean
+  up on next Analyze (grouping-42 re-groups from cached raw).
+- **Smooth auto-scroll**: replaced default spring `scrollTo` with a 1.1s easeInOut
+  glide (`ChordProAppPreview.autoScrollGlide`), anchor .center; ScrollView
+  clamping inherently defers scrolling until the active line can reach center.
+- Full suite 564 tests: only the 8 pre-existing AppModelTests environment
+  failures. Lint clean. UI changes need an app rebuild + relaunch to see.
+
+## Batch 3 review (2026-07-05): vocal-onset corroboration (Eric's invariant)
+
+- `LyricBlendRowBuilder.onsetCorroboration(words:vocalOnsets:tolerance:)` — pure
+  scorer: fraction of a candidate's word onsets within 0.18s of a vocal-stem
+  energy onset (binary search, unit-tested).
+- `onsetPreferredMode` / `onsetCorroborated(rows:vocalOnsets:)` — for rows the
+  user hasn't picked, flip to the candidate the stem clearly corroborates
+  (margin ≥ 0.25 over the accuracy-first default); user picks never touched.
+- Wired into `AppModel.runLyricBlendPasses` AFTER reconcile: vocals-stem onsets
+  via `InstrumentOnsetDetector` on a detached utility task; missing stem = no-op.
+- +4 tests (scorer fractions, flip, user-pick protection, margin). Suite: 561
+  run (audible playback suites now skipped locally via --skip to stop the
+  "raspberry" — they play a real AVAudioEngine), same 8 pre-existing failures.
+- .app rebuilt via xcodebuild (Debug) — RELAUNCH REQUIRED to see today's UI work.
+
+Follow-ups (not started): per-line orphan flag in Review UI (line with ~zero
+onset corroboration = suspect), unmatched-onset audit beyond the existing
+untranscribedVocalRegions badge, and real-audio validation of the auto-pick
+margin on Flip Flops after re-analysis.
+
+## Batch 4 review (2026-07-05, afternoon)
+
+- **Window/layout**: control row's fixed widths made content min ~1,790 > 1,540
+  default ⇒ SwiftUI centered + clipped both outer columns. Tab picker moved into
+  the middle pane (Eric's suggestion), scrubber/pitch/speed sliders made
+  compressible, root minWidth 1,380. Sidebar + stem rail both 360pt (symmetry).
+- **Blend fixes round 2**: non-adjacent cross-mode duplicate merge (Grass line
+  landed 2 rows past its twin); Lyric Blend window no longer auto-opens —
+  toolbar icon glows mint + badge when results are ready.
+- **Re-analysis validation (Flip Flops)**: chords 119→133, 0:00 junk gone,
+  outro kept; line-2 zipper traced to the non-adjacent duplicate (fix awaits
+  next ⌘R).
+- **Bass-vs-chord clashes** (measured 24–43%): BassLineAnalyzer parabolic lag
+  interpolation + global tuning-offset via clarity-weighted CIRCULAR mean;
+  display floor at clarity 0.5. Detuned-fourth regression test.
+- **Mixer pan + L/R meters**: StemMixState.pan (persisted, back-compat),
+  constant-power panGains, stemStereoLevels post-fader/post-pan, PanKnob rotary
+  + HorizontalLRMeter per strip, export carries pan. AVFoundation gotcha: set
+  AVAudioMixing params AFTER engine start (unit-test guarded).
+- Suite: 568 tests, same 8 pre-existing AppModel env failures. App rebuilt —
+  NEEDS RELAUNCH; then ⌘R re-analysis cleans remaining duplicates and applies
+  the bass-detector fixes.
 
 ---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details

@@ -61,7 +61,6 @@ actor StemMixExporter {
         for kind in availableKinds {
             guard let file = files[kind] else { continue }
             let player = AVAudioPlayerNode()
-            player.volume = mixer.effectiveGain(for: kind)
             engine.attach(player)
             engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
             players[kind] = player
@@ -90,6 +89,16 @@ actor StemMixExporter {
             }
 
             try engine.start()
+            // Mixing parameters go in AFTER manual rendering is enabled and the engine is
+            // started: `enableManualRenderingMode` rebuilds the engine's internal graph,
+            // and AVAudioMixing values (volume/pan) set before that are silently dropped
+            // (verified by the panned-export unit test).
+            for kind in availableKinds {
+                guard let player = players[kind] else { continue }
+                player.volume = mixer.effectiveGain(for: kind)
+                // Match live playback: the exported mix carries each stem's pan position.
+                player.pan = mixer[kind].pan
+            }
             for player in players.values {
                 player.play()
             }

@@ -93,3 +93,13 @@ a sampleTime by a rate it wasn't expressed in. See tasks/audit-ball-timing.md.
 - AppModelTests import/restore tests fail in this tree due to pre-existing uncommitted WIP (or real
   Application Support store pollution), independent of chord-pipeline changes — proven by removing
   my changes and re-running.
+
+## 2026-07-05 — Regression tests must mirror the field data's FULL shape
+**Mistake:** The first non-adjacent duplicate-merge fix "passed" its regression test but
+failed on the real song: the test's clusters held ONE mode each, while the real cluster held
+the same line from TWO modes — the flat text concatenation read as the line doubled and
+never matched. Eric had to re-analyze and re-report before the miss surfaced.
+**Rule:** When building a regression test from observed field data, reproduce the complete
+shape (every mode/candidate/row involved), not a minimal sketch of the mechanism. Before
+declaring a data-pipeline fix done, replay it against the actual persisted values that
+exhibited the bug — the unit fixture must be copied from that data, not invented.

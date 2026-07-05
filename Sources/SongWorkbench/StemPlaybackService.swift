@@ -1,6 +1,13 @@
 import AVFoundation
 import Foundation
 
+/// One stem's left/right meter reading in `[0, 1]`.
+struct StemStereoLevel: Equatable, Sendable {
+    var left: Float
+    var right: Float
+    static let zero = StemStereoLevel(left: 0, right: 0)
+}
+
 @MainActor
 final class StemPlaybackService: ObservableObject, PlaybackClock {
     @Published private(set) var currentTime: TimeInterval = 0
@@ -12,6 +19,14 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     @Published private(set) var stemLevels = Dictionary(
         uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(0)) }
     )
+    /// Post-fader, post-pan left/right levels per stem, for the channel strips' horizontal
+    /// L/R meters.
+    @Published private(set) var stemStereoLevels = Dictionary(
+        uniqueKeysWithValues: StemKind.allCases.map { ($0, StemStereoLevel.zero) }
+    )
+    /// The mixer state currently applied to the players — kept so metering can apply the
+    /// same pan law the audio path uses.
+    private var appliedMixer = StemMixerModel()
 
     private let engine = AVAudioEngine()
     private let stemMixerNode = AVAudioMixerNode()
@@ -93,9 +108,21 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     }
 
     func apply(_ mixer: StemMixerModel) {
+        appliedMixer = mixer
         for kind in StemKind.allCases {
             players[kind]?.volume = mixer.effectiveGain(for: kind)
+            // AVAudioPlayerNode adopts AVAudioMixing: pan applies on the mixer input bus
+            // (balance for stereo stems, constant-power placement for mono).
+            players[kind]?.pan = mixer[kind].pan
         }
+    }
+
+    /// Constant-power pan gains for the L/R meters, matching the audible pan law:
+    /// center ⇒ (≈0.707, ≈0.707), hard left ⇒ (1, 0), hard right ⇒ (0, 1).
+    static func panGains(for pan: Float) -> (left: Float, right: Float) {
+        let clamped = min(max(pan, -1), 1)
+        let angle = (Double(clamped) + 1) * .pi / 4
+        return (Float(cos(angle)), Float(sin(angle)))
     }
 
     /// Builds the click track from the song's beat times and connects it. Call after `load`. A
@@ -210,6 +237,10 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         }
         do {
             if !engine.isRunning { try engine.start() }
+            // Re-push mixing parameters now the engine is running: AVAudioMixing values
+            // (volume/pan) set on a node before the engine (re)starts can be dropped by
+            // graph rebuilds — field-verified in the exporter's manual-rendering path.
+            apply(appliedMixer)
             for kind in StemKind.allCases where files[kind] != nil {
                 players[kind]?.play()
             }
@@ -394,12 +425,16 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             return
         }
         for kind in StemKind.allCases {
-            stemLevels[kind] = meterLevel(for: kind, at: currentTime)
+            let stereo = meterStereoLevel(for: kind, at: currentTime)
+            stemStereoLevels[kind] = stereo
+            stemLevels[kind] = max(stereo.left, stereo.right)
         }
     }
 
-    private func meterLevel(for kind: StemKind, at time: TimeInterval) -> Float {
-        guard let file = meterFiles[kind], file.length > 0 else { return 0 }
+    /// Post-fader, post-pan L/R RMS for one stem at `time` — one file read feeds both the
+    /// vertical VU (max of the sides) and the horizontal L/R meter.
+    private func meterStereoLevel(for kind: StemKind, at time: TimeInterval) -> StemStereoLevel {
+        guard let file = meterFiles[kind], file.length > 0 else { return .zero }
         let sampleRate = file.processingFormat.sampleRate
         let startFrame = min(
             max(AVAudioFramePosition(time * sampleRate), 0),
@@ -410,20 +445,30 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             frameCount > 0,
             let buffer = AVAudioPCMBuffer(
                 pcmFormat: file.processingFormat, frameCapacity: frameCount)
-        else { return 0 }
+        else { return .zero }
 
         do {
             file.framePosition = startFrame
             try file.read(into: buffer, frameCount: frameCount)
-            return Self.meterLevel(from: buffer) * (players[kind]?.volume ?? 0)
+            let source = Self.stereoMeterLevel(from: buffer)
+            let volume = players[kind]?.volume ?? 0
+            let gains = Self.panGains(for: appliedMixer[kind].pan)
+            // Constant-power law: ×√2 restores unity at center so the meters read the same
+            // as the old mono meter for an unpanned stem.
+            let normalization = Float(2).squareRoot()
+            return StemStereoLevel(
+                left: min(source.left * volume * gains.left * normalization, 1),
+                right: min(source.right * volume * gains.right * normalization, 1)
+            )
         } catch {
-            return 0
+            return .zero
         }
     }
 
     private func resetStemLevels() {
         for kind in StemKind.allCases {
             stemLevels[kind] = 0
+            stemStereoLevels[kind] = .zero
         }
     }
 
@@ -443,6 +488,29 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         }
         let meanSquare = sumOfSquares / Float(channelCount * frameLength)
         return min(max(sqrt(meanSquare), 0), 1)
+    }
+
+    /// Per-side RMS of the buffer's first two channels; a mono buffer reads the same on both
+    /// sides (its signal feeds both speakers equally before panning).
+    static func stereoMeterLevel(from buffer: AVAudioPCMBuffer) -> StemStereoLevel {
+        guard let channelData = buffer.floatChannelData else { return .zero }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        guard channelCount > 0, frameLength > 0 else { return .zero }
+
+        func rms(channel: Int) -> Float {
+            let samples = channelData[channel]
+            var sumOfSquares: Float = 0
+            for frame in 0..<frameLength {
+                let sample = samples[frame]
+                sumOfSquares += sample * sample
+            }
+            return min(max(sqrt(sumOfSquares / Float(frameLength)), 0), 1)
+        }
+
+        let left = rms(channel: 0)
+        let right = channelCount > 1 ? rms(channel: 1) : left
+        return StemStereoLevel(left: left, right: right)
     }
 
     private func releaseSecurityScopes() {

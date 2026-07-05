@@ -7,7 +7,14 @@ struct SongWorkbenchApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(model: model)
-                .frame(minWidth: 1_300, minHeight: 650)
+                // The floor must be ≥ the layout's true minimum or SwiftUI CLIPS the outer
+                // columns instead of stopping the resize (field-confirmed: the control row's
+                // old fixed widths pushed the content minimum past the 1,540 default and the
+                // window opened with the song sidebar and stem rail cut off). After moving
+                // the editor tab picker into the middle pane and making the scrubber and
+                // pitch/speed sliders compressible, the content minimum is ~1,330; 1,380
+                // keeps a safety margin.
+                .frame(minWidth: 1_380, minHeight: 650)
                 .background(Color.swCanvas.ignoresSafeArea())
                 .foregroundStyle(Color.swTextPrimary)
                 .tint(Color.swAccent)
@@ -18,7 +25,6 @@ struct SongWorkbenchApp: App {
                 ) { _ in
                     model.flushPendingSave()
                 }
-                .modifier(LyricBlendAutoOpen(model: model))
         }
         // Explicit initial size so the window opens wide enough, on first launch, to show all 3
         // main sections of `PlayerView.mainColumns` at once (fixed-width song sidebar + the
@@ -110,18 +116,7 @@ private struct AboutCommandButton: View {
     }
 }
 
-/// Auto-opens the "Lyric Blend" window once `model.lyricBlendReadySongID` is set (backlog #11:
-/// "on analysis complete, open a new Lyric Blend window for the selected song"). Resets the
-/// signal immediately after opening so it doesn't re-fire if the same song is re-selected later.
-private struct LyricBlendAutoOpen: ViewModifier {
-    @ObservedObject var model: AppModel
-    @Environment(\.openWindow) private var openWindow
-
-    func body(content: Content) -> some View {
-        content.onChange(of: model.lyricBlendReadySongID) { _, newValue in
-            guard newValue != nil else { return }
-            openWindow(id: "lyricBlend")
-            model.lyricBlendReadySongID = nil
-        }
-    }
-}
+// The Lyric Blend window is no longer auto-opened when results are ready (Eric: "don't pop
+// open the Lyric Blend window — have an icon light up instead"). `model.lyricBlendReadySongID`
+// now drives the glowing indicator on `SongActionsCard`'s Lyric Blend button, and is cleared
+// when the user opens the window from there.

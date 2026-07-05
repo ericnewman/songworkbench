@@ -540,10 +540,18 @@ enum ChordOnsetAligner {
     /// For each event, if an onset lies within `tolerance` of its time, move the event to the
     /// nearest such onset; otherwise leave it. Order/count preserved; times stay nondecreasing.
     /// Returns events unchanged when `onsets` is empty.
+    ///
+    /// When `beatTimes` is provided, an event is NOT snapped if doing so would compress its
+    /// gap to the previous event below `minimumBeatFraction` of the local beat while the
+    /// original spacing was at least that — snapping must never manufacture the sub-beat
+    /// slivers that `ChordEventDurationFilter` then deletes (which erased REAL chord changes:
+    /// an A–B–A pair compressed by the nondecreasing clamp collapsed to a single A).
     static func snap(
         _ events: [EditableChordEvent],
         toOnsets onsets: [TimeInterval],
-        tolerance: TimeInterval = 0.35
+        tolerance: TimeInterval = 0.35,
+        beatTimes: [TimeInterval] = [],
+        minimumBeatFraction: Double = 0.8
     ) -> [EditableChordEvent] {
         guard !onsets.isEmpty, !events.isEmpty else { return events }
         let sortedOnsets = onsets.sorted()
@@ -560,12 +568,38 @@ enum ChordOnsetAligner {
             if abs(nearest - time) <= tolerance {
                 newTime = nearest
             }
+            if index > 0, let beat = localBeatLength(at: time, beatTimes: beatTimes) {
+                let minimumGap = beat * minimumBeatFraction
+                let previous = result[index - 1].time
+                if newTime - previous < minimumGap, time - previous >= minimumGap {
+                    // Snapping would create a sliver the duration filter deletes; keep the
+                    // decoder's beat-aligned time instead of losing the change downstream.
+                    newTime = time
+                }
+            }
             // Keep the sequence nondecreasing so chord order is preserved.
             newTime = max(newTime, floor)
             result[index].time = newTime
             floor = newTime
         }
         return result
+    }
+
+    /// Length of the beat interval nearest `time`, or nil without a usable grid.
+    private static func localBeatLength(
+        at time: TimeInterval, beatTimes: [TimeInterval]
+    ) -> TimeInterval? {
+        guard beatTimes.count >= 2 else { return nil }
+        var best: (distance: TimeInterval, length: TimeInterval)?
+        for index in 0..<(beatTimes.count - 1) {
+            let length = beatTimes[index + 1] - beatTimes[index]
+            guard length > 0 else { continue }
+            let distance = abs(beatTimes[index] - time)
+            if best == nil || distance < best!.distance {
+                best = (distance, length)
+            }
+        }
+        return best?.length
     }
 }
 
@@ -1457,6 +1491,11 @@ enum TrailingLyricTailPruner {
         return words.map(\.start).min() ?? segment.start
     }
 
+    /// Geometry may TIGHTEN the VAD signal cutoff by at most this much. A lyric-body end far
+    /// below the last voiced moment CONTRADICTS the VAD — real vocals continue — so the
+    /// geometric heuristic must yield instead of deleting sung outro lines.
+    static let maxSignalTightening: TimeInterval = 3.0
+
     private static func resolvedCutoff(
         segments: [TimedLyricSegment],
         lastVoicedEnd: TimeInterval?,
@@ -1484,11 +1523,20 @@ enum TrailingLyricTailPruner {
                 minTrailingInstrumental: minTrailingInstrumental)
         else { return signalCutoff }
         guard let signalCutoff else { return lyricBodyEnd }
+        guard signalCutoff - lyricBodyEnd <= maxSignalTightening else { return signalCutoff }
         return min(signalCutoff, lyricBodyEnd)
     }
 
     /// When vocals end early but ASR/VAD still admit bleed blips, the last real lyric line ends well
     /// before `sourceDuration` and every line after it starts at/after that end (Summertime outro).
+    ///
+    /// Geometry alone is NOT sufficient: nearly every song's final line starts within
+    /// `maxTailClusterGap` of the previous line's end with ≥3s of audio left, so a purely
+    /// geometric rule deleted the real closing lines of ordinary songs (field-confirmed:
+    /// "I never thought I'd want to hang around" conf 0.98 cut from Settle Down). The tail is
+    /// only treated as instrumental-bleed junk when every tail line LOOKS degenerate: a blip
+    /// of ≤2 substantive words, or a normalized duplicate of an earlier line or another tail
+    /// line (Whisper's outro loop signature).
     static func lyricBodyEndBeforeInstrumentalTail(
         _ segments: [TimedLyricSegment],
         sourceDuration: TimeInterval?,
@@ -1505,11 +1553,39 @@ enum TrailingLyricTailPruner {
             let tail = Array(sorted[(index + 1)...])
             guard
                 tail.allSatisfy({ substantiveLineStart($0) >= line.end - lineStartEpsilon }),
-                substantiveLineStart(tail[0]) <= line.end + maxTailClusterGap
+                substantiveLineStart(tail[0]) <= line.end + maxTailClusterGap,
+                tailLooksDegenerate(tail, body: Array(sorted[...index]))
             else { continue }
             return line.end
         }
         return nil
+    }
+
+    /// True when EVERY tail line is junk-shaped: ≤2 substantive words, or a normalized
+    /// duplicate of a body line or of another tail line. One unique multi-word tail line
+    /// (a real closing lyric) vetoes the cut.
+    static func tailLooksDegenerate(
+        _ tail: [TimedLyricSegment], body: [TimedLyricSegment]
+    ) -> Bool {
+        guard !tail.isEmpty else { return false }
+        let bodyTexts = Set(body.map { normalizedLineText($0.text) })
+        var tailCounts: [String: Int] = [:]
+        for line in tail { tailCounts[normalizedLineText(line.text), default: 0] += 1 }
+        return tail.allSatisfy { line in
+            let words = line.words.filter { $0.text.contains(where: { !$0.isWhitespace }) }
+            if words.count <= 2 { return true }
+            let normalized = normalizedLineText(line.text)
+            if normalized.isEmpty { return true }
+            if bodyTexts.contains(normalized) { return true }
+            return (tailCounts[normalized] ?? 0) >= 2
+        }
+    }
+
+    static func normalizedLineText(_ text: String) -> String {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
 

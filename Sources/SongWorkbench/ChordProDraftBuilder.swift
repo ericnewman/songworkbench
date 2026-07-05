@@ -205,8 +205,18 @@ struct ChordProDraftBuilder: Sendable {
                 // A short intro has no previous line to carry its chords, so fold them into
                 // the first sung line rather than emitting a standalone chord-only line.
                 leadingChords = gapChords
-            } else if index > 0, segment.start - lyrics[index - 1].end > 1.5 {
-                lines.append("")
+            } else if index > 0 {
+                // Anticipated changes: a gap chord CLOSER to this line's start than to the
+                // previous line's end is the next phrase's chord arriving a hair early
+                // (field case: Bb at 26.78s, 0.30s before "Laughter…" but 0.48s after the
+                // previous line) — attach it to the START of this line, where a musician
+                // expects it, instead of the previous line's tail.
+                leadingChords = gapChords.filter { chord in
+                    segment.start - chord.time < chord.time - gapStart
+                }
+                if segment.start - lyrics[index - 1].end > 1.5 {
+                    lines.append("")
+                }
             }
             var isSectionStart = index == 0 || gapBars >= 4
             if let section = sectionByStart[segment.start],
@@ -232,8 +242,11 @@ struct ChordProDraftBuilder: Sendable {
             if index + 1 < lyrics.count {
                 let nextStart = lyrics[index + 1].start
                 if bars(from: segment.end, to: nextStart, input: input) < 4 {
+                    // Chords closer to the NEXT line's start are its anticipated changes —
+                    // they render as that line's leading chords, not this line's tail.
                     trailingChords = chords.filter {
                         $0.time >= segment.end && $0.time < nextStart
+                            && nextStart - $0.time >= $0.time - segment.end
                     }
                 }
             }

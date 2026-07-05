@@ -337,7 +337,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // Grouping-version suffix: changes the stage record (so re-analysis
                     // re-groups from the cached raw transcription) without changing the raw
                     // transcription cache key, so no re-transcription is needed.
-                    version: result.engine.engineVersion + "|grouping-41-keep-voiced-tail"
+                    version: result.engine.engineVersion + "|grouping-42-degenerate-tail-prune"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
                 modelIdentifier: result.engine.modelName,
@@ -615,7 +615,7 @@ struct HarmonyStage: AnalysisStageRunning {
                 engine: AnalysisEngineVersion(
                     identifier: harmonyEngine.metadata.identifier,
                     version: harmonyEngine.metadata.version
-                        + "|reduce-11-chorus-consensus"
+                        + "|reduce-14-bass-snap"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -646,31 +646,45 @@ struct HarmonyStage: AnalysisStageRunning {
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
             let detectedBassNotes = detectBassNotes(context)
-            // Key-aware Viterbi decoding over beat windows: a diatonic prior scales frame
-            // evidence and a switch penalty smooths window-to-window flicker, with a no-chord
-            // state absorbing weak-evidence windows (quiet intros/fades). Replaces independent
-            // per-window voting, which let transient out-of-key chroma noise win 28% of the
-            // events on the reference song.
-            var chords = BassInformedChordRefiner().refine(
-                ChordTimelineDecoder().events(
-                    from: result,
-                    key: estimatedKey,
-                    bassNotes: detectedBassNotes ?? context.document.bassNotes
-                ),
-                bassNotes: detectedBassNotes ?? []
-            )
-            // Snap chord-change times to where the instrumental actually changes: onsets detected
-            // on the GUITAR stem (falling back to the "other"/accompaniment stem). Best-effort and
-            // non-destructive — any failure or missing stem leaves the chord times unchanged.
+            // Instrumental onsets from the GUITAR stem (falling back to "other"/accompaniment):
+            // computed BEFORE decoding so the Viterbi can discount its switch penalty for beat
+            // windows that start on an attack, then reused to snap event times. Best-effort —
+            // any failure or missing stem yields [] and both uses degrade gracefully.
             let instrumentURL: URL? =
                 context.document.stems?.resolved().guitar
                 ?? context.document.stems?.resolved().other
                 ?? context.document.stems?.resolved().accompaniment
-            if let instrumentURL,
-                let onsets = try? InstrumentOnsetDetector.onsets(url: instrumentURL),
-                !onsets.isEmpty
-            {
-                chords = ChordOnsetAligner.snap(chords, toOnsets: onsets)
+            let instrumentOnsets: [TimeInterval] =
+                instrumentURL.flatMap { try? InstrumentOnsetDetector.onsets(url: $0) } ?? []
+            // Key-aware Viterbi decoding over beat windows: a diatonic prior scales frame
+            // evidence and a switch penalty smooths window-to-window flicker, with a no-chord
+            // state absorbing weak-evidence windows (quiet intros/fades). Replaces independent
+            // per-window voting, which let transient out-of-key chroma noise win 28% of the
+            // events on the reference song. Switches landing on instrument onsets are charged
+            // a reduced penalty so real one-beat changes survive the smoothing.
+            // Switch-discount cues for the decoder: instrument attacks PLUS confident bass
+            // note onsets — chord changes co-occur with bass root movement, so a beat window
+            // starting on either cue pays the reduced switch penalty. (Snapping below keeps
+            // using the pure instrument onsets: bass onsets mark WHEN changes are plausible,
+            // not the exact instrumental attack to align the label to.)
+            let bassCues = (detectedBassNotes ?? context.document.bassNotes)
+                .filter { $0.confidence >= 0.5 }
+                .map(\.timestamp)
+            var chords = BassInformedChordRefiner().refine(
+                ChordTimelineDecoder().events(
+                    from: result,
+                    key: estimatedKey,
+                    bassNotes: detectedBassNotes ?? context.document.bassNotes,
+                    instrumentOnsets: instrumentOnsets + bassCues
+                ),
+                bassNotes: detectedBassNotes ?? []
+            )
+            // Snap chord-change times to where the instrumental actually changes. The beat grid
+            // guards the snap: it must never compress two real events to sub-beat spacing (the
+            // duration filter below would then delete a genuine change).
+            if !instrumentOnsets.isEmpty {
+                chords = ChordOnsetAligner.snap(
+                    chords, toOnsets: instrumentOnsets, beatTimes: resolvedBeatTimes)
             }
             // Onset snapping (and its nondecreasing clamp) can compress neighbouring events to
             // sub-beat spacing; merge those slivers into the preceding chord. Runs LAST so it
@@ -681,6 +695,12 @@ struct HarmonyStage: AnalysisStageRunning {
                 sourceDuration: context.document.sourceDuration
             )
             let alignedChords = chords
+            // With the chord timeline final, re-arbitrate BORDERLINE bass-note roundings
+            // against it — ambiguous fractional pitches snap to the concurrent chord's
+            // tone; decisive ones stay (see `BassChordReconciler`).
+            let reconciledBassNotes = detectedBassNotes.map {
+                BassChordReconciler.snapped($0, chords: alignedChords)
+            }
             return AnalysisStageOutcome { document in
                 document.estimatedBPM = estimatedBPM
                 document.beatTimes = resolvedBeatTimes
@@ -692,8 +712,8 @@ struct HarmonyStage: AnalysisStageRunning {
                     chords: alignedChords,
                     lyrics: document.lyrics,
                     beatTimes: resolvedBeatTimes)
-                if let detectedBassNotes {
-                    document.bassNotes = detectedBassNotes
+                if let reconciledBassNotes {
+                    document.bassNotes = reconciledBassNotes
                 }
                 document.chordReviewState = .draft
                 document.stageRecords[.harmony] = record

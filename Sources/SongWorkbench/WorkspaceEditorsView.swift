@@ -120,9 +120,11 @@ struct PlaybackTransportCard: View {
             }
             .fixedSize()
 
-            // Compact scrubber (~3in) — enough travel for seeking without dominating the bar.
+            // Compact scrubber (~3in ideal) — enough travel for seeking without dominating the
+            // bar, but COMPRESSIBLE: a fixed 220 made the whole control row's minimum wider
+            // than the default window's middle column, so the layout clipped the outer panes.
             PlaybackProgressSlider(model: model)
-                .frame(width: 220)
+                .frame(minWidth: 100, idealWidth: 220, maxWidth: 260)
 
             HStack(alignment: .center, spacing: 10) {
                 VStack(spacing: 1) {
@@ -141,7 +143,7 @@ struct PlaybackTransportCard: View {
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
-                .frame(width: 108)
+                .frame(minWidth: 84, idealWidth: 108, maxWidth: 108)
                 .help("Pitch shift (semitones); playback speed is unaffected")
                 VStack(spacing: 1) {
                     Slider(value: $model.tempoRate, in: 0.5...1.5, step: 0.05)
@@ -151,7 +153,7 @@ struct PlaybackTransportCard: View {
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
-                .frame(width: 108)
+                .frame(minWidth: 84, idealWidth: 108, maxWidth: 108)
                 .help("Playback speed (pitch preserved)")
                 Button("Reset Pitch and Speed", systemImage: "arrow.counterclockwise") {
                     model.pitchSemitones = 0
@@ -161,7 +163,6 @@ struct PlaybackTransportCard: View {
                 .disabled(model.pitchSemitones == 0 && model.tempoRate == 1)
                 .help("Reset pitch and speed")
             }
-            .fixedSize()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -1631,6 +1632,11 @@ struct BeatBallInput: Equatable {
 }
 
 private struct ChordProAppPreview: View {
+    /// Playback auto-scroll animation: a slow symmetric ease so each line advance glides the
+    /// chart toward center instead of the default quick spring's "jump scroll". Duration is a
+    /// large fraction of a typical inter-line gap so the chart reads as continuously moving.
+    static let autoScrollGlide: Animation = .easeInOut(duration: 1.1)
+
     let source: String
     var transpose: Int = 0
     var highlightContext: ChordProPlaybackHighlightContext?
@@ -1729,7 +1735,22 @@ private struct ChordProAppPreview: View {
         guard showBassNotes, !bassNotes.isEmpty, let ordinal,
             lyricLineWindows.indices.contains(ordinal)
         else { return nil }
-        return BassNoteRowFormatter.label(for: bassNotes, inWindow: lyricLineWindows[ordinal])
+        // Transposed by the SAME amount as the chart's chords — the bass row previously
+        // showed raw detected pitches, reading a consistent half-step off whenever the
+        // Transpose stepper was non-zero (Eric: "half a step low, or perhaps not
+        // transposed" — it was the latter).
+        return BassNoteRowFormatter.label(
+            for: bassNotes, inWindow: lyricLineWindows[ordinal], transposedBy: transpose)
+    }
+
+    /// The same window's bass notes with onset times, for rhythmic mode's positioned row (each
+    /// note at its real x on the row's time axis instead of one flush-left label).
+    private func timedBassNotes(forLyricOrdinal ordinal: Int?) -> [TimedBassNoteLabel] {
+        guard showBassNotes, !bassNotes.isEmpty, let ordinal,
+            lyricLineWindows.indices.contains(ordinal)
+        else { return [] }
+        return BassNoteRowFormatter.timedLabels(
+            for: bassNotes, inWindow: lyricLineWindows[ordinal], transposedBy: transpose)
     }
 
     /// Beats per bar: 4/4 by default, but estimated from the lyric-line phrase structure so a
@@ -2014,7 +2035,14 @@ private struct ChordProAppPreview: View {
                                         forLyricOrdinal: ordinal, in: document
                                     )
                                 else { return }
-                                withAnimation {
+                                // Teleprompter glide, not a jump: a slow ease toward the next
+                                // line's centered position reads as one continuous scroll when
+                                // lines advance every few seconds (Eric: "smooth incremental
+                                // scroll ... keep the active line centered"). Centering is
+                                // clamped by the ScrollView itself, so the chart naturally
+                                // stays put until enough lines have played for the active one
+                                // to reach the middle of the viewport.
+                                withAnimation(Self.autoScrollGlide) {
                                     scrollProxy.scrollTo(offset, anchor: .center)
                                 }
                             }
@@ -2031,7 +2059,7 @@ private struct ChordProAppPreview: View {
                                     offset = nil
                                 }
                                 guard let offset else { return }
-                                withAnimation {
+                                withAnimation(Self.autoScrollGlide) {
                                     scrollProxy.scrollTo(offset, anchor: .center)
                                 }
                             }
@@ -2116,6 +2144,8 @@ private struct ChordProAppPreview: View {
             .map(untranscribedLineNumbers.contains) ?? false
         let itemBassLabel = bassLabel(
             forLyricOrdinal: item.lyricOrdinal)
+        let itemRowBassNotes = timedBassNotes(
+            forLyricOrdinal: item.lyricOrdinal)
         ChordProPreviewBlockView(
             block: item.block,
             highlight: itemHighlight,
@@ -2142,6 +2172,7 @@ private struct ChordProAppPreview: View {
             hasUntranscribedVocals: itemHasUntranscribed,
             rowChordTimes: chordRow.effectiveTimes,
             bassLabel: itemBassLabel,
+            rowBassNotes: itemRowBassNotes,
             lyricSegment: itemLyricSegment,
             onToggleLyricAccepted: onToggleLyricAccepted,
             onCommitLyricOverride: onCommitLyricOverride,
@@ -2161,38 +2192,8 @@ private struct ChordProAppPreview: View {
     private func indexedBlocks(
         for document: ChordProPreviewDocument
     ) -> [ChordProPreviewIndexedBlock] {
-        var lyricOrdinal = 0
-        var displayLine = 0
-        return document.blocks.enumerated().map { offset, block in
-            let ordinal: Int?
-            // Only lines with real (non-whitespace) lyric text are lyric lines; chord-only
-            // lines (intro/instrumental/outro) carry whitespace lyric and must not consume
-            // an ordinal, or highlight/ball alignment shifts off the real lyrics.
-            if case .lyric(let line) = block, line.hasSungText {
-                ordinal = lyricOrdinal
-                lyricOrdinal += 1
-            } else {
-                ordinal = nil
-            }
-            // Number every musical line — lyric lines AND chord-only instrumental lines — in a
-            // single running sequence, so instrumental sections are referenceable too. Section
-            // headers, titles, metadata, and directives are not numbered.
-            let displayNumber: Int?
-            if case .lyric(let line) = block,
-                line.hasSungText || !line.chords.isEmpty
-            {
-                displayLine += 1
-                displayNumber = displayLine
-            } else {
-                displayNumber = nil
-            }
-            return ChordProPreviewIndexedBlock(
-                offset: offset,
-                block: block,
-                lyricOrdinal: ordinal,
-                displayLineNumber: displayNumber
-            )
-        }
+        // Shared with the Lyric Blend window so both surfaces agree on line numbers.
+        ChordProPreviewIndexing.indexedBlocks(for: document)
     }
 
     private func blockOffset(
@@ -2513,13 +2514,67 @@ struct LineBeatBall: Equatable {
     var chordTimes: [TimeInterval] = []
 }
 
-private struct ChordProPreviewIndexedBlock {
+struct ChordProPreviewIndexedBlock {
     let offset: Int
     let block: ChordProPreviewBlock
     let lyricOrdinal: Int?
     /// 1-based running number across all musical lines (lyric + chord-only instrumental), or nil
     /// for non-musical blocks (titles, section headers, metadata, directives).
     var displayLineNumber: Int?
+}
+
+/// Shared chart-line numbering, used by the Review pane's gutter AND the Lyric Blend window,
+/// so a row referenced as "line 9" means the same line in both places.
+enum ChordProPreviewIndexing {
+    static func indexedBlocks(
+        for document: ChordProPreviewDocument
+    ) -> [ChordProPreviewIndexedBlock] {
+        var lyricOrdinal = 0
+        var displayLine = 0
+        return document.blocks.enumerated().map { offset, block in
+            let ordinal: Int?
+            // Only lines with real (non-whitespace) lyric text are lyric lines; chord-only
+            // lines (intro/instrumental/outro) carry whitespace lyric and must not consume
+            // an ordinal, or highlight/ball alignment shifts off the real lyrics.
+            if case .lyric(let line) = block, line.hasSungText {
+                ordinal = lyricOrdinal
+                lyricOrdinal += 1
+            } else {
+                ordinal = nil
+            }
+            // Number every musical line — lyric lines AND chord-only instrumental lines — in a
+            // single running sequence, so instrumental sections are referenceable too. Section
+            // headers, titles, metadata, and directives are not numbered.
+            let displayNumber: Int?
+            if case .lyric(let line) = block,
+                line.hasSungText || !line.chords.isEmpty
+            {
+                displayLine += 1
+                displayNumber = displayLine
+            } else {
+                displayNumber = nil
+            }
+            return ChordProPreviewIndexedBlock(
+                offset: offset,
+                block: block,
+                lyricOrdinal: ordinal,
+                displayLineNumber: displayNumber
+            )
+        }
+    }
+
+    /// Review-pane display line number for each SUNG-lyric ordinal in `source` — the mapping
+    /// the Lyric Blend window uses to label its rows with the chart's own numbers.
+    static func displayNumbersByLyricOrdinal(source: String) -> [Int: Int] {
+        guard let document = try? ChordProDocument(parsing: source) else { return [:] }
+        var mapping: [Int: Int] = [:]
+        for item in indexedBlocks(for: ChordProPreviewDocument(document: document)) {
+            if let ordinal = item.lyricOrdinal, let number = item.displayLineNumber {
+                mapping[ordinal] = number
+            }
+        }
+        return mapping
+    }
 }
 
 private struct ChordProPreviewBlockView: View {
@@ -2567,8 +2622,12 @@ private struct ChordProPreviewBlockView: View {
     var rowChordTimes: [TimeInterval] = []
     /// Detected bass note(s) sounding during this row's window (e.g. "E · A · D"), shown above
     /// the chord/lyric content when the View menu's "Show Bass Notes" toggle is on. `nil` for
-    /// non-lyric blocks or when there's nothing to show.
+    /// non-lyric blocks or when there's nothing to show. Used only as the flush-left fallback
+    /// when the rhythmic (positioned) bass row can't render — monospace mode or an overridden
+    /// line, where there's no per-time x axis.
     var bassLabel: String?
+    /// The same bass notes with onset times, for rhythmic mode's positioned per-note row.
+    var rowBassNotes: [TimedBassNoteLabel] = []
     /// The live segment behind this rendered lyric line (backlog #15 Phase 2 remainder — chart
     /// interactivity); `nil` for chord-only/non-lyric blocks. Drives the accept toggle, the
     /// confidence tint, and the edited-line text when set.
@@ -2584,6 +2643,21 @@ private struct ChordProPreviewBlockView: View {
     @State private var isEditingLyric = false
     @State private var draftLyricText = ""
 
+    /// True when the nested `ChordProPreviewLineView` will render the bass notes positioned on
+    /// its rhythmic time axis — mirrors that view's own mode selection (rhythmic words present,
+    /// no override) so the flush-left fallback label never doubles up with the positioned row.
+    private var rendersPositionedBassNotes: Bool {
+        guard case .lyric(let line) = block else { return false }
+        guard rhythmicSpacing, !rhythmicWordTimings.isEmpty, !rowBassNotes.isEmpty else {
+            return false
+        }
+        let overrideActive =
+            line.hasSungText
+            && lyricSegment?.overrideText?
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        return !overrideActive
+    }
+
     var body: some View {
         // Bottom-aligned so the number sits on the words/waveform row of the line, not up on
         // the beat-dot / ball reserve at the top of the block.
@@ -2594,11 +2668,12 @@ private struct ChordProPreviewBlockView: View {
                 .frame(width: 22, alignment: .trailing)
                 .padding(.bottom, 3)
             VStack(alignment: .leading, spacing: 2) {
-                if let bassLabel {
-                    // Same size as the chord glyphs (13pt monospaced) and a bright green — Eric:
-                    // "Bass note names should be the same size as chords, and be in bright
-                    // green" — rather than the smaller 10pt `StemKind.bass.laneColor` (blue) used
-                    // elsewhere, which read as secondary metadata next to the chart's chords.
+                if let bassLabel, !rendersPositionedBassNotes {
+                    // Flush-left fallback (monospace mode / overridden lines). Same size as the
+                    // chord glyphs (13pt monospaced) and a bright green — Eric: "Bass note names
+                    // should be the same size as chords, and be in bright green" — rather than
+                    // the smaller 10pt `StemKind.bass.laneColor` (blue) used elsewhere, which
+                    // read as secondary metadata next to the chart's chords.
                     Text(bassLabel)
                         .font(.system(size: 13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Color.swMint)
@@ -2663,7 +2738,8 @@ private struct ChordProPreviewBlockView: View {
                         rowChordEvents: rowChordEvents,
                         onToggleChordAccepted: onToggleChordAccepted,
                         onSetChordManualTime: onSetChordManualTime,
-                        overrideText: lyricSegment?.overrideText)
+                        overrideText: lyricSegment?.overrideText,
+                        rowBassNotes: rowBassNotes)
                 }
                 if line.hasSungText, let lyricSegment {
                     lyricControls(for: lyricSegment)
@@ -2824,6 +2900,27 @@ private struct ChordProPreviewLineView: View {
     /// renders as plain corrected text instead of the per-word ASR layout — hand-typed text has
     /// no per-word ASR timings to place rhythmically or bounce the ball over.
     var overrideText: String?
+    /// Detected bass notes in this row's time window (onset order). In rhythmic mode each note
+    /// renders at its onset's x on the SAME time axis as the chords — previously the names were
+    /// a single flush-left label, which read as "clustered against the start of the line".
+    var rowBassNotes: [TimedBassNoteLabel] = []
+
+    /// Extra row height reserved above the chords for the positioned bass notes.
+    private static let bassRowReserve: CGFloat = 18
+
+    /// Bass-note x positions in rhythmic mode: each note at its onset's x on the words' time
+    /// axis (same mapping as authoritative chord times), collisions nudged right like chords.
+    private var rhythmicBassXs: [CGFloat] {
+        guard !rowBassNotes.isEmpty, !rhythmicWords.isEmpty else { return [] }
+        var result: [CGFloat] = []
+        var cursor = -CGFloat.greatestFiniteMagnitude
+        for note in rowBassNotes {
+            let x = max(rhythmicX(forTime: note.time), cursor)
+            result.append(x)
+            cursor = x + CGFloat(note.name.count + 1) * Self.characterWidth
+        }
+        return result
+    }
 
     /// Live chord event behind `line.chords[index]`, or `nil` if unmatched.
     private func chordEvent(at index: Int) -> EditableChordEvent? {
@@ -3104,16 +3201,20 @@ private struct ChordProPreviewLineView: View {
         let xs = rhythmicWordXs
         let dots = rhythmicBeatDotPositions
         let chordXs = rhythmicChordXs
+        let bassXs = rhythmicBassXs
         let ball = rhythmicBallPosition
         // Reserve space above the content: the full ball reserve when the ball is shown, else a
         // thin row for the beat dots, else nothing (so lines without either keep their height).
         let topReserve: CGFloat =
             ball != nil
             ? Self.ballTopReserve : (dots.isEmpty ? 0 : Self.rhythmicDotTopReserve)
+        // Positioned bass-note row (when present) sits between the reserve and the chords;
+        // chords/words shift down by this amount so nothing overlaps.
+        let bassReserve: CGFloat = bassXs.isEmpty ? 0 : Self.bassRowReserve
         let totalWidth =
             (xs.last ?? 0) + CGFloat(max(words.last?.text.count ?? 1, 1))
             * Self.characterWidth + Self.characterWidth
-        let contentHeight = (line.chords.isEmpty ? 20 : 42) + topReserve
+        let contentHeight = (line.chords.isEmpty ? 20 : 42) + topReserve + bassReserve
         return ZStack(alignment: .topLeading) {
             ForEach(Array(barlineXs.enumerated()), id: \.offset) { _, x in
                 Rectangle()
@@ -3127,6 +3228,14 @@ private struct ChordProPreviewLineView: View {
                     .frame(width: 3.5, height: 3.5)
                     .position(x: x, y: 4)
             }
+            ForEach(Array(bassXs.enumerated()), id: \.offset) { index, x in
+                // Same size as the chord glyphs and bright green (Eric: "Bass note names
+                // should be the same size as chords, and be in bright green").
+                Text(rowBassNotes[index].name)
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.swMint)
+                    .offset(x: x, y: topReserve)
+            }
             ForEach(Array(words.enumerated()), id: \.offset) { index, word in
                 let isHighlighted =
                     highlight?.wordRange.map { $0.overlaps(word.characterRange) } ?? false
@@ -3136,14 +3245,16 @@ private struct ChordProPreviewLineView: View {
                             size: 15, weight: isHighlighted ? .bold : .regular, design: .monospaced)
                     )
                     .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
-                    .offset(x: xs[index], y: (line.chords.isEmpty ? 0 : 20) + topReserve)
+                    .offset(
+                        x: xs[index],
+                        y: (line.chords.isEmpty ? 0 : 20) + topReserve + bassReserve)
             }
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
                     .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
                     .foregroundStyle(.tint)
                     .background(chordTint(at: index).opacity(0.3))
-                    .offset(x: chordXs[index], y: topReserve)
+                    .offset(x: chordXs[index], y: topReserve + bassReserve)
                     // Free-timestamp drag (no snapping) + tap-to-accept — rhythmic mode has a
                     // true, uniform time axis (`pixelsPerSecond`), so dragging here is exact.
                     .gesture(chordDragGesture(at: index))
@@ -3154,12 +3265,16 @@ private struct ChordProPreviewLineView: View {
                 let lastX = xs.last, let lastWord = words.last
             {
                 let restBeats = max(Int((trailingRestSeconds / beatLengthSeconds).rounded()), 2)
-                Text("𝄽\(restBeats)")
-                    .font(.system(size: 13))
+                // Plain text, not the musical rest glyph 𝄽 (U+1D13D): no font shipped with
+                // macOS covers it (verified via coveredCharacterSet — the system falls back
+                // to LastResort), so it rendered as a "?" box (Eric: "what do these ?4
+                // symbols mean?").
+                Text("rest \(restBeats)")
+                    .font(.system(size: 10))
                     .foregroundStyle(Color.swTextSecondary.opacity(0.75))
                     .offset(
                         x: lastX + CGFloat(max(lastWord.text.count, 1)) * Self.characterWidth + 10,
-                        y: (line.chords.isEmpty ? 0 : 20) + topReserve
+                        y: (line.chords.isEmpty ? 0 : 20) + topReserve + bassReserve
                     )
                     .help(
                         "\(restBeats)-beat rest: the voice stops here before the next line")
@@ -3175,7 +3290,7 @@ private struct ChordProPreviewLineView: View {
         }
         .frame(
             width: max(1, totalWidth),
-            height: (line.chords.isEmpty ? 20 : 42) + topReserve,
+            height: contentHeight,
             alignment: .topLeading
         )
     }
@@ -3778,6 +3893,19 @@ struct StemMixSidebar: View {
         let state = model.stemMixer[kind]
         let isAvailable = model.stemFiles?[kind] != nil
         return VStack(spacing: 4) {
+            // Horizontal L/R signal level at the top of the channel, like a console's
+            // stereo input meter (post-fader, post-pan).
+            HorizontalLRMeter(level: stemPlayback.stemStereoLevels[kind] ?? .zero)
+                .help("\(kind.rawValue.capitalized) left/right signal level")
+
+            PanKnob(
+                value: Binding(
+                    get: { Double(model.stemMixer[kind].pan) },
+                    set: { model.setStemPan(Float($0), for: kind) }
+                )
+            )
+            .help(panHelp(for: state.pan, name: kind.rawValue.capitalized))
+
             HStack(spacing: 2) {
                 VerticalFader(
                     value: Binding(
@@ -3805,13 +3933,28 @@ struct StemMixSidebar: View {
 
             ScribbleStrip(text: shortName(kind))
         }
-        .frame(maxWidth: 30)
+        .frame(maxWidth: 38)
         .disabled(!isAvailable)
         .opacity(isAvailable ? 1 : 0.4)
     }
 
+    private func panHelp(for pan: Float, name: String) -> String {
+        let position: String
+        if abs(pan) < 0.01 {
+            position = "center"
+        } else {
+            position = "\(Int((abs(pan) * 100).rounded()))% \(pan < 0 ? "left" : "right")"
+        }
+        return "\(name) pan: \(position) — drag to move, double-click to center"
+    }
+
     private var slimClickStrip: some View {
         VStack(spacing: 4) {
+            // Stand-ins for the L/R meter + pan knob so the click fader aligns with the
+            // stem strips (the click is a mono centered reference — no pan).
+            Color.clear.frame(height: HorizontalLRMeter.totalHeight)
+            Color.clear.frame(height: PanKnob.defaultSize)
+
             HStack(spacing: 2) {
                 VerticalFader(
                     value: Binding(
@@ -3833,7 +3976,7 @@ struct StemMixSidebar: View {
 
             ScribbleStrip(text: "Clk")
         }
-        .frame(maxWidth: 30)
+        .frame(maxWidth: 38)
     }
 
     private func shortName(_ kind: StemKind) -> String {
@@ -3854,6 +3997,73 @@ struct StemMixSidebar: View {
         }
         .buttonStyle(.plain)
         .help(label == "M" ? "Mute" : "Solo")
+    }
+}
+
+/// A slim two-bar horizontal L/R level meter for the top of a channel strip.
+private struct HorizontalLRMeter: View {
+    var level: StemStereoLevel
+    private static let barHeight: CGFloat = 3
+    private static let barSpacing: CGFloat = 1
+    static let totalHeight: CGFloat = barHeight * 2 + barSpacing
+
+    var body: some View {
+        VStack(spacing: Self.barSpacing) {
+            bar(fraction: level.left)
+            bar(fraction: level.right)
+        }
+        .frame(height: Self.totalHeight)
+    }
+
+    private func bar(fraction: Float) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.swSurface)
+                Capsule()
+                    .fill(Color.swMint)
+                    .frame(width: proxy.size.width * CGFloat(min(max(fraction, 0), 1)))
+            }
+        }
+        .frame(height: Self.barHeight)
+    }
+}
+
+/// A traditional mixer pan pot: a small rotary knob whose indicator sweeps −135°…+135°
+/// (hard left … hard right). Drag right/up to pan right, left/down to pan left;
+/// double-click snaps back to center.
+private struct PanKnob: View {
+    @Binding var value: Double
+    static let defaultSize: CGFloat = 20
+    var size: CGFloat = PanKnob.defaultSize
+    @State private var dragStartValue: Double?
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color.swSurface)
+            Circle().strokeBorder(Color.swTextSecondary.opacity(0.45), lineWidth: 1)
+            // Indicator line from the center toward the rim.
+            Capsule()
+                .fill(abs(value) < 0.01 ? Color.swTextSecondary : Color.swAccent)
+                .frame(width: 2, height: size * 0.38)
+                .offset(y: -size * 0.2)
+                .rotationEffect(.degrees(value * 135))
+        }
+        .frame(width: size, height: size)
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { gesture in
+                    if dragStartValue == nil { dragStartValue = value }
+                    // Right or up increases; ~90pt of travel spans one full side.
+                    let travel = gesture.translation.width - gesture.translation.height
+                    let next = (dragStartValue ?? 0) + Double(travel) / 90
+                    value = min(max(next, -1), 1)
+                }
+                .onEnded { _ in dragStartValue = nil }
+        )
+        .simultaneousGesture(TapGesture(count: 2).onEnded { value = 0 })
+        .accessibilityLabel("Pan")
+        .accessibilityValue(String(format: "%.2f", value))
     }
 }
 

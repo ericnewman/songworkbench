@@ -37,6 +37,108 @@ final class StemMixerTests: XCTestCase {
         XCTAssertEqual(StemKind.allCases, [.vocals, .drums, .bass, .guitar, .piano, .other])
     }
 
+    func testPanIsClampedPersistedAndDefaultsToCenter() throws {
+        var mixer = StemMixerModel()
+        XCTAssertEqual(mixer[.vocals].pan, 0)  // default center
+
+        mixer.setPan(-0.6, for: .vocals)
+        mixer.setPan(3, for: .drums)
+        XCTAssertEqual(mixer[.vocals].pan, -0.6)
+        XCTAssertEqual(mixer[.drums].pan, 1)  // clamped
+
+        // Round-trips through Codable (the analysis-document persistence path).
+        let data = try JSONEncoder().encode(mixer)
+        let decoded = try JSONDecoder().decode(StemMixerModel.self, from: data)
+        XCTAssertEqual(decoded[.vocals].pan, -0.6)
+
+        // Pre-pan documents (no `pan` key) decode to center rather than failing.
+        let legacy = #"{"gain":1.5,"isMuted":false,"isSoloed":true}"#.data(using: .utf8)!
+        let state = try JSONDecoder().decode(StemMixState.self, from: legacy)
+        XCTAssertEqual(state.pan, 0)
+        XCTAssertEqual(state.gain, 1.5)
+        XCTAssertTrue(state.isSoloed)
+    }
+
+    @MainActor
+    func testPanGainsFollowConstantPowerLaw() {
+        let center = StemPlaybackService.panGains(for: 0)
+        XCTAssertEqual(center.left, 0.7071, accuracy: 0.001)
+        XCTAssertEqual(center.right, 0.7071, accuracy: 0.001)
+
+        let hardLeft = StemPlaybackService.panGains(for: -1)
+        XCTAssertEqual(hardLeft.left, 1, accuracy: 0.001)
+        XCTAssertEqual(hardLeft.right, 0, accuracy: 0.001)
+
+        let hardRight = StemPlaybackService.panGains(for: 1)
+        XCTAssertEqual(hardRight.left, 0, accuracy: 0.001)
+        XCTAssertEqual(hardRight.right, 1, accuracy: 0.001)
+
+        // Constant power: L² + R² stays 1 across the sweep.
+        for pan in stride(from: Float(-1), through: 1, by: 0.25) {
+            let gains = StemPlaybackService.panGains(for: pan)
+            XCTAssertEqual(gains.left * gains.left + gains.right * gains.right, 1, accuracy: 0.001)
+        }
+    }
+
+    @MainActor
+    func testStereoMeterLevelSplitsChannelsAndDuplicatesMono() {
+        let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: 8_000, channels: 2)!
+        let stereo = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: 512)!
+        stereo.frameLength = 512
+        for frame in 0..<512 {
+            stereo.floatChannelData![0][frame] = 0.5  // left
+            stereo.floatChannelData![1][frame] = 0.1  // right
+        }
+        let split = StemPlaybackService.stereoMeterLevel(from: stereo)
+        XCTAssertEqual(split.left, 0.5, accuracy: 0.001)
+        XCTAssertEqual(split.right, 0.1, accuracy: 0.001)
+
+        let monoFormat = AVAudioFormat(standardFormatWithSampleRate: 8_000, channels: 1)!
+        let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: 512)!
+        mono.frameLength = 512
+        for frame in 0..<512 { mono.floatChannelData![0][frame] = 0.3 }
+        let duplicated = StemPlaybackService.stereoMeterLevel(from: mono)
+        XCTAssertEqual(duplicated.left, 0.3, accuracy: 0.001)
+        XCTAssertEqual(duplicated.right, duplicated.left)
+    }
+
+    func testExporterAppliesPanToTheRenderedMix() async throws {
+        // One mono stem panned hard LEFT: the exported stereo file must carry its signal
+        // on the left channel and (near) silence on the right.
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stems = StemFiles(
+            vocals: directory.appendingPathComponent("vocals.wav"),
+            drums: directory.appendingPathComponent("drums.wav"),
+            bass: directory.appendingPathComponent("bass.wav"),
+            other: directory.appendingPathComponent("other.wav")
+        )
+        try writeConstantWAV(to: stems.vocals, value: 0.4, frames: 8_000, sampleRate: 8_000)
+        for kind in [StemKind.drums, .bass, .other] {
+            try writeConstantWAV(to: stems[kind]!, value: 0.3, frames: 8_000, sampleRate: 8_000)
+        }
+
+        var mixer = StemMixerModel()
+        mixer.setPan(-1, for: .vocals)
+        for kind in [StemKind.drums, .bass, .other] {
+            mixer.setMuted(true, for: kind)
+        }
+
+        let destination = directory.appendingPathComponent("panned.wav")
+        try await StemMixExporter().export(stems: stems, to: destination, mixer: mixer)
+
+        let output = try AVAudioFile(forReading: destination)
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: output.processingFormat,
+            frameCapacity: AVAudioFrameCount(output.length)
+        )!
+        try output.read(into: buffer)
+        let left = abs(buffer.floatChannelData![0][4_000])
+        let right = abs(buffer.floatChannelData![1][4_000])
+        XCTAssertGreaterThan(left, 0.2, "panned-left stem must land on the left channel")
+        XCTAssertLessThan(right, left * 0.2, "right channel should carry (near) silence")
+    }
+
     func testExporterMixesToStereoAndReportsProgress() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
