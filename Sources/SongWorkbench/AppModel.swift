@@ -1068,6 +1068,37 @@ final class AppModel: ObservableObject {
         lyricSegments = LyricBlendRowBuilder.effectiveLyrics(from: lyricBlendRows)
     }
 
+    /// Toggles a chord event's Review-chart "accepted" flag, by id (backlog #15 Phase 2
+    /// remainder — chart interactivity). A no-op if the id isn't found, e.g. a stale tap racing
+    /// a fast re-analysis that already replaced the event.
+    func toggleChordAccepted(id: EditableChordEvent.ID) {
+        guard let index = chordEvents.firstIndex(where: { $0.id == id }) else { return }
+        chordEvents[index].accepted.toggle()
+    }
+
+    /// Sets (or clears, when `nil`) a chord event's dragged Review-chart position. Deliberately a
+    /// FREE timestamp with no snapping — see `EditableChordEvent.manualTime`'s doc comment.
+    func setChordManualTime(id: EditableChordEvent.ID, manualTime: TimeInterval?) {
+        guard let index = chordEvents.firstIndex(where: { $0.id == id }) else { return }
+        chordEvents[index].manualTime = manualTime
+    }
+
+    /// Toggles a lyric segment's Review-chart "accepted" flag, by id.
+    func toggleLyricAccepted(id: TimedLyricSegment.ID) {
+        guard let index = lyricSegments.firstIndex(where: { $0.id == id }) else { return }
+        lyricSegments[index].accepted.toggle()
+    }
+
+    /// Records a manual correction typed directly into the Review chart for one lyric line, by
+    /// id — mirrors `applyLyricBlendOverride`'s trim/clear convention. Unlike the Lyric Blend
+    /// override, this does not rebuild `lyricSegments` from a row builder (there isn't one here);
+    /// it edits the matching segment in place.
+    func setLyricOverrideText(id: TimedLyricSegment.ID, text: String) {
+        guard let index = lyricSegments.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        lyricSegments[index].overrideText = trimmed.isEmpty ? nil : text
+    }
+
     func retryAnalysisStage(_ stage: SongAnalysisStage) {
         guard let song = selectedSong else { return }
         runAnalysis(for: song, stages: [stage])

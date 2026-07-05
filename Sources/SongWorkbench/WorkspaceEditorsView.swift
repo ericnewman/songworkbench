@@ -1128,7 +1128,17 @@ private struct ChordProTabEditor: View {
                                 uniqueKeysWithValues: (model.songTimelineForPreview()?.rows ?? [])
                                     .map { ($0.number, $0.chordTimes) }),
                             bassNotes: model.bassNotes,
-                            showBassNotes: showBassNotes
+                            showBassNotes: showBassNotes,
+                            lyricSegments: sortedLyricSegments,
+                            chordEvents: model.chordEvents,
+                            onToggleLyricAccepted: { id in model.toggleLyricAccepted(id: id) },
+                            onCommitLyricOverride: { id, text in
+                                model.setLyricOverrideText(id: id, text: text)
+                            },
+                            onToggleChordAccepted: { id in model.toggleChordAccepted(id: id) },
+                            onSetChordManualTime: { id, time in
+                                model.setChordManualTime(id: id, manualTime: time)
+                            }
                         )
                     }
                 }
@@ -1667,6 +1677,49 @@ private struct ChordProAppPreview: View {
     /// above each lyric line when `showBassNotes` is on, replacing the standalone Bass Notes tab.
     var bassNotes: [BassNoteObservation] = []
     var showBassNotes = false
+    /// Lyric segments in the SAME sorted order `lyricOrdinal` indexes into (backlog #15 Phase 2
+    /// remainder — chart interactivity), so a rendered line's confidence/accepted/overrideText
+    /// can be read (and edited) directly, without a separate lookup mechanism.
+    var lyricSegments: [TimedLyricSegment] = []
+    /// The live chord events (backlog #15 Phase 2 remainder), matched to each rendered chord via
+    /// its row's authoritative onset time (`EditableChordEvent.matching(rowTime:in:)`) so the
+    /// chart can show confidence tint, accept state, and drag-to-reposition.
+    var chordEvents: [EditableChordEvent] = []
+    var onToggleLyricAccepted: (TimedLyricSegment.ID) -> Void = { _ in }
+    var onCommitLyricOverride: (TimedLyricSegment.ID, String) -> Void = { _, _ in }
+    var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
+    var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
+
+    /// The live segment behind a rendered lyric line, by ordinal (nil for chord-only rows or an
+    /// out-of-range ordinal — matches the existing `bassLabel(forLyricOrdinal:)` convention).
+    private func lyricSegment(forOrdinal ordinal: Int?) -> TimedLyricSegment? {
+        guard let ordinal, lyricSegments.indices.contains(ordinal) else { return nil }
+        return lyricSegments[ordinal]
+    }
+
+    /// Per-row chord matching, bundled into one call (backlog #15 Phase 2 remainder) so the body's
+    /// `ForEach` only needs one `let` for both results — Swift's expression type-checker times out
+    /// on this view's already-large per-item closure if that computation is inlined as two
+    /// separate statements plus an inline call inside the `ChordProPreviewBlockView(...)`
+    /// initializer.
+    private struct ChordRowData {
+        /// Real chord event behind each rendered chord, index-aligned with `line.chords`.
+        let events: [EditableChordEvent?]
+        /// Authoritative onset times with any manually-dragged chord's time substituted, so a
+        /// drag moves the chord without any other change to the existing time→x coordinate math
+        /// (`ChordProPreviewLineView` consumes this array as its authoritative source).
+        let effectiveTimes: [TimeInterval]
+    }
+
+    private func chordRowData(for item: ChordProPreviewIndexedBlock) -> ChordRowData {
+        let rawTimes: [TimeInterval] =
+            item.displayLineNumber.flatMap { timelineChordTimesByLine[$0] } ?? []
+        let events = rawTimes.map { EditableChordEvent.matching(rowTime: $0, in: chordEvents) }
+        let effectiveTimes = zip(rawTimes, events).map { rowTime, event in
+            event?.effectiveTime ?? rowTime
+        }
+        return ChordRowData(events: events, effectiveTimes: effectiveTimes)
+    }
 
     /// The detected bass note(s) sounding during a lyric line's time window, formatted for
     /// display (e.g. "E · A · D") — `nil` when the toggle is off, there's no bass data, or
@@ -1941,71 +1994,8 @@ private struct ChordProAppPreview: View {
                             ScrollView([.horizontal, .vertical]) {
                                 LazyVStack(alignment: .leading, spacing: 10) {
                                     ForEach(indexedBlocks(for: document), id: \.offset) { item in
-                                        let strip = lineStrip(for: item, in: document)
-                                        let lineWords = wordTimings(
-                                            forLyricOrdinal: item.lyricOrdinal)
-                                        let firstWordOnset = lineWords.first?.start
-                                        // Resolving bar downbeat for the shared metric grid (nil
-                                        // when there's no beat grid → first-word-flush fallback).
-                                        let rowDownbeat =
-                                            rhythmicSpacing
-                                            ? rowDownbeatTime(forFirstWordAt: firstWordOnset) : nil
-                                        // Melody peaks for the pre-vocal gap (bounded so it can't
-                                        // overrun the previous sung line).
-                                        let prevLineEnd: TimeInterval? =
-                                            (item.lyricOrdinal).flatMap { ord in
-                                                ord > 0
-                                                    && lyricLineWindows.indices.contains(ord - 1)
-                                                    ? lyricLineWindows[ord - 1].upperBound : nil
-                                            }
-                                        // Next sung line's start, so the trailing tail can't overrun it.
-                                        let nextLineStart: TimeInterval? =
-                                            (item.lyricOrdinal).flatMap { ord in
-                                                lyricLineWindows.indices.contains(ord + 1)
-                                                    ? lyricLineWindows[ord + 1].lowerBound : nil
-                                            }
-                                        let leadingMelody = leadingMelodyFill(
-                                            firstWordOnset: firstWordOnset,
-                                            previousLineEnd: prevLineEnd)
-                                        let trailingMelody = trailingMelodyFill(
-                                            lastWordEnd: lineWords.last?.end,
-                                            nextLineStart: nextLineStart)
-                                        ChordProPreviewBlockView(
-                                            block: item.block,
-                                            highlight: highlightContext?.highlight(
-                                                forLyricOrdinal: item.lyricOrdinal
-                                            ),
-                                            beatBall: beatBallValue(for: item, in: document),
-                                            beatDots: beatDotValue(for: item, in: document),
-                                            rhythmicSpacing: rhythmicSpacing,
-                                            rhythmicWordTimings: lineWords,
-                                            vocalPeaks: strip.peaks,
-                                            lineDuration: strip.duration,
-                                            stripColor: strip.color,
-                                            rowDownbeatSeconds: rowDownbeat,
-                                            gutterSeconds: gutterSeconds,
-                                            beatLengthSeconds: beatLengthSeconds,
-                                            beatsPerBar: beatsPerBar,
-                                            // In first-word-anchor mode the row origin is not a
-                                            // downbeat, so bar lines would mark false bars.
-                                            showBarlines: showBarlines && vocalsFollowBeatGrid,
-                                            chordOnsetTimes: chordOnsetTimes,
-                                            leadingMelodyPeaks: leadingMelody.peaks,
-                                            melodyColor: leadingMelody.color,
-                                            leadingMelodySeconds: leadingMelody.seconds,
-                                            trailingMelodyPeaks: trailingMelody.peaks,
-                                            trailingMelodySeconds: trailingMelody.seconds,
-                                            lineNumber: item.displayLineNumber,
-                                            trailingRestSeconds: trailingRestSeconds(
-                                                lastWordEnd: lineWords.last?.end,
-                                                nextLineStart: nextLineStart),
-                                            hasUntranscribedVocals: item.displayLineNumber
-                                                .map(untranscribedLineNumbers.contains) ?? false,
-                                            rowChordTimes: item.displayLineNumber
-                                                .flatMap { timelineChordTimesByLine[$0] } ?? [],
-                                            bassLabel: bassLabel(forLyricOrdinal: item.lyricOrdinal)
-                                        )
-                                        .id(item.offset)
+                                        blockRow(for: item, in: document)
+                                            .id(item.offset)
                                     }
                                 }
                                 .padding(12)
@@ -2063,6 +2053,102 @@ private struct ChordProAppPreview: View {
         // on every playback tick (see `refreshGrid()`'s doc comment: this is the fix for the
         // CPU-during-playback / laggy-ball-and-highlight report).
         .onChange(of: gridDependencyKey, initial: true) { _, _ in refreshGrid() }
+    }
+
+    /// One rendered chart row (title/metadata/section/lyric/chord-only line), fully configured.
+    /// Pulled out of the `ForEach` above as its OWN function (backlog #15 Phase 2 remainder,
+    /// chart interactivity): the closure was already large before this task added several more
+    /// `ChordProPreviewBlockView` parameters, and Swift's type-checker times out solving a
+    /// `ForEach` result-builder closure with this many statements as one unit — an ordinary
+    /// function's statements are checked individually, so this has no such limit.
+    @ViewBuilder
+    private func blockRow(
+        for item: ChordProPreviewIndexedBlock, in document: ChordProPreviewDocument
+    ) -> some View {
+        let strip = lineStrip(for: item, in: document)
+        let lineWords = wordTimings(
+            forLyricOrdinal: item.lyricOrdinal)
+        let firstWordOnset = lineWords.first?.start
+        // Resolving bar downbeat for the shared metric grid (nil
+        // when there's no beat grid → first-word-flush fallback).
+        let rowDownbeat =
+            rhythmicSpacing
+            ? rowDownbeatTime(forFirstWordAt: firstWordOnset) : nil
+        // Melody peaks for the pre-vocal gap (bounded so it can't
+        // overrun the previous sung line).
+        let prevLineEnd: TimeInterval? =
+            (item.lyricOrdinal).flatMap { ord in
+                ord > 0
+                    && lyricLineWindows.indices.contains(ord - 1)
+                    ? lyricLineWindows[ord - 1].upperBound : nil
+            }
+        // Next sung line's start, so the trailing tail can't overrun it.
+        let nextLineStart: TimeInterval? =
+            (item.lyricOrdinal).flatMap { ord in
+                lyricLineWindows.indices.contains(ord + 1)
+                    ? lyricLineWindows[ord + 1].lowerBound : nil
+            }
+        let leadingMelody = leadingMelodyFill(
+            firstWordOnset: firstWordOnset,
+            previousLineEnd: prevLineEnd)
+        let trailingMelody = trailingMelodyFill(
+            lastWordEnd: lineWords.last?.end,
+            nextLineStart: nextLineStart)
+        let chordRow = chordRowData(for: item)
+        // Every argument below is pre-computed into its own `let`
+        // (rather than inlined as an expression in the call) —
+        // this view's `ChordProPreviewBlockView(...)` call has
+        // enough arguments that the Swift type-checker times out
+        // solving them jointly with any nested expression inside
+        // the call itself; simple identifiers avoid that.
+        let itemLyricSegment = lyricSegment(
+            forOrdinal: item.lyricOrdinal)
+        let itemHighlight = highlightContext?.highlight(
+            forLyricOrdinal: item.lyricOrdinal)
+        let itemBeatBall = beatBallValue(for: item, in: document)
+        let itemBeatDots = beatDotValue(for: item, in: document)
+        let itemShowBarlines = showBarlines && vocalsFollowBeatGrid
+        let itemTrailingRest = trailingRestSeconds(
+            lastWordEnd: lineWords.last?.end,
+            nextLineStart: nextLineStart)
+        let itemHasUntranscribed: Bool =
+            item.displayLineNumber
+            .map(untranscribedLineNumbers.contains) ?? false
+        let itemBassLabel = bassLabel(
+            forLyricOrdinal: item.lyricOrdinal)
+        ChordProPreviewBlockView(
+            block: item.block,
+            highlight: itemHighlight,
+            beatBall: itemBeatBall,
+            beatDots: itemBeatDots,
+            rhythmicSpacing: rhythmicSpacing,
+            rhythmicWordTimings: lineWords,
+            vocalPeaks: strip.peaks,
+            lineDuration: strip.duration,
+            stripColor: strip.color,
+            rowDownbeatSeconds: rowDownbeat,
+            gutterSeconds: gutterSeconds,
+            beatLengthSeconds: beatLengthSeconds,
+            beatsPerBar: beatsPerBar,
+            showBarlines: itemShowBarlines,
+            chordOnsetTimes: chordOnsetTimes,
+            leadingMelodyPeaks: leadingMelody.peaks,
+            melodyColor: leadingMelody.color,
+            leadingMelodySeconds: leadingMelody.seconds,
+            trailingMelodyPeaks: trailingMelody.peaks,
+            trailingMelodySeconds: trailingMelody.seconds,
+            lineNumber: item.displayLineNumber,
+            trailingRestSeconds: itemTrailingRest,
+            hasUntranscribedVocals: itemHasUntranscribed,
+            rowChordTimes: chordRow.effectiveTimes,
+            bassLabel: itemBassLabel,
+            lyricSegment: itemLyricSegment,
+            onToggleLyricAccepted: onToggleLyricAccepted,
+            onCommitLyricOverride: onCommitLyricOverride,
+            rowChordEvents: chordRow.events,
+            onToggleChordAccepted: onToggleChordAccepted,
+            onSetChordManualTime: onSetChordManualTime
+        )
     }
 
     private var previewResult: Result<ChordProPreviewDocument, Error> {
@@ -2483,6 +2569,20 @@ private struct ChordProPreviewBlockView: View {
     /// the chord/lyric content when the View menu's "Show Bass Notes" toggle is on. `nil` for
     /// non-lyric blocks or when there's nothing to show.
     var bassLabel: String?
+    /// The live segment behind this rendered lyric line (backlog #15 Phase 2 remainder — chart
+    /// interactivity); `nil` for chord-only/non-lyric blocks. Drives the accept toggle, the
+    /// confidence tint, and the edited-line text when set.
+    var lyricSegment: TimedLyricSegment?
+    var onToggleLyricAccepted: (TimedLyricSegment.ID) -> Void = { _ in }
+    var onCommitLyricOverride: (TimedLyricSegment.ID, String) -> Void = { _, _ in }
+    /// Real chord events behind this row's rendered chords, index-aligned with the block's
+    /// `ChordProPreviewLine.chords` (backlog #15 Phase 2 remainder).
+    var rowChordEvents: [EditableChordEvent?] = []
+    var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
+    var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
+
+    @State private var isEditingLyric = false
+    @State private var draftLyricText = ""
 
     var body: some View {
         // Bottom-aligned so the number sits on the words/waveform row of the line, not up on
@@ -2538,24 +2638,94 @@ private struct ChordProPreviewBlockView: View {
                 .font(.callout.italic())
                 .foregroundStyle(.secondary)
         case .lyric(let line):
-            ChordProPreviewLineView(
-                line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots,
-                rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
-                vocalPeaks: vocalPeaks, lineDuration: lineDuration, stripColor: stripColor,
-                rowDownbeatSeconds: rowDownbeatSeconds, gutterSeconds: gutterSeconds,
-                beatLengthSeconds: beatLengthSeconds, beatsPerBar: beatsPerBar,
-                showBarlines: showBarlines,
-                chordOnsetTimes: chordOnsetTimes,
-                leadingMelodyPeaks: leadingMelodyPeaks, melodyColor: melodyColor,
-                leadingMelodySeconds: leadingMelodySeconds,
-                trailingMelodyPeaks: trailingMelodyPeaks,
-                trailingMelodySeconds: trailingMelodySeconds,
-                trailingRestSeconds: trailingRestSeconds,
-                rowChordTimes: rowChordTimes)
+            VStack(alignment: .leading, spacing: 2) {
+                if isEditingLyric {
+                    editingLyricField
+                } else {
+                    ChordProPreviewLineView(
+                        line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots,
+                        rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
+                        vocalPeaks: vocalPeaks, lineDuration: lineDuration, stripColor: stripColor,
+                        rowDownbeatSeconds: rowDownbeatSeconds, gutterSeconds: gutterSeconds,
+                        beatLengthSeconds: beatLengthSeconds, beatsPerBar: beatsPerBar,
+                        showBarlines: showBarlines,
+                        chordOnsetTimes: chordOnsetTimes,
+                        leadingMelodyPeaks: leadingMelodyPeaks, melodyColor: melodyColor,
+                        leadingMelodySeconds: leadingMelodySeconds,
+                        trailingMelodyPeaks: trailingMelodyPeaks,
+                        trailingMelodySeconds: trailingMelodySeconds,
+                        trailingRestSeconds: trailingRestSeconds,
+                        rowChordTimes: rowChordTimes,
+                        rowChordEvents: rowChordEvents,
+                        onToggleChordAccepted: onToggleChordAccepted,
+                        onSetChordManualTime: onSetChordManualTime,
+                        overrideText: lyricSegment?.overrideText)
+                }
+                if line.hasSungText, let lyricSegment {
+                    lyricControls(for: lyricSegment)
+                }
+            }
         case .directive(let source):
             Text(source)
                 .font(.caption.monospaced())
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// Small accept/edit affordance row beneath a lyric line (backlog #15 Phase 2 remainder).
+    /// Deliberately NOT inside `ChordProPreviewLineView` — accepting/editing a whole line is a
+    /// simple, coordinate-independent action, unlike chord tint/drag which lives right on the
+    /// chord glyph because it IS coordinate-dependent.
+    private func lyricControls(for segment: TimedLyricSegment) -> some View {
+        let tier = ReviewConfidenceTier(segment.confidence)
+        return HStack(spacing: 6) {
+            Button {
+                onToggleLyricAccepted(segment.id)
+            } label: {
+                Image(systemName: segment.accepted ? "checkmark.circle.fill" : "circle")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(segment.accepted ? Color.swMint : Color.swTextSecondary)
+            .help(segment.accepted ? "Accepted — click to un-accept" : "Accept this line")
+
+            Button {
+                draftLyricText = segment.effectiveText
+                isEditingLyric = true
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.swTextSecondary)
+            .help("Correct this line's text")
+
+            if !segment.accepted, let label = tier.label {
+                Text(label)
+                    .font(.swDisplay(9))
+                    .foregroundStyle(tier.tint)
+            }
+            if segment.overrideText != nil {
+                Text("Edited")
+                    .font(.swDisplay(9))
+                    .foregroundStyle(Color.swTextSecondary)
+            }
+        }
+    }
+
+    /// Inline correction field, seeded with the line's currently effective text. Return commits;
+    /// Escape (via `onExitCommand`) discards. Writes `TimedLyricSegment.overrideText` on commit —
+    /// the schema is per-line, so this is the finest-grained "word edit" the model supports.
+    @ViewBuilder private var editingLyricField: some View {
+        if let lyricSegment {
+            TextField(
+                "Line text", text: $draftLyricText,
+                onCommit: {
+                    onCommitLyricOverride(lyricSegment.id, draftLyricText)
+                    isEditingLyric = false
+                }
+            )
+            .textFieldStyle(.plain)
+            .font(.system(.body, design: .monospaced))
+            .onExitCommand { isEditingLyric = false }
         }
     }
 }
@@ -2635,9 +2805,55 @@ private struct ChordProPreviewLineView: View {
     /// Seconds of TRUE vocal silence after this line's last word (≥ 2 beats, < 4 bars) —
     /// drawn as a rest marker so short real breaks are visible (audit RC-4). 0 = none.
     var trailingRestSeconds: TimeInterval = 0
-    /// Authoritative chord onset times for this row (chart order, from `SongTimeline`).
-    /// When it pairs 1:1 with `line.chords`, chords render at these REAL times.
+    /// Authoritative chord onset times for this row (chart order, from `SongTimeline`), with any
+    /// manually-dragged chord's time already substituted (backlog #15 Phase 2 remainder — see
+    /// `ChordProAppPreview.effectiveRowChordTimes`). When it pairs 1:1 with `line.chords`, chords
+    /// render at these times.
     var rowChordTimes: [TimeInterval] = []
+    /// The real chord event behind each rendered chord, index-aligned with `line.chords`; `nil`
+    /// where there's no live match (edited/legacy charts, or `rowChordTimes` doesn't pair 1:1).
+    /// Drives confidence tint, tap-to-accept, and drag-to-reposition.
+    var rowChordEvents: [EditableChordEvent?] = []
+    var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
+    var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
+    /// A user-typed correction for this line (backlog #15 Phase 2 remainder). When set, the line
+    /// renders as plain corrected text instead of the per-word ASR layout — hand-typed text has
+    /// no per-word ASR timings to place rhythmically or bounce the ball over.
+    var overrideText: String?
+
+    /// Live chord event behind `line.chords[index]`, or `nil` if unmatched.
+    private func chordEvent(at index: Int) -> EditableChordEvent? {
+        rowChordEvents.indices.contains(index) ? rowChordEvents[index] : nil
+    }
+
+    /// Tint for a chord's glyph: clear once accepted (matches `ReviewConfidenceTier.high`'s
+    /// "nothing to flag" treatment), else driven by its confidence tier. Unmatched chords (no
+    /// live event, e.g. an edited/legacy chart) never tint — there's nothing to accept/drag.
+    private func chordTint(at index: Int) -> Color {
+        guard let event = chordEvent(at: index), !event.accepted else { return .clear }
+        return ReviewConfidenceTier(event.confidence).tint
+    }
+
+    /// Drag-to-reposition (free timestamp, no snapping) + tap-to-accept for one chord glyph.
+    /// A drag under 3pt of total travel counts as a tap (toggles `accepted`); anything past that
+    /// commits a `manualTime` at the release position, converted from the drag's pixel delta
+    /// using `pixelsPerSecond` (the same constant rhythmic-mode positions everything on, so a
+    /// drag's visual distance always matches the time it moves the chord by).
+    private func chordDragGesture(at index: Int) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onEnded { value in
+                guard let event = chordEvent(at: index) else { return }
+                let distance =
+                    value.translation.width * value.translation.width
+                    + value.translation.height * value.translation.height
+                guard distance > 9 else {
+                    onToggleChordAccepted(event.id)
+                    return
+                }
+                let deltaSeconds = Double(value.translation.width / Self.pixelsPerSecond)
+                onSetChordManualTime(event.id, event.effectiveTime + deltaSeconds)
+            }
+    }
 
     private var rhythmicWords: [TimedLyricWord] {
         rhythmicSpacing ? rhythmicWordTimings : []
@@ -2661,9 +2877,19 @@ private struct ChordProPreviewLineView: View {
         max(0, gutterPx + CGFloat(time - gridOriginTime) * Self.pixelsPerSecond)
     }
 
+    /// Trimmed, non-empty `overrideText`, or `nil` — mirrors `TimedLyricSegment.effectiveText`'s
+    /// own trim/empty check.
+    private var effectiveOverrideText: String? {
+        guard let overrideText else { return nil }
+        let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if rhythmicWords.isEmpty {
+            if line.hasSungText, effectiveOverrideText != nil {
+                overriddenContent
+            } else if rhythmicWords.isEmpty {
                 monospaceContent
             } else {
                 rhythmicContent
@@ -2672,6 +2898,32 @@ private struct ChordProPreviewLineView: View {
                 waveformStrip
             }
         }
+    }
+
+    /// A hand-corrected line's render: the chords stay exactly where they already are (still
+    /// tintable/tappable), but the lyric text is the user's typed correction rendered as a single
+    /// plain string — there's no ASR per-word timing for typed text, so this skips rhythmic
+    /// spacing and the bouncing ball for this line only (backlog #15 Phase 2 remainder).
+    @ViewBuilder private var overriddenContent: some View {
+        ZStack(alignment: .topLeading) {
+            Text(effectiveOverrideText ?? "")
+                .font(.system(size: 15, design: .monospaced))
+                .foregroundStyle(Color.swTextPrimary)
+                .offset(y: line.chords.isEmpty ? 0 : 20)
+            ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
+                Text(chord.name)
+                    .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
+                    .foregroundStyle(.tint)
+                    .background(chordTint(at: index).opacity(0.3))
+                    .offset(x: monospaceChordX(chord))
+                    .onTapGesture {
+                        if let event = chordEvent(at: index) {
+                            onToggleChordAccepted(event.id)
+                        }
+                    }
+            }
+        }
+        .frame(width: monospaceWidth, alignment: .topLeading)
     }
 
     /// Width of this line's rendered content. Measured from the ACTUAL lyric string (not
@@ -2876,7 +3128,11 @@ private struct ChordProPreviewLineView: View {
                 Text(chord.name)
                     .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
                     .foregroundStyle(.tint)
+                    .background(chordTint(at: index).opacity(0.3))
                     .offset(x: chordXs[index], y: topReserve)
+                    // Free-timestamp drag (no snapping) + tap-to-accept — rhythmic mode has a
+                    // true, uniform time axis (`pixelsPerSecond`), so dragging here is exact.
+                    .gesture(chordDragGesture(at: index))
             }
             // Rest marker: a short TRUE break after the last word (audit RC-4) — so the pause
             // the musician hears is visible on the chart instead of unexplained blank space.
@@ -3132,7 +3388,7 @@ private struct ChordProPreviewLineView: View {
                 lyricText
                     .offset(y: line.chords.isEmpty ? 0 : 20)
 
-                ForEach(Array(line.chords.enumerated()), id: \.offset) { _, chord in
+                ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                     Text(chord.name)
                         .font(
                             .system(
@@ -3142,7 +3398,16 @@ private struct ChordProPreviewLineView: View {
                             )
                         )
                         .foregroundStyle(.tint)
+                        .background(chordTint(at: index).opacity(0.3))
                         .offset(x: monospaceChordX(chord))
+                        // Monospace mode has no uniform time axis for lyric lines (columns are
+                        // typeset over words, not seconds), so only tap-to-accept is offered
+                        // here — free-timestamp drag needs rhythmic mode's real time axis.
+                        .onTapGesture {
+                            if let event = chordEvent(at: index) {
+                                onToggleChordAccepted(event.id)
+                            }
+                        }
                 }
             }
             .offset(y: Self.ballTopReserve)
