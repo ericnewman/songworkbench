@@ -1,6 +1,9 @@
-import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+
+#if canImport(AppKit)
+    import AppKit
+#endif
 
 /// The workspace editor tabs, selected by a segmented control at the top of the
 /// window so the editor content fills the right column.
@@ -1175,7 +1178,7 @@ private struct ChordProTabEditor: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(8)
             }
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(Color.swTextBackground)
             .border(.separator)
         }
     }
@@ -1214,61 +1217,76 @@ private struct ChordProTabEditor: View {
     }
 
     private func importDocument() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText, .plainText]
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try model.importChordPro(from: url)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        #if os(macOS)
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [
+                UTType(filenameExtension: "cho") ?? .plainText, .plainText,
+            ]
+            panel.allowsMultipleSelection = false
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                try model.importChordPro(from: url)
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        #else
+            errorMessage = "Importing isn\u{2019}t available on iPad yet."
+        #endif
     }
 
     private func exportDocument() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText]
-        panel.nameFieldStringValue = config.exportFileName
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            switch config.kind {
-            case .chordPro:
-                try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
-            case .bassNote:
-                try model.exportBassNoteChordPro(to: url)
+        #if os(macOS)
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText]
+            panel.nameFieldStringValue = config.exportFileName
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                switch config.kind {
+                case .chordPro:
+                    try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
+                case .bassNote:
+                    try model.exportBassNoteChordPro(to: url)
+                }
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        #else
+            errorMessage = "Exporting isn\u{2019}t available on iPad yet."
+        #endif
     }
 
     /// Writes the current (transposed) ChordPro to a temp file and opens it in the JustChords app.
     private func openInJustChords() {
-        let baseName = (config.exportFileName as NSString).deletingPathExtension
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(baseName.isEmpty ? "chart" : baseName)
-            .appendingPathExtension("cho")
-        do {
-            try model.exportChordPro(to: fileURL, transposedBy: model.chordProTranspose)
-        } catch {
-            errorMessage = "Could not prepare the chart: \(error.localizedDescription)"
-            return
-        }
-        guard let appURL = Self.justChordsApplicationURL() else {
-            errorMessage = "JustChords wasn’t found in Applications."
-            return
-        }
-        let openConfig = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open([fileURL], withApplicationAt: appURL, configuration: openConfig) {
-            _, error in
-            if let error {
-                DispatchQueue.main.async {
-                    errorMessage = "Could not open JustChords: \(error.localizedDescription)"
+        #if os(macOS)
+            let baseName = (config.exportFileName as NSString).deletingPathExtension
+            let fileURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(baseName.isEmpty ? "chart" : baseName)
+                .appendingPathExtension("cho")
+            do {
+                try model.exportChordPro(to: fileURL, transposedBy: model.chordProTranspose)
+            } catch {
+                errorMessage = "Could not prepare the chart: \(error.localizedDescription)"
+                return
+            }
+            guard let appURL = Self.justChordsApplicationURL() else {
+                errorMessage = "JustChords wasn’t found in Applications."
+                return
+            }
+            let openConfig = NSWorkspace.OpenConfiguration()
+            NSWorkspace.shared.open([fileURL], withApplicationAt: appURL, configuration: openConfig)
+            {
+                _, error in
+                if let error {
+                    DispatchQueue.main.async {
+                        errorMessage = "Could not open JustChords: \(error.localizedDescription)"
+                    }
                 }
             }
-        }
+        #else
+            errorMessage = "Opening in JustChords isn\u{2019}t available on iPad."
+        #endif
     }
 
     /// Locates the JustChords app in the standard install locations.
@@ -2005,7 +2023,7 @@ private struct ChordProAppPreview: View {
                                 )
                             }
                             .defaultScrollAnchor(.topLeading)
-                            .background(Color(nsColor: .textBackgroundColor))
+                            .background(Color.swTextBackground)
                             .border(.separator)
                             .onChange(of: highlightContext?.currentLyricOrdinal) { _, ordinal in
                                 guard
@@ -2729,13 +2747,13 @@ private struct ChordProPreviewBlockView: View {
             )
             .textFieldStyle(.plain)
             .font(.system(.body, design: .monospaced))
-            .onExitCommand { isEditingLyric = false }
+            .onExitCommandCompat { isEditingLyric = false }
         }
     }
 }
 
 private struct ChordProPreviewLineView: View {
-    private static let lyricFont = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+    private static let lyricFont = PlatformFont.monospacedSystemFont(ofSize: 15, weight: .regular)
     private static let characterWidth = NSString(string: "M").size(
         withAttributes: [.font: lyricFont]
     ).width
@@ -3654,25 +3672,31 @@ struct StemMixSidebar: View {
     }
 
     private func loadStemFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try model.importStems(from: url)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        #if os(macOS)
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                try model.importStems(from: url)
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        #else
+            errorMessage = "Loading stem folders isn\u{2019}t available on iPad yet."
+        #endif
     }
 
     private func exportMix() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.wav]
-        panel.nameFieldStringValue = "Stem Mix.wav"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.exportStemMix(to: url)
+        #if os(macOS)
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.wav]
+            panel.nameFieldStringValue = "Stem Mix.wav"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            model.exportStemMix(to: url)
+        #endif
     }
 
     var body: some View {

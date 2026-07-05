@@ -59,15 +59,22 @@ protocol ModelArchiveExtracting: Sendable {
 
 struct DittoModelArchiveExtractor: ModelArchiveExtracting {
     func extract(zipURL: URL, to destinationDirectoryURL: URL) async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-x", "-k", zipURL.path, destinationDirectoryURL.path]
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw ModelPackageError.archiveExtractionFailed(process.terminationStatus)
-        }
-        try Task.checkCancellation()
+        #if os(macOS)
+            // `Process` (NSTask) is macOS-only. On iPadOS this needs an in-process
+            // unzip (e.g. Apple Archive / a small zip reader) — tracked in the iPad
+            // port plan; model-zip installs are unavailable there until then.
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            process.arguments = ["-x", "-k", zipURL.path, destinationDirectoryURL.path]
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw ModelPackageError.archiveExtractionFailed(process.terminationStatus)
+            }
+            try Task.checkCancellation()
+        #else
+            throw ModelPackageError.extractionUnsupportedOnPlatform
+        #endif
     }
 }
 
@@ -75,6 +82,7 @@ enum ModelPackageError: LocalizedError, Equatable {
     case invalidPath(String)
     case emptyPackage
     case archiveExtractionFailed(Int32)
+    case extractionUnsupportedOnPlatform
     case archiveComponentMissing(String)
     case missingEntryPoint(String)
     case invalidManifest
@@ -87,6 +95,8 @@ enum ModelPackageError: LocalizedError, Equatable {
             "The model package contains no files."
         case .archiveExtractionFailed(let status):
             "Model archive extraction failed with status \(status)."
+        case .extractionUnsupportedOnPlatform:
+            "Model archive extraction isn\u{2019}t supported on this platform yet."
         case .archiveComponentMissing(let path):
             "Archive component did not produce the expected contents at \(path)."
         case .missingEntryPoint(let path):

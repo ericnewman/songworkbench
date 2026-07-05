@@ -62,11 +62,7 @@ struct StoredSongProject: Codable, Equatable, Sendable {
         lastOpenedAt: Date? = nil
     ) {
         sourcePath = url.path
-        bookmarkData = try? url.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
+        bookmarkData = try? url.appScopedBookmarkData()
         self.settings = settings
         self.analysis = analysis
         self.lastOpenedAt = lastOpenedAt
@@ -83,12 +79,8 @@ struct StoredSongProject: Codable, Equatable, Sendable {
 
         var isStale = false
         let url =
-            (try? URL(
-                resolvingBookmarkData: bookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )) ?? URL(fileURLWithPath: sourcePath)
+            (try? URL(resolvingAppScopedBookmark: bookmarkData, bookmarkDataIsStale: &isStale))
+            ?? URL(fileURLWithPath: sourcePath)
         return (url, isStale)
     }
 }

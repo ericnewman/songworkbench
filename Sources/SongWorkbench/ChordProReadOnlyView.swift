@@ -1,6 +1,9 @@
-import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+
+#if canImport(AppKit)
+    import AppKit
+#endif
 
 /// A true, spec-exact ChordPro renderer for the `chordPro` tab (backlog #15): chords positioned
 /// above lyric text at their recorded column, nothing else. No waveform, no bouncing ball, no
@@ -19,7 +22,7 @@ struct ChordProReadOnlyView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color.swTextBackground)
         .accessibilityIdentifier("chordpro-readonly-view")
     }
 
@@ -186,16 +189,20 @@ struct ChordProTrueView: View {
     }
 
     private func exportDocument() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText]
-        panel.nameFieldStringValue = "Song.cho"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        #if os(macOS)
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText]
+            panel.nameFieldStringValue = "Song.cho"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        #else
+            errorMessage = "Exporting isn\u{2019}t available on iPad yet."
+        #endif
     }
 }
 

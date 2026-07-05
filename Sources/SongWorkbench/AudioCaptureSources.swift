@@ -16,14 +16,14 @@ import Foundation
 /// specific input (e.g. BlackHole); omit it to use the default input (microphone).
 final class AVAudioEngineCaptureSource: AudioCaptureSource, @unchecked Sendable {
     let kind: CaptureSourceKind
-    private let deviceID: AudioDeviceID?
+    private let deviceID: PlatformAudioDeviceID?
     private let engine = AVAudioEngine()
     private var started = false
 
     /// - Parameters:
     ///   - kind: `.microphone` or `.loopbackDevice` (telemetry/UX only).
     ///   - deviceID: Core Audio device to capture from; `nil` = system default input.
-    init(kind: CaptureSourceKind = .microphone, deviceID: AudioDeviceID? = nil) {
+    init(kind: CaptureSourceKind = .microphone, deviceID: PlatformAudioDeviceID? = nil) {
         self.kind = kind
         self.deviceID = deviceID
     }
@@ -31,9 +31,13 @@ final class AVAudioEngineCaptureSource: AudioCaptureSource, @unchecked Sendable 
     func start(onBuffer: @escaping @Sendable (CaptureBuffer) -> Void) throws {
         guard !started else { return }
 
-        if let deviceID {
-            try engine.inputNode.auAudioUnit.setDeviceID(deviceID)
-        }
+        #if os(macOS)
+            // Explicit HAL input-device selection (e.g. BlackHole) is a macOS concept;
+            // iPadOS routes input through AVAudioSession instead.
+            if let deviceID {
+                try engine.inputNode.auAudioUnit.setDeviceID(deviceID)
+            }
+        #endif
 
         let input = engine.inputNode
         let format = input.inputFormat(forBus: 0)
@@ -119,7 +123,7 @@ enum SystemAudioCaptureProbe {
             screenCaptureKitAvailable: screenCaptureKit,
             processTapAvailable: processTap,
             // Preflight is non-prompting; CGRequestScreenCaptureAccess() prompts at first use.
-            screenRecordingPermissionGranted: CGPreflightScreenCaptureAccess()
+            screenRecordingPermissionGranted: PlatformCapture.screenRecordingPreflight()
         )
     }
 }
@@ -136,7 +140,7 @@ enum CaptureSourceCatalog {
 
     static func makeSource(
         kind: CaptureSourceKind,
-        deviceID: AudioDeviceID? = nil
+        deviceID: PlatformAudioDeviceID? = nil
     ) throws -> AudioCaptureSource {
         switch kind {
         case .microphone:

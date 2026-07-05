@@ -1,6 +1,9 @@
-import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+
+#if canImport(AppKit)
+    import AppKit
+#endif
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
@@ -213,7 +216,7 @@ private struct PlayerView: View {
         self.model = model
         playback = model.playback
         let stored = UserDefaults.standard.double(forKey: Self.songListHeightDefaultsKey)
-        let screenThird = (NSScreen.main?.visibleFrame.height ?? 900) / 3
+        let screenThird = PlatformScreen.visibleHeight(fallback: 900) / 3
         _songListIdealHeight = State(initialValue: stored >= 150 ? stored : screenThird)
     }
 
@@ -228,7 +231,7 @@ private struct PlayerView: View {
         HStack(alignment: .top, spacing: 16) {
             // Left column: the song list on top, the tool cards below it (resizable divider), so
             // the editor gets the whole rest of the window.
-            VSplitView {
+            PlatformVSplit {
                 SongSidebar(model: model)
                     .frame(minHeight: 150, idealHeight: songListIdealHeight)
                     // Persist divider adjustments so the songs area keeps its height

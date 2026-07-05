@@ -71,6 +71,53 @@ let project = Project(
             ])
         ),
         .target(
+            name: "SongWorkbenchiPad",
+            destinations: [.iPad],
+            product: .app,
+            bundleId: "com.local.SongWorkbench.iPad",
+            deploymentTargets: .iOS("17.0"),
+            infoPlist: .extendingDefault(with: [
+                "CFBundleDisplayName": "SongWorkbench",
+                "LSApplicationCategoryType": "public.app-category.music",
+                "NSMicrophoneUsageDescription":
+                    "SongWorkbench uses audio input for music analysis.",
+                "NSAppleMusicUsageDescription":
+                    "SongWorkbench reads your Music library so you can open and analyze local tracks.",
+                // Required on iOS; an empty launch-screen dictionary uses the app's background.
+                "UILaunchScreen": [:],
+                // Practice layout is landscape-first, but allow all iPad orientations.
+                "UISupportedInterfaceOrientations": [
+                    "UIInterfaceOrientationLandscapeLeft",
+                    "UIInterfaceOrientationLandscapeRight",
+                    "UIInterfaceOrientationPortrait",
+                    "UIInterfaceOrientationPortraitUpsideDown",
+                ],
+                // Let users pull songs in via the Files app.
+                "UIFileSharingEnabled": true,
+                "LSSupportsOpeningDocumentsInPlace": true,
+            ]),
+            sources: ["Sources/SongWorkbench/**"],
+            resources: ["Resources/**"],
+            // No .entitlements file: the macOS one is app-sandbox/app-scope-bookmark
+            // specific; iOS gets its sandbox implicitly and (for now) needs no extra
+            // entitlements. Add an iOS-specific file here when iCloud/documents land.
+            dependencies: [
+                .package(product: "FluidAudio"),
+                .package(product: "onnxruntime"),
+                .package(product: "WhisperFramework"),
+            ],
+            settings: .settings(base: [
+                "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
+                "CODE_SIGN_STYLE": "Automatic",
+                "CURRENT_PROJECT_VERSION": "1",
+                "DEVELOPMENT_TEAM": "65FBMF6CMD",
+                "GENERATE_INFOPLIST_FILE": "YES",
+                "MARKETING_VERSION": "1.0",
+                "SWIFT_VERSION": "6.0",
+                "TARGETED_DEVICE_FAMILY": "2",
+            ])
+        ),
+        .target(
             name: "SongWorkbenchTests",
             destinations: .macOS,
             product: .unitTests,
@@ -96,6 +143,12 @@ let project = Project(
             testAction: .targets(["SongWorkbenchTests"]),
             runAction: .runAction(configuration: .debug),
             archiveAction: .archiveAction(configuration: .release)
-        )
+        ),
+        .scheme(
+            name: "SongWorkbenchiPad",
+            shared: true,
+            buildAction: .buildAction(targets: ["SongWorkbenchiPad"]),
+            runAction: .runAction(configuration: .debug)
+        ),
     ]
 )

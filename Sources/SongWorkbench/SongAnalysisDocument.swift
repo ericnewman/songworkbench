@@ -540,22 +540,14 @@ struct StoredAudioReference: Codable, Equatable, Sendable {
 
     init(url: URL) {
         path = url.path
-        bookmarkData = try? url.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
+        bookmarkData = try? url.appScopedBookmarkData()
     }
 
     func resolvedURL() -> URL {
         guard let bookmarkData else { return URL(fileURLWithPath: path) }
         var stale = false
         return
-            (try? URL(
-                resolvingBookmarkData: bookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            )) ?? URL(fileURLWithPath: path)
+            (try? URL(resolvingAppScopedBookmark: bookmarkData, bookmarkDataIsStale: &stale))
+            ?? URL(fileURLWithPath: path)
     }
 }

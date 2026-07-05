@@ -4,6 +4,12 @@ import SwiftUI
 struct SongWorkbenchApp: App {
     @StateObject private var model = AppModel()
 
+    init() {
+        // iPadOS requires an AVAudioSession category before any AVAudioEngine render/IO
+        // starts (silent output otherwise); this is a no-op on macOS.
+        PlatformAudioSession.configureForPlayback()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView(model: model)
@@ -14,89 +20,93 @@ struct SongWorkbenchApp: App {
                 .preferredColorScheme(.dark)
                 .onReceive(
                     NotificationCenter.default.publisher(
-                        for: NSApplication.willTerminateNotification)
+                        for: PlatformLifecycle.willTerminateNotification)
                 ) { _ in
                     model.flushPendingSave()
                 }
                 .modifier(LyricBlendAutoOpen(model: model))
         }
-        // Explicit initial size so the window opens wide enough, on first launch, to show all 3
-        // main sections of `PlayerView.mainColumns` at once (fixed-width song sidebar + the
-        // flexible editor column + the stem-mix rail) without the user having to drag it wider —
-        // the old `minWidth: 1_100` floor left the flexible editor column only ~410pt once the
-        // ~690pt of fixed columns/spacing/padding around it were subtracted.
-        .defaultSize(width: 1_540, height: 900)
-        Window("About \(AboutInfo.appName)", id: "about") {
-            AboutView()
-                .preferredColorScheme(.dark)
-        }
-        .windowResizability(.contentSize)
-        Window("Lyric Blend", id: "lyricBlend") {
-            LyricBlendView(model: model)
-                .preferredColorScheme(.dark)
-        }
-        .defaultSize(width: 720, height: 640)
-        .commands {
-            CommandGroup(replacing: .appInfo) {
-                AboutCommandButton()
+        #if os(macOS)
+            // Explicit initial size so the window opens wide enough, on first launch, to show
+            // all 3 main sections of `PlayerView.mainColumns` at once (fixed-width song sidebar
+            // + the flexible editor column + the stem-mix rail) without the user having to drag
+            // it wider — the old `minWidth: 1_100` floor left the flexible editor column only
+            // ~410pt once the ~690pt of fixed columns/spacing/padding around it were subtracted.
+            .defaultSize(width: 1_540, height: 900)
+        #endif
+        #if os(macOS)
+            Window("About \(AboutInfo.appName)", id: "about") {
+                AboutView()
+                    .preferredColorScheme(.dark)
             }
-            CommandGroup(replacing: .newItem) {
-                Button("Import Songs...") {
-                    model.isImporterPresented = true
-                }
-                .keyboardShortcut("o")
+            .windowResizability(.contentSize)
+            Window("Lyric Blend", id: "lyricBlend") {
+                LyricBlendView(model: model)
+                    .preferredColorScheme(.dark)
             }
-            CommandMenu("Playback") {
-                Button(model.isActivePlaybackPlaying ? "Pause" : "Play") {
-                    model.toggleActivePlayback()
+            .defaultSize(width: 720, height: 640)
+            .commands {
+                CommandGroup(replacing: .appInfo) {
+                    AboutCommandButton()
                 }
-                .keyboardShortcut(.space, modifiers: [])
-                .disabled(model.selectedSong == nil)
-
-                Button("Back 10 Seconds") {
-                    model.skipActivePlayback(by: -10)
+                CommandGroup(replacing: .newItem) {
+                    Button("Import Songs...") {
+                        model.isImporterPresented = true
+                    }
+                    .keyboardShortcut("o")
                 }
-                .keyboardShortcut(.leftArrow, modifiers: [.command])
-                .disabled(model.selectedSong == nil)
+                CommandMenu("Playback") {
+                    Button(model.isActivePlaybackPlaying ? "Pause" : "Play") {
+                        model.toggleActivePlayback()
+                    }
+                    .keyboardShortcut(.space, modifiers: [])
+                    .disabled(model.selectedSong == nil)
 
-                Button("Forward 10 Seconds") {
-                    model.skipActivePlayback(by: 10)
+                    Button("Back 10 Seconds") {
+                        model.skipActivePlayback(by: -10)
+                    }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command])
+                    .disabled(model.selectedSong == nil)
+
+                    Button("Forward 10 Seconds") {
+                        model.skipActivePlayback(by: 10)
+                    }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command])
+                    .disabled(model.selectedSong == nil)
+
+                    Divider()
+
+                    Button("Original Pitch and Tempo") {
+                        model.pitchSemitones = 0
+                        model.tempoRate = 1
+                    }
+                    .keyboardShortcut("0", modifiers: [.command])
                 }
-                .keyboardShortcut(.rightArrow, modifiers: [.command])
-                .disabled(model.selectedSong == nil)
 
-                Divider()
+                CommandMenu("Analysis") {
+                    Button("Analyze Selected Song") {
+                        model.analyzeSelectedSong(replaceExistingChordPro: true)
+                    }
+                    .keyboardShortcut("r", modifiers: [.command])
+                    .disabled(model.isSongAnalysisRunning || model.selectedSong == nil)
 
-                Button("Original Pitch and Tempo") {
-                    model.pitchSemitones = 0
-                    model.tempoRate = 1
+                    Button("Re-analyze All Songs") {
+                        model.reanalyzeAllSongs()
+                    }
+                    .disabled(model.isSongAnalysisRunning || model.songs.isEmpty)
                 }
-                .keyboardShortcut("0", modifiers: [.command])
-            }
 
-            CommandMenu("Analysis") {
-                Button("Analyze Selected Song") {
-                    model.analyzeSelectedSong(replaceExistingChordPro: true)
-                }
-                .keyboardShortcut("r", modifiers: [.command])
-                .disabled(model.isSongAnalysisRunning || model.selectedSong == nil)
-
-                Button("Re-analyze All Songs") {
-                    model.reanalyzeAllSongs()
-                }
-                .disabled(model.isSongAnalysisRunning || model.songs.isEmpty)
-            }
-
-            CommandMenu("Recent Songs") {
-                if model.songs.isEmpty {
-                    Text("No Recent Songs")
-                } else {
-                    ForEach(model.recentSongs.prefix(10)) { song in
-                        Button(song.title) { model.select(song) }
+                CommandMenu("Recent Songs") {
+                    if model.songs.isEmpty {
+                        Text("No Recent Songs")
+                    } else {
+                        ForEach(model.recentSongs.prefix(10)) { song in
+                            Button(song.title) { model.select(song) }
+                        }
                     }
                 }
             }
-        }
+        #endif
     }
 }
 
