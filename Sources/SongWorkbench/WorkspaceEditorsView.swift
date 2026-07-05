@@ -2595,9 +2595,13 @@ private struct ChordProPreviewBlockView: View {
                 .padding(.bottom, 3)
             VStack(alignment: .leading, spacing: 2) {
                 if let bassLabel {
+                    // Same size as the chord glyphs (13pt monospaced) and a bright green — Eric:
+                    // "Bass note names should be the same size as chords, and be in bright
+                    // green" — rather than the smaller 10pt `StemKind.bass.laneColor` (blue) used
+                    // elsewhere, which read as secondary metadata next to the chart's chords.
                     Text(bassLabel)
-                        .font(.swMono(10))
-                        .foregroundStyle(StemKind.bass.laneColor)
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.swMint)
                 }
                 blockContent
                 if hasUntranscribedVocals {
@@ -2951,12 +2955,22 @@ private struct ChordProPreviewLineView: View {
         CGFloat(line.chords.map { $0.column + $0.name.count }.max() ?? 0)
     }
 
-    /// Width for an instrumental line's content + strip: proportional to its time window (same
-    /// `pixelsPerSecond` scale lyric lines use), so a long interlude reads visibly wider than a
-    /// short verse line instead of collapsing to its chord-text width. Never narrower than the
-    /// chords themselves.
+    /// Width for an instrumental line's content + strip: the bar-grid text's own extent.
+    ///
+    /// This used to also floor at `lineDuration * pixelsPerSecond` (rhythmic mode's 100px/sec
+    /// time scale) so a long interlude read wider than a short verse line. That floor predates
+    /// `ChordProDraftBuilder.instrumentalRows` splitting a long span into `typicalLyricBars`-sized
+    /// rows (matching the median SUNG line's own bar count) — once a row's DURATION is already
+    /// normalized to "about one verse line's worth of bars," re-applying a flat 100px/sec floor on
+    /// top massively over-widens it: sung text needs far fewer than 100px per second (a 4-second
+    /// phrase might only need ~150px of monospace glyphs), so a same-duration instrumental row
+    /// came out several times wider than the verse lines around it and ran off the right edge of
+    /// the chart (reported: "Intro lines... go off screen to the right"). The bar-grid text
+    /// (`chordColumnExtent`) is already proportional to the row's own bar count, so it alone gives
+    /// each row a width comparable to a typical lyric line — exactly what `typicalLyricBars`'s own
+    /// doc comment already promises ("instrumental rows render about as wide as the verse rows").
     private var instrumentalTimeWidth: CGFloat {
-        max(chordColumnExtent * Self.characterWidth, CGFloat(lineDuration) * Self.pixelsPerSecond)
+        chordColumnExtent * Self.characterWidth
     }
 
     /// X of a chord on an instrumental line, spread proportionally across `instrumentalTimeWidth`

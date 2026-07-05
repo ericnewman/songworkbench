@@ -203,20 +203,32 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
         return code.count == 2 ? code.lowercased() : nil
     }
 
-    /// Rejects over-aggressive repetition cleanup that truncated the timeline well before
-    /// the raw transcript ended — a sign the filter mistook real lyrics for a loop.
+    /// Rejects over-aggressive repetition cleanup that swept up real lyrics along with the
+    /// loop. The previous check only rescued a bad cut that landed in the first half of the
+    /// song (`filteredEnd < raw.duration * 0.5`), so a false-positive loop detection past the
+    /// midpoint of a longer song was never caught — the reported "vocals stop being inserted
+    /// after line 50" bug. Position in the song isn't actually the signal that matters: what
+    /// matters is whether the words the filter dropped are real, varied lyrics (which a
+    /// hallucination loop never produces) or genuinely just the same handful of words on
+    /// repeat. So instead this looks directly at the dropped tail's lexical diversity —
+    /// distinct-word ratio — which works regardless of where in the song the cut lands.
     nonisolated static func repetitionFilteredOrRaw(
         filtered: WhisperCPPTranscript,
-        raw: WhisperCPPTranscript
+        raw: WhisperCPPTranscript,
+        minimumDroppedWordsToReconsider: Int = 8,
+        minimumUniqueWordRatio: Double = 0.5
     ) -> WhisperCPPTranscript {
         let tokens = filtered.segments.flatMap(\.tokens)
         guard !tokens.isEmpty, raw.duration > 0 else { return filtered }
         let filteredEnd = tokens.map(\.end).max() ?? 0
-        let rawEnd = raw.segments.flatMap(\.tokens).map(\.end).max() ?? 0
-        if filteredEnd < raw.duration * 0.5, filteredEnd + 1 < rawEnd {
-            return raw
-        }
-        return filtered
+        let droppedTail = raw.segments.flatMap(\.tokens).filter { $0.start >= filteredEnd }
+        let normalizedDropped =
+            droppedTail
+            .map { $0.text.lowercased().filter { $0.isLetter || $0.isNumber } }
+            .filter { !$0.isEmpty }
+        guard normalizedDropped.count >= minimumDroppedWordsToReconsider else { return filtered }
+        let uniqueRatio = Double(Set(normalizedDropped).count) / Double(normalizedDropped.count)
+        return uniqueRatio >= minimumUniqueWordRatio ? raw : filtered
     }
 
 }
