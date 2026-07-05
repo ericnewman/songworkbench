@@ -157,5 +157,67 @@ margin on Flip Flops after re-analysis.
   NEEDS RELAUNCH; then ⌘R re-analysis cleans remaining duplicates and applies
   the bass-detector fixes.
 
+## Review: chord/vocal accuracy + timeline placement (2026-07-05)
+
+Findings:
+- [ ] Harmony decode still windows raw chroma on the harmony engine's original
+      `result.beat?.beatTimes`, even after deriving `resolvedBeatTimes` from
+      drum onsets. This can pick labels and Viterbi switch discounts on a
+      different grid than the one later used for snapping, duration filtering,
+      chorus consensus, ChordPro, and playback.
+- [ ] `VocalWordOnsetAligner` lets multiple adjacent words snap to the same
+      vocal onset because it only enforces nondecreasing starts. This can stack
+      word anchors/ball timing and inflate onset-corroboration scores for
+      candidates whose words are bunched near one energy burst.
+- [ ] Generated ChordPro still hard-codes `beatsPerBar = 4`, while the live
+      preview estimates 3/4/5/6 from lyric-line spacing. Non-4 phrase grids can
+      therefore render and persist chord-only rows/barlines differently from the
+      preview timeline.
+
+Verification basis:
+- Static code review of `AnalysisStage`, `ChordTimelineDecoder`,
+  `VocalWordOnsetAligner`, `ChordProDraftBuilder`, `WorkspaceEditorsView`,
+  `MeasureGrid`, and associated tests. No implementation changes or test runs
+  in this pass.
+
+## Review: instrumental-row width bug + Rhythmic Spacing always-on (2026-07-05, evening)
+
+- **Instrumental line width** (Eric: "Intro and outro instrumental parts... compressed to
+  roughly 1/3 the expected width"): three compounding bugs in `WorkspaceEditorsView.swift`,
+  all in the chord-only (no lyric words) row path:
+  1. `instrumentalTimeWidth` sized itself from the bar-grid TEXT's own character extent
+     (`chordColumnExtent`), not from the row's real duration — a chord symbol is far more
+     compact per bar than the words a singer fits into that bar, so a same-duration
+     instrumental row rendered a fraction of a sung row's width. Fixed: keyed to
+     `lineDuration * pixelsPerSecond` (the SAME scale rhythmic-mode sung lines use),
+     falling back to the old character-extent sizing when rhythmic spacing is off.
+  2. That fix initially did nothing: `lineStrip`'s `duration` was gated behind
+     `instrumentalLane` (guitar/piano envelope) being loaded — an unrelated "is there a
+     waveform to draw" concern bundled into the same guard, so it silently returned 0
+     whenever no instrument stem was available/loaded at that call site. Decoupled: the
+     row's time WINDOW resolves unconditionally; only the drawn peaks/color depend on a
+     lane.
+  3. Once width was time-based, chord glyphs (still positioned by column-fraction of the
+     bar-grid text) clustered wrong. `lineStrip` now also returns the row's real start time;
+     threaded through as `rowStartTime` on `ChordProPreviewBlockView`/`ChordProPreviewLineView`;
+     `monospaceChordX` uses `(rowChordTimes[index] - rowStartTime) / lineDuration` when
+     available. The flat "| . . |" bar-grid text can't stretch to the new width either, so
+     it's hidden for instrumental rows once they're on the time-scaled axis (beat dots,
+     already time-correct, remain as the structure indicator).
+  - Verified live (Flip Flops, Settle Down): instrumental row widths now match/exceed
+    adjacent vocal-line widths (previously ~65-90px vs ~230-515px); chords and beat dots
+    spread across the full row instead of clustering left; no crash/regression.
+- **Rhythmic Spacing toggle removed** (Eric: "always on"): `@AppStorage("rhythmicSpacing")`
+  replaced with `private let rhythmicSpacing = true`; menu item deleted. Downstream code
+  (three struct-level `var rhythmicSpacing = false` defaults + every conditional) left as-is
+  since the parent always passes `true` now — minimal-impact, no behavior change to prune.
+- Suite: same 568 tests, same 8 pre-existing AppModel env failures (verified twice, before
+  and after this fix).
+- **Build gotcha hit during this fix**: `xcodebuild build` via desktop-commander without
+  `-derivedDataPath` wrote to a NEW DerivedData hash folder rather than the one the running
+  app/Xcode.app uses — two rebuild+relaunch cycles showed zero visual change until caught by
+  `stat`-ing the actual running binary's mtime. See tasks/lessons.md. Pin
+  `-derivedDataPath` going forward.
+
 ---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details

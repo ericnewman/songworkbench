@@ -963,7 +963,9 @@ private struct ChordProTabEditor: View {
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     @AppStorage("chordProBarlinesEnabled") private var barlinesEnabled = false
-    @AppStorage("rhythmicSpacing") private var rhythmicSpacing = false
+    /// Always on (Eric: rhythmic spacing should never be turned off) — no longer a user toggle.
+    /// Kept as a `let` rather than deleting every `rhythmicSpacing` reference throughout this file.
+    private let rhythmicSpacing = true
     @AppStorage("chordProShowWaveform") private var showWaveform = false
     /// Shows a bass-note row above each lyric line in the chart (backlog #15 Phase 2
     /// consolidation) — replaces the removed standalone Bass Notes tab and the old
@@ -1036,7 +1038,6 @@ private struct ChordProTabEditor: View {
                     Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
                     Toggle("Beat dots", isOn: $beatDotsEnabled)
                     Toggle("Barlines", isOn: $barlinesEnabled)
-                    Toggle("Rhythmic spacing", isOn: $rhythmicSpacing)
                     Toggle("Waveform", isOn: $showWaveform)
                     Toggle("Show Bass Notes", isOn: $showBassNotes)
                         .disabled(model.bassNotes.isEmpty)
@@ -1046,7 +1047,7 @@ private struct ChordProTabEditor: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help(
-                    "Show/hide the bouncing ball, beat dots, measure barlines, rhythmic spacing, "
+                    "Show/hide the bouncing ball, beat dots, measure barlines, "
                         + "the per-line waveform, and the detected bass note row")
                 Spacer()
                 if config.supportsMarkReviewed {
@@ -1949,25 +1950,38 @@ private struct ChordProAppPreview: View {
     private func lineStrip(
         for item: ChordProPreviewIndexedBlock,
         in document: ChordProPreviewDocument
-    ) -> (peaks: [Float], duration: TimeInterval, color: Color) {
+    ) -> (peaks: [Float], duration: TimeInterval, start: TimeInterval, color: Color) {
         // Lyric lines use the vocals lane color (matches the waveform panel); a full-mix fallback is
         // neutral so it isn't mislabeled as the isolated vocal.
         let lyricColor: Color = audioEnvelopeIsVocals ? StemKind.vocals.laneColor : .swTextSecondary
         if let ordinal = item.lyricOrdinal {
+            let start: TimeInterval =
+                lyricLineWindows.indices.contains(ordinal)
+                ? lyricLineWindows[ordinal].lowerBound : 0
             return (
                 vocalPeaks(forLyricOrdinal: ordinal),
-                lineDuration(forLyricOrdinal: ordinal), lyricColor
+                lineDuration(forLyricOrdinal: ordinal), start, lyricColor
             )
         }
-        guard case .lyric(let line) = item.block, !line.chords.isEmpty,
-            !line.hasSungText,
-            let lane = instrumentalLane,
+        // The row's real time window (hence its rhythmic-mode WIDTH, and where each of its chords
+        // falls within that width) must not depend on whether there's a guitar/piano envelope to
+        // draw as a waveform strip underneath it — those are separate concerns. Gating `duration`
+        // behind `instrumentalLane` meant a song with no guitar/piano stem (or one not yet loaded
+        // at this call site) silently reported duration 0 for every instrumental row, which fell
+        // through `instrumentalTimeWidth`'s `lineDuration > 0` guard straight to the old
+        // character-count sizing — no amount of fixing that width formula could show through when
+        // this returned 0 first. Resolve the window unconditionally; only the drawn peaks (and
+        // their color) depend on a lane actually being available. `start` lets each chord glyph
+        // find its real time-proportional x within the row (see `monospaceChordX`) instead of a
+        // fraction of the bar-grid TEXT's own character count.
+        guard case .lyric(let line) = item.block, !line.chords.isEmpty, !line.hasSungText,
             let window = chordOnlyLineWindow(for: item, in: document)
-        else { return ([], 0, .swTextSecondary) }
-        return (
-            peaks(in: window, from: lane.envelope),
-            max(0, window.end - window.start), lane.color
-        )
+        else { return ([], 0, 0, .swTextSecondary) }
+        let duration = max(0, window.end - window.start)
+        guard let lane = instrumentalLane else {
+            return ([], duration, window.start, .swTextSecondary)
+        }
+        return (peaks(in: window, from: lane.envelope), duration, window.start, lane.color)
     }
 
     private func wordTimings(forLyricOrdinal ordinal: Int?) -> [TimedLyricWord] {
@@ -2155,6 +2169,7 @@ private struct ChordProAppPreview: View {
             rhythmicWordTimings: lineWords,
             vocalPeaks: strip.peaks,
             lineDuration: strip.duration,
+            rowStartTime: strip.start,
             stripColor: strip.color,
             rowDownbeatSeconds: rowDownbeat,
             gutterSeconds: gutterSeconds,
@@ -2586,6 +2601,10 @@ private struct ChordProPreviewBlockView: View {
     var rhythmicWordTimings: [TimedLyricWord] = []
     var vocalPeaks: [Float] = []
     var lineDuration: TimeInterval = 0
+    /// This row's own real start time (its `chordOnlyLineWindow`/lyric-window lower bound) — the
+    /// origin `rowChordTimes` are measured from when placing a chord glyph time-proportionally
+    /// across `instrumentalTimeWidth` (see `ChordProPreviewLineView.monospaceChordX`).
+    var rowStartTime: TimeInterval = 0
     /// Color of this line's audio strip (matches the stem's lane color in the waveform panel).
     var stripColor: Color = .swAmber
     /// The bar downbeat time this line resolves onto (shared metric grid origin); nil = no grid.
@@ -2724,7 +2743,8 @@ private struct ChordProPreviewBlockView: View {
                     ChordProPreviewLineView(
                         line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots,
                         rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
-                        vocalPeaks: vocalPeaks, lineDuration: lineDuration, stripColor: stripColor,
+                        vocalPeaks: vocalPeaks, lineDuration: lineDuration,
+                        rowStartTime: rowStartTime, stripColor: stripColor,
                         rowDownbeatSeconds: rowDownbeatSeconds, gutterSeconds: gutterSeconds,
                         beatLengthSeconds: beatLengthSeconds, beatsPerBar: beatsPerBar,
                         showBarlines: showBarlines,
@@ -2848,6 +2868,10 @@ private struct ChordProPreviewLineView: View {
     /// Duration (seconds) of this line's time window, so the strip can be drawn on the SAME
     /// pixels-per-second scale as the rhythmic words (words and waveform share one time axis).
     var lineDuration: TimeInterval = 0
+    /// This row's own real start time — the origin `rowChordTimes` are measured from, used to
+    /// place each chord glyph time-proportionally on an instrumental (chord-only) row instead of
+    /// by its fractional position in the bar-grid TEXT (see `monospaceChordX`).
+    var rowStartTime: TimeInterval = 0
     /// Color of the audio strip — matches the source stem's lane color in the waveform panel.
     var stripColor: Color = .swAmber
     /// The song time of the bar downbeat this line resolves onto. All rows pin this downbeat to a
@@ -3016,7 +3040,7 @@ private struct ChordProPreviewLineView: View {
                     .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
                     .foregroundStyle(.tint)
                     .background(chordTint(at: index).opacity(0.3))
-                    .offset(x: monospaceChordX(chord))
+                    .offset(x: monospaceChordX(chord, at: index))
                     .onTapGesture {
                         if let event = chordEvent(at: index) {
                             onToggleChordAccepted(event.id)
@@ -3047,33 +3071,58 @@ private struct ChordProPreviewLineView: View {
         !line.chords.isEmpty && !line.hasSungText
     }
 
+    /// True once an instrumental row is actually being rendered on the real-duration time axis
+    /// (`instrumentalTimeWidth`'s rhythmic branch) rather than the bar-grid text's own character
+    /// extent — the condition under which the flat "| . . |" text can no longer visually track
+    /// the row's width (see `monospaceContent`).
+    private var isTimeScaledInstrumentalLine: Bool {
+        isInstrumentalLine && rhythmicSpacing && lineDuration > 0
+    }
+
     /// The chord row's text extent, in characters (rightmost chord column + its name length).
     private var chordColumnExtent: CGFloat {
         CGFloat(line.chords.map { $0.column + $0.name.count }.max() ?? 0)
     }
 
-    /// Width for an instrumental line's content + strip: the bar-grid text's own extent.
+    /// Width for an instrumental line's content + strip.
     ///
-    /// This used to also floor at `lineDuration * pixelsPerSecond` (rhythmic mode's 100px/sec
-    /// time scale) so a long interlude read wider than a short verse line. That floor predates
-    /// `ChordProDraftBuilder.instrumentalRows` splitting a long span into `typicalLyricBars`-sized
-    /// rows (matching the median SUNG line's own bar count) — once a row's DURATION is already
-    /// normalized to "about one verse line's worth of bars," re-applying a flat 100px/sec floor on
-    /// top massively over-widens it: sung text needs far fewer than 100px per second (a 4-second
-    /// phrase might only need ~150px of monospace glyphs), so a same-duration instrumental row
-    /// came out several times wider than the verse lines around it and ran off the right edge of
-    /// the chart (reported: "Intro lines... go off screen to the right"). The bar-grid text
-    /// (`chordColumnExtent`) is already proportional to the row's own bar count, so it alone gives
-    /// each row a width comparable to a typical lyric line — exactly what `typicalLyricBars`'s own
-    /// doc comment already promises ("instrumental rows render about as wide as the verse rows").
+    /// In rhythmic mode, a SUNG line's width comes from `rhythmicX`/`metricX`, which place words
+    /// (and everything else) on the shared `pixelsPerSecond` time scale — NOT from the character
+    /// count of the words themselves. An instrumental (chord-only) line has no words to lay out
+    /// on that axis, so nothing ever put it on the same scale; it fell back to sizing itself from
+    /// the bar-grid TEXT's character extent (`chordColumnExtent`) instead. A chord symbol like
+    /// "D#" is far more compact, per bar, than the words a singer actually fits into that bar, so
+    /// a same-duration instrumental row rendered a fraction of a sung row's width (reported:
+    /// "intro/outro instrumental parts... compressed to roughly 1/3 the expected width").
+    ///
+    /// The fix: put instrumental rows on the SAME `pixelsPerSecond` time scale sung rows use in
+    /// rhythmic mode, keyed off the row's own real duration (already split to ~one verse line's
+    /// worth of bars by `ChordProDraftBuilder.instrumentalRows`, so this doesn't reintroduce the
+    /// earlier "long interlude runs off the right edge" bug — that fix lives in the row-splitting,
+    /// not in how each already-short row is scaled). Falls back to the old character-extent sizing
+    /// when rhythmic spacing is off (monospace mode sizes sung lines by their own text length too,
+    /// so matching that convention keeps both line kinds on the same footing there) or duration is
+    /// unknown.
     private var instrumentalTimeWidth: CGFloat {
-        chordColumnExtent * Self.characterWidth
+        if rhythmicSpacing, lineDuration > 0 {
+            return CGFloat(lineDuration) * Self.pixelsPerSecond
+        }
+        return chordColumnExtent * Self.characterWidth
     }
 
-    /// X of a chord on an instrumental line, spread proportionally across `instrumentalTimeWidth`
-    /// (its column is already time-proportional from the draft builder); monospace column x
-    /// otherwise.
-    private func monospaceChordX(_ chord: ChordProPreviewChord) -> CGFloat {
+    /// X of a chord on an instrumental line. In rhythmic mode (once `instrumentalTimeWidth` is
+    /// keyed to real duration, not the bar-grid text's length) a chord's column-fraction position
+    /// no longer means anything on that wider axis — it must use its own REAL onset time instead,
+    /// same as a word does. `rowChordTimes` is index-aligned with `line.chords`; falls back to the
+    /// old column-fraction-of-text positioning when times aren't available 1:1, or off the
+    /// rhythmic axis entirely (monospace mode, no duration).
+    private func monospaceChordX(_ chord: ChordProPreviewChord, at index: Int) -> CGFloat {
+        if isInstrumentalLine, rhythmicSpacing, lineDuration > 0,
+            rowChordTimes.indices.contains(index)
+        {
+            let fraction = (rowChordTimes[index] - rowStartTime) / lineDuration
+            return instrumentalTimeWidth * CGFloat(min(max(fraction, 0), 1))
+        }
         guard isInstrumentalLine, lineDuration > 0, chordColumnExtent > 0 else {
             return CGFloat(chord.column) * Self.characterWidth
         }
@@ -3514,8 +3563,18 @@ private struct ChordProPreviewLineView: View {
             }
 
             ZStack(alignment: .topLeading) {
-                lyricText
-                    .offset(y: line.chords.isEmpty ? 0 : 20)
+                // The bar-grid "| . . |" text is a flat monospace string that can't stretch to
+                // match `instrumentalTimeWidth` once that's keyed to real duration instead of the
+                // text's own character count (see `instrumentalTimeWidth`/`monospaceChordX`) — it
+                // would render flush-left at its own short natural width while the chord glyphs
+                // (now correctly time-positioned) spread out across the wider row, reading as
+                // disconnected from their bar markers. The beat dots above already show the row's
+                // structure on the SAME time axis the chords now use, so this row just omits the
+                // text here rather than show a misleading, un-stretched copy of it.
+                if !isTimeScaledInstrumentalLine {
+                    lyricText
+                        .offset(y: line.chords.isEmpty ? 0 : 20)
+                }
 
                 ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                     Text(chord.name)
@@ -3528,7 +3587,7 @@ private struct ChordProPreviewLineView: View {
                         )
                         .foregroundStyle(.tint)
                         .background(chordTint(at: index).opacity(0.3))
-                        .offset(x: monospaceChordX(chord))
+                        .offset(x: monospaceChordX(chord, at: index))
                         // Monospace mode has no uniform time axis for lyric lines (columns are
                         // typeset over words, not seconds), so only tap-to-accept is offered
                         // here — free-timestamp drag needs rhythmic mode's real time axis.

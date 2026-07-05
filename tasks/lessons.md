@@ -103,3 +103,35 @@ never matched. Eric had to re-analyze and re-report before the miss surfaced.
 shape (every mode/candidate/row involved), not a minimal sketch of the mechanism. Before
 declaring a data-pipeline fix done, replay it against the actual persisted values that
 exhibited the bug — the unit fixture must be copied from that data, not invented.
+
+## 2026-07-05 — `xcodebuild` from the CLI can write to a DIFFERENT DerivedData folder than Xcode.app
+**Mistake:** After editing `WorkspaceEditorsView.swift` and running `xcodebuild build -workspace
+... -scheme SongWorkbench -destination 'platform=macOS'` (no `-derivedDataPath`) via
+desktop-commander, the command reported success but the RUNNING app showed zero visual change
+across two separate edit+rebuild+relaunch cycles. `ps aux` showed the app launching from
+`DerivedData/SongWorkbench-favoqfzepggqffaexaekdhrbjjwc/...`, but `stat` on that exact binary
+path showed the SAME mtime from hours earlier — the CLI build had silently written to a
+DIFFERENT hash-named DerivedData folder (`SongWorkbench-gxvqzdbqjmsizdbbkbbrwjujqgwr`, created
+fresh) instead of updating the one Xcode.app/the launched app actually uses.
+**Rule:** After any `xcodebuild build`, verify the fix landed by `stat`-ing the mtime of the
+EXACT `.app/Contents/MacOS/<name>` binary the running process's `ps aux` path points to — don't
+trust "BUILD SUCCEEDED" alone. If the mtime didn't move, pass `-derivedDataPath` explicitly
+pinned to that same running app's DerivedData folder (find it via `find
+~/Library/Developer/Xcode/DerivedData -maxdepth 1 -iname "SongWorkbench*"` sorted by mtime) so
+CLI builds and the GUI/launched app share one build product going forward.
+
+## 2026-07-05 — A width/layout fix can reveal a SECOND, previously-invisible bug in the same code path
+**Context:** Fixing `instrumentalTimeWidth` (chord-only ChordPro rows rendered at ~1/3 a sung
+line's width — Eric: "compressed to roughly 1/3 the expected width") first appeared to do
+nothing at all: `lineDuration` for those rows was silently 0 because `lineStrip`'s duration was
+gated behind `instrumentalLane` (guitar/piano envelope) being loaded, an unrelated concern
+bundled into the same guard. Fixing THAT revealed a third issue: chord glyphs still positioned
+by column-fraction-of-bar-grid-TEXT no longer meant anything once the row's pixel width was
+keyed to real duration, so labels clustered wrong: needed `rowChordTimes` + the row's real start
+time threaded through as a new parameter. A fourth: the flat "| . . |" bar-grid text itself
+can't stretch to the new width, so it had to be hidden in the rhythmic/time-scaled case.
+**Rule:** When a single computed property's DOCUMENTED behavior doesn't show up after a fix,
+suspect an upstream value silently defaulting to zero/empty behind an unrelated gate before
+re-checking the fix's own formula. And once one property in a tightly-coupled layout
+(width/position/text) is changed to a new coordinate space, audit every SIBLING property that
+assumed the OLD coordinate space still holds.
