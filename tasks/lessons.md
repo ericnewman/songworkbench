@@ -3,6 +3,22 @@
 - When the user says to skip already completed items in a batch, exclude them
   from the new output folder and manifest rather than copying prior results
   into the batch deliverable.
+
+- `isolation: "worktree"` on the Agent tool fails outright in this environment
+  ("not in a git repository and no WorktreeCreate hooks configured") — the
+  sandbox's view of the checkout isn't a git repo from the harness's
+  perspective even though the real Mac checkout is. Dispatch parallel
+  subagents WITHOUT isolation instead, and make safety come from disjoint
+  file-scoping in the prompt, not the isolation parameter.
+- Non-isolated parallel subagents share one working tree with whatever else
+  is touching it concurrently (the user, another session, a background
+  merge). One subagent's real, verified-passing edit (LyricBlendRowBuilder.swift
+  fix, task #15) silently vanished — not committed, not even present as an
+  uncommitted diff — most likely clobbered by an unrelated concurrent
+  process (an iPad-support merge landed mid-run). Always `git status`/`git
+  diff --stat` right after subagents report back, before trusting a
+  "done" report — a subagent's own build/test verification inside its
+  sandbox doesn't guarantee its edits survived on the real checkout.
 - Do not carry a prior batch-exclusion rule into a new analysis request when the
   user broadens the scope; explicitly include all requested unique recordings.
 - When packaging a workflow as a skill, confirm whether adjacent outputs belong
