@@ -114,9 +114,15 @@ call sites (~25, same API on iOS), `keyboardShortcut` (iOS 14+), `.onHover`
    `.playAndRecord`), interruption/route-change handling, optional background-audio
    mode; mic capture works, but loopback-device and system-audio capture do not
    exist on iPadOS (feature should be hidden there).
-5. **Music library access** — `MediaPlayer`/MusicKit provider for the picker; DRM'd
-   Apple Music tracks cannot be decoded for analysis (files-based import remains the
-   primary path).
+5. **Music library access** — **DONE (reduced).** `MediaPlayerMusicLibrary`
+   (`MusicLibrary.swift`) enumerates the on-device library via `MPMediaQuery` so the
+   picker is populated instead of empty. Honest limitation: iOS never exposes a local
+   file URL for library tracks (`MPMediaItem.assetURL` is an `ipod-library://` URL
+   readable only via an async AVFoundation export, not the file-copy import path this
+   app uses), so tracks are browsable but classify as `.platformUnavailable` and can't
+   be handed to the analyzer directly — the Files-app import remains the primary path.
+   Gated on `NSAppleMusicUsageDescription` (set on the iPad target). Not yet done:
+   async export-to-temp-file so DRM-free tracks become analyzable.
 6. **Test target for iOS** — `SongWorkbenchTests` is mac-only; decide which suites
    should run against the iPad destination.
 
