@@ -797,6 +797,13 @@ struct SongStructureAnalyzer: Sendable {
     var chorusSimilarity: Double = 0.7
     /// A gap (seconds) between consecutive lyric lines at/above which a new section starts.
     var sectionGap: TimeInterval = 4
+    /// A line at or below this SPOKEN word count (whitespace-separated tokens, e.g. "in a Key
+    /// West bar" = 5) is a CANDIDATE tag/continuation line — short enough that its own
+    /// standalone chorus/verse classification might just be an artifact of having too little
+    /// vocabulary to compare, rather than genuinely different material. Being short alone is not
+    /// enough to suppress a split (see `isProbableContinuation`, which additionally requires the
+    /// combined text read as MORE self-sufficient than the line alone).
+    var shortLineWordCountThreshold: Int = 5
 
     enum SectionKind: Equatable, Sendable {
         case verse
@@ -835,9 +842,31 @@ struct SongStructureAnalyzer: Sendable {
         }
         for i in 1..<lines.count {
             let gap = lines[i].start - lines[i - 1].end
-            if gap >= sectionGap || isChorus[i] != isChorus[blockStart] {
+            // A short trailing line just after a real (but sub-`sectionGap`) pause CAN read as a
+            // continuation/tag of the previous line (a common call-and-response songwriting
+            // pattern — e.g. "Yeah, I need a break … in a Key West bar") rather than genuinely
+            // new material — but being short is not enough evidence on its own (plenty of
+            // genuinely new, self-sufficient lines are also short, e.g. a 4-word bar-period
+            // re-cut fragment of a new chorus). Only suppress the classification-mismatch split
+            // when combining this line onto the PREVIOUS line's text reads as more sensible than
+            // the line alone: the combined phrase must itself match some other line at least as
+            // well as any standalone match this short line has (see `isProbableContinuation`).
+            let isShortCandidate =
+                gap < sectionGap && spokenWordCount(lines[i].text) <= shortLineWordCountThreshold
+            let isProbableContinuation =
+                isShortCandidate
+                && isProbableContinuation(
+                    line: lines[i], previousLine: lines[i - 1], allWords: words, allLines: lines)
+            let classificationMismatch =
+                !isProbableContinuation && isChorus[i] != isChorus[blockStart]
+            if gap >= sectionGap || classificationMismatch {
                 flush(blockStart)
                 blockStart = i
+            } else if isProbableContinuation {
+                // Continues the current block: adopt the block's classification so later lines
+                // comparing against `isChorus[blockStart]` (and the final section's `kind`) see
+                // one consistent block, rather than a short tag silently flipping mid-block.
+                isChorus[i] = isChorus[blockStart]
             }
         }
         flush(blockStart)
@@ -852,6 +881,42 @@ struct SongStructureAnalyzer: Sendable {
 
     private func wordSet(_ text: String) -> Set<String> {
         Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    }
+
+    /// The number of spoken words in a line — whitespace-separated tokens, NOT `wordSet`'s
+    /// Jaccard tokens (which also splits on internal punctuation like apostrophes, so a
+    /// contraction such as "There's" would otherwise count as two tokens instead of one word).
+    private func spokenWordCount(_ text: String) -> Int {
+        text.split { $0.isWhitespace }.count
+    }
+
+    /// Whether `line` (a short trailing candidate) more plausibly completes `previousLine` than
+    /// it stands as its own new phrase: true when appending `line`'s words onto `previousLine`'s
+    /// reads as at least as strong a match to some OTHER line elsewhere (typically an earlier,
+    /// unsplit occurrence of the same chorus) as any standalone match `line` has on its own. This
+    /// is what actually distinguishes a genuine call-and-response tag — e.g. "Yeah I need a
+    /// break" + "in a Key West bar" together matching the full chorus line elsewhere far better
+    /// than "in a Key West bar" matches anything alone — from an ordinary short bar-period-cut
+    /// fragment of a brand-new line (e.g. "There's a place with"), whose combination with an
+    /// unrelated preceding line does NOT improve its match to anything.
+    private func isProbableContinuation(
+        line: TimedLyricSegment, previousLine: TimedLyricSegment, allWords: [Set<String>],
+        allLines: [TimedLyricSegment]
+    ) -> Bool {
+        let lineWords = wordSet(line.text)
+        let combinedWords = wordSet(previousLine.text).union(lineWords)
+        var bestStandalone = 0.0
+        var bestCombined = 0.0
+        for (index, other) in allLines.enumerated() {
+            guard other.start != previousLine.start || other.end != previousLine.end else {
+                continue
+            }
+            guard other.start != line.start || other.end != line.end else { continue }
+            let otherWords = allWords[index]
+            bestStandalone = max(bestStandalone, jaccard(lineWords, otherWords))
+            bestCombined = max(bestCombined, jaccard(combinedWords, otherWords))
+        }
+        return bestCombined >= chorusSimilarity && bestCombined > bestStandalone
     }
 
     private func jaccard(_ a: Set<String>, _ b: Set<String>) -> Double {

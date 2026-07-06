@@ -202,6 +202,54 @@ final class LyricPhraseGrouperTests: XCTestCase {
             "both chorus occurrences must still be recognized as chorus blocks after regrouping")
     }
 
+    /// Regression (Key West Bar field case): a genuinely NEW section (a chorus repeat, elsewhere
+    /// Jaccard-matching an earlier chorus occurrence) that starts only a SHORT time (well under
+    /// `SongStructureAnalyzer`'s 4s `sectionGap`) after the previous section's last line must
+    /// still get its OWN section boundary — via the chorus/verse classification mismatch, not the
+    /// gap — so `LyricPhraseGrouper`'s bar-period re-cut never pools the new section's words in
+    /// with the previous section's, and can never steal the new section's first word onto the
+    /// tail of the previous section's last re-cut line. Mirrors the real bug: "...and enjoy the
+    /// vibe" (end of a verse-ish block) immediately followed, after only a couple of seconds, by
+    /// "There's a place..." (the start of a chorus repeated verbatim later in the song).
+    func testShortGapBeforeANewChorusOccurrenceNeverStealsItsFirstWordIntoThePreviousSection() {
+        let versePart = eightBarChorusWords(
+            startBar: 0, text: ["one", "two", "three", "four", "five", "six", "seven", "eight"])
+        // The chorus text also appears, verbatim, far later in the song (bar 40) so
+        // `SongStructureAnalyzer`'s word-set Jaccard reliably classifies BOTH occurrences as
+        // chorus — the classification-mismatch split does not depend on the gap being large.
+        let chorusText = ["there's", "a", "place", "with", "no", "worries", "no", "racing"]
+        // Starts at bar 8 -- i.e. immediately after the verse's 8 bars end, only the ~1.8s
+        // still-inside-the-bar-grid gap between the verse's last word and the chorus's first
+        // word (well under the analyzer's 4s `sectionGap`).
+        let chorusOccurrenceA = eightBarChorusWords(startBar: 8, text: chorusText)
+        let chorusOccurrenceB = eightBarChorusWords(startBar: 40, text: chorusText)
+        let input = [line(versePart), line(chorusOccurrenceA), line(chorusOccurrenceB)]
+        let chords =
+            eightBarChords(startBar: 0) + eightBarChords(startBar: 8) + eightBarChords(startBar: 40)
+
+        let result = LyricPhraseGrouper.regroup(
+            input, beatTimes: uniformBeatTimes(bpm: 120, bars: 48), tempo: 120, chords: chords)
+
+        // The verse's re-cut lines must end on "four" / "eight" — never picking up "there's",
+        // the chorus's first word — and the chorus's own first re-cut line must start cleanly on
+        // "there's", never missing it to the verse above.
+        XCTAssertTrue(
+            result.contains { $0.text == "one two three four" }, "\(result.map(\.text))")
+        XCTAssertTrue(
+            result.contains { $0.text == "five six seven eight" }, "\(result.map(\.text))")
+        XCTAssertFalse(
+            result.contains { $0.text.hasSuffix("there's") && $0.text != "there's" },
+            "verse line stole the chorus's first word: \(result.map(\.text))")
+        XCTAssertTrue(
+            result.contains { $0.text == "there's a place with" }, "\(result.map(\.text))")
+
+        // And the section boundary itself must be genuinely there: both chorus occurrences are
+        // recognized as chorus, the verse is not, confirming the split is real, not incidental.
+        let sections = SongStructureAnalyzer().vocalSections(for: result)
+        XCTAssertEqual(sections.filter { $0.kind == .chorus }.count, 2, "\(sections)")
+        XCTAssertEqual(sections.filter { $0.kind == .verse }.count, 1, "\(sections)")
+    }
+
     // MARK: - Stage 2: rhyme/syllable nudge (PRD §3.4)
 
     /// A 12-bar/3-cell section (period 4 bars) where the globally-nearest word gap to the SECOND

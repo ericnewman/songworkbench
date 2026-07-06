@@ -821,6 +821,65 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertTrue(ChordProChordTimeCarrier.parse(document).isEmpty, document)
     }
 
+    /// Regression (Key West Bar field case): a short (<=4-word) call-and-response tag line —
+    /// "in a Key West bar" — that completes a chorus phrase after a real but short (~3s, well
+    /// under the analyzer's 4s `sectionGap`) instrumental/breath pause must stay part of the SAME
+    /// section as the line it completes, not be misread as a new verse. On its own the short tag
+    /// shares few/no words with the fuller chorus line elsewhere in the song, so its standalone
+    /// Jaccard similarity comes out low — without the short-trailing-line exemption, that
+    /// classification mismatch (verse vs. chorus) would incorrectly split the section even though
+    /// the gap itself is nowhere near the 4s threshold.
+    func testShortTagLineAfterShortGapStaysInSameSectionAsCompletedChorusLine() {
+        func line(_ start: TimeInterval, _ end: TimeInterval, _ text: String) -> TimedLyricSegment {
+            let words = text.split(separator: " ")
+            var characterOffset = 0
+            var timedWords: [TimedLyricWord] = []
+            let span = (end - start) / Double(max(words.count, 1))
+            for (index, word) in words.enumerated() {
+                let wordStart = start + Double(index) * span
+                let wordEnd = wordStart + span
+                let range = characterOffset..<(characterOffset + word.count)
+                timedWords.append(
+                    TimedLyricWord(
+                        text: String(word), start: wordStart, end: wordEnd, characterRange: range))
+                characterOffset += word.count + 1
+            }
+            return TimedLyricSegment(start: start, end: end, text: text, words: timedWords)
+        }
+        let lyrics = [
+            // Earlier, unsplit occurrence of the full phrase — the reference the split
+            // occurrence's COMBINED (lead-in + tag) text will match.
+            line(0, 2, "Yeah I need a break in a Key West bar"),
+            // An independent EARLIER occurrence of just the lead-in half, so "Yeah I need a
+            // break" reliably Jaccard-matches (1.0) and classifies as chorus on its own, entirely
+            // independent of whatever tag follows it later.
+            line(10, 11.7, "Yeah I need a break"),
+            line(20, 22, "Some totally unrelated verse content here"),
+            line(24, 26, "More unrelated verse content follows along"),
+            // Split occurrence: a real ~3s pause breaks the SAME phrase into a lead-in line and a
+            // short trailing tag — mirrors the field case exactly (segments 13 → 14). "in a Key
+            // West bar" shares NO words with anything else in this fixture on ITS OWN (standalone
+            // Jaccard ~0 against every other line), but COMBINED with the immediately preceding
+            // "Yeah I need a break" it reconstructs the first occurrence's full text exactly
+            // (Jaccard 1.0) — the signal that correctly identifies it as a continuation/tag
+            // rather than a genuinely new, self-sufficient line.
+            line(50, 51.7, "Yeah I need a break"),
+            line(54.76, 56, "in a Key West bar"),
+        ]
+        let sections = SongStructureAnalyzer().vocalSections(for: lyrics)
+        // The short tag line at 54.76 must NOT start its own new section: it should fall inside
+        // whichever section starts at 50 (the "Yeah I need a break" lead-in), not create a new
+        // section boundary at 54.76.
+        XCTAssertFalse(
+            sections.contains { $0.start == 54.76 },
+            "short trailing tag line incorrectly started its own section: \(sections)")
+        // The lead-in ("Yeah I need a break" @50) and its trailing tag must land in the SAME,
+        // LAST section (nothing else starts after 50), and that section must be classified as a
+        // chorus — inherited correctly from the lead-in's own reliable classification.
+        XCTAssertEqual(sections.map(\.start).max(), 50, "\(sections)")
+        XCTAssertEqual(sections.last?.kind, .chorus, "\(sections)")
+    }
+
     func testChordTimeDirectiveIsPreservedByTheChordProParserAsAnOpaqueDirective() throws {
         // x_ is the ChordPro convention for app-specific extensions: a spec-compliant parser
         // must not choke on it, and this app's own parser must round-trip it verbatim through a
