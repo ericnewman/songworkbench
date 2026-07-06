@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-#if canImport(AppKit)
+#if os(macOS)
     import AppKit
 #endif
 
@@ -12,6 +12,7 @@ enum EditorTab: String, CaseIterable, Identifiable {
     case chords
     case chordPro
     case review
+    case structure
 
     var id: String { rawValue }
 
@@ -21,6 +22,7 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .chords: "Chords"
         case .chordPro: "ChordPro"
         case .review: "Review"
+        case .structure: "Structure"
         }
     }
 
@@ -30,6 +32,7 @@ enum EditorTab: String, CaseIterable, Identifiable {
         case .chords: "music.note"
         case .chordPro: "doc.plaintext"
         case .review: "text.badge.checkmark"
+        case .structure: "square.stack.3d.up"
         }
     }
 }
@@ -47,6 +50,7 @@ struct WorkspaceEditorsView: View {
             case .chords: ChordTimelineEditor(model: model)
             case .chordPro: ChordProTrueView(model: model)
             case .review: ChordProReviewTab(model: model)
+            case .structure: SongStructureView(model: model)
             }
         }
         .padding(12)

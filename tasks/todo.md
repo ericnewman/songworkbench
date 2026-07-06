@@ -1,5 +1,24 @@
 # Fix: missed chord changes + dropped end-of-song lyrics (2026-07-04)
 
+# iPad device build smoke test (2026-07-06)
+
+## Acceptance criteria
+
+- [x] The active Xcode iPad destination builds without macOS-only AppKit import errors.
+- [ ] If the build succeeds, launch the app on the connected iPad from Xcode.
+
+## Review
+
+- Updated shared SwiftUI files to use `#if os(macOS)` for AppKit imports/branches instead
+  of `canImport(AppKit)`, keeping iPad builds on UIKit paths.
+- Fast Xcode diagnostics: clean for `ChordProReadOnlyView.swift`, `ContentView.swift`,
+  `WorkspaceEditorsView.swift`, and `PlatformShims.swift`.
+- Xcode `BuildProject`: succeeded on 2026-07-06 using the active scheme/destination
+  (7.366s). Launch/install still needs Xcode's Run action with the connected iPad selected.
+- Follow-up: user reports the iPad is not listed in Xcode. `xcrun devicectl list devices`
+  timed out waiting for `CoreDeviceService` to initialize, so current blocker is device
+  discovery/trust/CoreDevice state rather than Swift compilation.
+
 ## Diagnosis (verified against code + real cached data)
 
 ### Symptom 1: Missed chord changes
@@ -285,6 +304,126 @@ Verification basis:
   separate 1-row breaks either side of a sung line must not fuse into one false run of 2).
 - Suite: 588 tests, same pre-existing `AppModelTests`/`MusicLibraryTests` environment
   failures. Lint clean. App rebuilt (pinned `-derivedDataPath`) and relaunched.
+
+## Plan: "Structure" tab — Form / Harmony / Meter / Rhyme / Melody-proxy (2026-07-06)
+
+Eric's proposal: separate a song's *structure* from its *content* — Form (section
+order), Harmony (chord progression), Melody (phrase pattern e.g. AABA), Meter (lyric
+syllable pattern), Rhyme (end-rhyme scheme), Lyrics (actual words) — then model each
+recurring section as a reusable **Phrase Template** (chord pattern + meter + rhyme
+scheme) that instances are checked against. Deviation from the fitted template is a
+much stronger anomaly signal than today's per-subsystem heuristics, and would have
+caught 2 of the 3 bugs found in the Key West Bar review by hand (short tag-line
+misfire, run-on word-stealing) plus the word-doubling class of bug (a line running to
+2x its section's normal syllable count is an obvious tell). Confirmed scope with Eric:
+Phase 1 ships Form + Harmony + Meter + Rhyme together (not staged), Melody is an
+approximate proxy (chord-pattern + meter + rhyme similarity across lines), clearly
+labeled as approximate in the UI since there's no real pitch-contour pipeline.
+
+Researched current architecture first (read-only subagent) so this plan targets real
+code, not assumptions:
+
+- `SongStructureAnalyzer.vocalSections(for:)` (`ChordProDraftBuilder.swift:795-926`)
+  already gives Verse N / Chorus labels + `isProbableContinuation` (today's fix). Only
+  `.verse`/`.chorus` kinds — no Intro/Bridge/Solo/Outro distinction.
+- Intro/Instrumental/Outro detection is inline in `ChordProDraftBuilder.build(...)`
+  (~lines 170-305), bars-based (`gapBars >= 4`), independent of `SongStructureAnalyzer`.
+  **No merged whole-song ordered Form list exists yet** — must assemble one from both.
+- **No Roman-numeral/scale-degree math exists anywhere.** `MusicalKey.swift` has the
+  pitch-class name table (line 16-18) and a private `parseChord(_:)` (line 63-88) to
+  reuse for chord-root/quality extraction.
+- **Syllable counting and rhyme detection already exist and are unit-tested**:
+  `SyllableCounter.swift`, `RhymeDetector.swift` (loads bundled
+  `Resources/cmudict_rhyme.tsv`), `RhymeSyllableScorer.swift`, already consumed by
+  `LyricPhraseGrouper.swift`. Meter/Rhyme layers reuse these directly — no new phonetic
+  code needed.
+- UI tabs are a `Picker` over `EditorTab` (`WorkspaceEditorsView.swift:10-35`), state in
+  `ContentView.swift:230`, switched view in `WorkspaceEditorsView`. `ChordProReadOnlyView`
+  is the closest sibling (read-only, takes a plain rendered string). `SongTimeline` is
+  computed on demand by `ChordProDraftBuilder.buildResult(...)` and memoized in
+  `AppModel` by source-string cache key (`AppModel.swift:2109`, `songTimelineForPreview()`
+  at 2110-2134) — not persisted into the saved analysis JSON. Follow the same pattern:
+  derive, don't persist.
+
+### Steps
+- [x] New `SongStructureOverview.swift`: `FormSection` (label, kind incl. new
+      `.intro/.bridge/.solo/.outro/.instrumental` alongside existing verse/chorus,
+      start/end), assembled by merging `SongStructureAnalyzer.vocalSections` with the
+      existing bars-gap instrumental detection into one ordered list. Bridge/Solo rule
+      (per Eric — "a word-less verse or chorus pattern is usually a solo"): an
+      instrumental gap classifies as **Solo** when its chord progression matches an
+      already-established Verse/Chorus template's chord pattern over the corresponding
+      bar span (i.e. it's that section played wordless) — reuses the same
+      chord-pattern-matching the Phrase Template step below needs, no separate
+      duration heuristic required. A gap that matches no known template stays generic
+      **Instrumental**. **Bridge** is a worded, non-repeating section that doesn't
+      match the verse or chorus template. Ship as best-effort v1, expect retuning
+      once checked against more real songs.
+- [x] Roman-numeral mapping: new small function (on `MusicalKey` or a new
+      `RomanNumeralMapper`) — chord root pitch class vs. key root → scale degree,
+      quality-aware casing (upper/lower/°/+), reusing `MusicalKey.parseChord`. Chords
+      that don't classify cleanly (secondary dominants etc.) fall back to bare
+      chord-letter display rather than a wrong numeral.
+- [x] Meter: per section, syllable count per lyric line via existing `SyllableCounter`.
+- [x] Rhyme: per section, end-rhyme letters (A/B/C/D) per line via existing
+      `RhymeDetector`/`RhymeSyllableScorer`.
+- [x] Melody proxy: per section, build a per-line signature (chord-pattern hash +
+      syllable count + rhyme letter, tolerant match not exact), assign phrase letters
+      (A/A/B/A) by first-appearance order within the section. Label as approximate
+      in the UI — this is not real melody analysis.
+- [x] Phrase Template assembly: for each repeated section kind, pick a canonical
+      occurrence and report {length in lines, phrase pattern, chord pattern, lyric
+      meter, rhyme} — matches the shape of Eric's Key West Bar example (FORM +
+      VERSE TEMPLATE + CHORUS TEMPLATE blocks).
+- [x] New read-only `SongStructureView.swift` + `EditorTab.structure` case, wired into
+      the same `Picker` as the Review tab; `AppModel.songStructureOverview()` memoized
+      the same way as `songTimelineForPreview()` (derive on demand, no cache-migration
+      concerns).
+- [x] Tests: new `SongStructureOverviewTests.swift` — Roman-numeral cases (incl.
+      secondary-dominant fallback), Form-list assembly (vocal + instrumental merge),
+      melody-proxy phrase-letter assignment on a synthetic 4-line verse fixture,
+      template assembly picking the canonical occurrence. Reuse existing
+      `TimedLyricSegment`/`EditableChordEvent` fixture conventions.
+- [x] Verify: build, full suite (expect only the pre-existing ~8 AppModelTests/
+      MusicLibraryTests env failures), lint, rebuild+relaunch app, eyeball the tab
+      against Key West Bar's real data.
+
+## Review (2026-07-06)
+
+Implemented as planned, in one new source file plus small additions:
+- `SongStructureOverview.swift`: `SongStructureOverview`/`Section`/`PhraseTemplate`,
+  `RomanNumeralMapper` (own small chord-root parser, deliberately separate from
+  `MusicalKeyEstimator.parseChord` — didn't touch that already-tested internal),
+  `MelodyPhraseProxy`, `SongStructureOverviewBuilder`. Form reuses
+  `LyricSectionDeriver.sections` (already merges vocal + instrumental/intro/outro into
+  one ordered list — no new merge logic needed there). Bridge/Solo reclassification
+  and Phrase Template assembly share one `chordSignature`/`signaturesMatch` comparator
+  (exact match, or ≥0.75 Jaccard set-overlap fallback for a single passing chord).
+- `AppModel.songStructureOverview()`: cached by `chordProSource` like
+  `songTimelineForPreview()`, but simpler (no byte-for-byte round-trip check needed).
+- `EditorTab.structure` + `SongStructureView.swift`: read-only, mirrors
+  `ChordProReadOnlyView`'s shape (plain scroll, no edit chrome), renders FORM plus a
+  template card per repeated worded section kind.
+- Tests: 11 new (`RomanNumeralMapperTests`, `MelodyPhraseProxyTests`,
+  `SongStructureOverviewBuilderTests` — the last using a hand-built fixture with two
+  matching-chord verses, a wordless gap reusing the verse pattern (→ Solo), and a
+  worded section with an unrelated pattern (→ Bridge, not "Verse 3")). All passed on
+  first run — no red/green needed since nothing existing was being changed.
+- Suite: 601 tests, same 8 pre-existing `AppModelTests`/`MusicLibraryTests`
+  environment failures, nothing new. Lint clean repo-wide.
+- Live-verified on Key West Bar (real data, rebuilt app via `tuist generate` +
+  pinned-`-derivedDataPath` `xcodebuild`): Form correctly lists Intro/Verse 1-4/
+  Chorus×4/Instrumental/Outro matching the song's real structure, including the short
+  ~4s "Verse 3" (the tag-line block task #14 fixed). VERSE/CHORUS templates render
+  with real chord/meter/rhyme data. No Bridge/Solo triggered on this song's real
+  (noisier) chord data — plausible given the exact/0.75-Jaccard match is tuned against
+  clean synthetic data; flagged in the plan as expected v1 retuning territory, not
+  treated as a bug.
+- **Environment note**: `.build/checkouts` got corrupted mid-session (two ` 2`-suffixed
+  duplicate checkout dirs, stale `workspace-state.json`) — almost certainly a
+  concurrent process (the iPad-support work landing at the same time) touching the
+  same SwiftPM cache. Fixed by removing the duplicates + `workspace-state.json` +
+  `repositories` and re-running `swift package resolve`. See `tasks/lessons.md`.
 
 ---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details

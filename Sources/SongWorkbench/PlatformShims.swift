@@ -2,9 +2,9 @@ import AVFoundation
 import Foundation
 import SwiftUI
 
-#if canImport(AppKit)
+#if os(macOS)
     import AppKit
-#elseif canImport(UIKit)
+#else
     import UIKit
 #endif
 
@@ -20,7 +20,7 @@ enum PlatformScreen {
     /// screen (Split View, Stage Manager), so the fallback is used; window-relative
     /// sizing should come from the layout pass there instead.
     static func visibleHeight(fallback: CGFloat = 900) -> CGFloat {
-        #if canImport(AppKit)
+        #if os(macOS)
             return NSScreen.main?.visibleFrame.height ?? fallback
         #else
             return fallback
@@ -30,7 +30,7 @@ enum PlatformScreen {
 
 /// Platform font for text measurement (`NSFont` / `UIFont` share the relevant API:
 /// `monospacedSystemFont(ofSize:weight:)` and `NSAttributedString` sizing).
-#if canImport(AppKit)
+#if os(macOS)
     typealias PlatformFont = NSFont
 #elseif canImport(UIKit)
     typealias PlatformFont = UIFont
@@ -39,7 +39,7 @@ enum PlatformScreen {
 /// App-lifecycle notifications (NSApplication vs UIApplication).
 enum PlatformLifecycle {
     static var willTerminateNotification: Notification.Name {
-        #if canImport(AppKit)
+        #if os(macOS)
             return NSApplication.willTerminateNotification
         #else
             return UIApplication.willTerminateNotification
@@ -84,7 +84,7 @@ extension Color {
     /// `NSColor.textBackgroundColor` has no UIKit twin; `systemBackground` is the
     /// closest visual equivalent for text-document surfaces on iPadOS.
     static var swTextBackground: Color {
-        #if canImport(AppKit)
+        #if os(macOS)
             return Color(nsColor: .textBackgroundColor)
         #else
             return Color(uiColor: .systemBackground)

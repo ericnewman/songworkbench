@@ -199,3 +199,22 @@ the first time — a latent bug in one of them can look like a brand-new regress
 itself. Also: any "scan adjacent items for a run of X" loop must skip over items that aren't X
 and aren't a real boundary (directives, comments, blank lines) — a raw `index ± 1` check is
 almost always wrong once directives can be interleaved between the things being counted.
+
+## 2026-07-06 — `.build/checkouts` can be silently corrupted by a concurrent process sharing the checkout
+**Symptom:** `swift build` failed with "the package manifest ... cannot be accessed" for
+FluidAudio and onnxruntime-swift-package-manager, even though nothing in the current edit
+touched dependencies. `ls .build/checkouts` showed duplicate ` 2`-suffixed dirs (`FluidAudio 2`,
+`onnxruntime-swift-package-manager 2`) alongside a stale `workspace-state.json` pointing at
+paths that no longer matched — almost certainly a concurrent `tuist generate`/`swift package
+resolve` (the iPad-support work landing in the same checkout at the same time) racing on the
+same SwiftPM cache directory.
+**Fix:** confirm no build process is actually running (`ps aux | grep -iE
+"xcodebuild|swift build|swift package|tuist"`) before touching `.build/`, then remove the
+duplicate/stale dirs (`.build/checkouts/<name> 2`, `.build/workspace-state.json`,
+`.build/repositories`) and re-run `swift package resolve` — cheap and safe since none of it is
+tracked in git.
+**Rule:** In a shared checkout where multiple sessions/subagents may run Tuist/SwiftPM
+concurrently, a "manifest cannot be accessed" or similarly nonsensical SwiftPM error is more
+likely stale/corrupted `.build` state from a concurrent writer than a real problem with your own
+change — check `.build/checkouts` for duplicate/` 2` dirs before assuming your edit broke
+something.

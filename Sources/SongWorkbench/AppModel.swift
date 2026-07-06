@@ -2133,6 +2133,33 @@ final class AppModel: ObservableObject {
         return result.timeline
     }
 
+    /// Cached `SongStructureOverview` (the Structure tab's Form/Harmony/Meter/Rhyme/Melody-
+    /// proxy breakdown) for the current analysis. Keyed by `chordProSource` purely as a cheap
+    /// "has the underlying analysis changed" signal — unlike `songTimelineForPreview`, this
+    /// doesn't need byte-for-byte round-trip validation, since the overview isn't tied to
+    /// `chordProSource`'s exact rendered text.
+    private var structureOverviewCache: (source: String, overview: SongStructureOverview?)?
+    func songStructureOverview() -> SongStructureOverview? {
+        guard let song = selectedSong, !lyricSegments.isEmpty else { return nil }
+        if let cached = structureOverviewCache, cached.source == chordProSource {
+            return cached.overview
+        }
+        let overview = SongStructureOverviewBuilder().build(
+            ChordProDraftInput(
+                title: song.title,
+                tempo: estimatedBPM,
+                lyrics: lyricSegments,
+                chords: chordEvents,
+                confidenceThreshold: chordConfidenceThreshold,
+                beatTimes: beatTimes,
+                sourceDuration: sourceDuration,
+                untranscribedVocalRegions: untranscribedVocalRegions,
+                estimatedKey: estimatedKey
+            ))
+        structureOverviewCache = (chordProSource, overview)
+        return overview
+    }
+
     private func rebuildGeneratedChordProDraft() {
         guard
             let song = selectedSong,

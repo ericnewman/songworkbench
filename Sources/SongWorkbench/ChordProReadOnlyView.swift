@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-#if canImport(AppKit)
+#if os(macOS)
     import AppKit
 #endif
 
