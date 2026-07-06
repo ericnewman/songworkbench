@@ -178,9 +178,33 @@ private struct BackgroundStatusBar: View {
 /// row matching the playback bar's height.
 private struct SongActionsCard: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 8) {
+            // Lyric Blend results no longer pop their window open on analysis completion;
+            // this button's mint glow is the "ready" indicator instead (Eric's request).
+            Button("Lyric Blend", systemImage: "square.stack.3d.up") {
+                openWindow(id: "lyricBlend")
+                model.lyricBlendReadySongID = nil
+            }
+            .labelStyle(.iconOnly)
+            .disabled(model.lyricBlendRows.isEmpty)
+            .foregroundStyle(
+                model.lyricBlendReadySongID != nil ? Color.swMint : Color.swTextPrimary
+            )
+            .overlay(alignment: .topTrailing) {
+                if model.lyricBlendReadySongID != nil {
+                    Circle()
+                        .fill(Color.swMint)
+                        .frame(width: 7, height: 7)
+                        .offset(x: 4, y: -4)
+                }
+            }
+            .help(
+                model.lyricBlendReadySongID != nil
+                    ? "New Lyric Blend results are ready — click to review"
+                    : "Open the Lyric Blend window")
             Button("Remove Song", systemImage: "trash") {
                 if let song = model.selectedSong {
                     model.removeSong(song)
@@ -227,6 +251,32 @@ private struct PlayerView: View {
         }
     }
 
+    /// The Lyrics/Chords/ChordPro/Review segmented control, shown centered at the top of the
+    /// middle (editor) pane. ⌘1…⌘4 shortcuts ride along in a hidden background.
+    private var editorTabPicker: some View {
+        Picker("Editor", selection: $selectedEditor) {
+            ForEach(EditorTab.allCases) { tab in
+                Label(tab.title, systemImage: tab.systemImage).tag(tab)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(minWidth: 280, maxWidth: 560)
+        .background {
+            // ⌘1…⌘4 switch editor tabs (also enables hands-free navigation).
+            ForEach(
+                Array(EditorTab.allCases.enumerated()), id: \.element
+            ) { index, tab in
+                Button("Show \(tab.title)") { selectedEditor = tab }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character(String(index + 1))),
+                        modifiers: .command)
+            }
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
+    }
+
     private var mainColumns: some View {
         HStack(alignment: .top, spacing: 16) {
             // Left column: the song list on top, the tool cards below it (resizable divider), so
@@ -254,7 +304,9 @@ private struct PlayerView: View {
                 }
                 .frame(minHeight: 220)
             }
-            .frame(width: 380)
+            // 360 matches the expanded stem rail exactly (Eric: same width for the first and
+            // last columns, for visual symmetry).
+            .frame(width: 360)
 
             // Main column: the segment/editor view, maximized. The playback bar spans the
             // full width up top (thin, scrubber gets the extra width) so play/pause/seek
@@ -277,34 +329,13 @@ private struct PlayerView: View {
                     .frame(maxWidth: .infinity)
                 }
 
-                // ONE control row — playback · editor tabs · song actions — so the editor
-                // below gets every remaining vertical point.
+                // ONE control row — playback · song actions. The editor tab picker lives at
+                // the top of the middle pane instead (Eric: "move the segmented control into
+                // the middle pane to save horizontal space in the tool bar") — with it here,
+                // the row's minimum width exceeded the default window's middle column and the
+                // whole layout clipped the outer panes.
                 HStack(alignment: .center, spacing: 12) {
                     PlaybackTransportCard(model: model)
-
-                    Spacer(minLength: 8)
-
-                    Picker("Editor", selection: $selectedEditor) {
-                        ForEach(EditorTab.allCases) { tab in
-                            Label(tab.title, systemImage: tab.systemImage).tag(tab)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(minWidth: 280, maxWidth: 560)
-                    .background {
-                        // ⌘1…⌘4 switch editor tabs (also enables hands-free navigation).
-                        ForEach(
-                            Array(EditorTab.allCases.enumerated()), id: \.element
-                        ) { index, tab in
-                            Button("Show \(tab.title)") { selectedEditor = tab }
-                                .keyboardShortcut(
-                                    KeyEquivalent(Character(String(index + 1))),
-                                    modifiers: .command)
-                        }
-                        .opacity(0)
-                        .accessibilityHidden(true)
-                    }
 
                     Spacer(minLength: 8)
 
@@ -315,6 +346,7 @@ private struct PlayerView: View {
                 if model.selectedSong != nil {
                     HStack(alignment: .top, spacing: 12) {
                         VStack(spacing: 12) {
+                            editorTabPicker
                             WorkspaceEditorsView(model: model, selectedEditor: selectedEditor)
                             if let error = playback.errorMessage ?? model.projectErrorMessage {
                                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -327,9 +359,11 @@ private struct PlayerView: View {
 
                         // Right rail: a slim copy of the Stems console (full-height vertical
                         // faders + VU meters), persistent across ALL editor views and
-                        // collapsible so the editor can reclaim the width.
+                        // collapsible so the editor can reclaim the width. 360 expanded =
+                        // same width as the song sidebar (visual symmetry; also gives the
+                        // channel strips room for the planned L/R meters + pan pots).
                         StemMixSidebar(model: model)
-                            .frame(width: stemRailExpanded ? 250 : 44)
+                            .frame(width: stemRailExpanded ? 360 : 44)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {

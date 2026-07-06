@@ -93,3 +93,93 @@ a sampleTime by a rate it wasn't expressed in. See tasks/audit-ball-timing.md.
 - AppModelTests import/restore tests fail in this tree due to pre-existing uncommitted WIP (or real
   Application Support store pollution), independent of chord-pipeline changes — proven by removing
   my changes and re-running.
+
+## 2026-07-05 — Regression tests must mirror the field data's FULL shape
+**Mistake:** The first non-adjacent duplicate-merge fix "passed" its regression test but
+failed on the real song: the test's clusters held ONE mode each, while the real cluster held
+the same line from TWO modes — the flat text concatenation read as the line doubled and
+never matched. Eric had to re-analyze and re-report before the miss surfaced.
+**Rule:** When building a regression test from observed field data, reproduce the complete
+shape (every mode/candidate/row involved), not a minimal sketch of the mechanism. Before
+declaring a data-pipeline fix done, replay it against the actual persisted values that
+exhibited the bug — the unit fixture must be copied from that data, not invented.
+
+## 2026-07-05 — `xcodebuild` from the CLI can write to a DIFFERENT DerivedData folder than Xcode.app
+**Mistake:** After editing `WorkspaceEditorsView.swift` and running `xcodebuild build -workspace
+... -scheme SongWorkbench -destination 'platform=macOS'` (no `-derivedDataPath`) via
+desktop-commander, the command reported success but the RUNNING app showed zero visual change
+across two separate edit+rebuild+relaunch cycles. `ps aux` showed the app launching from
+`DerivedData/SongWorkbench-favoqfzepggqffaexaekdhrbjjwc/...`, but `stat` on that exact binary
+path showed the SAME mtime from hours earlier — the CLI build had silently written to a
+DIFFERENT hash-named DerivedData folder (`SongWorkbench-gxvqzdbqjmsizdbbkbbrwjujqgwr`, created
+fresh) instead of updating the one Xcode.app/the launched app actually uses.
+**Rule:** After any `xcodebuild build`, verify the fix landed by `stat`-ing the mtime of the
+EXACT `.app/Contents/MacOS/<name>` binary the running process's `ps aux` path points to — don't
+trust "BUILD SUCCEEDED" alone. If the mtime didn't move, pass `-derivedDataPath` explicitly
+pinned to that same running app's DerivedData folder (find it via `find
+~/Library/Developer/Xcode/DerivedData -maxdepth 1 -iname "SongWorkbench*"` sorted by mtime) so
+CLI builds and the GUI/launched app share one build product going forward.
+
+## 2026-07-05 — A width/layout fix can reveal a SECOND, previously-invisible bug in the same code path
+**Context:** Fixing `instrumentalTimeWidth` (chord-only ChordPro rows rendered at ~1/3 a sung
+line's width — Eric: "compressed to roughly 1/3 the expected width") first appeared to do
+nothing at all: `lineDuration` for those rows was silently 0 because `lineStrip`'s duration was
+gated behind `instrumentalLane` (guitar/piano envelope) being loaded, an unrelated concern
+bundled into the same guard. Fixing THAT revealed a third issue: chord glyphs still positioned
+by column-fraction-of-bar-grid-TEXT no longer meant anything once the row's pixel width was
+keyed to real duration, so labels clustered wrong: needed `rowChordTimes` + the row's real start
+time threaded through as a new parameter. A fourth: the flat "| . . |" bar-grid text itself
+can't stretch to the new width, so it had to be hidden in the rhythmic/time-scaled case.
+**Rule:** When a single computed property's DOCUMENTED behavior doesn't show up after a fix,
+suspect an upstream value silently defaulting to zero/empty behind an unrelated gate before
+re-checking the fix's own formula. And once one property in a tightly-coupled layout
+(width/position/text) is changed to a new coordinate space, audit every SIBLING property that
+assumed the OLD coordinate space still holds.
+
+## 2026-07-05 — Don't trust a doc comment's justification for a shortcut; verify against the code
+**Mistake:** `ChordProDraftBuilder.measureGrid` hard-coded `beatsPerBar = 4` with a doc comment
+implying the builder had no lyric-onset signal independent of the lyrics themselves — but
+`lyrics: [TimedLyricSegment]` was already a parameter in that very function, exactly like the
+live preview (`WorkspaceEditorsView`) already used to estimate 3/4/5/6 via
+`DownbeatEstimator.estimateBeatsPerBar`. The comment's claim was simply false.
+**Rule:** A comment explaining WHY a shortcut is "necessary" is a claim, not a fact — check it
+against the actual function scope before accepting the shortcut.
+
+## 2026-07-05 — `ChordProDraftBuilder` test fixtures need real `words:` and can't hand-derive bar-pipe strings
+**Mistake:** Built a `ChordProDraftBuilderTests` fixture with several short `TimedLyricSegment`
+lines (default `words: []`) before an instrumental outro. `TrailingLyricTailPruner
+.tailLooksDegenerate` treats `words.count <= 2` as an ASR-hallucination blip, so it silently
+pruned the trailing lines from `bodyLyrics`, shifting `lastLyricEnd` and the outro's start time
+out from under the test — the assertion failed for a reason unrelated to the fix under test.
+Separately, hand-computing the expected `"| [C] | [F] | ... |"` bar-pipe string from
+`beatsPerBar` alone was unreliable: `instrumentalRows`' row-splitting math
+(`typicalLyricBars`/`LyricSectionDeriver.bars`) uses its OWN hard-coded 4-beat-per-bar
+conversion independent of the real `MeasureGrid.beatsPerBar`, and `DownbeatEstimator.barPhase`
+re-fits bar boundaries to the given chord onsets — so even a "clearly wrong" grid can still
+render a clean-looking bar-pipe string by accident (confirmed empirically: a 2-onset case
+rendered identically under both beatsPerBar 4 and 5).
+**Rule:** Give `ChordProDraftBuilder` test fixtures ≥3 dummy `words` per line whenever the test
+needs several short, closely-timed lyric lines followed by a real instrumental gap. Prefer a
+DIFFERENTIAL assertion (same chords/timing; vary only the signal under test — e.g. lyric-line
+spacing — and assert the output differs) over a hand-derived exact-match string, and always
+empirically confirm a new regression test actually fails when the fix is reverted before
+trusting it.
+
+## 2026-07-05 — A width fix can put a LATENT bug on-axis for the first time; re-audit adjacent scans, not just the new formula
+**Mistake (near-miss, caught live):** The evening's `instrumentalTimeWidth` fix (switching
+chord-only rows to `lineDuration * pixelsPerSecond`) was itself correct, but it made
+`chordOnlyLineWindow`'s multi-row slicing (`rowCount`/`position`) load-bearing for the first
+time — under the old character-count sizing, a wrong `rowCount` didn't visibly matter because
+row width didn't derive from the window slice at all. `rowCount` was ALREADY silently broken:
+it scanned `items` for consecutive chord-only rows via raw adjacent-index checks
+(`isChordOnlyRow(index - 1)`), but `ChordProDraftBuilder` interleaves an `{x_chord_times: ...}`
+directive immediately before every chord-only row, so real rows are 2 `items` slots apart, not
+1 — the scan hit the directive and stopped, collapsing every multi-row run to `rowCount == 1`
+(each row claiming the WHOLE gap). Reported live as "Intro and outro bars are now twice as
+wide" right after the width fix shipped and the app was rebuilt/relaunched for the first time.
+**Rule:** When a fix changes what a value is DERIVED FROM (character count → real duration,
+proportional → absolute, etc.), audit every UPSTREAM computation that value now depends on for
+the first time — a latent bug in one of them can look like a brand-new regression in the fix
+itself. Also: any "scan adjacent items for a run of X" loop must skip over items that aren't X
+and aren't a real boundary (directives, comments, blank lines) — a raw `index ± 1` check is
+almost always wrong once directives can be interleaved between the things being counted.

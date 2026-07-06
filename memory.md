@@ -205,3 +205,99 @@
   ChordPro arrangement fidelity → reference-lyrics-first) lives in
   `tasks/todo.md` ("Reconstruction-accuracy audit"). ChordPro format gaps: no
   {key}/{time}, no bar-aligned chord-only lines, character-anchored chords.
+- 2026-07-05 missed-chords + dropped-tail-lyrics fix: (1) `ChordTimelineDecoder`
+  switchPenalty 2.0→1.5 with ONSET-AWARE discount (×0.5 for beat windows starting
+  within 0.12s of an instrument onset, plumbed from AnalysisStage; stage tag
+  `reduce-12-onset-viterbi`) — a one-window excursion previously needed ~e⁴
+  evidence dominance, absorbing real passing chords (sweep on cached frames:
+  pen 2.0→124 events vs 215 argmax). (2) `ChordOnsetAligner.snap` now takes
+  beatTimes and refuses snaps that compress neighbours below 0.8 beat — the
+  snap+clamp+duration-filter chain was deleting genuine A-B-A changes.
+  (3) `TrailingLyricTailPruner.lyricBodyEndBeforeInstrumentalTail` was cutting
+  the final line(s) of nearly EVERY song with a ≥3s outro (pure geometry; proof:
+  Settle Down lost conf-0.98/1.00 closing lines). Now requires a DEGENERATE tail
+  (every tail line ≤2 words or a normalized duplicate) and geometry may tighten
+  the VAD cutoff by ≤3s, never override it (stage tag
+  `grouping-42-degenerate-tail-prune`). Regression tests use real song shapes
+  (Settle Down, Key West repeated-hook outro, Summertime blips).
+- 2026-07-05 batch 2: bass notes now render positioned per-onset on the rhythmic
+  time axis (`rowBassNotes` + `rhythmicBassXs`, own 18px row above chords; flush
+  label only as monospace/override fallback). Duplicated preview lines were
+  `LyricBlendRowBuilder` splitting one sung line into two rows when engines
+  disagreed on timing beyond the 1.5s cluster window — fixed by merging adjacent
+  clusters with DISJOINT mode sets + equal normalized text (real repeated hooks
+  share a mode, never merge). `ReferenceLyricAligner` strips pasted "0:00"
+  timestamps. Playback auto-scroll = 1.1s easeInOut glide to center
+  (`ChordProAppPreview.autoScrollGlide`); ScrollView clamping defers scrolling
+  until the active line can reach center. Eric's validation invariant to build
+  next: vocal-stem onsets are ground truth — every burst ↔ a word; use for
+  orphan/duplicate flagging and blend-candidate timing selection.
+- 2026-07-05 batch 3: vocal-onset corroboration wired per Eric's invariant (stem
+  waveform = ground truth for word placement). `LyricBlendRowBuilder
+  .onsetCorroboration` scores a candidate's words against vocals-stem onsets;
+  `onsetCorroborated(rows:)` auto-picks the clearly-corroborated candidate
+  (margin 0.25) for rows without a user pick, in `runLyricBlendPasses` after
+  reconcile (onsets detected off-main; no stem = no-op). NOTE: local `swift
+  test` should pass `--skip AudioPlaybackServiceTests --skip
+  StemPlaybackServiceTests` — those suites drive a real AVAudioEngine and emit
+  an audible blip per run. Follow-ups: Review-UI orphan flag for ~zero-
+  corroboration lines; validate auto-pick margin on real audio post-re-analysis.
+- 2026-07-05 bass-vs-chord clash fix: measured 24-43% of displayed bass notes
+  were non-chord-tones, dominated by ±1-semitone errors + low-confidence junk.
+  `BassLineAnalyzer`: parabolic lag interpolation (integer lags = ~80-cent steps
+  in the upper register) + global tuning-offset normalization using a clarity-
+  weighted CIRCULAR mean of deviations (plain median splits at the ±0.5
+  boundary — the detuned-recording case). `BassNoteRowFormatter` now hides
+  notes below clarity 0.5. Re-measure clash % after next re-analysis; residual
+  clashes may be real passing tones or chord-side errors. Blend-row merge also
+  extended to NON-adjacent clusters within 8s (Grass-line regression).
+- 2026-07-05 stem mixer pan+meters: StemMixState gains `pan` (−1…1, decodeIfPresent
+  back-compat); constant-power law in `StemPlaybackService.panGains`; per-stem
+  horizontal L/R meters (`stemStereoLevels`, post-fader post-pan, one file read
+  feeds both meters) + `PanKnob` rotary (drag right/up = right, double-click
+  centers) above each fader in the 360pt rail (strips widened 30→38).
+  GOTCHA: AVAudioMixing volume/pan set before `enableManualRenderingMode` +
+  engine.start() are silently dropped — set them AFTER the engine is running
+  (exporter unit test testExporterAppliesPanToTheRenderedMix guards this; live
+  path re-applies in play()). Export carries pan so bounces match the audible mix.
+- 2026-07-05 run-on lines + Laughter chord: the blend pass OVERWRITES the correct
+  primary reference-aligned lyrics seconds after analysis ("better, then
+  refreshed to the wrong state") — a shifted mode's two segments cluster into
+  one row and join into a run-on candidate that the accuracy-first default
+  picks. `LyricBlendRowBuilder.runOnDuplicatesDemoted` (in runLyricBlendPasses
+  after onsetCorroborated) demotes a candidate equal to neighbour-row text +
+  another candidate's text. ChordProDraftBuilder now attaches short-gap chords
+  closer to the NEXT line's start as that line's LEADING chords (anticipated
+  changes, e.g. Bb 0.30s before "Laughter"). Decoder switch-discount cues now
+  include confident (≥0.5) bass-note onsets alongside instrument attacks
+  (stage tag reduce-13-bass-cues) — bass root movement marks plausible chord
+  changes.
+- 2026-07-05 late: BASS DISPLAY TRANSPOSE — the chart's Transpose stepper shifted
+  chords but the bass row showed raw detected pitches (Eric: "half a step low,
+  or perhaps not transposed" — the latter). BassNoteRowFormatter gains
+  `transposedBy:`; Review preview passes its `transpose`. ALSO: the blend
+  overwrite left the GENERATED ChordPro draft stale (chart kept pre-blend
+  run-on lines after lyrics were fixed) — runLyricBlendPasses now rebuilds the
+  draft with rebuildGeneratedChordProDraft's guards (never touches reviewed/
+  imported charts). BassChordReconciler: borderline fractional pitches (±0.35
+  of the boundary) snap to the concurrent chord's tone post-decode; obs schema
+  gains optional `pitch` (fractional MIDI). Stage tag reduce-14-bass-snap.
+  iPad worktree: /Users/ericnewman/Documents/SongWorkbench-ipad branch
+  ipad-support, commit 318b0a9 — iOS Simulator build SUCCEEDS; plan in
+  docs/ipad-port-plan.md; blockers = UI adaptation, htdemucs on-device
+  viability, in-process unzip for model installs.
+- 2026-07-05 background-activity status: the 30-60s post-analysis dark window is
+  the blend passes. `AppModel.lyricBlendStatus` now feeds backgroundActivityStatus
+  ("Preparing Lyric Blend — Balanced pass (1 of 2)…" → "matching lines to the
+  vocal stem…" → "rebuilding chart…"), cleared via defer on every exit path.
+  Note: stems are NOT re-separated post-analysis — the per-mode transcription
+  passes are what users perceive as that; the status text now names them.
+- 2026-07-05 Settle Down line-12 root cause (3rd layer): the run-on came from the
+  PRIMARY Whisper pass (one 11.4s segment; IntraLinePauseSplitter blocked by
+  voiced energy in the 1.7s gap — held note/bleed keeps voicedFraction > 0.5),
+  and the exact-match run-on demotion missed it because engines word lines
+  differently ("wanna"/"want to", "one horse"/"one-horse"). Demotion is now
+  TOKEN-SIMILARITY based (LCS ratio ≥0.7 on both halves, any split boundary,
+  either order, per neighbour candidate). Trade-off: demoting picks the split
+  candidate's wording over the run-on's (split beats wording); synthesizing a
+  SPLIT accuracy candidate would be the deeper fix if wording quality matters.

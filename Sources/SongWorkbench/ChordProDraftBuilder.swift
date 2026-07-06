@@ -165,7 +165,7 @@ struct ChordProDraftBuilder: Sendable {
         // B2: bar-aligned chord-only rows reuse the SAME MeasureGrid/DownbeatEstimator machinery
         // the fixed-measure-grid preview work already built, so a chord-only row's bars line up
         // with the same downbeats the rest of the chart resolves to — not a separate spacing model.
-        let measureGrid = self.measureGrid(for: input, chords: chords)
+        let measureGrid = self.measureGrid(for: input, chords: chords, lyrics: lyrics)
 
         for (index, segment) in lyrics.enumerated() {
             let gapStart = index > 0 ? lyrics[index - 1].end : 0
@@ -205,8 +205,18 @@ struct ChordProDraftBuilder: Sendable {
                 // A short intro has no previous line to carry its chords, so fold them into
                 // the first sung line rather than emitting a standalone chord-only line.
                 leadingChords = gapChords
-            } else if index > 0, segment.start - lyrics[index - 1].end > 1.5 {
-                lines.append("")
+            } else if index > 0 {
+                // Anticipated changes: a gap chord CLOSER to this line's start than to the
+                // previous line's end is the next phrase's chord arriving a hair early
+                // (field case: Bb at 26.78s, 0.30s before "Laughter…" but 0.48s after the
+                // previous line) — attach it to the START of this line, where a musician
+                // expects it, instead of the previous line's tail.
+                leadingChords = gapChords.filter { chord in
+                    segment.start - chord.time < chord.time - gapStart
+                }
+                if segment.start - lyrics[index - 1].end > 1.5 {
+                    lines.append("")
+                }
             }
             var isSectionStart = index == 0 || gapBars >= 4
             if let section = sectionByStart[segment.start],
@@ -232,8 +242,11 @@ struct ChordProDraftBuilder: Sendable {
             if index + 1 < lyrics.count {
                 let nextStart = lyrics[index + 1].start
                 if bars(from: segment.end, to: nextStart, input: input) < 4 {
+                    // Chords closer to the NEXT line's start are its anticipated changes —
+                    // they render as that line's leading chords, not this line's tail.
                     trailingChords = chords.filter {
                         $0.time >= segment.end && $0.time < nextStart
+                            && nextStart - $0.time >= $0.time - segment.end
                     }
                 }
             }
@@ -530,20 +543,23 @@ struct ChordProDraftBuilder: Sendable {
 
     /// The whole-song measure grid used to bar-align chord-only rows (B2), built from the SAME
     /// beat/tempo data the fixed-measure-grid preview work already derives its grid from — no new
-    /// spacing model. `beatsPerBar` is fixed at 4, matching the chart's own `{time: 4/4}` (B1) and
-    /// every other bar computation in this file (`LyricSectionDeriver.bars` divides by 4
-    /// unconditionally) — unlike the live preview, the builder has no lyric-line-onset spacing
-    /// signal independent of the lyrics themselves to run `estimateBeatsPerBar` on, and chord-change
-    /// timing is too irregular a proxy for phrase-period detection (harmony changes wherever the
-    /// song calls for it, not at a consistent bar-multiple cadence like sung-line starts do).
-    /// `barPhase` IS estimated from the chord onsets: chord changes still cluster near downbeats in
-    /// most pop/rock harmony, so `DownbeatEstimator.barPhase` gets a legitimate (if weaker than
-    /// vocal-onset) signal for which beat is beat 1. Falls back to synthesized uniform beats from
-    /// `tempo` when no beat grid was detected, matching the `BouncingBall.beats(in:_:beatTimes:bpm:)`
-    /// precedent elsewhere in this codebase. `nil` when neither beats nor a tempo are available
-    /// (untimed songs keep the old proportional spacing).
+    /// spacing model. `beatsPerBar` is now estimated from the SAME lyric-line-onset signal the
+    /// live preview uses (`DownbeatEstimator.estimateBeatsPerBar`, via `WorkspaceEditorsView`'s
+    /// `beatsPerBar`), rather than hard-coded to 4 as it previously was: `lyrics` (already a
+    /// parameter of this builder, e.g. `typicalLyricBars(lyrics, input:)` above) carries the same
+    /// sung-line onsets the preview derives its own estimate from, so a non-4/4 song (a 5-beat
+    /// verse phrasing, say) no longer renders/persists chord-only rows and barlines on a
+    /// DIFFERENT bar grid than what the preview shows for the same song. Conservative by
+    /// construction (`estimateBeatsPerBar` only deviates from 4 with a clear margin), so a normal
+    /// 4/4 song is unaffected. Chord-change timing is still too irregular a proxy for phrase-period
+    /// detection, so `barPhase` continues to use the chord onsets: chord changes cluster near
+    /// downbeats in most pop/rock harmony, giving `DownbeatEstimator.barPhase` a legitimate (if
+    /// weaker than vocal-onset) signal for which beat is beat 1. Falls back to synthesized uniform
+    /// beats from `tempo` when no beat grid was detected, matching the
+    /// `BouncingBall.beats(in:_:beatTimes:bpm:)` precedent elsewhere in this codebase. `nil` when
+    /// neither beats nor a tempo are available (untimed songs keep the old proportional spacing).
     private func measureGrid(
-        for input: ChordProDraftInput, chords: [RenderableChordEvent]
+        for input: ChordProDraftInput, chords: [RenderableChordEvent], lyrics: [TimedLyricSegment]
     ) -> MeasureGrid? {
         guard let bpm = input.tempo, bpm > 0 else { return nil }
         let onsets = chords.map(\.time)
@@ -559,7 +575,9 @@ struct ChordProDraftBuilder: Sendable {
             beatTimes = stride(from: 0.0, through: end, by: beatLength).map { $0 }
         }
         guard !beatTimes.isEmpty else { return nil }
-        let beatsPerBar = 4
+        let lyricLineOnsets = lyrics.map { $0.words.first?.start ?? $0.start }
+        let beatsPerBar = DownbeatEstimator.estimateBeatsPerBar(
+            beatTimes: beatTimes, onsets: lyricLineOnsets)
         let barPhase = DownbeatEstimator.barPhase(
             beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
         let grid = MeasureGrid(

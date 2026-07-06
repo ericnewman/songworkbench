@@ -68,9 +68,223 @@ Owner: `TrailingLyricTailPruner.lyricBodyEndBeforeInstrumentalTail`
       confirm final lyrics reach ~230s and chord event count rises with changes
       landing on onsets.
 
-## Review
+## Review (2026-07-05)
 
-(to be filled after implementation)
+Implemented, all in existing files (no tuist generate needed):
+- `ChordTimelineDecoder`: switchPenalty 2.0→1.5; new onset-aware per-window penalty
+  (×0.5 within 0.12s of an instrument onset); `decode(switchPenalties:)` +
+  back-compat constant overload; onsets plumbed from AnalysisStage (computed
+  before decode, reused for snap).
+- `ChordOnsetAligner.snap(beatTimes:minimumBeatFraction:)`: refuses snaps that
+  compress neighbours below 0.8 beat (sliver source eliminated; duration filter
+  now truly a safety net).
+- `TrailingLyricTailPruner`: `tailLooksDegenerate` (≤2 words or normalized dup)
+  gates the geometric body-end; `maxSignalTightening = 3.0` caps how far geometry
+  may tighten the VAD cutoff.
+- Stage tags bumped: `reduce-12-onset-viterbi`, `grouping-42-degenerate-tail-prune`
+  → next analysis re-reduces/re-groups from cached raw data, no re-chroma/re-ASR.
+- Tests: +2 decoder (onset excursion survives / far onsets don't discount),
+  +4 pruner/aligner (Settle Down kept, Key West hook kept, blip tail still cut,
+  no sub-beat snap sliver). Full suite 558 tests: only the 8 pre-existing
+  AppModelTests environment failures (identical on clean main, verified by stash).
+- swift format lint clean.
+
+Remaining to fully verify: re-analyze Settle Down / Key West in the app and
+confirm final lyrics reach ~230s and chord changes land on onsets.
+
+## Batch 2 review (2026-07-05, later)
+
+- **Bass notes positioned on the time axis**: `BassNoteRowFormatter.timedLabels`
+  (onset + name); `ChordProPreviewLineView.rowBassNotes` renders each note at
+  `rhythmicX(forTime:)` on its own 18px row between the ball/dot reserve and the
+  chords (collision-nudged like chords). Flush-left label kept only as
+  monospace/override fallback. +2 formatter tests.
+- **Duplicated preview lines (ball skips them)**: verified against persisted docs —
+  NOT a preview-builder bug. `LyricBlendRowBuilder.buildRows` clusters the 3
+  engines' lines with a 1.5s anchor window; engines timing the same line further
+  apart (Grass: 20.26 vs 24.90) produced two rows → two rendered lines.
+  Fix: `mergeCrossModeDuplicates` — merge adjacent clusters (≤8s apart) whose mode
+  sets are DISJOINT and normalized texts equal; real repeated hooks share a mode
+  and never merge. +3 tests. Also `ReferenceLyricAligner` now drops pasted-site
+  timestamp tokens/lines ("0:00" junk, Flip Flops). +1 test. Existing docs clean
+  up on next Analyze (grouping-42 re-groups from cached raw).
+- **Smooth auto-scroll**: replaced default spring `scrollTo` with a 1.1s easeInOut
+  glide (`ChordProAppPreview.autoScrollGlide`), anchor .center; ScrollView
+  clamping inherently defers scrolling until the active line can reach center.
+- Full suite 564 tests: only the 8 pre-existing AppModelTests environment
+  failures. Lint clean. UI changes need an app rebuild + relaunch to see.
+
+## Batch 3 review (2026-07-05): vocal-onset corroboration (Eric's invariant)
+
+- `LyricBlendRowBuilder.onsetCorroboration(words:vocalOnsets:tolerance:)` — pure
+  scorer: fraction of a candidate's word onsets within 0.18s of a vocal-stem
+  energy onset (binary search, unit-tested).
+- `onsetPreferredMode` / `onsetCorroborated(rows:vocalOnsets:)` — for rows the
+  user hasn't picked, flip to the candidate the stem clearly corroborates
+  (margin ≥ 0.25 over the accuracy-first default); user picks never touched.
+- Wired into `AppModel.runLyricBlendPasses` AFTER reconcile: vocals-stem onsets
+  via `InstrumentOnsetDetector` on a detached utility task; missing stem = no-op.
+- +4 tests (scorer fractions, flip, user-pick protection, margin). Suite: 561
+  run (audible playback suites now skipped locally via --skip to stop the
+  "raspberry" — they play a real AVAudioEngine), same 8 pre-existing failures.
+- .app rebuilt via xcodebuild (Debug) — RELAUNCH REQUIRED to see today's UI work.
+
+Follow-ups (not started): per-line orphan flag in Review UI (line with ~zero
+onset corroboration = suspect), unmatched-onset audit beyond the existing
+untranscribedVocalRegions badge, and real-audio validation of the auto-pick
+margin on Flip Flops after re-analysis.
+
+## Batch 4 review (2026-07-05, afternoon)
+
+- **Window/layout**: control row's fixed widths made content min ~1,790 > 1,540
+  default ⇒ SwiftUI centered + clipped both outer columns. Tab picker moved into
+  the middle pane (Eric's suggestion), scrubber/pitch/speed sliders made
+  compressible, root minWidth 1,380. Sidebar + stem rail both 360pt (symmetry).
+- **Blend fixes round 2**: non-adjacent cross-mode duplicate merge (Grass line
+  landed 2 rows past its twin); Lyric Blend window no longer auto-opens —
+  toolbar icon glows mint + badge when results are ready.
+- **Re-analysis validation (Flip Flops)**: chords 119→133, 0:00 junk gone,
+  outro kept; line-2 zipper traced to the non-adjacent duplicate (fix awaits
+  next ⌘R).
+- **Bass-vs-chord clashes** (measured 24–43%): BassLineAnalyzer parabolic lag
+  interpolation + global tuning-offset via clarity-weighted CIRCULAR mean;
+  display floor at clarity 0.5. Detuned-fourth regression test.
+- **Mixer pan + L/R meters**: StemMixState.pan (persisted, back-compat),
+  constant-power panGains, stemStereoLevels post-fader/post-pan, PanKnob rotary
+  + HorizontalLRMeter per strip, export carries pan. AVFoundation gotcha: set
+  AVAudioMixing params AFTER engine start (unit-test guarded).
+- Suite: 568 tests, same 8 pre-existing AppModel env failures. App rebuilt —
+  NEEDS RELAUNCH; then ⌘R re-analysis cleans remaining duplicates and applies
+  the bass-detector fixes.
+
+## Review: chord/vocal accuracy + timeline placement (2026-07-05)
+
+Findings:
+- [x] Harmony decode still windows raw chroma on the harmony engine's original
+      `result.beat?.beatTimes`, even after deriving `resolvedBeatTimes` from
+      drum onsets. This can pick labels and Viterbi switch discounts on a
+      different grid than the one later used for snapping, duration filtering,
+      chorus consensus, ChordPro, and playback.
+- [x] `VocalWordOnsetAligner` lets multiple adjacent words snap to the same
+      vocal onset because it only enforces nondecreasing starts. This can stack
+      word anchors/ball timing and inflate onset-corroboration scores for
+      candidates whose words are bunched near one energy burst.
+- [x] Generated ChordPro still hard-codes `beatsPerBar = 4`, while the live
+      preview estimates 3/4/5/6 from lyric-line spacing. Non-4 phrase grids can
+      therefore render and persist chord-only rows/barlines differently from the
+      preview timeline.
+
+Verification basis:
+- Static code review of `AnalysisStage`, `ChordTimelineDecoder`,
+  `VocalWordOnsetAligner`, `ChordProDraftBuilder`, `WorkspaceEditorsView`,
+  `MeasureGrid`, and associated tests. No implementation changes or test runs
+  in this pass.
+
+### Fixes landed (2026-07-05, night)
+
+- **Harmony decode grid**: `ChordTimelineDecoder.events(from:key:bassNotes:instrumentOnsets:beatTimes:)`
+  gained an optional `beatTimes` override (defaults to the old embedded-grid
+  behavior when omitted, so every other caller is unaffected). `AnalysisStage`
+  now passes `resolvedBeatTimes` (the drum-locked grid) explicitly, so chord
+  decoding windows chroma on the SAME grid used downstream for snapping,
+  duration filtering, chorus consensus, ChordPro, and playback. Reducer/cache
+  stage tag bumped `"|reduce-14-bass-snap"` → `"|reduce-15-resolved-beatgrid"`
+  to force cached analyses to re-decode. Regression:
+  `testExplicitBeatTimesOverridesAnalysisEmbeddedGrid` (constructs a real chord
+  change on a "true" grid while the analysis embeds a decoy grid, asserts the
+  override wins).
+- **VocalWordOnsetAligner stacked anchors**: `snapped(_:toOnsets:tolerance:minimumWordGap:)`
+  gained a `minimumWordGap` (default 0.02s) and the nondecreasing clamp
+  (`>=`) became a strict `+ minimumWordGap` floor, so adjacent words can no
+  longer snap to the identical onset. Regression:
+  `testVocalWordOnsetAlignerNeverStacksTwoWordsOnTheSameOnset` (same two-word/
+  one-onset fixture as the existing nondecreasing test, strict `>` assertion).
+- **ChordPro hard-coded beatsPerBar**: `ChordProDraftBuilder.measureGrid` took
+  a `lyrics` parameter and now calls
+  `DownbeatEstimator.estimateBeatsPerBar(beatTimes:onsets:)` with the lyric-line
+  onsets — the same signal `WorkspaceEditorsView`'s live preview already uses —
+  instead of a literal `4`. The doc comment's original justification ("the
+  builder has no lyric-onset signal independent of the lyrics") was simply
+  wrong: `lyrics: [TimedLyricSegment]` was already in scope. Regression:
+  `testChordOnlyRowUsesEstimatedBeatsPerBarFromLyricSpacing` — a differential
+  test (proved to fail without the fix, by temporarily hardcoding `4` and
+  re-running) that builds the SAME outro chords twice, varying only whether
+  the preceding lyric lines are spaced 5 beats or 4 beats apart, and asserts
+  the rendered outro bar grid differs.
+- Suite: 586 tests, same pre-existing `AppModelTests`/`MusicLibraryTests`
+  environment failures (song-file-selection/persistence state, unrelated to
+  these 3 fixes) — none in `ChordTimelineDecoderTests`,
+  `ChordProDraftBuilderTests`, or the `VocalWordOnsetAligner` tests.
+  `swift format lint --strict -r Sources Tests` clean.
+
+## Review: instrumental-row width bug + Rhythmic Spacing always-on (2026-07-05, evening)
+
+- **Instrumental line width** (Eric: "Intro and outro instrumental parts... compressed to
+  roughly 1/3 the expected width"): three compounding bugs in `WorkspaceEditorsView.swift`,
+  all in the chord-only (no lyric words) row path:
+  1. `instrumentalTimeWidth` sized itself from the bar-grid TEXT's own character extent
+     (`chordColumnExtent`), not from the row's real duration — a chord symbol is far more
+     compact per bar than the words a singer fits into that bar, so a same-duration
+     instrumental row rendered a fraction of a sung row's width. Fixed: keyed to
+     `lineDuration * pixelsPerSecond` (the SAME scale rhythmic-mode sung lines use),
+     falling back to the old character-extent sizing when rhythmic spacing is off.
+  2. That fix initially did nothing: `lineStrip`'s `duration` was gated behind
+     `instrumentalLane` (guitar/piano envelope) being loaded — an unrelated "is there a
+     waveform to draw" concern bundled into the same guard, so it silently returned 0
+     whenever no instrument stem was available/loaded at that call site. Decoupled: the
+     row's time WINDOW resolves unconditionally; only the drawn peaks/color depend on a
+     lane.
+  3. Once width was time-based, chord glyphs (still positioned by column-fraction of the
+     bar-grid text) clustered wrong. `lineStrip` now also returns the row's real start time;
+     threaded through as `rowStartTime` on `ChordProPreviewBlockView`/`ChordProPreviewLineView`;
+     `monospaceChordX` uses `(rowChordTimes[index] - rowStartTime) / lineDuration` when
+     available. The flat "| . . |" bar-grid text can't stretch to the new width either, so
+     it's hidden for instrumental rows once they're on the time-scaled axis (beat dots,
+     already time-correct, remain as the structure indicator).
+  - Verified live (Flip Flops, Settle Down): instrumental row widths now match/exceed
+    adjacent vocal-line widths (previously ~65-90px vs ~230-515px); chords and beat dots
+    spread across the full row instead of clustering left; no crash/regression.
+- **Rhythmic Spacing toggle removed** (Eric: "always on"): `@AppStorage("rhythmicSpacing")`
+  replaced with `private let rhythmicSpacing = true`; menu item deleted. Downstream code
+  (three struct-level `var rhythmicSpacing = false` defaults + every conditional) left as-is
+  since the parent always passes `true` now — minimal-impact, no behavior change to prune.
+- Suite: same 568 tests, same 8 pre-existing AppModel env failures (verified twice, before
+  and after this fix).
+- **Build gotcha hit during this fix**: `xcodebuild build` via desktop-commander without
+  `-derivedDataPath` wrote to a NEW DerivedData hash folder rather than the one the running
+  app/Xcode.app uses — two rebuild+relaunch cycles showed zero visual change until caught by
+  `stat`-ing the actual running binary's mtime. See tasks/lessons.md. Pin
+  `-derivedDataPath` going forward.
+
+## Fix: intro/outro bars rendering 2x too wide (2026-07-05, night)
+
+- **Regression from the same evening's instrumental-row-width fix** (Eric, live: "Intro and
+  outro bars are now twice as wide as they should be"), only now visible because that fix put
+  chord-only rows on the real-duration `pixelsPerSecond` axis for the first time — the
+  underlying bug existed before but was invisible under the old character-count sizing.
+- **Root cause**: `WorkspaceEditorsView.chordOnlyLineWindow` splits a multi-row
+  intro/instrumental/outro span into `1/rowCount` slices per row, counting `rowCount` by
+  scanning `items` for consecutive chord-only rows via raw adjacent-index checks
+  (`isChordOnlyRow(index - 1)` / `(index + 1)`). But `ChordProDraftBuilder` emits an
+  `{x_chord_times: ...}` directive immediately before EVERY chord-only row (B5 round-trip
+  carrier), so in `document.blocks`/`items` each row is actually 2 slots apart
+  (directive, row, directive, row, ...), not 1. The raw adjacent check hit the directive and
+  stopped immediately, collapsing every multi-row run to `rowCount == 1` — so each row
+  claimed the ENTIRE gap instead of its slice.
+- **Fix**: extracted the run-scan into a new, directly testable
+  `ChordProPreviewIndexing.chordOnlyRunPosition(in:at:)` (`WorkspaceEditorsView.swift`) that
+  walks past interleaved directive/comment blocks (anything that isn't a real sung lyric line
+  or the array edge) instead of stopping at the first non-adjacent slot, and counts
+  `position`/`rowCount` in actual-row hops rather than raw item-offset arithmetic (which would
+  still overcount once directives are skipped). `chordOnlyLineWindow` now calls this shared
+  function instead of inlining the (buggy) scan.
+- Regression: `testChordOnlyRunPositionCountsConsecutiveRowsAcrossInterleavedDirectives`
+  (3-row fixture mirroring the real directive/row/directive/row shape, asserts rowCount=3 and
+  positions 0/1/2 — confirmed to fail with rowCount=[1,1,1] when reverted to the naive
+  adjacent-index check) and `testChordOnlyRunPositionTreatsARealLyricLineAsARunBoundary` (two
+  separate 1-row breaks either side of a sung line must not fuse into one false run of 2).
+- Suite: 588 tests, same pre-existing `AppModelTests`/`MusicLibraryTests` environment
+  failures. Lint clean. App rebuilt (pinned `-derivedDataPath`) and relaunched.
 
 ---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details

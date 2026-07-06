@@ -15,8 +15,18 @@ import Foundation
 struct ChordTimelineDecoder: Sendable {
     /// Log-domain cost of switching chords between adjacent beat windows. Higher = smoother.
     /// 2.5 rode the tonic straight through the reference song's real mid-verse changes
-    /// (author-confirmed); 2.0 recovers them once bass re-rooting pools the split evidence.
-    var switchPenalty: Float = 2.0
+    /// (author-confirmed); 2.0 recovered them but still absorbed one-beat passing chords
+    /// (a one-window excursion pays the penalty twice, requiring ~e⁴ evidence dominance —
+    /// field reports confirmed many real changes missed). 1.5 plus the onset discount below
+    /// keeps flicker suppression while letting genuine changes through.
+    var switchPenalty: Float = 1.5
+    /// Multiplier applied to `switchPenalty` for windows whose start lies on an instrumental
+    /// onset: real chord changes happen on attacks, so a switch that lines up with one is
+    /// charged half price, while mid-note flicker still pays full price.
+    var onsetPenaltyFactor: Float = 0.5
+    /// A window start within this distance of an onset counts as "on" it (matches the
+    /// change-point detector's minimum spacing).
+    var onsetTolerance: TimeInterval = 0.12
     /// Evidence mass assigned to the no-chord state in every window. Windows whose total
     /// label evidence is comparable to this floor decode as "no chord" and emit nothing
     /// (the previous chord sustains).
@@ -27,9 +37,20 @@ struct ChordTimelineDecoder: Sendable {
     func events(
         from analysis: SongAudioAnalysis,
         key: MusicalKey?,
-        bassNotes: [BassNoteObservation] = []
+        bassNotes: [BassNoteObservation] = [],
+        instrumentOnsets: [TimeInterval] = [],
+        // Overrides `analysis.beat?.beatTimes` when the caller has a BETTER grid — AnalysisStage
+        // phase-locks the harmony engine's tempo estimate to the drums stem's real onsets
+        // (`resolvedBeatTimes`) AFTER `analysis` is produced, and passes that here. Decoding
+        // window labels/onset-discounts on the harmony engine's own uncorrected grid while every
+        // downstream consumer (snap, duration filter, chorus consensus, ChordPro, playback) uses
+        // the drum-locked grid meant windows here could straddle real beats slightly differently
+        // than where everything else thinks the beats fall. `nil` (the default, and every
+        // existing caller/test) preserves the old behavior exactly.
+        beatTimes explicitBeatTimes: [TimeInterval]? = nil
     ) -> [EditableChordEvent] {
-        guard let beatTimes = analysis.beat?.beatTimes, beatTimes.count >= 2 else {
+        let beatTimes = explicitBeatTimes ?? (analysis.beat?.beatTimes ?? [])
+        guard beatTimes.count >= 2 else {
             // No usable beat grid: fall back to the window-voting reducer (2s windows).
             return ChordEventReducer().events(from: analysis)
         }
@@ -48,10 +69,17 @@ struct ChordTimelineDecoder: Sendable {
         )
         let labels = Self.observedLabels(windows)
         guard !labels.isEmpty else { return [] }
+        let penalties = Self.windowSwitchPenalties(
+            windows: windows,
+            onsets: instrumentOnsets,
+            basePenalty: switchPenalty,
+            onsetPenaltyFactor: onsetPenaltyFactor,
+            onsetTolerance: onsetTolerance
+        )
         let path = Self.decode(
             windows: windows,
             labels: labels,
-            switchPenalty: switchPenalty,
+            switchPenalties: penalties,
             noChordFloor: noChordFloor
         )
 
@@ -157,11 +185,52 @@ struct ChordTimelineDecoder: Sendable {
 
     // MARK: - Viterbi
 
-    /// Returns one entry per window: the decoded chord label, or `nil` for no-chord.
+    /// Per-window switch penalty: base everywhere, discounted for windows that start on an
+    /// instrumental onset. Two-pointer over the sorted onsets — O(windows + onsets).
+    static func windowSwitchPenalties(
+        windows: [WindowEvidence],
+        onsets: [TimeInterval],
+        basePenalty: Float,
+        onsetPenaltyFactor: Float,
+        onsetTolerance: TimeInterval
+    ) -> [Float] {
+        guard !onsets.isEmpty else {
+            return [Float](repeating: basePenalty, count: windows.count)
+        }
+        let sorted = onsets.sorted()
+        var cursor = 0
+        return windows.map { window in
+            while cursor < sorted.count - 1, sorted[cursor] < window.start - onsetTolerance {
+                cursor += 1
+            }
+            let near =
+                abs(sorted[cursor] - window.start) <= onsetTolerance
+                || (cursor > 0 && abs(sorted[cursor - 1] - window.start) <= onsetTolerance)
+            return near ? basePenalty * onsetPenaltyFactor : basePenalty
+        }
+    }
+
+    /// Backward-compatible constant-penalty decode.
     static func decode(
         windows: [WindowEvidence],
         labels: [String],
         switchPenalty: Float,
+        noChordFloor: Float
+    ) -> [String?] {
+        decode(
+            windows: windows,
+            labels: labels,
+            switchPenalties: [Float](repeating: switchPenalty, count: windows.count),
+            noChordFloor: noChordFloor
+        )
+    }
+
+    /// Returns one entry per window: the decoded chord label, or `nil` for no-chord.
+    /// `switchPenalties` is the per-window cost of ENTERING a new state at that window.
+    static func decode(
+        windows: [WindowEvidence],
+        labels: [String],
+        switchPenalties: [Float],
         noChordFloor: Float
     ) -> [String?] {
         // State 0 is the no-chord state; states 1... map to labels.
@@ -170,7 +239,9 @@ struct ChordTimelineDecoder: Sendable {
         var backpointers: [[Int]] = []
         backpointers.reserveCapacity(windows.count)
 
-        for window in windows {
+        for (windowIndex, window) in windows.enumerated() {
+            let switchPenalty =
+                windowIndex < switchPenalties.count ? switchPenalties[windowIndex] : 0
             let total = window.scores.values.reduce(0, +)
             var emission = [Float](repeating: 0, count: stateCount)
             if total > 0 {

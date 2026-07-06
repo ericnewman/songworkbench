@@ -126,21 +126,55 @@ enum ChordRowStringBuilder {
     }
 }
 
+/// A bass note prepared for rendering on a lyric row: its onset time (drives the time→x
+/// mapping in rhythmic mode, the same axis the chords use) and its display name.
+struct TimedBassNoteLabel: Equatable, Sendable {
+    let time: TimeInterval
+    let name: String
+}
+
 /// Formats detected bass notes for the Review tab's optional bass-note row (backlog: Bass Note
 /// display). A standalone (non-view) type so the windowing/formatting logic is unit-testable
 /// without SwiftUI, mirroring `ChordRowStringBuilder`.
 enum BassNoteRowFormatter {
+    /// Notes below this detector clarity are not worth charting: near-zero-confidence
+    /// observations were rendering alongside solid ones and reading as wrong notes against
+    /// the chords (measured: they account for a large share of bass-vs-chord clashes).
+    static let minimumDisplayConfidence: Float = 0.5
+
+    /// Bass notes within `window`, pitch-named, in onset order, with their onset times — used
+    /// by rhythmic mode to place each note at its real x instead of clustering the names
+    /// flush-left (reported: "bass notes seem clustered against the start of the lines").
+    /// `transposedBy` MUST match the chart's chord transpose, or the bass row reads a
+    /// constant offset from the chords above it.
+    static func timedLabels(
+        for bassNotes: [BassNoteObservation],
+        inWindow window: ClosedRange<TimeInterval>,
+        transposedBy semitones: Int = 0
+    ) -> [TimedBassNoteLabel] {
+        bassNotes
+            .filter {
+                window.contains($0.timestamp) && $0.confidence >= minimumDisplayConfidence
+            }
+            .sorted { $0.timestamp < $1.timestamp }
+            .map {
+                TimedBassNoteLabel(
+                    time: $0.timestamp,
+                    name: BassNoteNaming.name(forMidiNote: $0.midiNote + semitones))
+            }
+    }
+
     /// Bass notes within `window`, pitch-named and joined in onset order — e.g. "E · A · D".
     /// `nil` when nothing falls in the window, so callers can skip rendering the row entirely.
+    /// Monospace-mode fallback; rhythmic mode uses `timedLabels` for positioned rendering.
     static func label(
-        for bassNotes: [BassNoteObservation], inWindow window: ClosedRange<TimeInterval>
+        for bassNotes: [BassNoteObservation],
+        inWindow window: ClosedRange<TimeInterval>,
+        transposedBy semitones: Int = 0
     ) -> String? {
-        let notes =
-            bassNotes
-            .filter { window.contains($0.timestamp) }
-            .sorted { $0.timestamp < $1.timestamp }
+        let notes = timedLabels(for: bassNotes, inWindow: window, transposedBy: semitones)
         guard !notes.isEmpty else { return nil }
-        return notes.map { BassNoteNaming.name(forMidiNote: $0.midiNote) }.joined(separator: " · ")
+        return notes.map(\.name).joined(separator: " · ")
     }
 }
 

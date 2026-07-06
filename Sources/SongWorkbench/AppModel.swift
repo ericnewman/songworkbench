@@ -164,6 +164,12 @@ final class AppModel: ObservableObject {
     /// purely informational (e.g. a small "Preparing lyric blend…" indicator), never a gate on
     /// other UI.
     @Published private(set) var isComputingLyricBlend = false
+    /// Live description of the post-analysis background phase (per-mode blend transcription,
+    /// stem-onset matching, chart rebuild), for the bottom status bar — the 30–60s window
+    /// after an analysis completes previously showed NOTHING while the app quietly re-ran
+    /// the other transcription modes and then refreshed lyrics/chart (Eric: "we need some
+    /// indication of the background activity … that precedes the refresh").
+    @Published private(set) var lyricBlendStatus: String?
     /// User-provided reference lyrics. Persisted; the next analysis aligns these exact words/lines
     /// to the ASR timings. Call `applyReferenceLyrics()` to re-run alignment from the cached audio.
     @Published var referenceLyrics = "" {
@@ -255,6 +261,7 @@ final class AppModel: ObservableObject {
             }
             return "Analyzing song…"
         }
+        if let lyricBlendStatus { return lyricBlendStatus }
         if isExporting {
             return "Exporting mix… \(Int((exportProgress * 100).rounded()))%"
         }
@@ -960,17 +967,26 @@ final class AppModel: ObservableObject {
         isComputingLyricBlend = true
         Task { [weak self] in
             guard let self else { return }
+            // Whatever path exits this task, the status line must clear — a stuck
+            // "Preparing…" is worse than none.
+            defer {
+                self.lyricBlendStatus = nil
+                self.isComputingLyricBlend = false
+            }
             var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
                 primaryMode: primaryDocument.lyrics
             ]
-            for mode in otherModes {
+            for (index, mode) in otherModes.enumerated() {
+                self.lyricBlendStatus =
+                    "Preparing Lyric Blend — \(Self.blendModeLabel(mode)) pass "
+                    + "(\(index + 1) of \(otherModes.count))…"
                 if let segments = await self.runSingleTranscriptionPass(
                     for: song, mode: mode, existingDocument: primaryDocument)
                 {
                     lyricsByMode[mode] = segments
                 }
             }
-            self.isComputingLyricBlend = false
+            self.lyricBlendStatus = "Preparing Lyric Blend — matching lines to the vocal stem…"
             // The song may have been removed from the library while these passes ran.
             guard self.analysisBySongID[songID] != nil else { return }
 
@@ -987,18 +1003,66 @@ final class AppModel: ObservableObject {
             // whichever freshly-built row now occupies the same time window — otherwise a
             // re-analysis silently discards a user's correction, which is exactly what a
             // consistently-misheard-lyric override exists to survive.
-            let rows = LyricBlendRowBuilder.reconciled(
+            let reconciledRows = LyricBlendRowBuilder.reconciled(
                 newRows: freshRows, against: updated.lyricBlendRows)
+            // The vocal stem is ground truth for word placement (every sung burst ↔ a word):
+            // where the stem's energy onsets clearly corroborate a non-default candidate's
+            // timing, prefer it for rows the user hasn't picked — engine timing disagreements
+            // (the duplicated-line class of bugs) then resolve toward the audio itself.
+            // Detection runs off the main actor; a missing stem degrades to no change.
+            let vocalsURL = updated.stems?.resolved().vocals
+            let vocalOnsets: [TimeInterval] = await Task.detached(priority: .utility) {
+                guard let vocalsURL else { return [] }
+                return (try? InstrumentOnsetDetector.onsets(url: vocalsURL)) ?? []
+            }.value
+            // A candidate that runs a neighbour's line together with this row's line is a
+            // timing artifact, not a longer line — prefer the split candidate (field case:
+            // "line 9 is actually 2 lines").
+            let rows = LyricBlendRowBuilder.runOnDuplicatesDemoted(
+                LyricBlendRowBuilder.onsetCorroborated(
+                    reconciledRows, vocalOnsets: vocalOnsets))
             updated.lyricBlendRows = rows
             let oldLyrics = updated.lyrics
             updated.lyrics = TimedLyricSegment.reconciled(
                 newSegments: LyricBlendRowBuilder.effectiveLyrics(from: rows), against: oldLyrics)
+            // The chart must follow the lyrics: this overwrite previously left the GENERATED
+            // ChordPro draft stale, so the chart kept showing pre-blend run-on lines after
+            // the lyric list was already fixed (field case: chart line 12 "settle down,
+            // trading my rowdy friends…"). Same guards as `rebuildGeneratedChordProDraft`:
+            // only an unreviewed, generator-produced draft is rebuilt.
+            if updated.stageRecords[.chordPro]?.state == .succeeded,
+                updated.stageRecords[.chordPro]?.provenance?.engineIdentifier
+                    == "chordpro-draft-builder",
+                updated.chordProReviewState != .reviewed
+            {
+                self.lyricBlendStatus = "Preparing Lyric Blend — rebuilding chart…"
+                updated.chordProSource = self.chordProBuilder.build(
+                    ChordProDraftInput(
+                        title: song.title,
+                        tempo: updated.estimatedBPM,
+                        lyrics: updated.lyrics,
+                        chords: updated.chords,
+                        confidenceThreshold: updated.chordConfidenceThreshold,
+                        beatTimes: updated.beatTimes,
+                        sourceDuration: updated.sourceDuration,
+                        estimatedKey: updated.estimatedKey
+                    ))
+            }
             self.analysisBySongID[songID] = updated
             if self.selectedSongID == songID {
                 self.applyAnalysis(updated)
             }
             self.scheduleSave()
             self.lyricBlendReadySongID = songID
+        }
+    }
+
+    /// Short human label for a transcription mode in the background status line.
+    private static func blendModeLabel(_ mode: TranscriptionMode) -> String {
+        switch mode {
+        case .fastDraft: "Fast"
+        case .balancedDraft: "Balanced"
+        case .accuracy: "Accuracy"
         }
     }
 
@@ -1647,6 +1711,11 @@ final class AppModel: ObservableObject {
 
     func setStemSoloed(_ soloed: Bool, for kind: StemKind) {
         stemMixer.setSoloed(soloed, for: kind)
+        stemPlayback.apply(stemMixer)
+    }
+
+    func setStemPan(_ pan: Float, for kind: StemKind) {
+        stemMixer.setPan(pan, for: kind)
         stemPlayback.apply(stemMixer)
     }
 

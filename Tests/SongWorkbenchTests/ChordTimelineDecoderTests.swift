@@ -193,6 +193,56 @@ final class ChordTimelineDecoderTests: XCTestCase {
         XCTAssertEqual(kept.map(\.chord), ["F#", "F#m"])
     }
 
+    func testOneBeatPassingChordOnInstrumentOnsetSurvives() {
+        // C# everywhere except beat window 4 (t=2.0–2.5), where F# has clear-but-not-
+        // overwhelming dominance (ratio ~6.2, ln≈1.83). At full penalty the excursion costs
+        // 2×1.5=3.0 nats and is absorbed; with onsets at the change boundaries the cost is
+        // 2×0.75=1.5 and the real passing chord survives. Regression for field-reported
+        // missed chord changes.
+        var observations: [ChordObservation] = []
+        for beatIndex in 0..<8 where beatIndex != 4 {
+            let t = TimeInterval(beatIndex) * 0.5
+            observations.append(obs(t + 0.1, .cSharp, .major, 0.7))
+            observations.append(obs(t + 0.3, .cSharp, .major, 0.7))
+        }
+        let t4 = 2.0
+        observations.append(obs(t4 + 0.05, .fSharp, .major, 0.7))
+        observations.append(obs(t4 + 0.15, .fSharp, .major, 0.7))
+        observations.append(obs(t4 + 0.25, .fSharp, .major, 0.7))
+        observations.append(obs(t4 + 0.35, .fSharp, .major, 0.7))
+        observations.append(obs(t4 + 0.45, .cSharp, .major, 0.45))
+        let beats = (0...8).map { TimeInterval($0) * 0.5 }
+
+        let withoutOnsets = ChordTimelineDecoder().events(
+            from: analysis(observations, beats: beats), key: dbMajor)
+        XCTAssertEqual(
+            withoutOnsets.map(\.chord), ["C#"],
+            "full-price switches should absorb the excursion (flicker suppression)")
+
+        let withOnsets = ChordTimelineDecoder().events(
+            from: analysis(observations, beats: beats), key: dbMajor,
+            instrumentOnsets: [2.0, 2.5])
+        XCTAssertEqual(withOnsets.map(\.chord), ["C#", "F#", "C#"])
+        XCTAssertEqual(withOnsets[1].time, 2.0, accuracy: 1e-9)
+    }
+
+    func testOnsetsFarFromWindowStartsDoNotDiscountPenalty() {
+        // Same evidence as the flicker test; onsets exist but none within tolerance of the
+        // noisy windows' starts, so decoding is unchanged.
+        var observations: [ChordObservation] = []
+        for beatIndex in 0..<8 {
+            let t = TimeInterval(beatIndex) * 0.5
+            observations.append(obs(t + 0.05, .cSharp, .major, 0.7))
+            observations.append(obs(t + 0.20, .cSharp, .major, 0.65))
+            observations.append(obs(t + 0.35, .e, .minor, 0.6))
+        }
+        let beats = (0...8).map { TimeInterval($0) * 0.5 }
+        let events = ChordTimelineDecoder().events(
+            from: analysis(observations, beats: beats), key: dbMajor,
+            instrumentOnsets: [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75])
+        XCTAssertEqual(events.map(\.chord), ["C#"])
+    }
+
     func testMissingBeatGridFallsBackToWindowVoting() {
         let observations = [
             obs(0.5, .cSharp, .major, 0.8),
@@ -203,5 +253,31 @@ final class ChordTimelineDecoderTests: XCTestCase {
         let analysis = SongAudioAnalysis(beat: nil, chords: observations, estimatedKey: nil)
         let events = ChordTimelineDecoder().events(from: analysis, key: dbMajor)
         XCTAssertEqual(events.map(\.chord), ["C#", "F#"])
+    }
+
+    func testExplicitBeatTimesOverridesAnalysisEmbeddedGrid() {
+        // Regression for the grid-mismatch finding: AnalysisStage decodes on its
+        // drum-locked `resolvedBeatTimes`, which can differ from the harmony engine's own
+        // `analysis.beat.beatTimes` embedded above. Genuine change C#→F# on the TRUE beats
+        // (0, 0.5, ... 4.0); `analysis` embeds a DECOY grid offset by a quarter beat, which
+        // would straddle every chord boundary and blur the windows if it were used instead.
+        var observations: [ChordObservation] = []
+        for beatIndex in 0..<4 {
+            let t = TimeInterval(beatIndex) * 0.5
+            observations.append(obs(t + 0.1, .cSharp, .major, 0.7))
+            observations.append(obs(t + 0.3, .cSharp, .major, 0.7))
+        }
+        for beatIndex in 4..<8 {
+            let t = TimeInterval(beatIndex) * 0.5
+            observations.append(obs(t + 0.1, .fSharp, .major, 0.7))
+            observations.append(obs(t + 0.3, .fSharp, .major, 0.7))
+        }
+        let trueBeats = (0...8).map { TimeInterval($0) * 0.5 }
+        let decoyBeats = trueBeats.map { $0 + 0.25 }
+        let events = ChordTimelineDecoder().events(
+            from: analysis(observations, beats: decoyBeats), key: dbMajor,
+            beatTimes: trueBeats)
+        XCTAssertEqual(events.map(\.chord), ["C#", "F#"])
+        XCTAssertEqual(events[1].time, 2.0, accuracy: 1e-9)
     }
 }

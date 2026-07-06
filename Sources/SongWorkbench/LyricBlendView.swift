@@ -15,9 +15,13 @@ struct LyricBlendView: View {
                 if model.lyricBlendRows.isEmpty {
                     emptyState
                 } else {
-                    ForEach(model.lyricBlendRows) { row in
+                    let numbers = displayNumbersByRowIndex
+                    ForEach(
+                        Array(model.lyricBlendRows.enumerated()), id: \.element.id
+                    ) { index, row in
                         LyricBlendRowView(
                             row: row,
+                            displayLineNumber: numbers[index],
                             onSelect: { mode in
                                 model.applyLyricBlendSelection(rowID: row.id, mode: mode)
                             },
@@ -49,6 +53,15 @@ struct LyricBlendView: View {
         }
     }
 
+    /// The Review pane's chart line number for each blend row, keyed by row INDEX. Blend rows
+    /// emit the chart's sung lines in order, so the i-th row is the i-th sung-lyric ordinal;
+    /// `ChordProPreviewIndexing` translates ordinals to the same running display numbers the
+    /// Review gutter shows (which also count chord-only instrumental lines) — "line 9" here
+    /// is line 9 there.
+    private var displayNumbersByRowIndex: [Int: Int] {
+        ChordProPreviewIndexing.displayNumbersByLyricOrdinal(source: model.chordProSource)
+    }
+
     private var emptyState: some View {
         Text(
             "No blend candidates yet — analyze a song with more than one transcription model "
@@ -62,6 +75,9 @@ struct LyricBlendView: View {
 
 private struct LyricBlendRowView: View {
     let row: LyricBlendRow
+    /// The Review pane's chart line number for this row, so both surfaces speak the same
+    /// "line N" language; `nil` when the chart hasn't been built yet.
+    var displayLineNumber: Int?
     let onSelect: (TranscriptionMode) -> Void
     let onOverrideChange: (String) -> Void
 
@@ -71,10 +87,12 @@ private struct LyricBlendRowView: View {
     @State private var overrideDraft: String
 
     init(
-        row: LyricBlendRow, onSelect: @escaping (TranscriptionMode) -> Void,
+        row: LyricBlendRow, displayLineNumber: Int? = nil,
+        onSelect: @escaping (TranscriptionMode) -> Void,
         onOverrideChange: @escaping (String) -> Void
     ) {
         self.row = row
+        self.displayLineNumber = displayLineNumber
         self.onSelect = onSelect
         self.onOverrideChange = onOverrideChange
         _overrideDraft = State(initialValue: row.overrideText ?? "")
@@ -92,9 +110,19 @@ private struct LyricBlendRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(timeLabel)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(Color.swTextSecondary)
+            HStack(spacing: 8) {
+                if let displayLineNumber {
+                    Text("Line \(displayLineNumber)")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(Color.swTextPrimary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.swSurface, in: Capsule())
+                }
+                Text(timeLabel)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color.swTextSecondary)
+            }
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(row.candidates) { candidate in
                     candidateButton(candidate)

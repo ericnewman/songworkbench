@@ -587,6 +587,18 @@ final class TranscriptionTests: XCTestCase {
             ReferenceLyricAligner.align(referenceText: "  \n\n ", asrSegments: asr), asr)
     }
 
+    func testReferenceAlignerDropsPastedSiteTimestamps() {
+        // Lyrics pasted from a site carried a trailing "0:00" (Flip Flops regression): a
+        // timestamp-only line must vanish entirely, and a timestamp token inside a line must
+        // not become a word.
+        let asr = [lyricSegment([lyricWord("hello", 0, 1), lyricWord("world", 1, 2)])]
+        let lines = ReferenceLyricAligner.align(
+            referenceText: "Hello world 0:00\n\n0:00\n1:23:45", asrSegments: asr)
+
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(lines[0].words.map(\.text), ["Hello", "world"])
+    }
+
     private func lyricWord(_ text: String, _ start: TimeInterval, _ end: TimeInterval)
         -> TimedLyricWord
     {

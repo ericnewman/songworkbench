@@ -1093,6 +1093,75 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(ChordOnsetAligner.snap(events, toOnsets: []), events)
     }
 
+    func testNormalFinalLinesWithLongOutroAreKept() {
+        // Settle Down regression: unique multi-word closing lines followed by a long
+        // instrumental outro. The old geometric heuristic cut everything after the
+        // second-to-last line; degenerate-tail + VAD corroboration must keep them.
+        let lines = [
+            sentenceSegment("Build a little house with a front porch swing", start: 209.9),
+            sentenceSegment("Sit all day together and listen to the birds sing", start: 215.3),
+            sentenceSegment("I never thought I'd want to hang around", start: 220.8),
+            sentenceSegment("She makes me want to settle down", start: 226.8),
+        ]
+        let pruned = TrailingLyricTailPruner.pruned(
+            lines, lastVoicedEnd: 230.3, vocalOffset: 230.3, sourceDuration: 257.1)
+        XCTAssertEqual(pruned.count, 4)
+
+        XCTAssertNil(
+            TrailingLyricTailPruner.lyricBodyEndBeforeInstrumentalTail(
+                lines, sourceDuration: 257.1),
+            "unique multi-word tail lines are real lyrics, not instrumental-tail junk")
+    }
+
+    func testRepeatedOutroHookKeptWhenVADSaysVoiced() {
+        // Key West regression: the hook repeats through a sung outro. Geometry flags the
+        // repeats as a degenerate tail, but the VAD says vocals continue well past the
+        // proposed cutoff — the signal wins and the outro is kept.
+        let lines = [
+            sentenceSegment("Where friends come from near and far", start: 203.2),
+            sentenceSegment("Yeah I need a break in the Key West bar", start: 207.3),
+            sentenceSegment("Yeah I need a break in the Key West bar", start: 213.8),
+            sentenceSegment("Yeah I need a break in the Key West bar", start: 222.2),
+        ]
+        let pruned = TrailingLyricTailPruner.pruned(
+            lines, lastVoicedEnd: 228.8, vocalOffset: 228.8, sourceDuration: 231.0)
+        XCTAssertEqual(pruned.count, 4)
+    }
+
+    func testDegenerateBlipTailStillCutWithVADAgreement() {
+        // The case the pruner exists for: short "I" blips stranded right after the last
+        // real line, with the VAD agreeing vocals ended at the body. Geometry detects the
+        // junk tail and the signal cutoff removes it.
+        let body = sentenceSegment("And under the stars it feels so right", start: 104.3)
+        let blip1 = sentenceSegment("I", start: body.end)
+        let blip2 = sentenceSegment("I", start: body.end + 1.7)
+        XCTAssertNotNil(
+            TrailingLyricTailPruner.lyricBodyEndBeforeInstrumentalTail(
+                [body, blip1, blip2], sourceDuration: 158.7))
+        let pruned = TrailingLyricTailPruner.pruned(
+            [body, blip1, blip2],
+            lastVoicedEnd: body.end, vocalOffset: body.end, sourceDuration: 158.7)
+        XCTAssertEqual(pruned.map(\.text), [body.text])
+    }
+
+    func testChordOnsetAlignerSnapRefusesToCreateSubBeatSliver() {
+        // Two genuine one-beat-apart changes; an onset sits just before the SECOND event
+        // such that snapping would compress the pair to 0.2s (< 0.8 beat at 0.5s/beat).
+        // With the beat grid provided, the second event must keep its decoder time.
+        let events = [
+            EditableChordEvent(time: 2.0, chord: "A", confidence: 0.8),
+            EditableChordEvent(time: 2.5, chord: "D", confidence: 0.8),
+        ]
+        let beats = (0...10).map { TimeInterval($0) * 0.5 }
+        let snapped = ChordOnsetAligner.snap(
+            events, toOnsets: [2.0, 2.2], tolerance: 0.35, beatTimes: beats)
+        XCTAssertEqual(snapped[0].time, 2.0, accuracy: 0.000_001)
+        XCTAssertEqual(snapped[1].time, 2.5, accuracy: 0.000_001)
+        // Without the beat grid the old compressing behavior remains (documented).
+        let compressed = ChordOnsetAligner.snap(events, toOnsets: [2.0, 2.2], tolerance: 0.35)
+        XCTAssertEqual(compressed[1].time, 2.2, accuracy: 0.000_001)
+    }
+
     func testChordOnsetAlignerKeepsTimesNondecreasing() {
         // Two close events whose nearest onsets would reorder them: the second is clamped up to
         // the first so order is preserved.
@@ -1188,6 +1257,23 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(out[0].words[1].start, out[0].words[0].start)
         XCTAssertLessThan(out[0].words[0].start, out[0].words[0].end)
         XCTAssertLessThan(out[0].words[1].start, out[0].words[1].end)
+    }
+
+    func testVocalWordOnsetAlignerNeverStacksTwoWordsOnTheSameOnset() {
+        // Regression: BOTH words snap to the identical nearest onset (0.90) — a plain
+        // "nondecreasing" floor previously let the second word land at EXACTLY the first
+        // word's time (0.90 == 0.90), stacking their anchors and inflating onset-corroboration
+        // scores for candidates whose words bunch near one energy burst. Every word's onset
+        // must now be STRICTLY later than the previous one.
+        let segment = TimedLyricSegment(
+            start: 1.0, end: 1.9, text: "a b",
+            words: [
+                TimedLyricWord(text: "a", start: 1.00, end: 1.40, characterRange: 0..<1),
+                TimedLyricWord(text: "b", start: 1.50, end: 1.90, characterRange: 2..<3),
+            ])
+        let out = VocalWordOnsetAligner.snapped(
+            [segment], toOnsets: [0.90], tolerance: 0.7)
+        XCTAssertGreaterThan(out[0].words[1].start, out[0].words[0].start)
     }
 
     // MARK: - StrandedLeadingWordRepairer

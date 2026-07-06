@@ -705,12 +705,17 @@ enum ReferenceLyricAligner {
         for raw in rawLines {
             let line = raw.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }
+            let words = wordsWithRanges(in: line).filter { text, _ in
+                // Pasted lyrics often carry site timestamps ("0:00"); they are categorically
+                // never lyrics (same rule as `TimestampHallucinationFilter` on the ASR side)
+                // and previously aligned as junk words/lines at the end of the song.
+                !TimestampHallucinationFilter.isTimestampLike(text) && !core(text).isEmpty
+            }
+            guard !words.isEmpty else { continue }
             let lineIndex = lineTexts.count
             lineTexts.append(line)
-            for (text, range) in wordsWithRanges(in: line) {
-                let c = core(text)
-                guard !c.isEmpty else { continue }
-                refWords.append((lineIndex, text, range, c))
+            for (text, range) in words {
+                refWords.append((lineIndex, text, range, core(text)))
             }
         }
         guard !refWords.isEmpty, !asrWords.isEmpty else { return asrSegments }
