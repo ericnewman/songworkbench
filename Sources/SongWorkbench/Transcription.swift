@@ -306,11 +306,20 @@ enum TimedLyricSegmentGrouper {
                     beginsCapitalizedWord(token.text)
                     && gap >= configuration.capitalizedLineStartGap
                     && current.count >= 2
-                // A capitalized word that opens a new transcriber segment is a line start even
-                // with no gap before it (Whisper packs words back-to-back yet segments per line).
-                let segmentLineStart =
-                    lineStartOnsets.contains(token.startTime)
-                    && beginsCapitalizedWord(token.text)
+                // A word that opens a new transcriber segment is a line start even with no gap
+                // before it (Whisper packs words back-to-back yet segments per line) and even
+                // when the word itself is lowercase — capitalization is not evidence either way
+                // for a boundary this reliable: `lineStartOnsets` comes from either the ASR
+                // engine's OWN per-line segmentation or (on `regroup`) an already-established
+                // line's first-word onset, so an exact-time match here is already a known-real
+                // boundary. Previously this ALSO required `beginsCapitalizedWord`, which silently
+                // dropped the forced break whenever a genuine new line started lowercase (common
+                // — ASR casing doesn't reliably track "new sung line" the way it tracks "new
+                // sentence"), re-welding two already-correct lines back into one run-on line on
+                // every reload. Reproduced against the field case ("She makes me want to settle
+                // down," + "trading my rowdy friends for a one-horse town." merging back together
+                // because "trading" is lowercase — Settle Down, Task #37/#38, 2026-07-07).
+                let segmentLineStart = lineStartOnsets.contains(token.startTime)
                 // Comma-delimited line end, only when there's no segment structure to rely on.
                 let commaLineEnd =
                     !hasSegmentStructure && current.count >= 2 && endsWithComma(previous.text)

@@ -1,3 +1,78 @@
+# Fix: segmentLineStart capitalization gate merges lowercase-starting lines (2026-07-07)
+
+Task #37/#38. Eric: "In Settle Down, there are a lot of lines that contain multiple rhythmic
+repeating patterns that should have been separate lines. Line 8 is a good example."
+
+Root-caused via the real persisted analysis JSON (`~/Library/Containers/com.local.SongWorkbench/
+.../songs/*.json`) and a temporary debug XCTest that called `TimedLyricSegmentGrouper.regroup`/
+`LyricPhraseGrouper.regroup` directly on the real data (deleted after diagnosis, never committed):
+
+- `lyricBlendRows` showed the raw candidates were CLEAN: "She makes me want to settle down,"
+  [54.40,58.12] and "trading my rowdy friends for a one-horse town." [59.85/60.35,65.78/70.20]
+  were two separate, multi-mode-agreed rows.
+- `LyricBlendRowBuilder.effectiveLyrics(from:)` maps rows 1:1 to segments, so the ORIGINAL
+  `document.lyrics` from a fresh analysis should have been 2 separate lines too.
+- But `AppModel.applyAnalysis` unconditionally reruns `TimedLyricSegmentGrouper.regroup` (and then
+  `LyricPhraseGrouper.regroup`) on `document.lyrics` on EVERY LOAD. Reconstructing the pre-merge
+  2-segment state and feeding it through `TimedLyricSegmentGrouper.regroup` reproduced the exact
+  merge live: `segmentLineStart` (the rule meant to force a break at an already-known line-start
+  onset even across a short gap) ALSO required `beginsCapitalizedWord(token.text)`. The second
+  line's first word, "trading", is lowercase, so the forced break silently didn't fire; the 2.2s
+  gap is real but under `maximumGap` (3s) once segment structure is present, so nothing else
+  caught it either — the two lines welded into one run-on line.
+- This is why the bug is STICKY across reloads: once merged, the sub-boundary (60.35 as its own
+  segment start) is gone from `lineStartOnsets` on the next regroup, so it can never self-heal —
+  only a fresh "Analyze Song" (which rebuilds `document.lyrics` from `lyricBlendRows` via
+  `effectiveLyrics`, bypassing the corrupted stored lyrics entirely) recovers the correct split.
+- `LyricPhraseGrouper` (the one bar/rhythm-aware pass) never got a chance to help either: it
+  requires >=2 full periods of confident (>=0.75) chord-per-bar autocorrelation WITHIN a single
+  section occurrence, and this Verse 2 occurs once — no repetition evidence to detect a period
+  from at all.
+
+**Fix**: removed the `beginsCapitalizedWord` requirement from `segmentLineStart`
+(`Transcription.swift`) — capitalization is not evidence either way for whether an exact
+`lineStartOnsets` time match is a real boundary; requiring it defeated the rule's own purpose.
+Added `testGroupingBreaksAtLowercaseSegmentLineStartWithoutRequiringCapitalization` reproducing
+the exact field tokens/onsets as a permanent regression test.
+
+**Verification**: `swift format lint --strict`, `swift build`, `swift test` (51/51
+`TranscriptionTests` incl. the 3 tests that already exercised `segmentLineStart`-adjacent
+behavior via other mechanisms — conjunction-continuation and leading-orphan merging, confirmed
+unaffected since those fire regardless of this flag; full suite 599 tests, same pre-existing
+8-failure baseline, nothing new). Rebuilt the macOS `.app`, re-ran "Analyze Song" live on Settle
+Down (a stale already-merged song can't self-heal on load per the mechanism above — needed a
+fresh analysis pass to rebuild `lyrics` from `lyricBlendRows`): both previously-merged lines now
+render as clean separate lines ("She makes me want to settle down," / "trading my rowdy friends
+for a one-horse town." at [54.40,58.12]/[60.35,65.78], and the analogous Verse 4 occurrence at
+[128.08,133.76]/[133.89,138.44]).
+
+## Bigger picture: this is a symptom, not the disease
+
+Eric's follow-up, verbatim: "It still feels like we're adding structure to the found lyrics,
+centering on the words as the most important factor. We need to prioritize the music, the beat,
+the rhythm, and the structure, then find the most likely lyric for each beat of the song. The
+Vocal track onset gives us strong clues as to where the words go, but [we should not let word-
+level heuristics] ignore the structure. It has to be musical first and foremost."
+
+Confirmed by this investigation: bar/rhythm structure (`LyricPhraseGrouper`) exists in this
+codebase but is a weak, LATE, optional correction layer — gated behind strict per-occurrence
+repetition evidence a single verse can never produce alone — while everything upstream (all 3
+transcription modes' own line grouping, and the reload-time regroup) is purely text/punctuation/
+gap-driven, and vocal onset (`LyricBlendRowBuilder.onsetCorroboration`) is only used to pick
+BETWEEN already-formed candidates, never to cut a boundary from scratch.
+
+Eric approved, verbatim ("1 Yes. 2 Yes. 3 Yes - lowest priority fallback when all else fails"):
+1. Cross-section/cross-song pooling for bar-period detection (a lone Verse 2 borrows the phrase
+   period its sibling verses establish, instead of requiring each occurrence prove its own).
+2. Promote bar/beat grid + vocal onset to the PRIMARY line-boundary driver; demote the text/gap/
+   capitalization grouper (`TimedLyricSegmentGrouper`) to a fallback used only where beat
+   structure can't be established at all (rubato, spoken-word, no chord/beat data).
+3. Ship this session's capitalization-gate fix now regardless (done, above) — it's the correct
+   behavior for whatever the fallback ends up covering either way.
+
+See Task #39 for the phased implementation plan (drafted, not yet started).
+
+---
 # Structure-alignment anomaly detection (2026-07-07)
 
 Task #36. Eric: "I'm curious how we can tell performance with alignment to the established song

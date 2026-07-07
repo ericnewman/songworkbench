@@ -247,6 +247,33 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testGroupingBreaksAtLowercaseSegmentLineStartWithoutRequiringCapitalization() {
+        // Field case (Settle Down, Task #37/#38, 2026-07-07): two clean, independently-agreed
+        // lines — "She makes me want to settle down," and "trading my rowdy friends for a
+        // one-horse town." — were welded back into one run-on line on every reload because the
+        // second line's first word ("trading") is lowercase, and the forced-break rule for a
+        // known existing line-start onset used to ALSO require capitalization. The 2.2s gap
+        // between them is real but under `maximumGap` (3s) once segment structure is present, so
+        // only the onset-match rule (not the gap) can save this boundary.
+        let tokens = [
+            token("She", 54.4, 54.7), token("makes", 55.43, 56.11), token("me", 56.12, 56.37),
+            token("want", 56.32, 56.9), token("to", 56.8, 57.16), token("settle", 57.11, 57.95),
+            token("down,", 57.84, 58.12),
+            token("trading", 60.35, 61.24), token("my", 61.37, 61.5), token("rowdy", 61.53, 62.16),
+            token("friends", 62.18, 62.9), token("for", 63.39, 63.81), token("a", 63.81, 63.94),
+            token("one-horse", 63.97, 65.12), token("town.", 65.18, 65.78),
+        ]
+        let onsets: Set<TimeInterval> = [54.4, 60.35]
+
+        assertSegments(
+            TimedLyricSegmentGrouper.group(tokens: tokens, lineStartOnsets: onsets),
+            equal: [
+                ("She makes me want to settle down,", 54.4, 58.12),
+                ("trading my rowdy friends for a one-horse town.", 60.35, 65.78),
+            ]
+        )
+    }
+
     func testGroupViaResultBreaksWhisperStyleZeroGapSegments() {
         // End-to-end through group(result:): two zero-gap Whisper-style segments must become two
         // lines (exercises lineStartOnsets(of:) derivation + the de-pad path).
