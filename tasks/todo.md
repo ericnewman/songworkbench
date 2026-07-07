@@ -91,6 +91,29 @@ deterministic tie-break fix, verify A alone doesn't already resolve it) → B (i
 `MelodyPhraseProxy`) → C (separate investigation, likely bigger scope, decide after A/B/D whether
 the symptom persists on a clean structure).
 
+## Live verification (2026-07-07, Settle Down, commit `cd1aa74`, rebuilt app)
+
+- **A confirmed working**: FORM now reads Intro → Verse 1 → Chorus → Verse 2 → Chorus →
+  **Verse 3 (2:36–2:55, one continuous section)** → Instrumental → Chorus → Outro — the former
+  Verse 3 (2:36–2:46) + Verse 4 (2:46–2:55) fragments merged into one, exactly as Eric confirmed
+  he expected. Stayed labeled "Verse 3" rather than being promoted to "Bridge" by
+  `reclassifyBridgeAndSolo` — expected/acceptable, since that promotion depends on this song's
+  actual chord data clearing the signature-mismatch bar, which wasn't part of what Eric asked to
+  fix (he confirmed the STRUCTURAL merge, not a guaranteed Bridge relabel).
+- **D confirmed working**: VERSE TEMPLATE now reads `Length: 6 lines` (was `Length: 2 lines`,
+  picking the anomalous fragment via an unstable line-count tie before this fix).
+- **B mechanism correct but limited real-world impact on this song**: CHORUS TEMPLATE still shows
+  `Phrase Pattern: A B C D E F G H` — unchanged. Unit tests confirm the tolerant (Jaccard >= 0.75)
+  clustering works correctly on synthetic "one passing chord" jitter. Settle Down's REAL chorus
+  chord pattern is far denser than that (~28 chord-signature entries across 9 lines, ~3 chords/
+  line on average) — per-line signatures differ by MORE than one passing chord, so even the
+  tolerant threshold can't bridge them. This is a strong signal that the underlying chord-
+  DETECTION density/jitter itself (Task #46 / Issue C, already deferred as a separate
+  investigation) is the deeper root cause behind BOTH the noisy instrumental chord patterns AND
+  this residual chorus over-fragmentation — worth investigating together rather than raising
+  `MelodyPhraseProxy`'s tolerance threshold in isolation (which would deviate from the
+  `signaturesMatch` convention used elsewhere without addressing the real cause).
+
 ---
 # Plan: music-structure-first lyric segmentation (Task #39, drafted 2026-07-07, NOT started)
 
