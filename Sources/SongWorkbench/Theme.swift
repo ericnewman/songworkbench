@@ -22,6 +22,10 @@ extension Color {
     static let swCanvas = Color(hex: 0x1A1B1E)
     /// Panels / menus / cards.
     static let swSurface = Color(hex: 0x25262B)
+    /// A touch lighter than `swSurface` — for panels that should read as sitting forward of
+    /// the ones around them (the Stem Mix console, so its controls have somewhere to cast a
+    /// shadow onto).
+    static let swSurfaceRaised = Color(hex: 0x2C2E34)
     /// Primary accent: active selection / focus.
     static let swAccent = Color(hex: 0x339AF0)
     /// Secondary accent: errors / alerts ONLY.
@@ -75,11 +79,12 @@ extension Font {
 
 private struct SWSurfacePanel: ViewModifier {
     var cornerRadius: CGFloat
+    var fill: Color = .swSurface
 
     func body(content: Content) -> some View {
         content.background {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color.swSurface)
+                .fill(fill)
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
@@ -127,9 +132,10 @@ private struct SWAccentHoverBorder: ViewModifier {
 
 extension View {
     /// Surface-grey panel: fill + subtle 1px white stroke. For cards,
-    /// editor containers, sidebars, inspector panels.
-    func swSurfacePanel(cornerRadius: CGFloat = 12) -> some View {
-        modifier(SWSurfacePanel(cornerRadius: cornerRadius))
+    /// editor containers, sidebars, inspector panels. `fill` defaults to `swSurface`; pass
+    /// `swSurfaceRaised` for a panel that should read slightly lighter than its neighbors.
+    func swSurfacePanel(cornerRadius: CGFloat = 12, fill: Color = .swSurface) -> some View {
+        modifier(SWSurfacePanel(cornerRadius: cornerRadius, fill: fill))
     }
 
     /// Floating glass panel (`.ultraThinMaterial` over a faint white fill,

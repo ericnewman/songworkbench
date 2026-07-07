@@ -3986,7 +3986,10 @@ struct StemMixSidebar: View {
         }
         .padding(isExpanded ? 10 : 8)
         .frame(maxWidth: .infinity, maxHeight: isExpanded ? .infinity : nil, alignment: .top)
-        .swSurfacePanel(cornerRadius: 12)
+        // Slightly lighter than the standard `swSurface` panels around it (Eric: "a slighty
+        // lighter background to the mixer") — also gives the now-3D controls below somewhere
+        // visibly darker (the old `swSurface`) to sit on/cast shadows onto.
+        .swSurfacePanel(cornerRadius: 12, fill: .swSurfaceRaised)
     }
 
     private var expandedContent: some View {
@@ -4226,7 +4229,25 @@ struct StemMixSidebar: View {
                 .font(.swMono(9, weight: .bold))
                 .frame(width: 18, height: 14)
                 .foregroundStyle(isOn ? Color.black : Color.swTextSecondary)
-                .background(RoundedRectangle(cornerRadius: 3).fill(isOn ? tint : Color.swSurface))
+                .background(
+                    // Off: a subtle raised-button gradient (light top edge, dark bottom) so it
+                    // reads as a physical key. On: a bright top-to-bottom tint gradient plus a
+                    // colored glow underneath — an LED-lit button, not just a color swap.
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(
+                            LinearGradient(
+                                colors: isOn
+                                    ? [tint, tint.opacity(0.8)]
+                                    : [Color.white.opacity(0.08), Color.black.opacity(0.28)],
+                                startPoint: .top, endPoint: .bottom
+                            )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3)
+                                .strokeBorder(Color.black.opacity(0.35), lineWidth: 0.5)
+                        )
+                        .shadow(color: isOn ? tint.opacity(0.65) : .clear, radius: 2)
+                )
         }
         .buttonStyle(.plain)
         .help(label == "M" ? "Mute" : "Solo")
@@ -4251,9 +4272,21 @@ private struct HorizontalLRMeter: View {
     private func bar(fraction: Float) -> some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.swSurface)
+                // Empty track reads as a groove (darker than the panel it sits on); the lit
+                // portion gets the same glossy-highlight + glow treatment as the segmented LEDs.
+                Capsule().fill(Color.black.opacity(0.35))
                 Capsule()
                     .fill(Color.swMint)
+                    .overlay {
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(0.5), .clear],
+                                    startPoint: .top, endPoint: .bottom
+                                )
+                            )
+                    }
+                    .shadow(color: Color.swMint.opacity(0.6), radius: 1.5)
                     .frame(width: proxy.size.width * CGFloat(min(max(fraction, 0), 1)))
             }
         }
@@ -4272,8 +4305,16 @@ private struct PanKnob: View {
 
     var body: some View {
         ZStack {
-            Circle().fill(Color.swSurface)
-            Circle().strokeBorder(Color.swTextSecondary.opacity(0.45), lineWidth: 1)
+            // Raised dome: a top-lit-to-bottom-shadowed gradient instead of a flat fill, plus a
+            // dark outer rim and a thin inner highlight, reads as a real knob rather than a disc.
+            Circle().fill(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.14), Color.swSurface, Color.black.opacity(0.3)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+            Circle().strokeBorder(Color.black.opacity(0.4), lineWidth: 1)
+            Circle().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5).padding(0.75)
             // Indicator line from the center toward the rim.
             Capsule()
                 .fill(abs(value) < 0.01 ? Color.swTextSecondary : Color.swAccent)
@@ -4281,6 +4322,7 @@ private struct PanKnob: View {
                 .offset(y: -size * 0.2)
                 .rotationEffect(.degrees(value * 135))
         }
+        .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
         .frame(width: size, height: size)
         .contentShape(Circle())
         .gesture(
@@ -4318,14 +4360,37 @@ private struct VerticalFader: View {
             let fraction = span > 0 ? CGFloat((value - range.lowerBound) / span) : 0
             let travel = max(height - thumbHeight, 1)
             ZStack(alignment: .bottom) {
-                Capsule().fill(Color.black.opacity(0.32)).frame(width: trackWidth)
+                // Inset groove: darker at the edges than the center, like a channel routed into
+                // the console face rather than a flat line drawn on top of it.
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.black.opacity(0.5), Color.black.opacity(0.22),
+                                Color.black.opacity(0.5),
+                            ],
+                            startPoint: .leading, endPoint: .trailing
+                        )
+                    )
+                    .frame(width: trackWidth)
                 Capsule()
                     .fill(Color.swAccent.opacity(0.75))
                     .frame(width: trackWidth, height: thumbHeight / 2 + fraction * travel)
+                // Raised cap: light-to-dark gradient + a hairline dark border reads as a real
+                // fader cap catching light from above, instead of a flat-color rectangle.
                 RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.swTextPrimary)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white, Color.swTextPrimary, Color(white: 0.72)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 3)
+                            .strokeBorder(Color.black.opacity(0.35), lineWidth: 0.5)
+                    )
                     .frame(width: thumbWidth, height: thumbHeight)
-                    .shadow(color: .black.opacity(0.4), radius: 1.5, y: 1)
+                    .shadow(color: .black.opacity(0.5), radius: 2, y: 1.5)
                     .offset(y: -fraction * travel)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -4355,8 +4420,24 @@ private struct SegmentedLevelMeter: View {
             ForEach(0..<segmentCount, id: \.self) { row in
                 let fromBottom = segmentCount - 1 - row
                 let threshold = Float(fromBottom) / Float(segmentCount)
+                let isLit = clamped > threshold
+                // Real LED look: a solid color base, a glossy top-half highlight (a lens
+                // catching light), and a soft colored glow behind it — instead of one flat
+                // fill that just switches color on/off.
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(clamped > threshold ? color(fromBottom) : Color.white.opacity(0.06))
+                    .fill(isLit ? color(fromBottom) : Color.white.opacity(0.06))
+                    .overlay {
+                        if isLit {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color.white.opacity(0.55), .clear],
+                                        startPoint: .top, endPoint: .bottom
+                                    )
+                                )
+                        }
+                    }
+                    .shadow(color: isLit ? color(fromBottom).opacity(0.7) : .clear, radius: 1.5)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
