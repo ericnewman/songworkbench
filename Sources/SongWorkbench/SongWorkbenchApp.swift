@@ -62,10 +62,16 @@ struct SongWorkbenchApp: App {
                     .keyboardShortcut("o")
                 }
                 CommandMenu("Playback") {
+                    // No `.keyboardShortcut(.space, ...)` here: AppKit checks the main menu's
+                    // key equivalents BEFORE the responder chain, even for unmodified keys, so
+                    // an unconditional space shortcut steals space out of every TextField/
+                    // TextEditor in the app before it can self-insert. Space-to-toggle is instead
+                    // handled by a first-responder-aware NSEvent monitor (`ContentView`'s
+                    // `installSpaceBarPlaybackToggle`), which only fires when nothing is being
+                    // actively edited. This menu item remains for click/discoverability.
                     Button(model.isActivePlaybackPlaying ? "Pause" : "Play") {
                         model.toggleActivePlayback()
                     }
-                    .keyboardShortcut(.space, modifiers: [])
                     .disabled(model.selectedSong == nil)
 
                     Button("Back 10 Seconds") {

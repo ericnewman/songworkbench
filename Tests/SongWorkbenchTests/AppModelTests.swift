@@ -288,6 +288,81 @@ final class AppModelTests: XCTestCase {
         model.playback.pause()
     }
 
+    /// `setActivePlaybackSource` (the Stem Mix pane's Original/Stems switch) differs from
+    /// `toggleRecordingPlayback`/`toggleStemPlayback` above: it must NOT force a play toggle —
+    /// switching sources while paused should leave the new source paused too.
+    func testSetActivePlaybackSourcePreservesPausedStateAndTransfersPosition() async throws {
+        let songURL = try makeSilentWAV(frameCount: 16_000)
+        let stemDirectory = try makeStemDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: songURL)
+            try? FileManager.default.removeItem(at: stemDirectory)
+        }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [songURL])
+        try await waitUntil { !model.songs.isEmpty }
+        let song = try XCTUnwrap(model.songs.first)
+        model.select(song)
+        try model.importStems(from: stemDirectory)
+        model.playback.seek(to: 0.4)
+
+        model.setActivePlaybackSource(.stemMix)
+
+        XCTAssertEqual(model.activePlaybackSource, .stemMix)
+        XCTAssertFalse(model.stemPlayback.isPlaying)
+        XCTAssertFalse(model.playback.isPlaying)
+        XCTAssertEqual(model.stemPlayback.currentTime, 0.4, accuracy: 0.02)
+    }
+
+    /// Switching sources while playing should keep audio flowing — just from the new source,
+    /// picked up at the same position — not silently pause.
+    func testSetActivePlaybackSourceKeepsPlayingAcrossSwitch() async throws {
+        let songURL = try makeSilentWAV(frameCount: 16_000)
+        let stemDirectory = try makeStemDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: songURL)
+            try? FileManager.default.removeItem(at: stemDirectory)
+        }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [songURL])
+        try await waitUntil { !model.songs.isEmpty }
+        let song = try XCTUnwrap(model.songs.first)
+        model.select(song)
+        try model.importStems(from: stemDirectory)
+        model.playback.seek(to: 0.4)
+        model.playback.play()
+
+        model.setActivePlaybackSource(.stemMix)
+
+        XCTAssertEqual(model.activePlaybackSource, .stemMix)
+        XCTAssertTrue(model.stemPlayback.isPlaying)
+        XCTAssertFalse(model.playback.isPlaying)
+        XCTAssertEqual(model.stemPlayback.currentTime, 0.4, accuracy: 0.02)
+        model.stemPlayback.pause()
+    }
+
+    /// Guard clauses: switching to the already-active source, or to `.stemMix` before stems are
+    /// loaded, must be no-ops (no pause/seek side effects on either service).
+    func testSetActivePlaybackSourceIsANoOpForCurrentSourceOrUnloadedStems() async throws {
+        let songURL = try makeSilentWAV(frameCount: 16_000)
+        defer { try? FileManager.default.removeItem(at: songURL) }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [songURL])
+        try await waitUntil { !model.songs.isEmpty }
+        let song = try XCTUnwrap(model.songs.first)
+        model.select(song)
+        model.playback.seek(to: 0.4)
+        model.playback.play()
+
+        model.setActivePlaybackSource(.recording)  // already active — no-op
+        XCTAssertTrue(model.playback.isPlaying)
+
+        model.setActivePlaybackSource(.stemMix)  // stems never loaded — no-op
+        XCTAssertEqual(model.activePlaybackSource, .recording)
+        XCTAssertTrue(model.playback.isPlaying)
+        model.playback.pause()
+    }
+
     /// `activeClock` is the single source of truth `activePlaybackTime`/`activePlaybackDuration`/
     /// `isActivePlaybackPlaying`/`seekActivePlayback` all delegate through — this verifies it
     /// resolves to the correct concrete service (by identity) in both playback-source states,

@@ -625,6 +625,27 @@ final class AppModel: ObservableObject {
         stemPlayback.togglePlayback()
     }
 
+    /// Switches which source `activeClock`/`toggleActivePlayback` act on, WITHOUT forcing a
+    /// play/pause change — unlike `toggleRecordingPlayback`/`toggleStemPlayback` above, which
+    /// always end with a play toggle on the destination source (that's the right behavior for
+    /// their own per-source Play buttons, now retired in favor of a single Play/Pause button
+    /// plus this source switch). If the outgoing source was playing, the incoming one picks up
+    /// playing from the same position; if it was paused, the incoming one stays paused.
+    func setActivePlaybackSource(_ source: PlaybackSource) {
+        guard source != activePlaybackSource else { return }
+        if source == .stemMix {
+            guard stemPlayback.isLoaded else { return }
+        }
+        let wasPlaying = activeClock.isPlaying
+        let time = activeClock.currentTime
+        activeClock.pause()
+        activePlaybackSource = source
+        activeClock.seek(to: time)
+        if wasPlaying {
+            activeClock.play()
+        }
+    }
+
     func seekActivePlayback(to time: TimeInterval) {
         activeClock.seek(to: time)
     }

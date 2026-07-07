@@ -63,10 +63,17 @@ struct WorkspaceEditorsView: View {
 /// large skip / play-pause buttons.
 struct PlaybackTransportCard: View {
     @ObservedObject var model: AppModel
+    // Observed directly (not just read through `model.isActivePlaybackPlaying`) so the single
+    // play/pause button below reacts immediately to state changes on WHICHEVER service is
+    // active — `model` itself doesn't republish its children's `@Published` changes, and
+    // `activePlaybackSource` alone only flips when the source switches, not on every
+    // play/pause toggle.
+    @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
 
     init(model: AppModel) {
         self.model = model
+        playback = model.playback
         stemPlayback = model.stemPlayback
     }
 
@@ -96,25 +103,22 @@ struct PlaybackTransportCard: View {
                 .swAccentHoverBorder(cornerRadius: 6)
                 .help("Back 10 seconds")
 
+                // One button, acting on whichever source is active (`activePlaybackSource`) —
+                // the Stem Mix pane's Original/Stems switch (`StemMixSidebar.sourcePicker`) is
+                // now what picks the source; this button just plays/pauses it. The small
+                // trailing badge (added by `compactPlayButton`) still signals which source is
+                // live so the transport bar doesn't lose that at-a-glance info.
                 compactPlayButton(
-                    title: model.isActivePlaybackPlaying ? "Pause Song" : "Play Song",
-                    disabled: model.selectedSong == nil,
+                    title: model.isActivePlaybackPlaying ? "Pause" : "Play",
+                    disabled: model.selectedSong == nil
+                        || (model.activePlaybackSource == .stemMix && !stemPlayback.isLoaded),
                     isPlaying: model.isActivePlaybackPlaying,
-                    help: "Play or pause the original recording"
+                    symbolVariant: model.activePlaybackSource == .stemMix ? "square.stack" : nil,
+                    help: model.activePlaybackSource == .stemMix
+                        ? "Play or pause the separated stem mix"
+                        : "Play or pause the original recording"
                 ) {
                     model.toggleActivePlayback()
-                }
-
-                compactPlayButton(
-                    title: stemPlayback.isPlaying ? "Pause Stem Mix" : "Play Stem Mix",
-                    disabled: !stemPlayback.isLoaded,
-                    isPlaying: stemPlayback.isPlaying,
-                    symbolVariant: "square.stack",
-                    help: stemPlayback.isLoaded
-                        ? "Play or pause the separated stem mix"
-                        : "Run Stems separation to enable mix playback"
-                ) {
-                    model.toggleStemPlayback()
                 }
 
                 Button("Forward 10 Seconds", systemImage: "goforward.10") {
@@ -4030,6 +4034,7 @@ struct StemMixSidebar: View {
                     .font(.caption)
                     .foregroundStyle(Color.swCoral)
             }
+            sourcePicker
             if model.stemFiles == nil {
                 Text("Run Stems separation to enable the mix.")
                     .font(.caption)
@@ -4057,6 +4062,30 @@ struct StemMixSidebar: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    /// Original-vs-Stems switch, replacing the transport bar's old separate per-source Play
+    /// buttons (now one Play/Pause button that just acts on whichever source this picks).
+    /// Switching preserves play/pause state — see `AppModel.setActivePlaybackSource`.
+    private var sourcePicker: some View {
+        Picker(
+            "Playback Source",
+            selection: Binding(
+                get: { model.activePlaybackSource },
+                set: { model.setActivePlaybackSource($0) }
+            )
+        ) {
+            Text("Original").tag(PlaybackSource.recording)
+            Text("Stems").tag(PlaybackSource.stemMix)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .disabled(!stemPlayback.isLoaded)
+        .help(
+            stemPlayback.isLoaded
+                ? "Play the original recording or the separated stem mix"
+                : "Run Stems separation to enable stem mix playback"
+        )
     }
 
     private func slimStrip(_ kind: StemKind) -> some View {

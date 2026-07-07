@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
+    #if os(macOS)
+        @State private var spaceBarMonitor: Any?
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -24,7 +27,38 @@ struct ContentView: View {
         .sheet(isPresented: $model.isMusicLibraryPickerPresented) {
             MusicLibraryPickerView(model: model)
         }
+        #if os(macOS)
+            .onAppear { installSpaceBarPlaybackToggle() }
+            .onDisappear {
+                if let spaceBarMonitor { NSEvent.removeMonitor(spaceBarMonitor) }
+                spaceBarMonitor = nil
+            }
+        #endif
     }
+
+    #if os(macOS)
+        /// Space bar toggles play/pause, but only when nothing is actively being edited — checked
+        /// via the REAL first responder (`NSText` covers the field editor behind every SwiftUI
+        /// `TextField`/`TextEditor`), not a per-field focus flag, so this one spot covers all ~12
+        /// text-entry surfaces across the app without having to thread a shared focus flag through
+        /// each of them. See the comment on the (now shortcut-less) Playback Command's Play/Pause
+        /// button in `SongWorkbenchApp.swift` for why a `.keyboardShortcut(.space, ...)` menu item
+        /// isn't used instead.
+        private func installSpaceBarPlaybackToggle() {
+            guard spaceBarMonitor == nil else { return }
+            spaceBarMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.charactersIgnoringModifiers == " ",
+                    event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty
+                else { return event }
+                if NSApp.keyWindow?.firstResponder is NSText {
+                    return event
+                }
+                guard model.selectedSong != nil else { return event }
+                model.toggleActivePlayback()
+                return nil
+            }
+        }
+    #endif
 }
 
 private struct SongSidebar: View {
@@ -426,8 +460,15 @@ private struct PlayerView: View {
                         // collapsible so the editor can reclaim the width. 360 expanded =
                         // same width as the song sidebar (visual symmetry; also gives the
                         // channel strips room for the planned L/R meters + pan pots).
-                        StemMixSidebar(model: model)
-                            .frame(width: stemRailExpanded ? 360 : 44)
+                        // Stem Mix now takes only the top half of the rail's height, leaving
+                        // room below for a planned future panel (reserved, not yet built).
+                        VStack(spacing: 12) {
+                            StemMixSidebar(model: model)
+                            if stemRailExpanded {
+                                stemMixReservedPanel
+                            }
+                        }
+                        .frame(width: stemRailExpanded ? 360 : 44)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
@@ -442,6 +483,18 @@ private struct PlayerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .padding(16)
+    }
+
+    /// Bottom half of the stem-mix rail, intentionally empty — just holding the layout split
+    /// so a future panel can drop in without another resize pass (Eric: "leaving room for
+    /// something new below it").
+    private var stemMixReservedPanel: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(
+                Color.swTextSecondary.opacity(0.15),
+                style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
