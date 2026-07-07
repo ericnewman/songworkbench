@@ -1,3 +1,97 @@
+# Plan: Structure tab accuracy — Settle Down live review (Task #43, drafted 2026-07-07)
+
+Eric live-reviewed the Structure tab on Settle Down and flagged 4 issues in one pass. All trace
+to the same theme as Task #39 above: parts of `SongStructureOverviewBuilder`/`SongStructureAnalyzer`
+lean on lyric-derived signals (line count, exact per-line text/chord equality) where a musically-
+grounded, tolerant signal would be more robust.
+
+## A. Verse 3/Verse 4 should be one Bridge — CONFIRMED by Eric, do first
+
+Live data: FORM shows `Verse 3` (2:36-2:46, 2 lines: "thought I would slow down." / "But then I
+saw her smile.") and `Verse 4` (2:46-2:55, 3 lines: "She turned my baby someday" / "I think" /
+"I am gonna stay") as two separate sections, sandwiched between the 2nd Chorus and the
+Instrumental. Every real verse/chorus in this song runs 6-9 lines / 20-50s; these two are 2-3
+lines / ~10s each. Read together they're one continuous Bridge.
+
+Root cause: `SongStructureAnalyzer.vocalSections` (ChordProDraftBuilder.swift) splits
+unconditionally whenever `gap >= sectionGap` (4.0s) — the actual gap here is 4.38s, just over the
+threshold, a natural mid-bridge breath, not a real section boundary. `reclassifyBridgeAndSolo`
+(SongStructureOverviewBuilder) exists to relabel a verse-shaped section as Bridge by chord-pattern
+mismatch, but never gets the chance because the two halves are never merged back into one section
+first.
+
+Eric confirmed target: Intro → Verse 1 → Chorus → Verse 2 → Chorus → **Bridge** → Instrumental →
+Chorus → Outro.
+
+Fix direction (not yet implemented): a gap-only split (no classification/kind mismatch) between
+two ADJACENT same-kind, non-chorus blocks should require stronger evidence than a kind-change
+split — kind changes carry their own independent evidence, a bare gap doesn't. Concretely: after
+the existing block-flush loop, merge adjacent `.verse`-kind sections when the gap between them is
+modest (not real Instrumental-scale) and at least one side is anomalously short vs. the song's
+other verse-kind occurrences (reuse evidence already present in the computed `sections`, not a
+fresh magic-number threshold). `sectionGap` itself must NOT simply move higher — that risks
+merging genuinely separate verses in other songs (Key West Bar's "Yeah I need a break… in a Key
+West bar" continuation test already covers the single-short-trailing-line case; this is the
+sibling case of two-or-more short blocks each on their own line-count already, needs its own new
+test). Needs a dedicated test fixture reproducing this exact 4-part shape (2 real verses, 1
+fragmented-into-two bridge, gap = sectionGap + a hair) before landing.
+
+## B. Chorus phrase pattern shows near-zero repetition (A B C D E F G H for 8-9 lines)
+
+Eric: "the composition of the chorus lists many patterns A B C D E F G H etc. But there seem to
+be a lot less than that, so maybe the criteria is off." Confirmed live: CHORUS TEMPLATE phrase
+pattern is `A B C D E F G H` — essentially no two lines ever cluster as "the same phrase", which
+doesn't match how a real chorus's melody works (a handful of repeating phrase shapes, e.g. AABA/
+ABAB, not one-off letters per line).
+
+Root cause: `MelodyPhraseProxy.phraseLetters` (SongStructureOverview.swift ~line 158) clusters
+two lines as the same phrase only when their `chordSignatures` arrays are EXACTLY equal
+(`$0.signature == signature`) and syllable count is within ±1. Real per-line chord windows
+(`chords.filter { $0.time >= line.start && $0.time < line.end }`) pick up timing jitter/passing
+chords, so two melodically-identical lines rarely produce byte-identical signature arrays — the
+same brittleness `reclassifyBridgeAndSolo` already solved for section-level comparison via
+`signaturesMatch` (Jaccard ≥ 0.75, tolerates one passing chord). Fix direction: make
+`MelodyPhraseProxy.phraseLetters` cluster via the same tolerant `signaturesMatch`-style
+comparison instead of exact `==`.
+
+## C. Instrumental section chord patterns look noisy/ungrounded
+
+Eric: "The chord patterns seem grounded in vocal melody, and go bad when it's instrumental." Live
+data: Outro chord pattern alone lists ~19 chord symbols across 36s. Two possible root causes,
+NOT yet distinguished:
+  1. `buildInstrumentalSummaries`/`chordSignature` aggregation is fine, and the underlying chord-
+     DETECTION itself (harmony analysis stage) is genuinely noisier without a vocal melody to
+     anchor pitch tracking — a chord-detection-engine accuracy question, not a Structure-tab
+     aggregation bug, and a much bigger separate investigation.
+  2. Something in how instrumental-section chord windows are sliced/attributed IS a Structure-tab
+     bug (distinct from A/B above).
+Needs its own investigation pass (compare raw Chords-tab data for the Outro span against what's
+displayed here) before deciding which. Do not conflate with A/B's fix.
+
+## D. "Too much dependence on lyrics" in representative/canonical-length selection
+
+Eric's broader callout, and the direct cause of a real bug already observed live: `buildTemplates`
+picks each kind's canonical shape via `mostCommonInt(lineCounts)` (a lyric-line-count vote) and
+`occurrences.first { $0.lines.count == canonicalLineCount }` for the representative. With Settle
+Down's current (buggy, pre-A-fix) verse occurrences at line counts `[6, 4, 2, 3]` — all distinct,
+no majority — `mostCommonInt` picks whichever key a Swift `Dictionary` iterates first on a
+count-1 tie, which is UNSTABLE/unspecified order. Live-observed: this picked the 2-line Verse 3
+fragment as the "representative" VERSE TEMPLATE (`Length: 2 lines`), corrupting the whole verse
+template display. Once A is fixed the immediate symptom likely disappears (fewer/no ties), but
+the underlying design smell remains: canonical-shape selection is keyed on a lyric-derived count,
+not a musical one. Fix direction: prefer a musically-grounded tie-break (bar count/duration, or
+matching the kind's majority CHORD pattern the way `reclassifyBridgeAndSolo` already does) over
+lyric line count, or at minimum make the tie-break deterministic (e.g. longest duration, or
+earliest occurrence) instead of dictionary-iteration-order.
+
+## Suggested order
+
+A first (confirmed, well-scoped, isolated to `SongStructureAnalyzer.vocalSections`) → D (small,
+deterministic tie-break fix, verify A alone doesn't already resolve it) → B (isolated to
+`MelodyPhraseProxy`) → C (separate investigation, likely bigger scope, decide after A/B/D whether
+the symptom persists on a clean structure).
+
+---
 # Plan: music-structure-first lyric segmentation (Task #39, drafted 2026-07-07, NOT started)
 
 Eric approved the direction ("1 Yes. 2 Yes. 3 Yes") — see

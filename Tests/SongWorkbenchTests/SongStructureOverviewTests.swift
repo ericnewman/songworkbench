@@ -42,6 +42,43 @@ final class MelodyPhraseProxyTests: XCTestCase {
             MelodyPhraseProxy.phraseLetters(chordSignatures: signatures, syllableCounts: syllables),
             ["A", "B"])
     }
+
+    /// Regression (Eric, live review, 2026-07-07): "the composition of the chorus lists many
+    /// patterns A B C D E F G H etc. But there seem to be a lot less than that, so maybe the
+    /// criteria is off." Real per-line chord windows pick up timing jitter — the same underlying
+    /// phrase's chord signature sometimes carries one extra/missing passing chord from one
+    /// occurrence to the next. Under the OLD exact-`==` clustering, only the byte-identical
+    /// occurrences of each phrase matched (["A","B","C","D","A","B"] — 4 distinct letters for 2
+    /// real phrases); with the tolerant Jaccard match (>= 0.75, mirroring
+    /// `SongStructureOverviewBuilder.signaturesMatch`) the jittery occurrences correctly fold
+    /// into their real phrase (["A","B","A","B","A","B"] — exactly 2).
+    func testJitteryChordSignaturesWithOnePassingChordStillClusterAsTheSamePhrase() {
+        let signatures: [[String]] = [
+            ["I", "IV", "V"],  // A
+            ["vi", "ii", "V"],  // B
+            ["I", "IV", "V", "vi"],  // A + one passing chord -> Jaccard 3/4 = 0.75, matches A
+            ["vi", "ii", "V", "I"],  // B + one passing chord -> Jaccard 3/4 = 0.75, matches B
+            ["I", "IV", "V"],  // A exactly
+            ["vi", "ii", "V"],  // B exactly
+        ]
+        let syllables = [8, 8, 8, 8, 8, 8]
+        XCTAssertEqual(
+            MelodyPhraseProxy.phraseLetters(chordSignatures: signatures, syllableCounts: syllables),
+            ["A", "B", "A", "B", "A", "B"])
+    }
+
+    /// Two lines with NO detected chord data at all must not blindly cluster together just
+    /// because both signatures are empty — `chordSignaturesMatch`'s `a == b` branch does still
+    /// match `[] == []`, matching the prior exact-equality behavior for this specific case, but
+    /// this test pins that down explicitly since the tolerant Jaccard branch's own `!a.isEmpty`
+    /// guard would otherwise silently do the opposite.
+    func testTwoLinesWithNoChordDataStillClusterTogetherLikeTheOldExactMatchDid() {
+        let signatures: [[String]] = [[], []]
+        let syllables = [8, 8]
+        XCTAssertEqual(
+            MelodyPhraseProxy.phraseLetters(chordSignatures: signatures, syllableCounts: syllables),
+            ["A", "A"])
+    }
 }
 
 final class SongStructureOverviewBuilderTests: XCTestCase {
@@ -130,6 +167,85 @@ final class SongStructureOverviewBuilderTests: XCTestCase {
         let bridgeTemplate = overview?.templates.first { $0.kind == .bridge }
         XCTAssertNotNil(bridgeTemplate)
         XCTAssertEqual(bridgeTemplate?.chordPattern, ["bIII", "bVII", "i", "v"])
+    }
+
+    /// Regression (Settle Down live review, 2026-07-07): with three verse-kind occurrences whose
+    /// LINE COUNTS are all different (6, 4, 2 — no majority, an unstable tie under the old
+    /// `mostCommonInt` line-count logic), the VERSE TEMPLATE's representative must be picked by
+    /// CHORD-PATTERN majority (two of the three share `C-G-Am-F`) rather than by which line count
+    /// happened to win an arbitrary Dictionary-iteration-order tie. Eric: "This seems like
+    /// another place with too much dependence on lyrics" — live-observed picking the anomalous
+    /// 2-line occurrence as "representative" (`Length: 2 lines`) purely because no other line
+    /// count could out-vote it either.
+    func testVerseTemplateRepresentativePicksChordPatternMajorityNotAnUnstableLineCountTie() {
+        // Genuinely distinct wording per line (no shared template with only an index swapped —
+        // that would Jaccard-match every line in a block against every other and misclassify the
+        // whole block as a repeated chorus instead of a verse).
+        func lines(_ texts: [String], at start: TimeInterval) -> [TimedLyricSegment] {
+            texts.enumerated().map { i, text in
+                TimedLyricSegment(
+                    start: start + Double(i) * 2, end: start + Double(i) * 2 + 1.5, text: text)
+            }
+        }
+        let verse1 = lines(
+            [
+                "Morning light breaks through the trees",
+                "Coffee steam rises past my face",
+                "Dog runs circles round the yard",
+                "Neighbors wave from cars going by",
+                "Radio plays a song I love",
+                "Time moves slow on days like these",
+            ], at: 0)
+        let verse2 = lines(
+            [
+                "Evening falls across the field",
+                "Crickets start their nightly song",
+                "Porch light flickers on next door",
+                "Stars come out one by one",
+            ], at: 30)
+        // The anomaly: fewest lines AND (below) a mismatched chord progression.
+        let verse3 = lines(
+            ["Thunder rolls beyond the hills", "Rain begins without a warning"], at: 60)
+        // A real Chorus (Jaccard-matching itself between its two occurrences) sits between every
+        // verse-kind block, exactly like Settle Down's real Verse-Chorus-Verse-Chorus-Bridge
+        // shape — so `SongStructureAnalyzer`'s section splits are all genuine classification-
+        // mismatch boundaries, not bare gap-only ones (keeps this fixture isolated to testing the
+        // Task D representative-selection fix, not Task A's separate gap-fragment merge).
+        let chorusLine = { (start: TimeInterval) in
+            TimedLyricSegment(start: start, end: start + 1.5, text: "we all sing the same song")
+        }
+        let input = ChordProDraftInput(
+            title: "Tie-Break Song",
+            tempo: 120,
+            lyrics: verse1 + [chorusLine(20)] + verse2 + [chorusLine(50)] + verse3,
+            chords: [
+                // Verse 1 (6 lines): the real verse progression.
+                EditableChordEvent(time: 0, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 3, chord: "G", confidence: 0.9),
+                EditableChordEvent(time: 6, chord: "Am", confidence: 0.9),
+                EditableChordEvent(time: 9, chord: "F", confidence: 0.9),
+                // Verse 2 (4 lines): SAME progression -- the two together form the majority.
+                EditableChordEvent(time: 30, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 33, chord: "G", confidence: 0.9),
+                EditableChordEvent(time: 36, chord: "Am", confidence: 0.9),
+                EditableChordEvent(time: 39, chord: "F", confidence: 0.9),
+                // Verse "3" (2 lines): the anomaly -- fewest lines AND a different progression.
+                EditableChordEvent(time: 60, chord: "Eb", confidence: 0.9),
+                EditableChordEvent(time: 61, chord: "Bb", confidence: 0.9),
+            ],
+            estimatedKey: MusicalKey(root: .c, quality: .major)
+        )
+        let overview = SongStructureOverviewBuilder().build(input)
+        let verseSections = overview?.form.filter { $0.kind == .verse }
+        XCTAssertEqual(
+            verseSections?.map(\.lines.count), [6, 4, 2],
+            "\(overview?.form.map { "\($0.label):\($0.kind)" } ?? [])")
+        let verseTemplate = overview?.templates.first { $0.kind == .verse }
+        XCTAssertNotNil(verseTemplate)
+        // The representative must be Verse 1 or Verse 2 (6 or 4 lines, chord-pattern majority),
+        // NEVER the 2-line anomaly -- and its chord pattern must be the shared majority one.
+        XCTAssertNotEqual(verseTemplate?.lineCount, 2, "\(overview?.templates ?? [])")
+        XCTAssertEqual(verseTemplate?.chordPattern, ["I", "V", "vi", "IV"])
     }
 
     func testReturnsNilForEmptyLyrics() {

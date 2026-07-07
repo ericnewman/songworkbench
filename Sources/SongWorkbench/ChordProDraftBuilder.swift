@@ -831,15 +831,14 @@ struct SongStructureAnalyzer: Sendable {
             }
         }
 
-        var sections: [VocalSection] = []
+        // Each block tracks its line RANGE (not just its start line) so the merge pass below can
+        // measure line count — `boundaryWasGapOnly[k]` records whether the split BEFORE block
+        // `k+1` was a bare `gap >= sectionGap` split with no classification-kind change either
+        // side (as opposed to a genuine verse/chorus classification-mismatch split, which is
+        // never eligible to be undone below).
+        var blockBoundaries = [0]
+        var boundaryWasGapOnly: [Bool] = []
         var blockStart = 0
-        func flush(_ start: Int) {
-            sections.append(
-                VocalSection(
-                    kind: isChorus[start] ? .chorus : .verse,
-                    start: lines[start].start,
-                    label: isChorus[start] ? "Chorus" : "Verse"))
-        }
         for i in 1..<lines.count {
             let gap = lines[i].start - lines[i - 1].end
             // A short trailing line just after a real (but sub-`sectionGap`) pause CAN read as a
@@ -860,7 +859,8 @@ struct SongStructureAnalyzer: Sendable {
             let classificationMismatch =
                 !isProbableContinuation && isChorus[i] != isChorus[blockStart]
             if gap >= sectionGap || classificationMismatch {
-                flush(blockStart)
+                blockBoundaries.append(i)
+                boundaryWasGapOnly.append(gap >= sectionGap && !classificationMismatch)
                 blockStart = i
             } else if isProbableContinuation {
                 // Continues the current block: adopt the block's classification so later lines
@@ -869,7 +869,18 @@ struct SongStructureAnalyzer: Sendable {
                 isChorus[i] = isChorus[blockStart]
             }
         }
-        flush(blockStart)
+        blockBoundaries.append(lines.count)
+
+        let mergedRanges = mergedGapFragmentedVerseBlocks(
+            blockBoundaries: blockBoundaries, boundaryWasGapOnly: boundaryWasGapOnly,
+            isChorus: isChorus)
+
+        var sections: [VocalSection] = mergedRanges.map { range in
+            VocalSection(
+                kind: isChorus[range.lowerBound] ? .chorus : .verse,
+                start: lines[range.lowerBound].start,
+                label: isChorus[range.lowerBound] ? "Chorus" : "Verse")
+        }
 
         var verseNumber = 0
         for index in sections.indices where sections[index].kind == .verse {
@@ -877,6 +888,66 @@ struct SongStructureAnalyzer: Sendable {
             sections[index].label = "Verse \(verseNumber)"
         }
         return sections
+    }
+
+    /// Merges adjacent, same-kind, non-chorus blocks that were split ONLY by a bare
+    /// `gap >= sectionGap` pause (never a genuine classification-mismatch split — that's real,
+    /// independent evidence of a new section and is never undone here) when at least one side is
+    /// anomalously short compared to the song's other verse-kind blocks — e.g. a Bridge whose
+    /// mid-phrase breath happens to land a hair over `sectionGap`, fragmenting it into two
+    /// short "Verse N" blocks instead of staying one section (Eric, field case, Settle Down
+    /// 2026-07-07: two ~10s/2-3-line fragments between a real Chorus and the Instrumental, where
+    /// every genuine verse in the song runs 20-50s / 6-9 lines). `reclassifyBridgeAndSolo`
+    /// (`SongStructureOverviewBuilder`) then has a fair chance to relabel the merged block as a
+    /// Bridge by chord-pattern mismatch — it never got that chance while split, since a lone
+    /// 2-3 line fragment's own chord signature is too sparse to compare meaningfully.
+    ///
+    /// "Anomalously short" is measured against the OTHER verse-kind blocks already present in the
+    /// song (line count STRICTLY less than half the longest verse-kind block) — never an
+    /// absolute magic number, so this stays a no-op for songs with no long-verse baseline to
+    /// compare against (mirrors `reclassifyBridgeAndSolo`'s own "needs >= 2 occurrences to have
+    /// a template" conservatism). Also requires the longest verse-kind block to have at least
+    /// `minimumBaselineLineCount` lines before the "half" comparison engages at all — a song
+    /// whose verses are ALL naturally short (e.g. two single-line verses) has no reliable
+    /// baseline to call either one an anomaly against, and merging them would be exactly the
+    /// wrong call (regression guard: `testTwoOrdinaryEqualLengthVersesSeparatedByAGapStaySplit`-
+    /// style two-line/one-line verse pairs must stay split).
+    private func mergedGapFragmentedVerseBlocks(
+        blockBoundaries: [Int], boundaryWasGapOnly: [Bool], isChorus: [Bool],
+        minimumBaselineLineCount: Int = 4
+    ) -> [Range<Int>] {
+        let blockCount = blockBoundaries.count - 1
+        guard blockCount > 1 else {
+            return blockCount == 1 ? [blockBoundaries[0]..<blockBoundaries[1]] : []
+        }
+        let verseLineCounts = (0..<blockCount).compactMap { block -> Int? in
+            let range = blockBoundaries[block]..<blockBoundaries[block + 1]
+            return isChorus[range.lowerBound] ? nil : range.count
+        }
+        guard let longestVerse = verseLineCounts.max(), verseLineCounts.count >= 2,
+            longestVerse >= minimumBaselineLineCount
+        else {
+            return (0..<blockCount).map { blockBoundaries[$0]..<blockBoundaries[$0 + 1] }
+        }
+        let shortThreshold = Double(longestVerse) / 2.0
+
+        var merged: [Range<Int>] = [blockBoundaries[0]..<blockBoundaries[1]]
+        for block in 1..<blockCount {
+            let range = blockBoundaries[block]..<blockBoundaries[block + 1]
+            let previousKind = isChorus[merged[merged.count - 1].lowerBound]
+            let thisKind = isChorus[range.lowerBound]
+            let eligibleBoundary = boundaryWasGapOnly[block - 1] && !previousKind && !thisKind
+            let eitherSideAnomalouslyShort =
+                Double(merged[merged.count - 1].count) < shortThreshold
+                || Double(range.count) < shortThreshold
+            if eligibleBoundary, eitherSideAnomalouslyShort {
+                let previous = merged.removeLast()
+                merged.append(previous.lowerBound..<range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
     }
 
     private func wordSet(_ text: String) -> Set<String> {

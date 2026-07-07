@@ -880,6 +880,105 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertEqual(sections.last?.kind, .chorus, "\(sections)")
     }
 
+    /// Regression (Settle Down field case, 2026-07-07): a Bridge whose mid-phrase breath happens
+    /// to land a HAIR over `sectionGap` (4s) must stay ONE section, not fragment into two short
+    /// "Verse N" blocks. Every real verse here runs 6 lines; the bridge's two halves run 1 line
+    /// each — before the fix, the bare `gap >= sectionGap` split (4.1s, no classification
+    /// mismatch: both halves default to `.verse`, same as the real verse) produced
+    /// ["Verse 1", "Chorus", "Verse 2", "Verse 3", "Chorus"]; after the fix the two anomalously
+    /// short same-kind fragments merge into one "Verse 2", giving
+    /// `SongStructureOverviewBuilder.reclassifyBridgeAndSolo` (a later stage, not under test
+    /// here) an actual chance to relabel it as a Bridge by chord-pattern mismatch — impossible
+    /// while it was still two 1-line fragments too sparse to compare meaningfully.
+    func testGapFragmentedShortVerseBlocksMergeIntoOneSection() {
+        func line(_ start: TimeInterval, _ text: String, duration: TimeInterval = 2)
+            -> TimedLyricSegment
+        {
+            TimedLyricSegment(start: start, end: start + duration, text: text)
+        }
+        // Six lines with genuinely distinct wording (not a shared template with one word
+        // swapped) so they never accidentally Jaccard-match EACH OTHER at >= chorusSimilarity
+        // and get misread as a repeated chorus themselves.
+        let verse1Text = [
+            "Morning light breaks through the trees",
+            "Coffee steam rises past my face",
+            "Dog runs circles round the yard",
+            "Neighbors wave from cars going by",
+            "Radio plays a song I love",
+            "Time moves slow on days like these",
+        ]
+        var verse1: [TimedLyricSegment] = []
+        var t: TimeInterval = 0
+        for text in verse1Text {
+            verse1.append(line(t, text))
+            t += 2.3  // 0.3s inter-line gap, well under sectionGap
+        }
+        let chorusText = ["sing the chorus now", "everybody sing along"]
+        t += 1
+        var chorusA: [TimedLyricSegment] = []
+        for text in chorusText {
+            chorusA.append(line(t, text))
+            t += 2.3
+        }
+        t += 1
+        let fragmentA = line(t, "thought I would slow down today", duration: 1.5)
+        t = fragmentA.end + 4.1  // just OVER sectionGap (4.0) -- the exact field case
+        let fragmentB = line(t, "but then I saw her smile", duration: 1.5)
+        t = fragmentB.end + 1
+        var chorusB: [TimedLyricSegment] = []
+        for text in chorusText {
+            chorusB.append(line(t, text))
+            t += 2.3
+        }
+
+        let lyrics = verse1 + chorusA + [fragmentA, fragmentB] + chorusB
+        let sections = SongStructureAnalyzer().vocalSections(for: lyrics)
+
+        XCTAssertEqual(
+            sections.map(\.label), ["Verse 1", "Chorus", "Verse 2", "Chorus"], "\(sections)")
+        XCTAssertEqual(sections.map(\.kind), [.verse, .chorus, .verse, .chorus], "\(sections)")
+        // The merged "Verse 2" must start at the FIRST fragment, not the second -- confirming the
+        // two fragments actually merged into one section rather than the second simply vanishing.
+        XCTAssertEqual(sections[2].start, fragmentA.start, "\(sections)")
+    }
+
+    /// Guard-rail: two ORDINARY, full-length verses (no chorus between them, a strophic song)
+    /// separated only by a `sectionGap`-or-longer pause must stay split — the merge above only
+    /// fires when at least one side is anomalously SHORT relative to the song's other verse-kind
+    /// blocks, so two same-length verses are never accidentally collapsed into one.
+    func testTwoOrdinaryEqualLengthVersesSeparatedByAGapStaySplit() {
+        func line(_ start: TimeInterval, _ text: String) -> TimedLyricSegment {
+            TimedLyricSegment(start: start, end: start + 2, text: text)
+        }
+        let verse1Text = [
+            "Morning light breaks through the trees",
+            "Coffee steam rises past my face",
+            "Dog runs circles round the yard",
+            "Neighbors wave from cars going by",
+        ]
+        let verse2Text = [
+            "Evening falls across the field",
+            "Crickets start their nightly song",
+            "Porch light flickers on next door",
+            "Stars come out one by one",
+        ]
+        var verse1: [TimedLyricSegment] = []
+        var t: TimeInterval = 0
+        for text in verse1Text {
+            verse1.append(line(t, text))
+            t += 2.3
+        }
+        t = verse1.last!.end + 4.1  // just over sectionGap, same magnitude as the fragment case
+        var verse2: [TimedLyricSegment] = []
+        for text in verse2Text {
+            verse2.append(line(t, text))
+            t += 2.3
+        }
+        let sections = SongStructureAnalyzer().vocalSections(for: verse1 + verse2)
+        XCTAssertEqual(sections.map(\.label), ["Verse 1", "Verse 2"], "\(sections)")
+        XCTAssertEqual(sections.map(\.start), [verse1[0].start, verse2[0].start], "\(sections)")
+    }
+
     func testChordTimeDirectiveIsPreservedByTheChordProParserAsAnOpaqueDirective() throws {
         // x_ is the ChordPro convention for app-specific extensions: a spec-compliant parser
         // must not choke on it, and this app's own parser must round-trip it verbatim through a

@@ -150,7 +150,7 @@ enum RomanNumeralMapper {
 /// lines. This is a PROXY, not real melody analysis: the app has no pitch-contour/melody-
 /// transcription pipeline (only ASR lyrics + chord/beat timing), so genuine melodic-phrase
 /// identity can't be computed honestly. Instead, two lines are treated as "the same
-/// melodic phrase" when they share an identical chord-pattern signature AND a similar
+/// melodic phrase" when they share a MATCHING chord-pattern signature AND a similar
 /// syllable count — usually true in verse/chorus pop/country form, where the tune repeats
 /// under different words (that's exactly what makes an AABA verse over an ABCB rhyme
 /// scheme possible), but a stand-in. Callers should label output as approximate.
@@ -166,7 +166,8 @@ enum MelodyPhraseProxy {
             let signature = chordSignatures[index]
             let syllables = syllableCounts[index]
             if let match = clusters.first(where: {
-                $0.signature == signature && abs($0.syllables - syllables) <= syllableTolerance
+                chordSignaturesMatch($0.signature, signature)
+                    && abs($0.syllables - syllables) <= syllableTolerance
             }) {
                 letters.append(match.letter)
             } else {
@@ -177,6 +178,25 @@ enum MelodyPhraseProxy {
             }
         }
         return letters
+    }
+
+    /// Two per-line chord signatures cluster as the same melodic phrase when identical, or — to
+    /// tolerate real per-line chord-window timing jitter/an embellishing passing chord some
+    /// occurrences don't have — when their SET overlap (Jaccard) is at least 0.75. Mirrors
+    /// `SongStructureOverviewBuilder.signaturesMatch`'s existing section-level tolerance; without
+    /// it, real per-line chord data (`chords.filter { $0.time >= line.start && $0.time < line.end
+    /// }`) almost never produces byte-identical arrays across two melodically-identical lines, so
+    /// EVERY line ends up in its own cluster (Eric, live review, 2026-07-07: a 9-line chorus
+    /// showed phrase pattern "A B C D E F G H" — essentially zero detected repetition — where a
+    /// real chorus melody normally reuses just a handful of phrase shapes, e.g. AABA/ABAB).
+    private static func chordSignaturesMatch(_ a: [String], _ b: [String]) -> Bool {
+        if a == b { return true }
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        let setA = Set(a)
+        let setB = Set(b)
+        let union = setA.union(setB).count
+        guard union > 0 else { return false }
+        return Double(setA.intersection(setB).count) / Double(union) >= 0.75
     }
 }
 
@@ -299,10 +319,7 @@ struct SongStructureOverviewBuilder: Sendable {
         for kind in [SongStructureOverview.Section.Kind.verse, .chorus, .bridge] {
             let occurrences = sections.filter { $0.kind == kind && !$0.lines.isEmpty }
             guard !occurrences.isEmpty else { continue }
-            let lineCounts = occurrences.map(\.lines.count)
-            let canonicalLineCount = mostCommonInt(lineCounts) ?? occurrences[0].lines.count
-            let representative =
-                occurrences.first { $0.lines.count == canonicalLineCount } ?? occurrences[0]
+            let representative = representativeOccurrence(occurrences, key: key)
 
             let rhyme = rhymeScheme(for: representative.lines)
             let meter = representative.lines.map(syllableCount)
@@ -384,10 +401,29 @@ struct SongStructureOverviewBuilder: Sendable {
         return counts.max(by: { $0.value < $1.value })?.key
     }
 
-    private func mostCommonInt(_ values: [Int]) -> Int? {
-        var counts: [Int: Int] = [:]
-        for value in values { counts[value, default: 0] += 1 }
-        return counts.max(by: { $0.value < $1.value })?.key
+    /// Picks the occurrence that best represents this kind's canonical shape. Prefers a musical
+    /// signal — the occurrence whose chord pattern matches the kind's OWN majority chord
+    /// signature, reusing the same `chordSignature`/`signaturesMatch`/`mostCommon` comparators
+    /// `reclassifyBridgeAndSolo` already uses — over a lyric-derived one (line count). A text-
+    /// segmentation glitch producing one anomalously-short occurrence must never corrupt the
+    /// displayed template just because it happened to win an unstable line-count tie (Eric, live
+    /// review, 2026-07-07: "This seems like another place with too much dependence on lyrics" —
+    /// live-observed on Settle Down: a 4-way line-count tie [6,4,2,3] with no majority picked the
+    /// 2-line fragment as "representative" via Dictionary iteration order). Falls back to the
+    /// LONGEST-DURATION occurrence — still a musical measure, never line count — when no chord-
+    /// pattern majority exists (a lone occurrence, or no two chord signatures match).
+    private func representativeOccurrence(
+        _ occurrences: [SongStructureOverview.Section], key: MusicalKey?
+    ) -> SongStructureOverview.Section {
+        let signatures = occurrences.map { chordSignature($0.chords, key: key) }
+        if let majority = mostCommon(signatures),
+            let match = occurrences.first(where: {
+                signaturesMatch(chordSignature($0.chords, key: key), majority)
+            })
+        {
+            return match
+        }
+        return occurrences.max { ($0.end - $0.start) < ($1.end - $1.start) } ?? occurrences[0]
     }
 
     /// Not `private`: reused directly by `StructureAlignmentDiagnostics` to compute a section
