@@ -493,4 +493,74 @@ Implemented as planned, in one new source file plus small additions:
   this session.
 
 ---
+# Review pane width, iPad nav-bar chrome, ChordPro concatenation bug (2026-07-06, later same day)
+
+Three follow-up reports that came in during/after the iPad testing pass above.
+
+## Review pane forcing left/right panels off-screen
+
+- `ChordProTabEditor`'s toolbar (title/badge/Import/mode picker/timing offset/View menu/Mark
+  Reviewed/Transpose/Export/JustChords) is only used by the Review tab (`ChordProReviewTab`
+  is the sole caller with `config: .chordPro`, which turns every optional control on) and had
+  no width constraint — its summed ideal width exceeded the middle column, especially on iPad,
+  pushing `SongSidebar`/`StemMixSidebar` out of the window.
+- Fix: split the toolbar into its own `toolbar` computed view and wrap it in a horizontal
+  `ScrollView` inside `body`, so it can only ever claim the width it's given instead of forcing
+  its parent wider. Dropped the toolbar's trailing `Spacer()` (meaningless inside a horizontal
+  ScrollView).
+- Verified live on the iPad simulator: Review tab now shows the full toolbar plus both side
+  panels, nothing off-screen.
+
+## iPad "wasted space at the top of the screen" (second report, distinct from the Structure-tab one)
+
+- Root cause: `SongSidebar`'s `.navigationTitle("Songs")` (inside `ContentView`'s single
+  `NavigationStack`) renders iOS's large-title system nav bar above our own compact collapsible
+  header — chrome macOS never shows, since `.navigationTitle` there just sets the window title.
+- Fix: new `View.hideSystemNavigationBarCompat()` in `PlatformShims.swift`
+  (`.toolbar(.hidden, for: .navigationBar)` on iOS, no-op on macOS), applied right after
+  `.navigationTitle("Songs")`.
+- Verified live on the iPad simulator: status bar sits directly above the compact header now,
+  no large title banner.
+
+## ChordPro lines rendering concatenated/scrambled on iPad ("Summertime's her with you")
+
+Finally root-caused and fixed Task #15 (word-doubling/timing-overlap in
+`LyricBlendRowBuilder.swift`), left pending across multiple earlier sessions.
+
+- Root cause (confirmed against the iPad simulator's OWN persisted analysis JSON, pulled via
+  `xcrun simctl get_app_container`): with only Parakeet available on iPad (no Whisper/accuracy
+  model), `balancedDraft`'s own line grouper ran two-to-three real lyric lines together into a
+  single run-on segment, while `fastDraft` split the SAME span into 2-3 clean, correctly-ordered
+  segments. `LyricBlendRowBuilder.buildRows`'s clustering only pulled the FIRST of those clean
+  segments into the run-on's cluster (the rest were more than `clusterWindow` away from its
+  anchor), so the clean segments became separate `LyricBlendRow`s whose time spans nonetheless
+  OVERLAPPED the run-on row. `ChordProDraftBuilder` has no concept of overlapping lyric lines
+  (a single voice can't sing two spans at once), so it printed all of them, and their words read
+  as scrambled/doubled on the chart.
+- Fix: `LyricBlendRowBuilder.mergeCrossModeDuplicates` gained a second, fallback merge pass
+  (`canMergeByOverlap`) that runs only when the existing exact-normalized-text pass finds
+  nothing. It merges an earlier cluster with a later one when their time windows actually
+  overlap AND the later cluster is a single-mode fragment (not already corroborated by 2+
+  modes) AND no mode common to both contributes segments that themselves overlap in time. The
+  single-mode-fragment condition is what keeps the existing `testRunOnDemotionTolerates…`
+  field case (Settle Down: both balanced AND fast cleanly split the phrase's second half into
+  their own 2-mode row) staying as 2 separate rows — that shape is independently trustworthy
+  and is `runOnDuplicatesDemoted`'s job, not this merge.
+- Added two regression tests reproducing the exact live iPad timestamps/text: a 2-cluster case
+  and the full 3-fastDraft-segment case from the field data.
+- Verified end-to-end: rebuilt the iPad app, re-ran "Analyze Song" on the live simulator for
+  the same song, and confirmed via the freshly-written analysis JSON that the chorus now
+  renders as ONE coherent line ("Laughter rising in the air It's just me and you right there
+  sometimes here with you") instead of 3 overlapping/scrambled ones.
+
+## Verification
+
+- `swift build`, `swift test` (604 tests: the same pre-existing 5-failure/8-assertion
+  `AppModelTests`/`MusicLibraryAppModelTests` baseline, nothing new), `swift build -c release`,
+  and `swift format lint --strict --recursive Sources Tests` all clean.
+- Rebuilt + reinstalled + relaunched the iPad simulator app after every change; visually
+  confirmed all three fixes live (Review pane layout, nav-bar chrome, and a full live
+  re-analysis of "Summertime's her with you" showing the corrected single-line chorus).
+
+---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details

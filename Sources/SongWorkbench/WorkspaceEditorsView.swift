@@ -1014,80 +1014,15 @@ private struct ChordProTabEditor: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            HStack {
-                Text(config.title)
-                    .font(.swDisplay(15, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                Text(statusBadge)
-                    .font(.swDisplay(11))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color.swSurface, in: Capsule())
-                if config.supportsImport {
-                    Button("Import...", systemImage: "square.and.arrow.down") {
-                        importDocument()
-                    }
-                    .labelStyle(.iconOnly)
-                    .help("Import a ChordPro file")
-                }
-                Picker(config.pickerAccessibilityLabel, selection: $mode) {
-                    Text("App Preview").tag(Mode.preview)
-                    Text(config.secondaryModeLabel).tag(Mode.secondary)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-                timingOffsetControl
-                // The four display toggles live in one compact "View" menu so their labels can't
-                // wrap and crowd the toolbar.
-                Menu {
-                    Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
-                    Toggle("Beat dots", isOn: $beatDotsEnabled)
-                    Toggle("Barlines", isOn: $barlinesEnabled)
-                    Toggle("Waveform", isOn: $showWaveform)
-                    Toggle("Show Bass Notes", isOn: $showBassNotes)
-                        .disabled(model.bassNotes.isEmpty)
-                } label: {
-                    Label("View", systemImage: "eye")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help(
-                    "Show/hide the bouncing ball, beat dots, measure barlines, "
-                        + "the per-line waveform, and the detected bass note row")
-                Spacer()
-                if config.supportsMarkReviewed {
-                    Button("Mark Reviewed", systemImage: "checkmark.seal") {
-                        model.markChordProReviewed()
-                    }
-                    .labelStyle(.iconOnly)
-                    .help("Mark the chart reviewed")
-                    .disabled(
-                        model.chordProSource.isEmpty || model.chordProReviewState == .reviewed
-                    )
-                }
-                if config.supportsTranspose {
-                    Stepper(
-                        "Transpose \(model.chordProTranspose)",
-                        value: $model.chordProTranspose, in: -12...12
-                    )
-                    .fixedSize()
-                }
-                Button("Export...", systemImage: "square.and.arrow.up") {
-                    exportDocument()
-                }
-                .labelStyle(.iconOnly)
-                .help("Export the chart to a ChordPro file")
-                .disabled(!isExportEnabled)
-                if config.kind == .chordPro {
-                    Button("JustChords", systemImage: "arrow.up.forward.app") {
-                        openInJustChords()
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(model.chordProSource.isEmpty)
-                    .help("Export the current chart and open it in the JustChords app.")
-                }
+            // The full toolbar (title, Import, mode picker, timing offset, View menu, Mark
+            // Reviewed, Transpose, Export, JustChords) sums to more ideal width than the
+            // middle column ever has, especially on iPad — an unconstrained HStack here
+            // forced the whole pane wider and pushed the song list/stem mixer off-screen
+            // (Eric: "Review pane is too wide and forces left and right panels off screen").
+            // A horizontal ScrollView caps the row's contribution to the parent's layout at
+            // whatever width is actually available; the row itself just scrolls instead.
+            ScrollView(.horizontal, showsIndicators: false) {
+                toolbar
             }
 
             if showsEmptyState {
@@ -1167,6 +1102,84 @@ private struct ChordProTabEditor: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var toolbar: some View {
+        HStack {
+            Text(config.title)
+                .font(.swDisplay(15, weight: .semibold))
+                .foregroundStyle(Color.swTextPrimary)
+            Text(statusBadge)
+                .font(.swDisplay(11))
+                .foregroundStyle(Color.swTextSecondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.swSurface, in: Capsule())
+            if config.supportsImport {
+                Button("Import...", systemImage: "square.and.arrow.down") {
+                    importDocument()
+                }
+                .labelStyle(.iconOnly)
+                .help("Import a ChordPro file")
+            }
+            Picker(config.pickerAccessibilityLabel, selection: $mode) {
+                Text("App Preview").tag(Mode.preview)
+                Text(config.secondaryModeLabel).tag(Mode.secondary)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 190)
+            timingOffsetControl
+            // The four display toggles live in one compact "View" menu so their labels can't
+            // wrap and crowd the toolbar.
+            Menu {
+                Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
+                Toggle("Beat dots", isOn: $beatDotsEnabled)
+                Toggle("Barlines", isOn: $barlinesEnabled)
+                Toggle("Waveform", isOn: $showWaveform)
+                Toggle("Show Bass Notes", isOn: $showBassNotes)
+                    .disabled(model.bassNotes.isEmpty)
+            } label: {
+                Label("View", systemImage: "eye")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(
+                "Show/hide the bouncing ball, beat dots, measure barlines, "
+                    + "the per-line waveform, and the detected bass note row")
+            if config.supportsMarkReviewed {
+                Button("Mark Reviewed", systemImage: "checkmark.seal") {
+                    model.markChordProReviewed()
+                }
+                .labelStyle(.iconOnly)
+                .help("Mark the chart reviewed")
+                .disabled(
+                    model.chordProSource.isEmpty || model.chordProReviewState == .reviewed
+                )
+            }
+            if config.supportsTranspose {
+                Stepper(
+                    "Transpose \(model.chordProTranspose)",
+                    value: $model.chordProTranspose, in: -12...12
+                )
+                .fixedSize()
+            }
+            Button("Export...", systemImage: "square.and.arrow.up") {
+                exportDocument()
+            }
+            .labelStyle(.iconOnly)
+            .help("Export the chart to a ChordPro file")
+            .disabled(!isExportEnabled)
+            if config.kind == .chordPro {
+                Button("JustChords", systemImage: "arrow.up.forward.app") {
+                    openInJustChords()
+                }
+                .labelStyle(.iconOnly)
+                .disabled(model.chordProSource.isEmpty)
+                .help("Export the current chart and open it in the JustChords app.")
+            }
+        }
+        .fixedSize()
     }
 
     @ViewBuilder

@@ -70,6 +70,7 @@ private struct SongSidebar: View {
             }
         }
         .navigationTitle("Songs")
+        .hideSystemNavigationBarCompat()
         .focused($listFocused)
         .task { listFocused = true }
         // Selecting a song programmatically (type-to-select) can move first-responder to the new

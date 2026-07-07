@@ -158,4 +158,18 @@ extension View {
             self
         #endif
     }
+
+    /// Hides the system navigation bar. macOS renders `.navigationTitle` in the window's own
+    /// title bar and never draws this row, so hiding it there is a no-op; on iPadOS it's a full
+    /// large-title banner sitting above our own compact collapsible header — pure wasted
+    /// vertical space once we already show the song name and status ourselves (Eric: "still a
+    /// lot of wasted space at the top of the iPad screen", 2026-07-06).
+    @ViewBuilder
+    func hideSystemNavigationBarCompat() -> some View {
+        #if os(iOS)
+            toolbar(.hidden, for: .navigationBar)
+        #else
+            self
+        #endif
+    }
 }

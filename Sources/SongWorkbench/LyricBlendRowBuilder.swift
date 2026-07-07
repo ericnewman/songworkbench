@@ -78,6 +78,10 @@ enum LyricBlendRowBuilder {
             if let anchor = cluster.first?.segment.start,
                 let texts = normalizedModeTexts(cluster)
             {
+                // Pass 1: exact normalized-text match — the original, most-specific rule.
+                // Runs to completion across every earlier candidate in the window before any
+                // fallback is considered, so a real match further back (e.g. past an unrelated
+                // intervening row) is never pre-empted by a coincidental overlap closer by.
                 for index in result.indices.reversed() {
                     guard let earlierAnchor = result[index].first?.segment.start,
                         anchor - earlierAnchor <= mergeWindow
@@ -89,6 +93,35 @@ enum LyricBlendRowBuilder {
                     mergedIndex = index
                     break
                 }
+                // Pass 2 (fallback, only when pass 1 found nothing): one mode's OWN grouper
+                // can run two real lines together into a single run-on segment (an over-merge,
+                // not a mistimed duplicate) — its text is then a superset of the other mode's
+                // cleanly-split line, so normalized texts never match. Two rows can never
+                // legitimately overlap in time (one voice can't sing two spans at once), so
+                // any actual time-window overlap means they're really the same moment; merging
+                // keeps them as alternate candidates of ONE row instead of two overlapping
+                // printed lines, which ChordProDraftBuilder rendered as words from both
+                // scrambled together on one chart line (field report on iPad's Parakeet-only
+                // pass, "Summertime's her with you": a balancedDraft run-on row spanning
+                // 41.37–49.8s overlapped THREE separate fastDraft rows that ordinary clustering
+                // had split apart because the run-on's own anchor only pulled in the first of
+                // them). Deliberately NOT gated on full mode-set disjointness — one of those
+                // fastDraft rows shares its mode with the run-on cluster (clustering had already
+                // folded fastDraft's first fragment in), and requiring full disjointness left
+                // the other two stranded as their own overlapping rows. `canMergeByOverlap`
+                // still refuses when the shared mode's OWN segments in the two clusters
+                // themselves overlap in time — that pattern is a genuine same-engine repeat
+                // (`testRepeatedHookFromTheSameModeStaysTwoRows`), not a split run-on.
+                if mergedIndex == nil {
+                    for index in result.indices.reversed() {
+                        guard let earlierAnchor = result[index].first?.segment.start,
+                            anchor - earlierAnchor <= mergeWindow
+                        else { break }
+                        guard canMergeByOverlap(result[index], cluster) else { continue }
+                        mergedIndex = index
+                        break
+                    }
+                }
             }
             if let mergedIndex {
                 result[mergedIndex] += cluster
@@ -97,6 +130,45 @@ enum LyricBlendRowBuilder {
             }
         }
         return result
+    }
+
+    /// Whether two clusters' provisional `[start, end]` windows (the span `row(from:)` would
+    /// give them) actually overlap in time, not just start close together.
+    private static func timeWindowsOverlap(_ a: [Tagged], _ b: [Tagged]) -> Bool {
+        guard let aStart = a.map(\.segment.start).min(), let aEnd = a.map(\.segment.end).max(),
+            let bStart = b.map(\.segment.start).min(), let bEnd = b.map(\.segment.end).max()
+        else { return false }
+        return aStart < bEnd && bStart < aEnd
+    }
+
+    /// Whether an EARLIER cluster `a` may reabsorb a later, overlapping cluster `b`. `b` must
+    /// be a single-mode fragment: a cluster already corroborated by 2+ modes (Settle Down field
+    /// case — balanced AND fast both cleanly split the phrase's second half into their own
+    /// cluster) is independently trustworthy and must stand as its own row even when an
+    /// earlier mode's contaminated run-on time-overlaps it; only `runOnDuplicatesDemoted`
+    /// should touch that shape, by demoting the run-on default within its OWN row rather than
+    /// merging rows. A lone single-mode cluster overlapping `a`, though, is the orphaned-
+    /// remainder-of-a-run-on shape (field case: fastDraft's 2nd/3rd segments splitting off from
+    /// balancedDraft's single run-on because only the 1st segment fell inside the run-on's
+    /// cluster window) and should be folded back in. Even then, a mode common to both must not
+    /// contribute segments that themselves overlap each other in time — that pattern is a
+    /// genuine same-engine repeat (two truly simultaneous hypotheses from one mode), never a
+    /// split run-on, and must stay separate (`testRepeatedHookFromTheSameModeStaysTwoRows`).
+    private static func canMergeByOverlap(_ a: [Tagged], _ b: [Tagged]) -> Bool {
+        guard Set(b.map(\.mode)).count == 1 else { return false }
+        guard timeWindowsOverlap(a, b) else { return false }
+        let aByMode = Dictionary(grouping: a, by: \.mode)
+        let bByMode = Dictionary(grouping: b, by: \.mode)
+        for (mode, aItems) in aByMode {
+            guard let bItems = bByMode[mode] else { continue }
+            for x in aItems {
+                for y in bItems
+                where x.segment.start < y.segment.end && y.segment.start < x.segment.end {
+                    return false
+                }
+            }
+        }
+        return true
     }
 
     /// The DISTINCT normalized texts a cluster's modes would each contribute as candidates

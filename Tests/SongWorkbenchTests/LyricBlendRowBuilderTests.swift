@@ -256,6 +256,68 @@ final class LyricBlendRowBuilderTests: XCTestCase {
         XCTAssertEqual(rows.count, 2)
     }
 
+    func testOverlappingRunOnClusterMergesWithNonMatchingDisjointCluster() {
+        // iPad field report ("Summertime's her with you", Parakeet-only pass, no accuracy
+        // model): balancedDraft's own grouper ran two real lines together into one run-on
+        // segment ("...right there sometimes here with you"), landing its anchor beyond the
+        // 1.5s cluster window from fastDraft's cleanly-split "It's just me and you right
+        // there." — so they formed two SEPARATE, but time-overlapping, rows. Neither the
+        // normal cluster window nor the exact-text merge caught this (the run-on's text is a
+        // superset, not a match), so both rows printed and ChordProDraftBuilder scrambled
+        // their words together onto one chart line ("iPad is showing multiple lines
+        // concatenated into a single line"). Disjoint-mode clusters that overlap in time can
+        // never legitimately both stand alone (one voice can't sing two spans at once), so
+        // they must merge into one row instead.
+        let balanced = [
+            segment(
+                "Laughter rising in the air It's just me and you right there sometimes here with you",
+                start: 41.37, end: 49.44)
+        ]
+        let fast = [segment("It's just me and you right there.", start: 43.69, end: 46.22)]
+
+        let rows = LyricBlendRowBuilder.buildRows(
+            fastDraft: fast, balancedDraft: balanced, accuracy: [])
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(
+            Set(rows[0].candidates.map(\.mode)), [.balancedDraft, .fastDraft])
+        XCTAssertEqual(rows[0].start, 41.37, accuracy: 0.000_001)
+        XCTAssertEqual(rows[0].end, 49.44, accuracy: 0.000_001)
+    }
+
+    func testRunOnClusterAbsorbsMultipleSeparatelyClusteredSameModeRows() {
+        // The full live-data shape from the same iPad re-analysis: fastDraft split the phrase
+        // cleanly into THREE sequential segments, but only the first ("Laughter rising in the
+        // air.") landed within the balancedDraft run-on's cluster window — the other two
+        // ("It's just me…", "Sometimes here…") fell outside it and became their own clusters.
+        // Those two share a mode (fastDraft) with the run-on cluster, so the plain
+        // mode-set-disjointness rule refused to merge them, leaving 3 overlapping rows that
+        // rendered as scrambled text. `canMergeByOverlap` must still combine them because
+        // fastDraft's OWN three segments never overlap each other — only the run-on's mode
+        // set does.
+        let balanced = [
+            segment(
+                "Laughter rising in the air It's just me and you right there sometimes here with you",
+                start: 41.37, end: 49.78)
+        ]
+        let fast = [
+            segment("Laughter rising in the air.", start: 41.45, end: 42.9),
+            segment("It's just me and you right there.", start: 43.69, end: 46.22),
+            segment("Sometimes here with you.", start: 46.56, end: 49.84),
+        ]
+
+        let rows = LyricBlendRowBuilder.buildRows(
+            fastDraft: fast, balancedDraft: balanced, accuracy: [])
+
+        XCTAssertEqual(rows.count, 1, "all four overlapping segments must collapse into one row")
+        XCTAssertEqual(Set(rows[0].candidates.map(\.mode)), [.balancedDraft, .fastDraft])
+        let fastCandidate = rows[0].candidates.first { $0.mode == .fastDraft }
+        XCTAssertEqual(
+            fastCandidate?.text,
+            "Laughter rising in the air. It's just me and you right there. Sometimes here with you."
+        )
+    }
+
     func testRunOnDuplicateDemotedToTheSplitCandidate() {
         // Field case ("line 9 is actually 2 lines"): accuracy ran the Smoke line together
         // with the Laughter line inside one row, while balanced/fast correctly held just
