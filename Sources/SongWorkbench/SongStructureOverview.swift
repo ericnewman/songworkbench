@@ -57,6 +57,11 @@ struct SongStructureOverview: Equatable, Sendable {
         /// End-rhyme letter per line, e.g. `["A","B","C","B"]`; `"-"` when a line's last
         /// word has no entry in the bundled rhyme dictionary.
         var rhymeScheme: [String]
+        /// Collapsed (consecutive-sustains-merged) chord-event count per line — the per-line
+        /// counterpart to `chordPattern`'s whole-section flat sequence. Used by
+        /// `StructureAlignmentDiagnostics` as a corroborating (not required) third signal
+        /// alongside meter/rhyme deviation.
+        var chordCountPattern: [Int] = []
     }
 
     /// Roll-up for a wordless section kind (Intro/Instrumental/Solo/Outro) — there's no lyric
@@ -313,7 +318,8 @@ struct SongStructureOverviewBuilder: Sendable {
             templates.append(
                 .init(
                     kind: kind, lineCount: representative.lines.count, phrasePattern: phrase,
-                    chordPattern: chordPattern, meterPattern: meter, rhymeScheme: rhyme))
+                    chordPattern: chordPattern, meterPattern: meter, rhymeScheme: rhyme,
+                    chordCountPattern: perLineChordSignatures.map(\.count)))
         }
         return templates
     }
@@ -384,7 +390,9 @@ struct SongStructureOverviewBuilder: Sendable {
         return counts.max(by: { $0.value < $1.value })?.key
     }
 
-    private func syllableCount(for line: TimedLyricSegment) -> Int {
+    /// Not `private`: reused directly by `StructureAlignmentDiagnostics` to compute a section
+    /// occurrence's ACTUAL per-line syllable counts for comparison against a `PhraseTemplate`.
+    func syllableCount(for line: TimedLyricSegment) -> Int {
         let words =
             line.words.isEmpty
             ? line.text.split { $0.isWhitespace }.map(String.init)
@@ -393,9 +401,19 @@ struct SongStructureOverviewBuilder: Sendable {
     }
 
     /// End-rhyme letter per line (e.g. `["A","B","C","B"]`) via the bundled CMU-derived
-    /// rhyme dictionary; `"-"` when a line's last word has no entry.
-    private func rhymeScheme(for lines: [TimedLyricSegment]) -> [String] {
-        let detector = RhymeDetector.shared
+    /// rhyme dictionary; `"-"` when a line's last word has no entry. Not `private`: reused
+    /// directly by `StructureAlignmentDiagnostics` — see `syllableCount(for:)`'s doc comment.
+    /// Letters are assigned positionally (first line to introduce a rhyme part gets the next
+    /// letter), so calling this fresh on a DIFFERENT set of lines than the template was built
+    /// from still produces a comparable letter-sequence SHAPE, not just comparable identity.
+    ///
+    /// `detector` defaults to `.shared` (the real bundled dictionary) but is injectable so tests
+    /// can supply a small hand-built table — the SPM test bundle doesn't host the app target's
+    /// `Resources/`, so `.shared` resolves every word to "no entry" there (see
+    /// `RhymeDetectorTests`'s own hand-built-table pattern).
+    func rhymeScheme(
+        for lines: [TimedLyricSegment], detector: RhymeDetector = .shared
+    ) -> [String] {
         var partToLetter: [String: String] = [:]
         var nextLetter: UInt8 = 65  // "A"
         var letters: [String] = []
@@ -428,5 +446,141 @@ struct SongStructureOverviewBuilder: Sendable {
         if let source = input.sourceDuration, source > 0 { return source }
         if let lastBeat = input.beatTimes.max(), lastBeat > lastKnownEnd { return lastBeat }
         return lastKnownEnd
+    }
+}
+
+/// Flags lyric lines whose syllable count AND end-rhyme both deviate from their section's
+/// established `PhraseTemplate` — a structural/linguistic anomaly signal, distinct from (and
+/// complementary to) `ReviewConfidenceTier`'s per-word ASR-confidence tint and
+/// `LyricLineDiagnostics`'s acoustic beat-grid heuristic. Eric, 2026-07-06: "It seems like
+/// enforcing some level of alignment would have caught these bugs sooner," and "When we have
+/// rhyming sentences, it seems like they would be separate lines, and not concatenated" — a
+/// word-doubling/run-on grouping bug breaks the established verse/chorus shape, and a rhyme
+/// scheme is one of the strongest tells that a transcription over- or under-split a line.
+///
+/// Requiring BOTH meter and rhyme to disagree (not either alone) is deliberate: a single new
+/// internal rhyme or a slightly longer line is ordinary songwriting variation, but a line that
+/// is simultaneously off-meter AND breaks the established rhyme is a much stronger sign that
+/// something got merged, split, or mis-transcribed. A per-line chord-event-count mismatch is
+/// folded in as a third, corroborating (not required) vote when it's also present.
+enum StructureAlignmentDiagnostics {
+    /// Minimum syllable-count difference (vs. the template's line) treated as a real deviation,
+    /// not ordinary phrasing variation.
+    private static let syllableDeviationThreshold = 2
+
+    /// Reason strings keyed by segment id, matching `LyricLineDiagnostics.suspectReasons`'s
+    /// shape so a caller can merge the two into one review-flag pass. `detector` defaults to
+    /// `.shared` (the real bundled dictionary); see `SongStructureOverviewBuilder.rhymeScheme`'s
+    /// doc comment for why tests inject a hand-built table instead.
+    static func anomalies(
+        in overview: SongStructureOverview, detector: RhymeDetector = .shared
+    ) -> [TimedLyricSegment.ID: String] {
+        var result: [TimedLyricSegment.ID: String] = [:]
+        let templatesByKind = Dictionary(
+            uniqueKeysWithValues: overview.templates.map { ($0.kind, $0) })
+        let builder = SongStructureOverviewBuilder()
+
+        for section in overview.form {
+            guard let template = templatesByKind[section.kind], !section.lines.isEmpty else {
+                continue
+            }
+
+            // A line-count mismatch means position-by-position comparison isn't meaningful —
+            // the established shape has N lines, this occurrence has a different count, which
+            // is itself a strong sign one line was merged or split incorrectly. Flag it as a
+            // whole (on the first line) rather than guess which specific line is at fault.
+            guard section.lines.count == template.lineCount else {
+                if let first = section.lines.first {
+                    result[first.id] =
+                        "Line count (\(section.lines.count)) differs from the established "
+                        + "\(section.label) shape (\(template.lineCount) lines) — a line may "
+                        + "have been merged or split incorrectly."
+                }
+                continue
+            }
+
+            let actualMeter = section.lines.map(builder.syllableCount(for:))
+
+            for (index, line) in section.lines.enumerated() {
+                guard index < template.meterPattern.count, index < template.rhymeScheme.count
+                else { continue }
+
+                let expectedSyllables = template.meterPattern[index]
+                let actualSyllables = actualMeter[index]
+                let meterDeviates =
+                    expectedSyllables > 0
+                    && abs(actualSyllables - expectedSyllables) >= syllableDeviationThreshold
+
+                let rhymeDeviates = breaksEstablishedRhyme(
+                    at: index, in: section.lines, template: template, detector: detector)
+
+                guard meterDeviates, rhymeDeviates else { continue }
+
+                var reason =
+                    "Off the \(section.label) pattern — \(actualSyllables) syllables "
+                    + "(expected ~\(expectedSyllables)) and breaks the established rhyme."
+                if index < template.chordCountPattern.count {
+                    let expectedChords = template.chordCountPattern[index]
+                    let actualChords = collapsedChordCount(
+                        section.chords.filter { $0.time >= line.start && $0.time < line.end })
+                    if expectedChords > 0, actualChords != expectedChords {
+                        reason +=
+                            " Chord count also differs (\(actualChords) vs \(expectedChords))."
+                    }
+                }
+                result[line.id] = reason
+            }
+        }
+        return result
+    }
+
+    /// Chord-event count with consecutive same-label sustains collapsed to one — mirrors the
+    /// dedup rule in `SongStructureOverviewBuilder.chordSignature` without needing that
+    /// function's `MusicalKey`-relative numeral mapping (irrelevant to a plain count).
+    private static func collapsedChordCount(_ chords: [EditableChordEvent]) -> Int {
+        let sorted = chords.sorted { $0.time < $1.time }
+        var count = 0
+        var lastLabel: String?
+        for chord in sorted where chord.chord != lastLabel {
+            count += 1
+            lastLabel = chord.chord
+        }
+        return count
+    }
+
+    /// Whether the ACTUAL line at `index` breaks a rhyme partnership the template establishes:
+    /// the template pairs this line's position with another position under the same rhyme
+    /// letter, but the CURRENT words at those two positions no longer actually rhyme.
+    ///
+    /// Deliberately compares real words directly via `RhymeDetector.rhymes`, not the letter
+    /// LABELS `PhraseTemplate.rhymeScheme`/`SongStructureOverviewBuilder.rhymeScheme(for:)`
+    /// produce — those letters are assigned positionally, fresh, on every call (first line to
+    /// introduce a rhyme part in THAT call gets the next letter). Two independently-computed
+    /// schemes can coincidentally land on the same letter at the same index without meaning the
+    /// same phonetic class (e.g. a template's index-2 "B" from a dog/frog pair and an unrelated
+    /// occurrence's index-2 "B" from an entirely different word, simply because both happened to
+    /// be the second unique rhyme part introduced in their own line sequence) — comparing letter
+    /// strings directly would silently miss real rhyme breaks like that.
+    private static func breaksEstablishedRhyme(
+        at index: Int, in lines: [TimedLyricSegment],
+        template: SongStructureOverview.PhraseTemplate, detector: RhymeDetector
+    ) -> Bool {
+        let letter = template.rhymeScheme[index]
+        guard letter != "-" else { return false }
+        guard
+            let partnerIndex = template.rhymeScheme.indices.first(where: {
+                $0 != index && template.rhymeScheme[$0] == letter
+            }), partnerIndex < lines.count
+        else { return false }
+        guard let wordA = lastWord(of: lines[index]), let wordB = lastWord(of: lines[partnerIndex])
+        else { return false }
+        return !detector.rhymes(wordA, wordB)
+    }
+
+    /// Same extraction rule as `SongStructureOverviewBuilder.lastWord(of:)` (private to that
+    /// type) — duplicated rather than exposed, since it's a one-line rule and this keeps the
+    /// builder's internals from growing a wider public surface just for this.
+    private static func lastWord(of line: TimedLyricSegment) -> String? {
+        line.text.split { !$0.isLetter && $0 != "'" }.last.map(String.init)
     }
 }

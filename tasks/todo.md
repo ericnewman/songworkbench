@@ -1,3 +1,77 @@
+# Structure-alignment anomaly detection (2026-07-07)
+
+Task #36. Eric: "I'm curious how we can tell performance with alignment to the established song
+structure. It seems like enforcing some level of alignment would have caught these bugs sooner,"
+followed by "When we have rhyming sentences, it seems like they would be separate lines, and not
+concatenated. So there are other mechanisms we should use to validate the final version."
+
+Added `StructureAlignmentDiagnostics` (`SongStructureOverview.swift`), a pure validation pass
+that compares each section occurrence's actual lines against its established `PhraseTemplate`
+(built earlier for the Structure tab from Meter/Rhyme/chord-pattern data already computed by
+`SongStructureOverviewBuilder`):
+
+- **Line-count mismatch**: if a section occurrence has a different number of lines than its
+  template, position-by-position comparison isn't meaningful — flagged as a whole (on the first
+  line) with the counts, since a mismatch is itself strong evidence a line was merged or split.
+- **Meter + rhyme deviation**: when counts match, each line's syllable count (`SyllableCounter`,
+  already exposed as `syllableCount(for:)`) and its established RHYME PARTNER (the other line
+  position the template's `rhymeScheme` pairs it with) are checked independently. A line is only
+  flagged when BOTH deviate — off-meter alone or a fresh rhyme alone is ordinary songwriting
+  variation; both together is a strong tell something got merged, split, or mis-transcribed.
+  Chord-event-count-per-line is folded in as a third, corroborating (non-required) signal.
+- Rhyme comparison deliberately does NOT compare the letter LABELS in `PhraseTemplate.rhymeScheme`
+  directly (`"A"`/`"B"`/…) — those are assigned positionally, fresh, on every call, so two
+  independently-computed schemes can coincidentally collide on the same letter at the same index
+  without meaning the same phonetic class. Instead it re-checks the actual current words at the
+  template's established PARTNER positions via `RhymeDetector.rhymes(_:_:)` directly.
+- `SongStructureOverviewBuilder.syllableCount(for:)` and `.rhymeScheme(for:lines:detector:)` were
+  un-privated for reuse; `PhraseTemplate` gained a `chordCountPattern: [Int]` field (free from
+  `buildTemplates`'s existing `perLineChordSignatures`).
+- Wired into the Lyrics tab by MERGING into the existing `showSuspectFlags`/"Review Flags" review
+  mechanism (`TimedLyricsEditor.suspectReasons` in `WorkspaceEditorsView.swift`) rather than
+  building new UI — same toggle, same warning-triangle icon, same tooltip; a line flagged by both
+  the acoustic beat-grid heuristic and the new structural one gets both reasons concatenated.
+  Distinct from (and complementary to) `ReviewConfidenceTier`'s per-word ASR-confidence tint,
+  which is an acoustic signal, not a structural/linguistic one.
+
+**Testing note**: the SPM test bundle doesn't host the app target's `Resources/`, so
+`RhymeDetector.shared` resolves every word to "no entry" in `swift test` (see the pre-existing
+`RhymeDetectorTests`'s own hand-built-table workaround). Made `rhymeScheme(for:detector:)` and
+`StructureAlignmentDiagnostics.anomalies(in:detector:)` accept an injectable `RhymeDetector`
+(default `.shared`, zero production behavior change) so tests can supply a small hand-built table.
+Also constructed `SongStructureOverview` test fixtures directly (`Section`/`PhraseTemplate`
+struct literals) rather than round-tripping through the full builder pipeline — `Section`-
+detection heuristics (`SongStructureAnalyzer`'s word-Jaccard chorus/verse classifier) misfire on
+synthetic fixtures that intentionally repeat lines verbatim across occurrences (reads as a real
+chorus repeat), which is already covered by `SongStructureOverviewBuilderTests` and isn't this
+feature's job to re-verify.
+
+## Live re-verification (incidentally re-covers Task #35)
+
+Rebuilt the macOS `.app` (`xcodebuild`, not `swift build`) and toggled "Review Flags" live on Key
+West Bar. The new diagnostic correctly flagged, with concrete reasons:
+- Chorus at [118.14, 122.45): `"Line count (1) differs from the established Chorus shape (7
+  lines) — a line may have been merged or split incorrectly."` — this is the "There's a a place
+  with with no no worries, worries, no no racing racing" run-on line.
+- Verse 3 at [126.82, 131.66): `"Line count (1) differs from the established Verse 3 shape (3
+  lines)…"` — the "Just cars cars time and time, that's not my fault" run-on line.
+
+This confirms the word-doubling bug **is still present** in Key West Bar's Chorus/Verse 3
+sections even after this session's earlier `LyricBlendRowBuilder` overlap-merge fix and
+`AnalysisStage.swift` cache-tag bump (still uncommitted — see git status). The tag bump's
+effectiveness remains unconfirmed; Task #35 (re-verify/root-cause why re-analysis isn't picking
+up the fix for this song) is still open. This diagnostic is a genuinely useful independent
+detector of that open bug, not a fix for it.
+
+## Verification
+
+- `swift format lint --strict --recursive Sources Tests`, `swift build`, and `swift test --skip
+  AudioPlaybackServiceTests --skip StemPlaybackServiceTests` (606 tests: 2 new
+  `StructureAlignmentDiagnosticsTests` passing, same pre-existing 8-assertion
+  `AppModelTests`/`MusicLibraryAppModelTests` baseline, nothing new broken) all clean.
+- Rebuilt the macOS `.app` via `xcodebuild` and live-verified on Key West Bar as above.
+
+---
 # Fix: missed chord changes + dropped end-of-song lyrics (2026-07-04)
 
 # iPad device build smoke test (2026-07-06)

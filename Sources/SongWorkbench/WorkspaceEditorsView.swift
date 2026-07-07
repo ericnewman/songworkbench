@@ -332,12 +332,21 @@ private struct TimedLyricsEditor: View {
         return map
     }
 
-    /// Lyric lines that look like mis-splits (off the probable beats-per-line or off the beat grid),
-    /// keyed by id → reason. Shown as a review flag; use Merge/Split to correct.
+    /// Lyric lines that look like mis-splits, keyed by id → reason. Shown as a review flag; use
+    /// Merge/Split to correct. Combines two independent signals: the acoustic beat-grid
+    /// heuristic (off the probable beats-per-line or off the beat grid) and the structural
+    /// meter/rhyme/chord-count deviation from the section's established `PhraseTemplate` (see
+    /// `StructureAlignmentDiagnostics`) — a line flagged by both gets both reasons concatenated.
     private var suspectReasons: [TimedLyricSegment.ID: String] {
         guard showSuspectFlags else { return [:] }
-        return LyricLineDiagnostics.suspectReasons(
+        var reasons = LyricLineDiagnostics.suspectReasons(
             model.lyricSegments, beatTimes: model.beatTimes, tempo: model.estimatedBPM)
+        if let overview = model.songStructureOverview() {
+            for (id, reason) in StructureAlignmentDiagnostics.anomalies(in: overview) {
+                reasons[id] = reasons[id].map { $0 + " " + reason } ?? reason
+            }
+        }
+        return reasons
     }
 
     /// Lyric lines and section headers merged in timeline order for the timestamped list.

@@ -137,3 +137,130 @@ final class SongStructureOverviewBuilderTests: XCTestCase {
         XCTAssertNil(SongStructureOverviewBuilder().build(input))
     }
 }
+
+/// Builds `SongStructureOverview` values directly (bypassing `SongStructureOverviewBuilder`'s
+/// section-detection heuristics like `SongStructureAnalyzer`'s word-Jaccard chorus/verse split)
+/// so these tests exercise ONLY `StructureAlignmentDiagnostics` against controlled Form/Template
+/// data. The builder's own detection logic (verse-vs-chorus classification, section boundaries)
+/// is already covered by `SongStructureOverviewBuilderTests`; re-fighting it here to also land
+/// on plain "Verse" sections would make these tests fragile for no benefit.
+final class StructureAlignmentDiagnosticsTests: XCTestCase {
+    private func line(_ start: TimeInterval, _ end: TimeInterval, _ text: String)
+        -> TimedLyricSegment
+    {
+        TimedLyricSegment(start: start, end: end, text: text)
+    }
+
+    /// One chord event per line, matching `chordCountPattern`'s per-line count of 1 exactly —
+    /// chord-count corroboration is intentionally a non-issue in these tests (they target the
+    /// required meter+rhyme signals), so every line always agrees with the template here.
+    private func chordsPerLine(startingAt times: [TimeInterval]) -> [EditableChordEvent] {
+        times.map { EditableChordEvent(time: $0, chord: "C", confidence: 0.9) }
+    }
+
+    /// A small, hand-built rhyme table in the same format `RhymeDetectorTests` uses — the SPM
+    /// test bundle doesn't host the app target's `Resources/`, so `RhymeDetector.shared` resolves
+    /// every word to "no entry" here. "window" gets its own distinct rhyme part so it reads as a
+    /// genuine, resolvable-but-different rhyme (not just an out-of-vocabulary "-").
+    private func testDetector() -> RhymeDetector {
+        RhymeDetector(
+            table: RhymeDetector.parseTable(
+                """
+                cat\tAE T
+                hat\tAE T
+                dog\tAO G
+                frog\tAO G
+                window\tIH N D OW
+                """))
+    }
+
+    func testFlagsOnlyTheLineThatBreaksBothMeterAndRhyme() {
+        let builder = SongStructureOverviewBuilder()
+        let detector = testDetector()
+
+        // Verse 1 is the template's representative occurrence — an AABB rhyme scheme
+        // ("cat"/"hat", "dog"/"frog"). Its OWN real syllable/rhyme values (computed via the
+        // same helpers the diagnostic uses) become the template, so this test isn't guessing
+        // magic numbers for the counter/dictionary's actual output.
+        let verse1Lines = [
+            line(0, 2, "I pet the cat"),
+            line(2, 4, "I found my hat"),
+            line(4, 6, "I walked the dog"),
+            line(6, 8, "beside a little frog"),
+        ]
+        let meterPattern = verse1Lines.map(builder.syllableCount(for:))
+        let rhymeScheme = builder.rhymeScheme(for: verse1Lines, detector: detector)
+        XCTAssertEqual(rhymeScheme, ["A", "A", "B", "B"], "fixture assumption: cat/hat/dog/frog")
+
+        let template = SongStructureOverview.PhraseTemplate(
+            kind: .verse, lineCount: 4, phrasePattern: [], chordPattern: [],
+            meterPattern: meterPattern, rhymeScheme: rhymeScheme,
+            chordCountPattern: [1, 1, 1, 1])
+
+        // Verse 2: lines 1, 2, and 4 match verse 1 verbatim (zero deviation expected); line 3
+        // is swapped for a long, unrelated line that breaks BOTH the meter (far more syllables)
+        // and the rhyme (an unrelated ending word) — the exact shape of bug this targets: a
+        // run-on/mis-split line inside an otherwise-regular verse.
+        let deviatingLine = line(
+            24, 26, "Yesterday I wandered around the entire town looking for a window")
+        let verse2Lines = [
+            line(20, 22, "I pet the cat"),
+            line(22, 24, "I found my hat"),
+            deviatingLine,
+            line(26, 28, "beside a little frog"),
+        ]
+        // Sanity: the deviating line really does break both signals against the template — its
+        // established rhyme partner is line 4 ("frog"), and "window" doesn't rhyme with it.
+        XCTAssertGreaterThanOrEqual(
+            abs(builder.syllableCount(for: deviatingLine) - meterPattern[2]), 2)
+        XCTAssertFalse(detector.rhymes("window", "frog"))
+
+        let verse1 = SongStructureOverview.Section(
+            label: "Verse", kind: .verse, start: 0, end: 8, lines: verse1Lines,
+            chords: chordsPerLine(startingAt: [0, 2, 4, 6]))
+        let verse2 = SongStructureOverview.Section(
+            label: "Verse", kind: .verse, start: 20, end: 28, lines: verse2Lines,
+            chords: chordsPerLine(startingAt: [20, 22, 24, 26]))
+        let overview = SongStructureOverview(
+            title: "Cat and Hat", form: [verse1, verse2], templates: [template])
+
+        let anomalies = StructureAlignmentDiagnostics.anomalies(in: overview, detector: detector)
+
+        XCTAssertEqual(anomalies.count, 1, "unexpected anomalies: \(anomalies)")
+        XCTAssertEqual(Array(anomalies.keys), [deviatingLine.id])
+        XCTAssertTrue(
+            anomalies[deviatingLine.id]?.contains("breaks the established rhyme") == true)
+
+        // The other three lines of verse 2 (and all of verse 1, which the template came from)
+        // must NOT be flagged.
+        for otherLine in verse1Lines + verse2Lines where otherLine.id != deviatingLine.id {
+            XCTAssertNil(anomalies[otherLine.id], "unexpected flag on \"\(otherLine.text)\"")
+        }
+    }
+
+    /// A 3-line verse occurrence compared against a 4-line template — a mismatched line count
+    /// can't be compared position-by-position, so it should be flagged as a whole (on its first
+    /// line) rather than silently skipped.
+    func testFlagsALineCountMismatchOnTheFirstLineOfTheShortOccurrence() {
+        let template = SongStructureOverview.PhraseTemplate(
+            kind: .verse, lineCount: 4, phrasePattern: [], chordPattern: [],
+            meterPattern: [4, 4, 4, 6], rhymeScheme: ["A", "A", "B", "B"],
+            chordCountPattern: [1, 1, 1, 1])
+        let shortVerseLines = [
+            line(40, 42, "I pet the cat"),
+            line(42, 44, "I found my hat"),
+            line(44, 46, "I walked the dog"),
+        ]
+        let shortVerse = SongStructureOverview.Section(
+            label: "Verse", kind: .verse, start: 40, end: 46, lines: shortVerseLines,
+            chords: chordsPerLine(startingAt: [40, 42, 44]))
+        let overview = SongStructureOverview(
+            title: "Missing Last Line", form: [shortVerse], templates: [template])
+
+        let anomalies = StructureAlignmentDiagnostics.anomalies(in: overview)
+
+        XCTAssertEqual(anomalies.count, 1, "unexpected anomalies: \(anomalies)")
+        XCTAssertEqual(Array(anomalies.keys), [shortVerseLines[0].id])
+        XCTAssertTrue(anomalies[shortVerseLines[0].id]?.contains("Line count") == true)
+    }
+}
