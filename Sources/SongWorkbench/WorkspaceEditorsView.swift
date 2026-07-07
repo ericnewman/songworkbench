@@ -988,6 +988,11 @@ private struct ChordProTabEditor: View {
     /// Review-tab bottom panel's bass toggle. Off by default: most songs won't have bass
     /// detected yet, and the extra row adds visual noise once they do.
     @AppStorage("reviewShowBassNotes") private var showBassNotes = false
+    /// Shows the raw `{x_chord_times: ...}` round-trip directive `ChordProDraftBuilder` emits
+    /// before every chord-only row (backlog B5) — a debug/inspection aid, not something most
+    /// people reading the chart want to see. Off by default (Eric: make these labels optional,
+    /// default off).
+    @AppStorage("reviewShowChordTimeLabels") private var showChordTimeLabels = false
 
     /// Lyric segments sorted into the order the highlight/ball ordinals use (so ordinal N indexes
     /// the same line across words, windows, and highlight).
@@ -1082,6 +1087,7 @@ private struct ChordProTabEditor: View {
                                     .map { ($0.number, $0.chordTimes) }),
                             bassNotes: model.bassNotes,
                             showBassNotes: showBassNotes,
+                            showChordTimeLabels: showChordTimeLabels,
                             lyricSegments: sortedLyricSegments,
                             chordEvents: model.chordEvents,
                             onToggleLyricAccepted: { id in model.toggleLyricAccepted(id: id) },
@@ -1148,6 +1154,7 @@ private struct ChordProTabEditor: View {
                 Toggle("Waveform", isOn: $showWaveform)
                 Toggle("Show Bass Notes", isOn: $showBassNotes)
                     .disabled(model.bassNotes.isEmpty)
+                Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
             } label: {
                 Label("View", systemImage: "eye")
             }
@@ -1155,7 +1162,8 @@ private struct ChordProTabEditor: View {
             .fixedSize()
             .help(
                 "Show/hide the bouncing ball, beat dots, measure barlines, "
-                    + "the per-line waveform, and the detected bass note row")
+                    + "the per-line waveform, the detected bass note row, "
+                    + "and each chord's raw detected timestamp")
             if config.supportsMarkReviewed {
                 Button("Mark Reviewed", systemImage: "checkmark.seal") {
                     model.markChordProReviewed()
@@ -1728,6 +1736,9 @@ private struct ChordProAppPreview: View {
     /// above each lyric line when `showBassNotes` is on, replacing the standalone Bass Notes tab.
     var bassNotes: [BassNoteObservation] = []
     var showBassNotes = false
+    /// Shows the raw `{x_chord_times: ...}` directive text (View menu's "Chord Time Labels"
+    /// toggle) instead of hiding it — off by default.
+    var showChordTimeLabels = false
     /// Lyric segments in the SAME sorted order `lyricOrdinal` indexes into (backlog #15 Phase 2
     /// remainder — chart interactivity), so a rendered line's confidence/accepted/overrideText
     /// can be read (and edited) directly, without a separate lookup mechanism.
@@ -2232,6 +2243,7 @@ private struct ChordProAppPreview: View {
             rowChordTimes: chordRow.effectiveTimes,
             bassLabel: itemBassLabel,
             rowBassNotes: itemRowBassNotes,
+            showChordTimeLabels: showChordTimeLabels,
             lyricSegment: itemLyricSegment,
             onToggleLyricAccepted: onToggleLyricAccepted,
             onCommitLyricOverride: onCommitLyricOverride,
@@ -2733,6 +2745,9 @@ private struct ChordProPreviewBlockView: View {
     var bassLabel: String?
     /// The same bass notes with onset times, for rhythmic mode's positioned per-note row.
     var rowBassNotes: [TimedBassNoteLabel] = []
+    /// Shows raw `{...}` directive lines (e.g. the `x_chord_times` round-trip carrier) instead
+    /// of hiding them — View menu's "Chord Time Labels" toggle, off by default.
+    var showChordTimeLabels = false
     /// The live segment behind this rendered lyric line (backlog #15 Phase 2 remainder — chart
     /// interactivity); `nil` for chord-only/non-lyric blocks. Drives the accept toggle, the
     /// confidence tint, and the edited-line text when set.
@@ -2852,9 +2867,11 @@ private struct ChordProPreviewBlockView: View {
                 }
             }
         case .directive(let source):
-            Text(source)
-                .font(.caption.monospaced())
-                .foregroundStyle(.tertiary)
+            if showChordTimeLabels {
+                Text(source)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 
