@@ -83,8 +83,14 @@ final class MusicLibraryAppModelTests: XCTestCase {
         let opened = model.openMusicLibraryItem(item)
 
         XCTAssertTrue(opened)
-        XCTAssertTrue(model.songs.contains { $0.id == Song(url: url).id })
-        XCTAssertEqual(model.selectedSongID, Song(url: url).id)
+        // `openMusicLibraryItem` routes through `importSongs`, which copies its source into
+        // local storage on a background Task and always auto-selects a single import — so the
+        // final song's `.id` is the LOCAL copy's URL, not `url` itself (same reasoning as
+        // `AppModelTests.testImportDuringRestoreIsMergedInsteadOfDiscarded`), and the test must
+        // wait for that Task before asserting on `model.songs`/`selectedSongID`.
+        try await waitUntil { model.songs.contains { $0.title == Song(url: url).title } }
+        let song = try XCTUnwrap(model.songs.first { $0.title == Song(url: url).title })
+        XCTAssertEqual(model.selectedSongID, song.id)
         XCTAssertNil(model.musicLibraryNotice)
         XCTAssertFalse(model.isMusicLibraryPickerPresented)
     }

@@ -19,12 +19,16 @@ final class AppModelTests: XCTestCase {
         let model = AppModel(store: store)
 
         model.importSongs(from: [importedURL])
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitUntil { model.songs.count >= 2 }
 
-        XCTAssertEqual(
-            Set(model.songs.map(\.id)),
-            Set([Song(url: importedURL).id, Song(url: restoredURL).id])
-        )
+        // `importSongs` always copies its source into local storage (see
+        // `AppModel.localizedSource`), so the imported song's final `.id` is the LOCAL copy's
+        // URL, not `importedURL` itself — compare by title (the copy keeps the original
+        // filename) instead of re-deriving the exact localized path here. The restored song
+        // isn't re-localized, so its identity is asserted exactly.
+        let titles = Set(model.songs.map(\.title))
+        XCTAssertEqual(titles, Set([Song(url: importedURL).title, Song(url: restoredURL).title]))
+        XCTAssertTrue(model.songs.contains { $0.id == Song(url: restoredURL).id })
     }
 
     func testBassNoteSourcePrefersDetectedBassNotes() async throws {
@@ -33,7 +37,7 @@ final class AppModelTests: XCTestCase {
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         await model.restoreProjects()
         model.importSongs(from: [url])
-        try await Task.sleep(for: .milliseconds(120))
+        try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
         model.select(song)
 
@@ -69,9 +73,12 @@ final class AppModelTests: XCTestCase {
         }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [firstURL, secondURL])
-        try await Task.sleep(for: .milliseconds(120))
-        let first = try XCTUnwrap(model.songs.first { $0.url == firstURL })
-        let second = try XCTUnwrap(model.songs.first { $0.url == secondURL })
+        try await waitUntil { model.songs.count >= 2 }
+        // `importSongs` always localizes into app storage (see `AppModel.localizedSource`), so
+        // the imported song's final `.url` is the LOCAL copy's, not `firstURL`/`secondURL`
+        // themselves — match by title (the copy keeps the original filename) instead.
+        let first = try XCTUnwrap(model.songs.first { $0.title == Song(url: firstURL).title })
+        let second = try XCTUnwrap(model.songs.first { $0.title == Song(url: secondURL).title })
 
         model.select(first)
         model.select(second)
@@ -88,9 +95,10 @@ final class AppModelTests: XCTestCase {
         }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [firstURL, secondURL])
-        try await Task.sleep(for: .milliseconds(120))
-        let first = try XCTUnwrap(model.songs.first { $0.url == firstURL })
-        let second = try XCTUnwrap(model.songs.first { $0.url == secondURL })
+        try await waitUntil { model.songs.count >= 2 }
+        // See `testRecentSongsFollowSelectionOrder`: match by title, not the pre-localization URL.
+        let first = try XCTUnwrap(model.songs.first { $0.title == Song(url: firstURL).title })
+        let second = try XCTUnwrap(model.songs.first { $0.title == Song(url: secondURL).title })
 
         model.select(first)
         model.analyzeSelectedSong()
@@ -111,16 +119,28 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
-        let first = Song(url: firstURL)
-        let second = Song(url: secondURL)
         let store = DelayedProjectStore(document: ProjectLibraryDocument())
         let model = AppModel(store: store)
         await model.restoreProjects()
         model.importSongs(from: [firstURL, secondURL])
+        // `importSongs` appends both songs on a background Task — acting on `first`/`second`
+        // before it lands races `removeSong`'s index-based neighbor-selection into no-op'ing
+        // or picking the wrong neighbor (the exact failure this test used to catch only
+        // sometimes: `removeSong` silently does nothing if `first` isn't in `model.songs` yet).
+        try await waitUntil { model.songs.count >= 2 }
+        // See `testRecentSongsFollowSelectionOrder`: match by title, not the pre-localization URL.
+        let first = try XCTUnwrap(model.songs.first { $0.title == Song(url: firstURL).title })
+        let second = try XCTUnwrap(model.songs.first { $0.title == Song(url: secondURL).title })
         model.select(first)
 
         model.removeSong(first)
-        try await Task.sleep(for: .milliseconds(350))
+        // `removeSong` debounces its save ~250ms (`AppModel.scheduleSave`) — poll for it
+        // instead of guessing a margin over that debounce.
+        try await waitUntil {
+            guard let saved = await store.lastSavedDocument() else { return false }
+            let ids = Set(saved.songs.map { Song(url: $0.resolvedURL()).id })
+            return !ids.contains(first.id) && ids.contains(second.id)
+        }
 
         XCTAssertFalse(model.songs.contains(first))
         XCTAssertEqual(model.selectedSongID, second.id)
@@ -160,7 +180,7 @@ final class AppModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [url])
-        try await Task.sleep(for: .milliseconds(120))
+        try await waitUntil { !model.songs.isEmpty }
 
         model.markLyricsReviewed()
         XCTAssertEqual(model.lyricReviewState, .reviewed)
@@ -246,7 +266,7 @@ final class AppModelTests: XCTestCase {
         }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [songURL])
-        try await Task.sleep(for: .milliseconds(120))
+        try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
         model.select(song)
         try model.importStems(from: stemDirectory)
@@ -281,7 +301,7 @@ final class AppModelTests: XCTestCase {
         }
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         model.importSongs(from: [songURL])
-        try await Task.sleep(for: .milliseconds(120))
+        try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
         model.select(song)
         try model.importStems(from: stemDirectory)

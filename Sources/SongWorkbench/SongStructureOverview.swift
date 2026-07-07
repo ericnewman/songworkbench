@@ -395,10 +395,19 @@ struct SongStructureOverviewBuilder: Sendable {
 
     private func mostCommon(_ signatures: [[String]]) -> [String]? {
         var counts: [[String]: Int] = [:]
+        var firstSeenOrder: [[String]] = []
         for signature in signatures where !signature.isEmpty {
+            if counts[signature] == nil { firstSeenOrder.append(signature) }
             counts[signature, default: 0] += 1
         }
-        return counts.max(by: { $0.value < $1.value })?.key
+        guard let maxCount = counts.values.max() else { return nil }
+        // A genuine tie between two DIFFERENT chord signatures must not resolve via
+        // `Dictionary`'s randomized-per-process iteration order — that made the representative-
+        // occurrence pick unstable across runs (SongStructureOverviewTests caught this: passed
+        // in isolation, failed as part of the full suite, purely from hash-seed luck). Break
+        // ties on first appearance in `signatures` instead — stable, deterministic, and a
+        // reasonable product default (the earliest-occurring pattern wins).
+        return firstSeenOrder.first { counts[$0] == maxCount }
     }
 
     /// Picks the occurrence that best represents this kind's canonical shape. Prefers a musical
