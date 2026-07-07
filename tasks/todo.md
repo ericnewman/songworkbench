@@ -36,7 +36,25 @@ check in before implementing).
 `segmentLineStart` capitalization-gate fix. Narrow, safe, ships regardless of everything below
 since the text/gap grouper will still exist as the eventual fallback tier.
 
-## Phase B — cross-section pooling + persisted vocal onsets (not started)
+## Phase B — cross-section pooling + persisted vocal onsets
+
+### Phase B2 — cross-section pooling — done, committed (`80a1f22`)
+
+`LyricPhraseGrouper.regroup` now computes one pooled bar-label-self-similarity decision per
+section KIND (verse, chorus) from every occurrence of that kind combined, instead of requiring
+each occurrence prove its own period alone. Falls back to the old single-occurrence `detectPeriod`
+only when the pool doesn't clear `minimumConfidence`. `totalBars` (not lag-period test-pair count)
+gates `minimumFullPeriods`, so pooling is a strict superset of the old per-occurrence behavior when
+a kind has only one occurrence (verified: all 11 pre-existing tests pass unchanged). New test
+`testLoneVerseBorrowsThePeriodItsConfidentSiblingVersesEstablish` proves the actual new capability
+end-to-end (a lone verse at 0.5 confidence alone borrows period 4 from siblings pooling to 0.833).
+Full suite run: 600 tests, same 8 pre-existing failures (AppModelTests/MusicLibraryTests
+song-library persistence/ordering — confirmed present identically with this change stashed out,
+unrelated to lyric grouping) present with and without this change. Not yet live-verified against a
+real song — planned alongside Phase B1/C live verification per the risks section below, since
+pooling alone has limited visible effect until Phase C promotes it to primary.
+
+### Phase B1 — persist vocal onsets in the schema (not started)
 
 1. **Persist vocal onsets in the schema.** Add `SongAnalysisDocument.vocalOnsets: [TimeInterval]`
    (schemaVersion 12), computed via `InstrumentOnsetDetector.onsets(url:)` on the vocals stem once
