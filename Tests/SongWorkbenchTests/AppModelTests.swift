@@ -356,7 +356,15 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.chordProSource, reviewedSource)
     }
 
-    func testEditingLyricsRebuildsOnlyUnreviewedGeneratedChordPro() async throws {
+    /// Eric, 2026-07-07: "When I edit lyrics on the lyrics tab, I expect those changes to
+    /// propagate to all other screens." A lyric edit changes what the chart SHOULD say, so —
+    /// unlike an unrelated setting such as the confidence threshold (see
+    /// `testChangingConfidenceRebuildsOnlyUnreviewedGeneratedChordPro`, which correctly stays
+    /// frozen after review) — editing a lyric line always un-reviews the previously-reviewed
+    /// ChordPro draft and regenerates it, the same way editing `chordProSource` directly already
+    /// un-reviews itself. This test used to assert the OPPOSITE (a reviewed chart stayed frozen
+    /// against a lyric edit forever) — that was the exact bug Eric hit live.
+    func testEditingLyricsAlwaysRebuildsGeneratedChordProEvenAfterReview() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
         let generatedRecord = AnalysisStageRecord(
@@ -397,10 +405,14 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.chordProReviewState, .draft)
 
         model.markChordProReviewed()
-        let reviewedSource = model.chordProSource
-        model.lyricSegments[0] = TimedLyricSegment(start: 0, end: 4, text: "Protected words")
+        XCTAssertEqual(model.chordProReviewState, .reviewed)
+        model.lyricSegments[0] = TimedLyricSegment(start: 0, end: 4, text: "Post-review words")
 
-        XCTAssertEqual(model.chordProSource, reviewedSource)
+        XCTAssertTrue(model.chordProSource.contains("[C]Post-review words"))
+        XCTAssertFalse(model.chordProSource.contains("Edited words"))
+        XCTAssertEqual(
+            model.chordProReviewState, .draft,
+            "a lyric edit must un-review a previously-reviewed chart, not silently no-op")
     }
 
     func testStaleSixStemAnalysisDoesNotLoadStemPlayback() async throws {

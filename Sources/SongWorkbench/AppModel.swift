@@ -140,6 +140,17 @@ final class AppModel: ObservableObject {
         didSet {
             if !isApplyingAnalysis {
                 lyricReviewState = .draft
+                // A lyric edit (Lyrics tab text field, or a Review-chart `overrideText`
+                // correction) changes what the chart SHOULD say, so a previously "Reviewed"
+                // ChordPro draft is now stale content, not a verified one — un-review it the
+                // same way editing `chordProSource` directly already un-reviews itself (see
+                // that property's own didSet below), so `rebuildGeneratedChordProDraft`'s
+                // `chordProReviewState != .reviewed` guard doesn't silently swallow the edit.
+                // Eric, 2026-07-07: "When I edit lyrics on the lyrics tab, I expect those
+                // changes to propagate to all other screens" — before this, editing a lyric
+                // line after marking the chart reviewed left the ChordPro/Review/Structure
+                // tabs, the timeline ball, and any export frozen on the pre-edit text forever.
+                chordProReviewState = .draft
                 rebuildGeneratedChordProDraft()
             }
             persistSelectedAnalysis()
