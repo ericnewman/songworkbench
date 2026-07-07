@@ -39,10 +39,40 @@ struct StemMixState: Codable, Equatable, Sendable {
 }
 
 struct StemMixerModel: Codable, Equatable, Sendable {
+    /// Upper bound for the master fader. Unlike a per-stem `gain`, the master sits downstream
+    /// of every stem's own headroom, driving `AVAudioMixerNode.outputVolume` directly — which
+    /// is only valid in 0...1 — so there's no +6 dB boost room here, just attenuation.
+    static let maximumMasterGain: Float = 1
+
     private var states: [StemKind: StemMixState]
+    /// Overall output level, applied downstream of every stem (and the click). Always
+    /// available regardless of which stems are loaded — it isn't gated by per-stem state the
+    /// way `effectiveGain(for:)` is.
+    var masterGain: Float
 
     init() {
         states = Dictionary(uniqueKeysWithValues: StemKind.allCases.map { ($0, StemMixState()) })
+        masterGain = Self.maximumMasterGain
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case states
+        case masterGain
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        states = try container.decode([StemKind: StemMixState].self, forKey: .states)
+        // `masterGain` arrived after documents were already in the field; missing = unity.
+        masterGain =
+            try container.decodeIfPresent(Float.self, forKey: .masterGain)
+            ?? Self.maximumMasterGain
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(states, forKey: .states)
+        try container.encode(masterGain, forKey: .masterGain)
     }
 
     subscript(kind: StemKind) -> StemMixState {
@@ -63,6 +93,10 @@ struct StemMixerModel: Codable, Equatable, Sendable {
 
     mutating func setPan(_ pan: Float, for kind: StemKind) {
         update(kind) { $0.pan = min(max(pan, -1), 1) }
+    }
+
+    mutating func setMasterGain(_ gain: Float) {
+        masterGain = min(max(gain, 0), Self.maximumMasterGain)
     }
 
     func effectiveGain(for kind: StemKind) -> Float {

@@ -3994,7 +3994,7 @@ struct StemMixSidebar: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .disabled(!model.isStemMixerModified)
-                .help("Reset all stem levels, mutes, and solos")
+                .help("Reset all stem levels, mutes, solos, and the master fader")
                 // Load/Export moved here from the removed Stems editor tab.
                 Menu {
                     Button("Load Stem Folder…", systemImage: "folder") { loadStemFolder() }
@@ -4034,6 +4034,8 @@ struct StemMixSidebar: View {
                         slimStrip(kind)
                     }
                     slimClickStrip
+                    Divider().padding(.horizontal, 2)
+                    slimMasterStrip
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -4126,6 +4128,40 @@ struct StemMixSidebar: View {
             Color.clear.frame(height: 14 * 2 + 2)
 
             ScribbleStrip(text: "Clk")
+        }
+        .frame(maxWidth: 38)
+    }
+
+    /// Overall Stem Mix output, downstream of every stem and the click. Unlike the per-stem
+    /// strips, this is never dimmed/disabled by which stems happen to be loaded — it's always
+    /// available as long as the mix itself is loaded.
+    private var slimMasterStrip: some View {
+        VStack(spacing: 4) {
+            // Stand-ins for the L/R meter + pan knob so the master fader aligns with the
+            // other strips — there's no per-stem meter or pan for the overall bus.
+            Color.clear.frame(height: HorizontalLRMeter.totalHeight)
+            Color.clear.frame(height: PanKnob.defaultSize)
+
+            HStack(spacing: 2) {
+                VerticalFader(
+                    value: Binding(
+                        get: { Double(model.stemMixer.masterGain) },
+                        set: { model.setStemMasterGain(Float($0)) }
+                    ),
+                    range: 0...Double(StemMixerModel.maximumMasterGain),
+                    thumbWidth: 14,
+                    controlWidth: 15
+                )
+                // Width stand-in for the meter so the fader aligns with the other strips.
+                Color.clear.frame(width: 11)
+            }
+            .frame(maxHeight: .infinity)
+            .help("Master: \(Int((model.stemMixer.masterGain * 100).rounded()))%")
+
+            // Stand-in for the M/S buttons so the scribble strips align.
+            Color.clear.frame(height: 14 * 2 + 2)
+
+            ScribbleStrip(text: "Mst")
         }
         .frame(maxWidth: 38)
     }

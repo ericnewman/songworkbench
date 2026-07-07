@@ -99,6 +99,9 @@ actor StemMixExporter {
                 // Match live playback: the exported mix carries each stem's pan position.
                 player.pan = mixer[kind].pan
             }
+            // Match live playback: the exported mix also carries the master fader (there's no
+            // separate stem-mixer node here, so it lands on the shared main mixer node).
+            engine.mainMixerNode.outputVolume = mixer.masterGain
             for player in players.values {
                 player.play()
             }

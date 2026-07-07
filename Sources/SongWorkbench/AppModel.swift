@@ -1730,6 +1730,13 @@ final class AppModel: ObservableObject {
         stemPlayback.apply(stemMixer)
     }
 
+    /// Overall Stem Mix output level. Unlike the per-stem controls, this isn't gated by
+    /// whether any particular stem is loaded — it's always available.
+    func setStemMasterGain(_ gain: Float) {
+        stemMixer.setMasterGain(gain)
+        stemPlayback.apply(stemMixer)
+    }
+
     /// True when the mixer differs from its default state (any gain, mute, or solo changed).
     var isStemMixerModified: Bool {
         stemMixer != StemMixerModel()

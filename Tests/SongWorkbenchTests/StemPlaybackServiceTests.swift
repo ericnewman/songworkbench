@@ -72,6 +72,33 @@ final class StemPlaybackServiceTests: XCTestCase {
         XCTAssertEqual(service.stemLevels[.drums] ?? 1, 0)
     }
 
+    func testMasterGainAttenuatesMeteredStemLevels() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let service = StemPlaybackService()
+        try service.load(
+            try makeStemFiles(in: directory, sampleValue: 0.4), mixer: StemMixerModel())
+        service.play()
+        try await Task.sleep(for: .milliseconds(180))
+        let fullLevel = service.stemLevels[.vocals] ?? 0
+        XCTAssertGreaterThan(fullLevel, 0.05)
+
+        // Pulling the master fader down must attenuate the metered level too — the meters
+        // read straight from the source file (not an engine tap), so they need the master
+        // gain applied explicitly to stay honest about what's actually audible.
+        var halved = StemMixerModel()
+        halved.setMasterGain(0.5)
+        service.apply(halved)
+        try await Task.sleep(for: .milliseconds(180))
+        let halvedLevel = service.stemLevels[.vocals] ?? 0
+        service.pause()
+
+        XCTAssertEqual(halvedLevel, fullLevel * 0.5, accuracy: 0.05)
+    }
+
     func testFailedReloadClearsPreviouslyLoadedState() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

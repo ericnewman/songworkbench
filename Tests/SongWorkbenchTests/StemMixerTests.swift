@@ -59,6 +59,81 @@ final class StemMixerTests: XCTestCase {
         XCTAssertTrue(state.isSoloed)
     }
 
+    func testMasterGainDefaultsToUnityIsClampedAndPersists() throws {
+        var mixer = StemMixerModel()
+        XCTAssertEqual(mixer.masterGain, 1)
+
+        mixer.setMasterGain(0.4)
+        XCTAssertEqual(mixer.masterGain, 0.4)
+
+        mixer.setMasterGain(-1)
+        XCTAssertEqual(mixer.masterGain, 0)  // clamped to the floor
+
+        mixer.setMasterGain(5)
+        XCTAssertEqual(mixer.masterGain, StemMixerModel.maximumMasterGain)  // clamped to unity
+
+        mixer.setMasterGain(0.6)
+        let data = try JSONEncoder().encode(mixer)
+        let decoded = try JSONDecoder().decode(StemMixerModel.self, from: data)
+        XCTAssertEqual(decoded.masterGain, 0.6)
+
+        // Pre-master documents (no `masterGain` key) decode to unity rather than failing, and
+        // still carry every stem's own state. `states` is `[StemKind: StemMixState]`, which
+        // Codable's synthesized Dictionary support encodes as a flat alternating-pairs array
+        // (StemKind isn't literally `String`, so it doesn't get the keyed-object shortcut) —
+        // matching what `JSONEncoder().encode(StemMixerModel())` actually produces.
+        let legacy = """
+            {"states":["vocals",{"gain":0.8,"isMuted":false,"isSoloed":false,"pan":0}]}
+            """.data(using: .utf8)!
+        let legacyDecoded = try JSONDecoder().decode(StemMixerModel.self, from: legacy)
+        XCTAssertEqual(legacyDecoded.masterGain, 1)
+        XCTAssertEqual(legacyDecoded[.vocals].gain, 0.8)
+    }
+
+    func testMasterGainIsIncludedInModifiedComparison() {
+        var mixer = StemMixerModel()
+        XCTAssertEqual(mixer, StemMixerModel())
+
+        mixer.setMasterGain(0.5)
+        XCTAssertNotEqual(mixer, StemMixerModel())
+    }
+
+    func testExporterAppliesMasterGainToTheWholeRenderedMix() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stems = StemFiles(
+            vocals: directory.appendingPathComponent("vocals.wav"),
+            drums: directory.appendingPathComponent("drums.wav"),
+            bass: directory.appendingPathComponent("bass.wav"),
+            other: directory.appendingPathComponent("other.wav")
+        )
+        for kind in [StemKind.vocals, .drums, .bass, .other] {
+            try writeConstantWAV(to: stems[kind]!, value: 0.4, frames: 8_000, sampleRate: 8_000)
+        }
+        var mixer = StemMixerModel()
+        for kind in [StemKind.drums, .bass, .other] {
+            mixer.setMuted(true, for: kind)
+        }
+        mixer.setMasterGain(0.5)
+
+        let destination = directory.appendingPathComponent("master-halved.wav")
+        try await StemMixExporter().export(stems: stems, to: destination, mixer: mixer)
+
+        let output = try AVAudioFile(forReading: destination)
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: output.processingFormat,
+            frameCapacity: AVAudioFrameCount(output.length)
+        )!
+        try output.read(into: buffer)
+        // A solo 0.4-amplitude mono stem at center pan lands unattenuated on both channels
+        // (see `testExporterMixesToStereoAndReportsProgress`); halving the master should
+        // halve that to ~0.2.
+        let left = abs(buffer.floatChannelData![0][4_000])
+        let right = abs(buffer.floatChannelData![1][4_000])
+        XCTAssertEqual(left, 0.2, accuracy: 0.02)
+        XCTAssertEqual(right, 0.2, accuracy: 0.02)
+    }
+
     @MainActor
     func testPanGainsFollowConstantPowerLaw() {
         let center = StemPlaybackService.panGains(for: 0)

@@ -115,6 +115,10 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             // (balance for stereo stems, constant-power placement for mono).
             players[kind]?.pan = mixer[kind].pan
         }
+        // Master fader: every stem player AND the click both already route into
+        // `stemMixerNode` (see `init`/`load`/`loadClickTrack`), so its own output volume is
+        // the single downstream point that scales the whole mix at once.
+        stemMixerNode.outputVolume = mixer.masterGain
     }
 
     /// Constant-power pan gains for the L/R meters, matching the audible pan law:
@@ -431,8 +435,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         }
     }
 
-    /// Post-fader, post-pan L/R RMS for one stem at `time` — one file read feeds both the
-    /// vertical VU (max of the sides) and the horizontal L/R meter.
+    /// Post-fader, post-pan, post-master L/R RMS for one stem at `time` — one file read feeds
+    /// both the vertical VU (max of the sides) and the horizontal L/R meter.
     private func meterStereoLevel(for kind: StemKind, at time: TimeInterval) -> StemStereoLevel {
         guard let file = meterFiles[kind], file.length > 0 else { return .zero }
         let sampleRate = file.processingFormat.sampleRate
@@ -456,9 +460,10 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             // Constant-power law: ×√2 restores unity at center so the meters read the same
             // as the old mono meter for an unpanned stem.
             let normalization = Float(2).squareRoot()
+            let master = appliedMixer.masterGain
             return StemStereoLevel(
-                left: min(source.left * volume * gains.left * normalization, 1),
-                right: min(source.right * volume * gains.right * normalization, 1)
+                left: min(source.left * volume * gains.left * normalization * master, 1),
+                right: min(source.right * volume * gains.right * normalization * master, 1)
             )
         } catch {
             return .zero
