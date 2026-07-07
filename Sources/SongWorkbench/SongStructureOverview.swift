@@ -59,11 +59,27 @@ struct SongStructureOverview: Equatable, Sendable {
         var rhymeScheme: [String]
     }
 
+    /// Roll-up for a wordless section kind (Intro/Instrumental/Solo/Outro) — there's no lyric
+    /// content to build a `PhraseTemplate` from, but the chord pattern and how much of the
+    /// song these sections take up is still structural information worth surfacing (Eric,
+    /// 2026-07-06: "include a section for the instrumental sections").
+    struct InstrumentalSummary: Equatable, Sendable {
+        var kind: Section.Kind
+        var occurrenceCount: Int
+        var totalDuration: TimeInterval
+        /// Chord pattern of the LONGEST occurrence (most representative), same Roman-numeral
+        /// signature format as `PhraseTemplate.chordPattern`.
+        var chordPattern: [String]
+    }
+
     var title: String
     /// Every section in the song, in time order.
     var form: [Section]
     /// One template per section kind that has at least one worded occurrence.
     var templates: [PhraseTemplate]
+    /// One summary per wordless section kind (Intro/Instrumental/Solo/Outro) present in the
+    /// song — see `InstrumentalSummary`.
+    var instrumentalSummaries: [InstrumentalSummary] = []
 }
 
 /// Chord-label-to-scale-degree (Roman numeral) mapping relative to a `MusicalKey`. A small,
@@ -220,7 +236,11 @@ struct SongStructureOverviewBuilder: Sendable {
 
         let reclassified = reclassifyBridgeAndSolo(sections, key: input.estimatedKey)
         let templates = buildTemplates(reclassified, key: input.estimatedKey)
-        return SongStructureOverview(title: input.title, form: reclassified, templates: templates)
+        let instrumentalSummaries = buildInstrumentalSummaries(
+            reclassified, key: input.estimatedKey)
+        return SongStructureOverview(
+            title: input.title, form: reclassified, templates: templates,
+            instrumentalSummaries: instrumentalSummaries)
     }
 
     /// Reclassifies sections using chord-pattern comparison against each kind's majority
@@ -296,6 +316,32 @@ struct SongStructureOverviewBuilder: Sendable {
                     chordPattern: chordPattern, meterPattern: meter, rhymeScheme: rhyme))
         }
         return templates
+    }
+
+    /// Builds one `InstrumentalSummary` per wordless kind (Intro/Instrumental/Solo/Outro)
+    /// that occurs at least once — the counterpart to `buildTemplates` for sections that have
+    /// no lyric lines to derive a phrase/meter/rhyme template from.
+    private func buildInstrumentalSummaries(
+        _ sections: [SongStructureOverview.Section], key: MusicalKey?
+    ) -> [SongStructureOverview.InstrumentalSummary] {
+        var summaries: [SongStructureOverview.InstrumentalSummary] = []
+        for kind in [
+            SongStructureOverview.Section.Kind.intro, .instrumental, .solo, .outro,
+        ] {
+            let occurrences = sections.filter { $0.kind == kind }
+            guard !occurrences.isEmpty else { continue }
+            let totalDuration = occurrences.reduce(0) { $0 + ($1.end - $1.start) }
+            // The longest occurrence is the most representative one to pull a chord pattern
+            // from — a short pickup/tag instrumental can otherwise win by list order alone.
+            let representative =
+                occurrences.max { ($0.end - $0.start) < ($1.end - $1.start) } ?? occurrences[0]
+            let chordPattern = chordSignature(representative.chords, key: key)
+            summaries.append(
+                .init(
+                    kind: kind, occurrenceCount: occurrences.count, totalDuration: totalDuration,
+                    chordPattern: chordPattern))
+        }
+        return summaries
     }
 
     /// Ordered chord-pattern signature for a span of chords: each event mapped to its Roman

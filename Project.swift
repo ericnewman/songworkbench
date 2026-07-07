@@ -85,12 +85,14 @@ let project = Project(
                     "SongWorkbench reads your Music library so you can open and analyze local tracks.",
                 // Required on iOS; an empty launch-screen dictionary uses the app's background.
                 "UILaunchScreen": [:],
-                // Practice layout is landscape-first, but allow all iPad orientations.
+                // Landscape-only (2026-07-06): the 3-column desktop-style layout (song
+                // list / editor / stem mixer) doesn't reflow for portrait width yet —
+                // confirmed on an iPad Pro 13" simulator (columns clipped off-screen,
+                // labels truncated). Revisit once the layout adapts responsively; until
+                // then, don't offer an orientation the app can't actually render in.
                 "UISupportedInterfaceOrientations": [
                     "UIInterfaceOrientationLandscapeLeft",
                     "UIInterfaceOrientationLandscapeRight",
-                    "UIInterfaceOrientationPortrait",
-                    "UIInterfaceOrientationPortraitUpsideDown",
                 ],
                 // Let users pull songs in via the Files app.
                 "UIFileSharingEnabled": true,

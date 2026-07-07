@@ -31,54 +31,20 @@ private struct SongSidebar: View {
     @ObservedObject var model: AppModel
     @State private var isDropTargeted = false
     @FocusState private var listFocused: Bool
+    /// Collapsed/expanded state of the whole song list, persisted across launches. Shares its
+    /// UserDefaults key with `PlayerView.mainColumns` (multiple `@AppStorage` readers/writers of
+    /// the same key stay in sync) so the outer frame can shrink to match. Added 2026-07-06: on
+    /// iPad the list ate a lot of vertical space even with one song selected — collapsing to a
+    /// single current-song row frees that space for the analysis tool cards below.
+    @AppStorage("songSidebarExpanded") private var isExpanded = true
 
     var body: some View {
-        List(selection: selection) {
-            Section {
-                ForEach(model.songs) { song in
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(song.title)
-                                .lineLimit(1)
-                            Text(song.fileExtension)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Remove Song", systemImage: "trash") {
-                            model.removeSong(song)
-                        }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(Color.swCoral)
-                    }
-                    .contextMenu {
-                        Button("Remove Song", systemImage: "trash", role: .destructive) {
-                            model.removeSong(song)
-                        }
-                    }
-                    .tag(song.id)
-                }
-            } header: {
-                HStack(spacing: 8) {
-                    Text("Songs")
-                        .font(.swDisplay(12, weight: .semibold))
-                        .foregroundStyle(Color.swTextSecondary)
-                    Spacer()
-                    // Library actions live with the library list.
-                    Button("Import Songs", systemImage: "plus") {
-                        model.isImporterPresented = true
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Import audio files")
-                    Button("Open from Music", systemImage: "music.note") {
-                        model.isMusicLibraryPickerPresented = true
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Open a track from your Music library")
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if isExpanded {
+                songList
+            } else {
+                collapsedRow
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -121,6 +87,100 @@ private struct SongSidebar: View {
         }
     }
 
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button {
+                withAnimation(.snappy) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.swTextSecondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text("Songs")
+                        .font(.swDisplay(12, weight: .semibold))
+                        .foregroundStyle(Color.swTextSecondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Collapse song list" : "Expand song list")
+            // Moved up from a dedicated footer bar at the bottom of the window (2026-07-06,
+            // Eric: "move the Ready indicator into the top of the screen and delete the
+            // footer bar to save space") — this header row is visible in every state
+            // (expanded or collapsed), so it's always on screen without its own chrome.
+            BackgroundStatusBar(model: model)
+            Spacer()
+            // Library actions live with the library list.
+            Button("Import Songs", systemImage: "plus") {
+                model.isImporterPresented = true
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .help("Import audio files")
+            Button("Open from Music", systemImage: "music.note") {
+                model.isMusicLibraryPickerPresented = true
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .help("Open a track from your Music library")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, isExpanded ? 4 : 8)
+    }
+
+    private var songList: some View {
+        List(selection: selection) {
+            ForEach(model.songs) { song in
+                HStack(spacing: 8) {
+                    // File format (MP3/M4A) used to show as a caption under the title —
+                    // dropped (2026-07-06) to tighten row height in the iPad song list,
+                    // where the extra line made titles feel far apart. Title-only rows
+                    // pack closer together on both platforms.
+                    Text(song.title)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Remove Song", systemImage: "trash") {
+                        model.removeSong(song)
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Color.swCoral)
+                }
+                .contextMenu {
+                    Button("Remove Song", systemImage: "trash", role: .destructive) {
+                        model.removeSong(song)
+                    }
+                }
+                .tag(song.id)
+            }
+        }
+    }
+
+    /// Shown when collapsed: just the current song, tappable to expand back to the full list.
+    private var collapsedRow: some View {
+        Button {
+            withAnimation(.snappy) { isExpanded = true }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "music.note")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.swTextSecondary)
+                Text(model.selectedSong?.title ?? "No song selected")
+                    .font(.swDisplay(13))
+                    .foregroundStyle(Color.swTextPrimary)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .help("Expand song list")
+    }
+
     private var selection: Binding<Song.ID?> {
         Binding(
             get: { model.selectedSongID },
@@ -136,19 +196,21 @@ private struct SongSidebar: View {
     }
 }
 
-/// Always-visible one-line status bar at the bottom of the main window: shows whatever the
-/// app is doing in the background (importing/copying a song, analyzing, exporting,
-/// downloading a model, loading a waveform) so long-running work is never invisible.
+/// Compact inline status indicator — shows whatever the app is doing in the background
+/// (importing/copying a song, analyzing, exporting, downloading a model, loading a waveform)
+/// so long-running work is never invisible. Lives in `SongSidebar`'s header row at the top of
+/// the window; used to be its own full-width footer bar at the bottom, which cost a whole row
+/// of vertical space for one line of text (2026-07-06, Eric: move it up, drop the footer).
 private struct BackgroundStatusBar: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             if let status = model.backgroundActivityStatus {
                 ProgressView()
                     .controlSize(.small)
-                    .scaleEffect(0.65)
-                    .frame(width: 14, height: 14)
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
                 Text(status)
                     .font(.swDisplay(11))
                     .foregroundStyle(Color.swTextPrimary)
@@ -162,15 +224,8 @@ private struct BackgroundStatusBar: View {
                     .font(.swDisplay(11))
                     .foregroundStyle(Color.swTextSecondary)
             }
-            Spacer()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 3)
-        .frame(height: 22)
-        .background(Color.swSurface.opacity(0.7))
-        .overlay(alignment: .top) {
-            Divider()
-        }
+        .layoutPriority(-1)
     }
 }
 
@@ -235,6 +290,11 @@ private struct PlayerView: View {
     /// view owns the height after that; we only record the user's adjustments).
     @State private var songListIdealHeight: CGFloat
     private static let songListHeightDefaultsKey = "songListHeight"
+    /// Mirrors `SongSidebar`'s own collapse state (same key) so the OUTER frame shrinks too —
+    /// otherwise a collapsed one-row list would still reserve a 150pt-minimum column.
+    @AppStorage("songSidebarExpanded") private var songSidebarExpanded = true
+    /// Height of the collapsed single-song row: header + one compact row, no list chrome.
+    private static let collapsedSongListHeight: CGFloat = 76
 
     init(model: AppModel) {
         self.model = model
@@ -245,14 +305,11 @@ private struct PlayerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            mainColumns
-            BackgroundStatusBar(model: model)
-        }
+        mainColumns
     }
 
-    /// The Lyrics/Chords/ChordPro/Review segmented control, shown centered at the top of the
-    /// middle (editor) pane. ⌘1…⌘4 shortcuts ride along in a hidden background.
+    /// The Structure/Lyrics/Chords/ChordPro/Review segmented control, shown centered at the
+    /// top of the middle (editor) pane. ⌘1…⌘5 shortcuts ride along in a hidden background.
     private var editorTabPicker: some View {
         Picker("Editor", selection: $selectedEditor) {
             ForEach(EditorTab.allCases) { tab in
@@ -283,13 +340,19 @@ private struct PlayerView: View {
             // the editor gets the whole rest of the window.
             PlatformVSplit {
                 SongSidebar(model: model)
-                    .frame(minHeight: 150, idealHeight: songListIdealHeight)
-                    // Persist divider adjustments so the songs area keeps its height
-                    // across sessions (default: a third of the screen).
+                    .frame(
+                        minHeight: songSidebarExpanded ? 150 : Self.collapsedSongListHeight,
+                        idealHeight: songSidebarExpanded
+                            ? songListIdealHeight : Self.collapsedSongListHeight,
+                        maxHeight: songSidebarExpanded ? .infinity : Self.collapsedSongListHeight
+                    )
+                    // Persist divider adjustments so the songs area keeps its height across
+                    // sessions (default: a third of the screen). Skipped while collapsed — that
+                    // height is fixed, not a user-chosen divider position.
                     .background(
                         GeometryReader { geo in
                             Color.clear.onChange(of: geo.size.height) { _, height in
-                                guard height >= 150 else { return }
+                                guard songSidebarExpanded, height >= 150 else { return }
                                 UserDefaults.standard.set(
                                     Double(height), forKey: Self.songListHeightDefaultsKey)
                             }

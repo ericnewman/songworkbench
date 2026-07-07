@@ -426,4 +426,71 @@ Implemented as planned, in one new source file plus small additions:
   `repositories` and re-running `swift package resolve`. See `tasks/lessons.md`.
 
 ---
+# Structure tab first + exhaustive iPad/desktop test pass (2026-07-06)
+
+## What shipped
+
+- Moved `.structure` to the first position in `EditorTab` (enum order = tab order = ⌘-shortcut
+  order) in `WorkspaceEditorsView.swift`; updated `ContentView.swift`'s doc comment.
+- iPad landscape-only lock: `Project.swift`'s `SongWorkbenchiPad` target now declares only
+  `UIInterfaceOrientationLandscapeLeft/Right` in `UISupportedInterfaceOrientations`. Confirmed
+  by direct testing that portrait clips the 3-column desktop-style layout (columns/labels cut
+  off); this was Eric's own suspicion going in, verified before fixing.
+- Exhaustive per-song check, **macOS desktop**: all 4 songs (Key West Bar, Settle Down, Flip
+  Flops and Barbeque, Summertime's her with you) render correctly across all 5 tabs.
+- Exhaustive per-song check, **iPad Pro 13" simulator**, full pipeline from scratch (Eric's
+  explicit choice: "All 4 songs, full pipeline, on iPad"): copied the 4 source audio files into
+  the simulator's sandboxed container Documents folder via `simctl get_app_container`, imported
+  each through the in-app Files picker, ran Stems → Transcribe → Tempo & Chords → ChordPro for
+  all 4. All succeeded; Structure tab verified for each.
+  - **Found + documented, not fixed**: Whisper Large V3 Turbo (Accuracy transcription) can't
+    install on iPad — `ModelPackageManager.swift`'s `DittoModelArchiveExtractor` shells out to
+    `/usr/bin/ditto` (`Process`/NSTask), which is macOS-only; the iOS `#else` branch throws
+    `extractionUnsupportedOnPlatform`. This was already flagged in a code comment as tracked/
+    known, not a new regression. Fast/Balanced (Parakeet, Core ML) installs and works fine on
+    iPad and was used for all 4 songs. Fixing this needs an in-process unzip (Apple Archive
+    framework) — real work, left for a dedicated pass.
+  - One accidental song deletion during testing (mis-clicked a trash icon next to the "+"
+    import button in the cramped iPad header) — re-imported, no lasting effect.
+
+## UI polish requests that came up live during the iPad pass (all shipped + verified both platforms)
+
+- Song list rows: dropped the MP3/M4A file-format caption line (title-only rows, tighter).
+- Song list is now collapsible: chevron in the `SongSidebar` header toggles `@AppStorage
+  "songSidebarExpanded"` (same key read in both `SongSidebar` and `PlayerView.mainColumns`, so
+  the outer split-view frame shrinks too); collapsed state shows just the current song's title,
+  tap to re-expand.
+- `SongStructureView`'s own header no longer repeats the song title (already shown by the
+  shared per-song title above the tab bar) — only the "Approximate" badge remains. This was the
+  "wasted space at the top of the screen" Eric flagged; confirmed by reading the view's code.
+- Background-activity status ("Ready" / in-progress spinner) moved from a dedicated footer bar
+  at the bottom of the window into the `SongSidebar` header row; the footer bar is gone.
+- Structure tab: added INTRO/INSTRUMENTAL/OUTRO SECTIONS cards (new
+  `SongStructureOverview.InstrumentalSummary`: occurrence count, total time, representative
+  chord pattern) alongside the existing VERSE/CHORUS/BRIDGE phrase templates — wordless
+  sections previously only showed up as bare rows in the FORM list with no further detail.
+
+## Verification
+
+- `swift build`, `swift test` (601 tests, same 8 pre-existing `AppModelTests`/
+  `MusicLibraryTests` baseline failures — confirmed via `git stash` that they fail identically
+  on unmodified `main`, so not caused by this session's changes), and `swift format lint
+  --strict --recursive Sources Tests` all clean after every batch of changes.
+- Rebuilt + relaunched both the macOS app and the iPad simulator app after each change and
+  live-verified via screenshots: collapsible list (both directions), tightened Structure
+  header, inline "Songs · Ready" status with no footer, and the new instrumental section cards
+  — on both platforms.
+- Did not add an iOS unit-test target: `SongWorkbenchTests` in `Project.swift` is
+  `destinations: .macOS` only and `SongWorkbenchiPad`'s scheme has no `testAction`. Live/manual
+  verification on the simulator stood in for iOS-side unit tests this pass.
+
+## Not done / left open
+
+- Whisper-on-iPad archive extraction (see above) — needs an Apple Archive-based in-process
+  unzip; `ModelPackageManager.swift` already has the seam (`ModelArchiveExtracting` protocol).
+- Task #15 from an earlier session (word-doubling/timing-overlap fix in
+  `LyricBlendRowBuilder.swift`, lost to a concurrent-process race) is still pending, untouched
+  this session.
+
+---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details

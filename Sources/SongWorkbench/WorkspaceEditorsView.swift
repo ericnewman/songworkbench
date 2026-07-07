@@ -8,31 +8,31 @@ import UniformTypeIdentifiers
 /// The workspace editor tabs, selected by a segmented control at the top of the
 /// window so the editor content fills the right column.
 enum EditorTab: String, CaseIterable, Identifiable {
+    case structure
     case lyrics
     case chords
     case chordPro
     case review
-    case structure
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .structure: "Structure"
         case .lyrics: "Lyrics"
         case .chords: "Chords"
         case .chordPro: "ChordPro"
         case .review: "Review"
-        case .structure: "Structure"
         }
     }
 
     var systemImage: String {
         switch self {
+        case .structure: "square.stack.3d.up"
         case .lyrics: "text.quote"
         case .chords: "music.note"
         case .chordPro: "doc.plaintext"
         case .review: "text.badge.checkmark"
-        case .structure: "square.stack.3d.up"
         }
     }
 }
@@ -46,11 +46,11 @@ struct WorkspaceEditorsView: View {
     var body: some View {
         Group {
             switch selectedEditor {
+            case .structure: SongStructureView(model: model)
             case .lyrics: TimedLyricsEditor(model: model)
             case .chords: ChordTimelineEditor(model: model)
             case .chordPro: ChordProTrueView(model: model)
             case .review: ChordProReviewTab(model: model)
-            case .structure: SongStructureView(model: model)
             }
         }
         .padding(12)

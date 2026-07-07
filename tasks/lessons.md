@@ -217,4 +217,33 @@ tracked in git.
 concurrently, a "manifest cannot be accessed" or similarly nonsensical SwiftPM error is more
 likely stale/corrupted `.build` state from a concurrent writer than a real problem with your own
 change — check `.build/checkouts` for duplicate/` 2` dirs before assuming your edit broke
+
+## 2026-07-06 — iPad Simulator UI is cramped: verify test-data state on screen, don't infer it
+**Symptom:** Assumed 4 songs were imported into the iPad app's isolated sandbox based on an
+earlier screenshot; after a rebuild+relaunch (needed to pick up the landscape-orientation fix),
+only 3 remained and a "Failed — Install the X model before running" message referenced models
+that hadn't actually finished installing yet. Separately, a `+` (import) button sits only ~15pt
+from a song row's trash icon in the cramped iPad toolbar; a click meant for `+` landed on trash
+and silently deleted "Flip Flops and Barbeque" mid-session.
+**Rule:** On the iPad simulator (or any narrow/cramped layout), re-verify the actual on-screen
+song list / model-install state with a fresh screenshot after ANY rebuild+relaunch or long wait
+— don't carry forward "I saw 4 songs earlier" as still true. When two small tap targets sit
+within ~20pt of each other (import `+` vs. a list row's trash icon), zoom in first to get exact
+glyph coordinates rather than estimating from a full screenshot, and prefer re-verifying
+immediately after the click (a stray deletion is otherwise invisible until several steps later).
+
+## 2026-07-06 — Whisper (Accuracy transcription) can't install on iPad: known, not a regression
+**Symptom:** Installing the Whisper Large V3 Turbo model on the iPad simulator failed with
+"Model archive extraction isn't supported on this platform yet."
+**Diagnosis:** `ModelPackageManager.swift`'s `DittoModelArchiveExtractor` shells out to
+`/usr/bin/ditto` via `Process`/`NSTask`, which doesn't exist on iOS; the `#else` branch already
+throws `ModelPackageError.extractionUnsupportedOnPlatform`, and the surrounding comment already
+says this was "tracked in the iPad port plan." Parakeet (Fast/Balanced) ships as a `.mlpackage`
+that doesn't need zip extraction, so it installs and works fine.
+**Rule:** Before treating a platform-specific install/feature failure as a new bug to fix,
+`Grep` the error string in source — if the `#else`/platform-gated branch already throws a
+named, documented error, it's a known, scoped-out gap (fixing it properly means implementing an
+Apple-Archive-based in-process unzip, real work, not a quick patch). Document it as a finding,
+keep testing with what DOES work on that platform (here: Parakeet-only), and don't burn the
+current task's time budget implementing the missing platform feature unless asked.
 something.

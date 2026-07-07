@@ -22,10 +22,13 @@ struct SongStructureView: View {
     private var content: some View {
         if let overview = model.songStructureOverview() {
             VStack(alignment: .leading, spacing: 16) {
-                header(overview)
+                header
                 formSection(overview)
                 ForEach(overview.templates, id: \.kind) { template in
                     templateCard(template)
+                }
+                ForEach(overview.instrumentalSummaries, id: \.kind) { summary in
+                    instrumentalCard(summary)
                 }
             }
         } else {
@@ -37,11 +40,12 @@ struct SongStructureView: View {
         }
     }
 
-    private func header(_ overview: SongStructureOverview) -> some View {
+    // `overview.title` used to repeat here as its own heading, right under the shared per-song
+    // title PlayerView already shows above the tab bar — pure duplication, and on iPad's tighter
+    // vertical layout it read as wasted space at the top of the tab (2026-07-06). Only the
+    // "Approximate" badge earns its own row now.
+    private var header: some View {
         HStack {
-            Text(overview.title)
-                .font(.swDisplay(15, weight: .semibold))
-                .foregroundStyle(Color.swTextPrimary)
             Spacer()
             Text("Approximate")
                 .font(.swDisplay(11))
@@ -90,6 +94,27 @@ struct SongStructureView: View {
                 "Lyric Meter",
                 template.meterPattern.map(String.init).joined(separator: " / "))
             templateRow("Rhyme", template.rhymeScheme.joined(separator: " "))
+        }
+        .padding(10)
+        .background(Color.swSurface, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Counterpart to `templateCard` for wordless kinds (Intro/Instrumental/Solo/Outro) —
+    /// no lyric lines to show a phrase/meter/rhyme breakdown for, so just occurrence count,
+    /// total time, and the representative chord pattern (Eric, 2026-07-06).
+    private func instrumentalCard(_ summary: SongStructureOverview.InstrumentalSummary)
+        -> some View
+    {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(templateTitle(summary.kind)) SECTIONS")
+                .font(.swDisplay(11, weight: .semibold))
+                .foregroundStyle(Color.swTextSecondary)
+            templateRow("Occurrences", "\(summary.occurrenceCount)")
+            templateRow("Total Time", formatted(summary.totalDuration))
+            templateRow(
+                "Chord Pattern",
+                summary.chordPattern.isEmpty
+                    ? "—" : "| " + summary.chordPattern.joined(separator: " | ") + " |")
         }
         .padding(10)
         .background(Color.swSurface, in: RoundedRectangle(cornerRadius: 8))
