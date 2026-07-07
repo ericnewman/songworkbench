@@ -250,6 +250,57 @@ final class LyricPhraseGrouperTests: XCTestCase {
         XCTAssertEqual(sections.filter { $0.kind == .verse }.count, 1, "\(sections)")
     }
 
+    // MARK: - Cross-section pooling (Task #39 Phase B2)
+
+    /// Two confidently-periodic 8-bar verses (period 4, clean `C G Am F` chords, distinct lyrics
+    /// so `SongStructureAnalyzer` reads them as verse, not a repeated chorus) plus a THIRD, lone
+    /// 8-bar verse occurrence whose own chords only coincidentally repeat at lag 4 in 2 of 4 bar
+    /// pairs (confidence 0.5 alone — well under `minimumConfidence` 0.75, so `detectPeriod` could
+    /// never apply period 4 to it by itself). Pooled across all three verse occurrences the
+    /// aggregate clears the confidence floor (10 matches / 12 pairs = 0.833), so the lone verse
+    /// must still get re-cut at the period-4 boundary — the literal "Verse 2 borrows the phrase
+    /// period its sibling verses establish" case from tasks/todo.md Task #39, and the OLD
+    /// per-occurrence-only logic would have left this section as one unsplit 8-word line.
+    func testLoneVerseBorrowsThePeriodItsConfidentSiblingVersesEstablish() {
+        let occurrenceA = eightBarChorusWords(
+            startBar: 0, text: ["one", "two", "three", "four", "five", "six", "seven", "eight"])
+        // Disjoint vocabulary from A (and from the lone verse below) so none of the three read as
+        // a Jaccard-matching chorus repeat of one another — all three classify as plain verse.
+        let occurrenceB = eightBarChorusWords(
+            startBar: 20,
+            text: ["north", "star", "guides", "sailors", "through", "the", "dark", "water"])
+        let lonelyWords = eightBarChorusWords(
+            startBar: 400,
+            text: ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"])
+        // Lag-4 pairs: (Bb,Bb) match, (Eb,Eb) match, (Cm,Fm) no, (Gm,Cdim) no -> 2/4 alone
+        // (confidence 0.5, below the 0.75 floor) but pooled with A's and B's clean 4/4 each, the
+        // aggregate is (4+4+2)/(4+4+4) = 10/12 = 0.833, clearing the floor.
+        let lonelyChords = eightBarChords(
+            startBar: 400, pattern: ["Bb", "Eb", "Cm", "Gm", "Bb", "Eb", "Fm", "Cdim"])
+
+        let input = [line(occurrenceA), line(occurrenceB), line(lonelyWords)]
+        let chords = eightBarChords(startBar: 0) + eightBarChords(startBar: 20) + lonelyChords
+
+        let result = LyricPhraseGrouper.regroup(
+            input, beatTimes: uniformBeatTimes(bpm: 120, bars: 28), tempo: 120, chords: chords)
+
+        let sections = SongStructureAnalyzer().vocalSections(for: result)
+        XCTAssertEqual(sections.filter { $0.kind == .verse }.count, 3, "\(sections)")
+
+        // The two confident occurrences still re-segment into 2 lines each, same as always.
+        XCTAssertTrue(result.contains { $0.text == "one two three four" }, "\(result.map(\.text))")
+        XCTAssertTrue(
+            result.contains { $0.text == "five six seven eight" }, "\(result.map(\.text))")
+
+        // The lone verse, isolated, could never prove period 4 on its own (0.5 confidence is below
+        // `minimumConfidence`) — pooling must still apply the siblings' period 4 and re-cut it into
+        // two 4-word cells rather than leaving the 8-word line untouched.
+        XCTAssertTrue(
+            result.contains { $0.text == "alpha beta gamma delta" }, "\(result.map(\.text))")
+        XCTAssertTrue(
+            result.contains { $0.text == "epsilon zeta eta theta" }, "\(result.map(\.text))")
+    }
+
     // MARK: - Stage 2: rhyme/syllable nudge (PRD §3.4)
 
     /// A 12-bar/3-cell section (period 4 bars) where the globally-nearest word gap to the SECOND

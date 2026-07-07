@@ -163,29 +163,63 @@ enum LyricPhraseGrouper {
             sectionBarRange[index] = (start, end)
         }
 
+        // Pools bar-label self-similarity evidence across EVERY occurrence of a section kind,
+        // rather than requiring a single occurrence prove its own period alone — a section that
+        // occurs only once (a lone Verse 2, most Bridges) can still borrow the phrase period its
+        // sibling occurrences establish (Eric, 2026-07-07: "prioritize the music, the beat, the
+        // rhythm, and the structure" — tasks/todo.md Task #39). `totalBars` (not the number of
+        // lag-`period` test pairs) is what `minimumFullPeriods` gates, matching `detectPeriod`'s
+        // original per-occurrence meaning exactly when a kind has only one occurrence — so this
+        // is a strict generalization, not a behavior change, for any section without siblings.
+        func pooledPeriod(indices: [Int]) -> (period: Int, confidence: Double)? {
+            var best: (period: Int, confidence: Double)?
+            for period in configuration.candidatePeriodsInBars {
+                guard period > 0 else { continue }
+                var matches = 0
+                var total = 0
+                var totalBars = 0
+                for index in indices {
+                    guard let barRange = sectionBarRange[index] else { continue }
+                    let labels = barLabels(startDownbeat: barRange.start, endDownbeat: barRange.end)
+                    totalBars += labels.count
+                    guard labels.count > period else { continue }
+                    for i in 0..<(labels.count - period) {
+                        total += 1
+                        if labels[i] == labels[i + period] { matches += 1 }
+                    }
+                }
+                guard totalBars >= period * configuration.minimumFullPeriods, total > 0 else {
+                    continue
+                }
+                let confidence = Double(matches) / Double(total)
+                if best == nil || confidence > best!.confidence {
+                    best = (period, confidence)
+                }
+            }
+            return best
+        }
+
         // Chorus occurrences must share ONE period so repeats stay structurally identical (PRD §4
         // chorus-determinism guard) — `SongStructureAnalyzer`'s word-set-Jaccard chorus detection
         // would otherwise silently regress if two occurrences of the same chorus re-segmented
-        // differently due to beat-grid jitter between the two sung passes.
+        // differently due to beat-grid jitter between the two sung passes. Pooling naturally
+        // satisfies this for BOTH kinds (every occurrence of a kind gets the same pooled
+        // decision), so verse and chorus now share one code path instead of chorus alone getting
+        // cross-occurrence sharing. Falls back to this occurrence's own single-occurrence
+        // evidence when the pool doesn't reach confidence.
         var decisions: [Int: (period: Int, confidence: Double)?] = [:]
-        let chorusIndices = sections.indices.filter { sections[$0].kind == .chorus }
-        if !chorusIndices.isEmpty {
-            var shared: (period: Int, confidence: Double)?
-            for index in chorusIndices {
-                guard let barRange = sectionBarRange[index] else { continue }
-                if let candidate = detectPeriod(
-                    startDownbeat: barRange.start, endDownbeat: barRange.end),
-                    shared == nil || candidate.confidence > shared!.confidence
-                {
-                    shared = candidate
+        for kind: SongStructureAnalyzer.SectionKind in [.verse, .chorus] {
+            let indices = sections.indices.filter { sections[$0].kind == kind }
+            guard !indices.isEmpty else { continue }
+            let pooled = pooledPeriod(indices: indices)
+            for index in indices {
+                if let pooled, pooled.confidence >= configuration.minimumConfidence {
+                    decisions[index] = pooled
+                } else if let barRange = sectionBarRange[index] {
+                    decisions[index] = detectPeriod(
+                        startDownbeat: barRange.start, endDownbeat: barRange.end)
                 }
             }
-            for index in chorusIndices { decisions[index] = shared }
-        }
-        for index in sections.indices where sections[index].kind == .verse {
-            guard let barRange = sectionBarRange[index] else { continue }
-            decisions[index] = detectPeriod(
-                startDownbeat: barRange.start, endDownbeat: barRange.end)
         }
 
         var result: [TimedLyricSegment] = []
