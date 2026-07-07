@@ -1,3 +1,104 @@
+# Plan: music-structure-first lyric segmentation (Task #39, drafted 2026-07-07, NOT started)
+
+Eric approved the direction ("1 Yes. 2 Yes. 3 Yes") — see
+[[lyric-segmentation-music-first-direction]] in memory for the full quote/rationale. This is a
+plan only. Confirm phasing before starting implementation (Eric's stated preference: plan first,
+check in before implementing).
+
+## Where things stand today (grounded in this session's reading, not assumption)
+
+- `TimedLyricSegmentGrouper.group`/`.regroup` (Transcription.swift): text/gap/capitalization/
+  comma-driven. Runs 3x independently per song (once per installed transcription mode) AND again
+  unconditionally on every `AppModel.applyAnalysis` load. This is the ONLY grouping mechanism
+  when just one transcription mode is installed (`runLyricBlendPasses` no-ops entirely when
+  `otherModes` is empty — single-mode songs never touch the blend-row machinery at all).
+- `LyricBlendRowBuilder` (backlog #11): clusters the (up to 3) modes' already-grouped lines into
+  time-windowed rows; `onsetCorroboration`/`onsetPreferredMode` use REAL vocal-stem onsets
+  (`InstrumentOnsetDetector.onsets(url:)` on the separated vocals stem) but ONLY to pick BETWEEN
+  already-formed candidate rows' timing — never to cut a new boundary. This onset list is computed
+  fresh inside `runLyricBlendPasses`'s Task and is NOT persisted in `SongAnalysisDocument` —
+  needed for Phase B1 below.
+- `LyricPhraseGrouper` (backlog #9 Phase 1): the ONE bar/rhythm-aware pass. Runs LAST, as an
+  optional post-pass, gated behind `detectPeriod` finding >=2 full periods of >=0.75-confidence
+  chord-per-bar autocorrelation WITHIN a single section OCCURRENCE. A section that occurs once
+  (a lone Verse 2, a Bridge) can never produce that evidence and is left entirely to the
+  text-driven grouper's output — exactly the gap that let the Settle Down bug through.
+- `SongStructureOverviewBuilder` (Task #36, this session): ALREADY does cross-occurrence pooling,
+  just for the Structure tab's display, not fed back into segmentation. `buildTemplates` takes the
+  MAJORITY line count and a representative chord pattern across ALL occurrences of a kind
+  (`mostCommonInt(lineCounts)`), and `reclassifyBridgeAndSolo` already compares each occurrence's
+  chord signature against the kind's majority pattern (`chordSignature`/`signaturesMatch`, Jaccard
+  >= 0.75). This is most of the "pool evidence across occurrences" machinery Phase B needs —
+  reuse it rather than re-deriving cross-occurrence consensus from scratch in `LyricPhraseGrouper`.
+
+## Phase A — done, committed (`9cd6f77`)
+
+`segmentLineStart` capitalization-gate fix. Narrow, safe, ships regardless of everything below
+since the text/gap grouper will still exist as the eventual fallback tier.
+
+## Phase B — cross-section pooling + persisted vocal onsets (not started)
+
+1. **Persist vocal onsets in the schema.** Add `SongAnalysisDocument.vocalOnsets: [TimeInterval]`
+   (schemaVersion 12), computed via `InstrumentOnsetDetector.onsets(url:)` on the vocals stem once
+   real stem separation completes (harmony/separation stage, wherever the stem file first becomes
+   available — NOT recomputed on every load). Old songs: empty array until their next "Analyze
+   Song" (or a lazy one-time backfill on load if a vocals stem file already exists on disk —
+   decide which during implementation; lazy backfill avoids forcing a re-analysis just to gain
+   this field, but adds load-time cost to every old song's first open).
+2. **Feed `PhraseTemplate` (or an equivalent lighter derivation) into `LyricPhraseGrouper` as the
+   period/line-count source of truth**, replacing `detectPeriod`'s single-occurrence-only
+   autocorrelation. Concretely: for a section kind with >=2 worded occurrences, the majority line
+   count (already computed by `SongStructureOverviewBuilder.buildTemplates`) implies a phrase
+   period in bars (occurrence's own bar span / majority line count, rounded) — apply that period
+   to EVERY occurrence of the kind, including ones with too little internal repetition to prove it
+   alone (the exact Verse-2-borrows-from-Verse-1/3 case Eric asked for). A kind with only ONE
+   occurrence ever (no cross-section evidence at all — a Bridge, most commonly) still falls back
+   to `detectPeriod`'s existing single-occurrence autocorrelation, or to Phase C's fallback tier
+   if that also fails.
+3. New tests: a section that individually has zero repeat evidence but shares its kind with 2+
+   confidently-periodic siblings gets segmented using the siblings' period. Regression coverage
+   for the existing chorus-determinism guard (must still hold under pooled detection).
+
+## Phase C — promote structure to primary, demote text grouping to fallback (not started)
+
+1. **Boundary snapping switches from "nearest real ASR word gap" to "nearest real vocal onset."**
+   `LyricPhraseGrouper.resegmented`'s Stage 1 currently snaps each computed phrase boundary to the
+   nearest inter-WORD gap in the flattened ASR word stream (`gapMidpoint`, built from
+   `lines.flatMap(\.words)`). Once vocal onsets are persisted (Phase B1), snap to the nearest real
+   onset/silence instead — independent of whichever transcription mode's (possibly wrong) word
+   timing happened to win the blend. Words still supply TEXT content; onsets supply WHERE a line
+   starts. Existing Stage 2 rhyme/syllable nudge (`RhymeSyllableScorer`) still applies on top.
+2. **Reorder the pipeline in `AppModel.applyAnalysis`**: run the (now pooled + onset-anchored)
+   `LyricPhraseGrouper` pass FIRST wherever chord/beat/onset data exists for a section, and only
+   fall back to `TimedLyricSegmentGrouper`'s text/gap/capitalization grouping for spans where beat
+   structure genuinely can't be established (no chords/beats at all, or pooled+single-occurrence
+   detection both fail confidence) — matches Eric's "lowest priority fallback when all else
+   fails." This likely also changes where `TimedLyricSegmentGrouper.group` runs for the INITIAL
+   per-mode transcription pass (right now every mode groups into lines before any music-structure
+   input exists at all) — needs its own sub-design pass once B is proven out; flagged here so it
+   isn't lost, not scoped in detail yet.
+3. Word-to-cell assignment: once a phrase-cell's [start,end) is fixed by structure+onsets, bucket
+   whichever transcription candidate's words fall in that time range into the cell (nearest-onset
+   assignment, same fencing discipline `resegmented` already uses so cells stay non-overlapping) —
+   replacing the current "trust the ASR engine's own line break, then just correct it after the
+   fact" flow with "structure decides the box, ASR text fills it."
+
+## Risks / open questions to resolve before Phase C lands
+
+- Changing `LyricPhraseGrouper`'s trigger condition from "rare, high-confidence" to "primary,
+  broadly-applied" means it will touch FAR more songs' lyrics than it does today — needs a wide
+  live-verification pass (multiple real songs, not just Settle Down/Key West Bar) before treating
+  it as done, per this project's established verify-live convention.
+  `LyricBlendRowBuilder`/`LyricPhraseGrouper`/`TimedLyricSegmentGrouper` together have 100+
+  existing tests; expect real churn there, not just additions.
+- `TimedLyricSegment.reconciled`'s override/accepted-annotation carry-forward matches by time-
+  window overlap — re-verify overrides still survive once cell boundaries move to onset-anchored
+  positions (they'll shift slightly vs. today's word-gap-anchored positions).
+- Onset detection quality varies by song (percussive/dense mixes vs. clean vocal stems) — decide
+  a real confidence/fallback story for "onsets exist but are noisy" distinct from "no onsets at
+  all," mirroring `LyricPhraseGrouper`'s existing "no-op, loudly, on low confidence" philosophy.
+
+---
 # Fix: segmentLineStart capitalization gate merges lowercase-starting lines (2026-07-07)
 
 Task #37/#38. Eric: "In Settle Down, there are a lot of lines that contain multiple rhythmic
