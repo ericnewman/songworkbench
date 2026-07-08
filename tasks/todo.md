@@ -1132,3 +1132,14 @@ reflect pad). MansfieldPlumbing's public export solved the equivalent for the 7.
    to the new length; bump engineVersion so cached stems regen.
 6. Device-test on the real iPad: confirm separation completes, no jetsam; keep macOS on the
    7.8s model (more context, plenty of RAM).
+
+## Phase 2 export note (2026-07-08)
+Confirmed empirically: setting segment=3.5s runs; env set up (torch/demucs/onnxscript in
+/tmp/demucs_mem). Export blocker detail — the cheap patch (spectro return_complex=False +
+view_as_complex, keep complex istft) does NOT work: torch.istft still requires a complex input
+and the exporter rejects complex stft/istft. No shortcut: must hand-roll a real DFT (matmul
+cos/sin, normalized=/sqrt(nfft), hann(4096), hop 1024, center reflect pad nfft//2) AND a real
+iSTFT (windowed overlap-add + NOLA window-sq normalization) replacing demucs.spec.spectro/
+ispectro, then A/B the separated stems vs the stock 7.8s model (null test) before trusting it.
+demucs spec params: n_fft=4096, hop=1024, win=hann(4096), win_length=4096, normalized=True,
+center=True, pad_mode=reflect, freqs=2049.
