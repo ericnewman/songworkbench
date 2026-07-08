@@ -37,6 +37,27 @@ struct ModelPackageDescriptor: Codable, Equatable, Sendable {
             archive.expectedSizeBytes
         }
     }
+
+    /// Whether any part of this package needs zip extraction to install. Extraction is
+    /// macOS-only (`DittoModelArchiveExtractor` shells out to `/usr/bin/ditto`; the iOS
+    /// branch throws `extractionUnsupportedOnPlatform`), so archive-bearing packages
+    /// (Whisper's Core ML encoder) can't install on iPad and shouldn't be offered there.
+    var requiresArchiveExtraction: Bool {
+        switch source {
+        case .files(let components): components.contains(where: \.isArchive)
+        case .zip: true
+        }
+    }
+
+    /// Whether this package can actually be installed on the RUNNING platform — the UI
+    /// should hide (not just fail) packages that can't.
+    var isInstallableOnCurrentPlatform: Bool {
+        #if os(macOS)
+            return true
+        #else
+            return !requiresArchiveExtraction
+        #endif
+    }
 }
 
 struct InstalledModelPackage: Equatable, Sendable {

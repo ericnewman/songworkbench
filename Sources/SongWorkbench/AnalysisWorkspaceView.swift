@@ -363,9 +363,13 @@ private struct ModelPackagesView: View {
                         .font(.swMono(12))
                         .foregroundStyle(Color.swTextSecondary)
                 }
-                ForEach(ModelCatalog.all, id: \.id) { descriptor in
+                // Whisper's Core ML encoder needs zip extraction, which is macOS-only — on
+                // iPad the row is hidden entirely instead of offering an install that can
+                // only fail (Eric: "the option to load it should be hidden").
+                let installable = ModelCatalog.all.filter(\.isInstallableOnCurrentPlatform)
+                ForEach(installable, id: \.id) { descriptor in
                     modelRow(descriptor)
-                    if descriptor.id != ModelCatalog.all.last?.id { Divider() }
+                    if descriptor.id != installable.last?.id { Divider() }
                 }
             }
             .padding()

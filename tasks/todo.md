@@ -949,3 +949,149 @@ Finally root-caused and fixed Task #15 (word-doubling/timing-overlap in
 
 ---
 # (previous) Align to Reference Lyrics — done 2026-06-25, see git history for details
+
+---
+# Plan: W1 downbeat-aware chord switch penalty + pure-time row axis (Task #47, drafted 2026-07-08)
+
+Eric approved both directions via quality review (tasks/quality-review-2026-07.md). Plan
+written before implementation per workflow. NOT started.
+
+## W1 — metric-position-dependent switch penalty (chord density root cause)
+
+Grounding: `ChordTimelineDecoder.windowSwitchPenalties` currently charges `switchPenalty` (1.5)
+× `onsetPenaltyFactor` (0.5) when a window start is within 0.12s of an instrument onset. No
+metric-position awareness. `DownbeatEstimator.barPhase(beatStrengths:)` (MeasureGrid.swift:149)
+already derives bar phase from drums+bass accent energy — NO lyrics needed, computable at
+analysis time from the same drum-locked grid the decoder already receives.
+
+- [ ] 1. AnalysisStage (HarmonyStage.run, ~:643-668): compute `beatsPerBar` via
+      `DownbeatEstimator.estimateBeatsPerBar` and `barPhase` via `barPhase(beatStrengths:)`
+      using drum-stem energy sampled at `resolvedBeatTimes`; pass both into the decoder.
+- [ ] 2. ChordTimelineDecoder: optional `meter: (beatsPerBar: Int, barPhase: Int)?` param
+      (nil = exact old behavior, all callers/tests unchanged). In `windowSwitchPenalties`,
+      multiply base penalty by a metric factor per window index i:
+      downbeat ≈0.7, half-bar ≈0.85, weak beats ≈1.3 (constants to tune offline).
+      Clamp combined (metric × onset) discount to ≥0.35 × base so discounts don't stack to
+      free. Keep the onset discount — genuine syncopation must stay reachable.
+- [ ] 3. Bump harmony stage version tag (reduce-12 → reduce-13) so cached songs re-decode.
+- [ ] 4. Offline validation BEFORE app verification, same harness as the decoder's doc header
+      (ChordTimelineDecoder.swift:11-14): replay cached Analysis JSON for reference songs
+      (Settle Down + the reference song). Metrics: event count, % non-diatonic, sub-beat
+      count, chorus self-agreement, instrumental outro symbol count (currently ~19/36s),
+      MelodyPhraseProxy chorus letters (currently A B C D E F G H — expect repeats to emerge).
+      Guard: verify known-real mid-verse changes (the ones 2.5/2.0 lost) still detected.
+- [ ] 5. Unit tests: synthetic windows where a passing chord on a weak beat is absorbed but
+      the same evidence on a downbeat switches; nil-meter regression test.
+- [ ] 6. Live verify on Mac (xcodebuild default DerivedData — NOT a repo-local
+      -derivedDataPath, iCloud xattrs break CodeSign; see memory), re-analyze, check
+      Structure tab chorus phrase pattern + outro chord pattern.
+
+## Pure-time row axis (purple vs yellow width unification)
+
+- [ ] 1. Measure first (verify-numerically lesson): from cached transcription JSON, compute
+      per-word textWidth(9px/char) vs duration×100px/s across songs → quantify how often
+      words would collide without the monospace floor, worst-case overlap px.
+- [ ] 2. Based on data, pick mitigation: accept small overlaps (likely fine if rare), or
+      derive global pixelsPerSecond from ~95th-pct char-rate (keeps ONE axis song-wide;
+      chord-drag px↔s conversion must use the same constant), or per-row font shrink (last
+      resort). Present numbers to Eric if ambiguous.
+- [ ] 3. rhythmicWordXs (WorkspaceEditorsView.swift:3678-3691): drop cumulative
+      max(desired, cursor) floor → x = metricX(word.start). totalWidth becomes
+      duration-based + last-word glyph allowance. Verify strip/chords/dots/ball all follow
+      (they map through rhythmicX/metricX, so they inherit the fix).
+- [ ] 4. Fix outro chord-only lineDuration=0 fallback: resolve end bound from song/beat
+      duration (as LyricSectionDeriver.resolvedSongEnd does) in chordOnlyLineWindow
+      (~:2588-2593) so rows never collapse to char-count width.
+- [ ] 5. Rebuild app + live verify: equal-elapsed purple and yellow rows render equal width;
+      drag-to-retime chords still lands where dropped.
+
+## Review (2026-07-08)
+
+W1 LANDED. Decoder: `BarMeter` + metric-position switch-penalty factors (downbeat 0.7,
+half-bar 0.85, weak 1.3, combined-discount floor 0.35x; nil meter = exact old behavior).
+HarmonyStage: bar phase from drums-stem accent energy via new `DrumAccentProfile` +
+`DownbeatEstimator.barPhase(beatStrengths:)`, gated on downbeatConfidence >= 0.08 (mirrors
+preview refreshGrid). Version bump reduce-15 -> reduce-16-metric-switch-penalty. 4 new unit
+tests; full suite 625 green.
+
+Offline validation (new manual harness ChordDecoderOfflineValidationTests, run with
+SW_OFFLINE_VALIDATION=1): 17 cached analyses, 13 with usable meter. Densest song 174->166
+events (1.38->1.32/bar); per-beat flurries collapsed (e.g. 3 chords in 1.1s removed);
+boundary moves of +/-1 beat onto downbeats; two songs +2 downbeat changes; nothing lost on
+the flicker-suppression side. Factors deliberately conservative — if Structure-tab chorus
+phrase letters remain fully distinct, raise weakBeatFactor toward 1.6 using the harness.
+
+Pure-time axis: MEASURED, then DEFERRED by Eric. 74 cached transcriptions: at 100px/s, 53%
+of adjacent sung-word pairs physically can't fit their time gap at 15pt (median required
+102px/s, p95 270, melisma pairs ~0 gap); half the songs need no stretch at all. The
+screenshot's narrow purple rows were likely the outro zero-duration fallback bug — FIXED
+(chordOnlyLineWindow now falls back to beat-grid extent + one bar when no envelope is
+loaded). Decision: rebuild + re-check visually before any axis rework; if still needed, the
+per-song adaptive shared scale (clamp densest-line requirement to 100-250px/s) is the
+agreed direction.
+
+---
+
+# HANDOFF (2026-07-08) — next session: iPad model-install crash
+
+## Bug
+On iPad, the app crashes shortly after prompting to install a missing model.
+
+## Known facts (verified this session)
+- `ModelPackageManager.swift:81-99` `DittoModelArchiveExtractor.extract` shells to
+  `/usr/bin/ditto` via `Process` on macOS; on iOS it throws
+  `ModelPackageError.extractionUnsupportedOnPlatform`. A THROW should alert, not
+  crash → the crash is an unguarded failure path upstream in the install flow
+  (try!, force-unwrap, or unchecked continuation) OR earlier in download handling.
+- The old SongWorkbench-ipad worktree is GONE; iPad support now lives in main
+  (repo /Users/ericnewman/Documents/SongWorkbench, HEAD fe8dade).
+- No SongWorkbench crash logs in ~/Library/Logs/DiagnosticReports (device crash;
+  user asked to pull the .ips from iPad Settings > Privacy & Security >
+  Analytics Data, or via Xcode's Devices window).
+
+## Plan
+1. Read the .ips crash log if the user provided it (check repo root / chat).
+2. Trace the install flow from the "install missing model" prompt to extract();
+   find and fix the unguarded failure path (surface an alert instead).
+3. Implement in-process zip extraction for iOS behind the existing
+   `ModelArchiveExtracting` protocol seam (small zip reader; Apple Archive
+   doesn't read .zip). Unit-test with a tiny fixture zip.
+4. Verify on iOS Simulator + device build; keep the macOS ditto path unchanged.
+
+## Also queued (user-requested)
+- Long instrumental lines still render too wide in the ChordPro preview —
+  split/cap instrumental rows to the same rendered width budget as sung lines
+  (builder splits by typicalBars but the preview draws rows time-scaled at
+  pixelsPerSecond; re-check against CURRENT code, it has moved past reduce-14).
+- A3 repeated-section chord consensus (sim showed chorus agreement 80%→100%).
+- Unresolved: macOS "failed model loading" message when starting analysis
+  (Jul 8 report) — never reproduced; suspects: parakeet -int8 folder-name
+  symlink staging, or a stale whisper model version folder (Models has "1" and "2").
+
+## RESOLUTION (2026-07-08) — iPad model-install crash
+
+Approach chosen: "just stop the crash" (not the deeper in-process-zip-extraction path in
+step 3 above — that remains a scoped-out follow-up so Whisper/Accuracy can eventually
+install on iPad).
+
+Root fix = gate out the un-installable package everywhere on iPad instead of letting the
+user reach Whisper's macOS-only `ditto` extraction:
+- `ModelPackageManager.isInstallableOnCurrentPlatform` (false for archive-bearing packages
+  on iOS).
+- Both install entry points filter by it: the Models popover (`AnalysisWorkspaceView`) and
+  the new first-run `ModelOnboardingSheet` (`ContentView`). There is no programmatic
+  auto-install caller, and mode selection (`availableTranscriptionModes` /
+  `primaryTranscriptionMode`) only READS installed status — so `extract()` is now
+  unreachable on iPad.
+- Onboarding gate blocks the app until all platform-installable models are present, so on
+  iPad Parakeet is guaranteed installed and `primaryTranscriptionMode` never falls back to
+  `.accuracy`.
+Also bundled (separate iPad bug, was written but never committed): the iOS
+security-scoped-URL import fix in `AppModel.importSongs` + import-error surfacing on the
+no-song screen + `com.local.SongWorkbench` import Logger.
+
+Verification: `xcodebuild` SongWorkbenchiPad Debug for iPad Pro 13" (M5) sim → BUILD
+SUCCEEDED; installed + launched on that sim → runs the full analysis UI on a real analyzed
+song with no crash; call-graph audit confirms every `installModelPackage` caller is
+filtered. Committed as the iPad-fix commit; the unrelated chord-decoder / ChordPro-preview
+WIP was intentionally left uncommitted in the working tree.

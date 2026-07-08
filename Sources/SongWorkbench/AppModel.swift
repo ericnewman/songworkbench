@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 
 enum PlaybackSource: Equatable, Sendable {
     case recording
@@ -118,6 +119,10 @@ enum SongTypeahead {
 
 @MainActor
 final class AppModel: ObservableObject {
+    /// Import-pipeline diagnostic log (Console.app / `log stream --predicate 'subsystem ==
+    /// "com.local.SongWorkbench"'`) — added to make on-device import failures observable.
+    static let importLog = Logger(subsystem: "com.local.SongWorkbench", category: "import")
+
     @Published private(set) var songs: [Song] = []
     @Published var selectedSongID: Song.ID?
     @Published private(set) var waveform: WaveformEnvelope?
@@ -312,6 +317,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var activePlaybackSource = PlaybackSource.recording
     @Published private(set) var modelPackageStatuses: [String: ModelPackageStatus] = [:]
     @Published private(set) var modelInstallProgress: [String: Double] = [:]
+    /// True once the initial on-disk model status scan has completed — the onboarding gate
+    /// must not flash open before the app KNOWS what's installed.
+    @Published private(set) var modelStatusesLoaded = false
+
+    /// True when every model the current platform can install IS installed. Gates the app
+    /// behind the first-run onboarding sheet (Eric: models must be installed "before
+    /// anything else is enabled"; required set = ALL platform-installable models).
+    var requiredModelsInstalled: Bool {
+        ModelCatalog.all.filter(\.isInstallableOnCurrentPlatform).allSatisfy {
+            if case .installed = modelPackageStatuses[$0.id] { return true }
+            return false
+        }
+    }
     @Published var pitchSemitones = 0 {
         didSet {
             let normalized = PitchShift.normalized(pitchSemitones)
@@ -1247,11 +1265,24 @@ final class AppModel: ObservableObject {
     }
 
     func importSongs(from urls: [URL]) {
+        // iOS file-picker URLs are SECURITY-SCOPED: until access is explicitly started, even
+        // `fileExists()` reports false for anything outside the app sandbox, so
+        // `expandingDirectories` silently dropped every picked file on iPad (songs "imported"
+        // but never appeared). macOS masked this — its open-panel/drag URLs carry implicit
+        // powerbox access. Hold access on the ORIGINAL picker URLs for the whole
+        // expand → filter → copy pipeline; released after localization completes below.
+        let accessedURLs = urls.filter { $0.startAccessingSecurityScopedResource() }
         // Expand dropped/selected folders into their audio files before importing.
         let candidates = SongImportPolicy.expandingDirectories(urls)
         let imported = SongImportPolicy.songs(from: candidates)
+        // Import-pipeline diagnostic (Logger so it's visible in `log stream` / Console for
+        // on-device debugging — the iPad multi-select report was unverifiable without it).
+        AppModel.importLog.log(
+            "importSongs: received \(urls.count) url(s), accessed \(accessedURLs.count), expanded \(candidates.count), accepted \(imported.count)"
+        )
         if imported.isEmpty, !urls.isEmpty {
             projectErrorMessage = "No supported audio files were found."
+            for url in accessedURLs { url.stopAccessingSecurityScopedResource() }
             return
         } else if imported.count < candidates.count {
             projectErrorMessage = "Some files use unsupported audio formats."
@@ -1263,6 +1294,11 @@ final class AppModel: ObservableObject {
         // is selected yet.
         let selectImmediately = urls.count == 1
         Task { [weak self] in
+            // Release the security-scoped access held above once every source has been
+            // copied into local storage (or failed) — runs on self == nil too.
+            defer {
+                for url in accessedURLs { url.stopAccessingSecurityScopedResource() }
+            }
             guard let self else { return }
             var localizedSongs: [Song] = []
             var firstFailure: String?
@@ -1277,12 +1313,18 @@ final class AppModel: ObservableObject {
                 case .success(let localURL):
                     localizedSongs.append(Song(url: localURL))
                 case .failure(let reason):
+                    AppModel.importLog.error(
+                        "importSongs: localization FAILED for \(song.title, privacy: .public): \(reason, privacy: .public)"
+                    )
                     if firstFailure == nil { firstFailure = reason }
                 }
             }
             self.importStatus = nil
             let existingIDs = Set(self.songs.map(\.id))
             let newSongs = localizedSongs.filter { !existingIDs.contains($0.id) }
+            AppModel.importLog.log(
+                "importSongs: localized \(localizedSongs.count), new (non-duplicate) \(newSongs.count), list \(self.songs.count) → \(self.songs.count + newSongs.count)"
+            )
             self.songs.append(contentsOf: newSongs)
             self.songs.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
             // Auto-select is skipped while a song is already analyzing: `select()` calls
@@ -2301,6 +2343,7 @@ final class AppModel: ObservableObject {
                 for: descriptor
             )
         }
+        modelStatusesLoaded = true
     }
 
     private func analysisOutputDirectory(for songID: Song.ID) -> URL {

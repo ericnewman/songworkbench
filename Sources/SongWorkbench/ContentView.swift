@@ -27,6 +27,20 @@ struct ContentView: View {
         .sheet(isPresented: $model.isMusicLibraryPickerPresented) {
             MusicLibraryPickerView(model: model)
         }
+        // First-run onboarding gate: EVERY platform-installable analysis model must be
+        // installed before the app is usable (Eric: "ask the user to install the models
+        // before anything else is enabled" — required set: all installable). Presents only
+        // AFTER the initial status scan (no flash), can't be swiped away, and auto-dismisses
+        // the moment the last required model lands.
+        .sheet(
+            isPresented: Binding(
+                get: { model.modelStatusesLoaded && !model.requiredModelsInstalled },
+                set: { _ in }
+            )
+        ) {
+            ModelOnboardingSheet(model: model)
+                .interactiveDismissDisabled()
+        }
         #if os(macOS)
             .onAppear { installSpaceBarPlaybackToggle() }
             .onDisappear {
@@ -59,6 +73,111 @@ struct ContentView: View {
             }
         }
     #endif
+}
+
+/// Blocking first-run sheet: installs the analysis models the platform supports before the
+/// rest of the app unlocks. Reuses the same install/cancel/status machinery as the Models
+/// popover (`AppModel.installModelPackage` & friends) — this is a gate in front of it, not a
+/// second implementation. Lives in ContentView.swift deliberately: adding a new Swift file
+/// requires a `tuist generate` round-trip.
+private struct ModelOnboardingSheet: View {
+    @ObservedObject var model: AppModel
+
+    private var descriptors: [ModelPackageDescriptor] {
+        ModelCatalog.all.filter(\.isInstallableOnCurrentPlatform)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Welcome to SongWorkbench")
+                    .font(.swDisplay(22, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
+                Text(
+                    "SongWorkbench analyzes songs on-device. Install the analysis models "
+                        + "below to get started — everything unlocks once they finish."
+                )
+                .font(.swDisplay(13))
+                .foregroundStyle(Color.swTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(descriptors, id: \.id) { descriptor in
+                    onboardingRow(descriptor)
+                    if descriptor.id != descriptors.last?.id { Divider() }
+                }
+            }
+            .padding(14)
+            .swSurfacePanel(cornerRadius: 12)
+            HStack {
+                Text(
+                    "Total download: \(pendingDownloadBytes, format: .byteCount(style: .file))"
+                )
+                .font(.swDisplay(12))
+                .foregroundStyle(Color.swTextSecondary)
+                Spacer()
+                Button("Install All") {
+                    for descriptor in descriptors
+                    where !isInstalled(descriptor)
+                        && model.modelInstallProgress[descriptor.id] == nil
+                    {
+                        model.installModelPackage(descriptor)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(pendingDownloadBytes == 0)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 520, maxWidth: 560)
+    }
+
+    private func isInstalled(_ descriptor: ModelPackageDescriptor) -> Bool {
+        if case .installed = model.modelPackageStatuses[descriptor.id] { return true }
+        return false
+    }
+
+    private var pendingDownloadBytes: Int64 {
+        descriptors.filter { !isInstalled($0) }.reduce(0) { $0 + $1.expectedDownloadBytes }
+    }
+
+    @ViewBuilder
+    private func onboardingRow(_ descriptor: ModelPackageDescriptor) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(descriptor.displayName)
+                        .font(.swDisplay(14, weight: .medium))
+                        .foregroundStyle(Color.swTextPrimary)
+                    Text(descriptor.purpose)
+                        .font(.swDisplay(12))
+                        .foregroundStyle(Color.swTextSecondary)
+                }
+                Spacer()
+                if isInstalled(descriptor) {
+                    Label("Installed", systemImage: "checkmark.circle.fill")
+                        .font(.swDisplay(12, weight: .medium))
+                        .foregroundStyle(Color.swMint)
+                } else if model.modelInstallProgress[descriptor.id] == nil {
+                    Button(
+                        "Install (\(descriptor.expectedDownloadBytes, format: .byteCount(style: .file)))"
+                    ) {
+                        model.installModelPackage(descriptor)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            if let progress = model.modelInstallProgress[descriptor.id] {
+                HStack(spacing: 8) {
+                    ProgressView(value: progress)
+                    Button("Cancel", role: .cancel) {
+                        model.cancelModelPackageInstall(descriptor)
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
 }
 
 private struct SongSidebar: View {
@@ -472,11 +591,23 @@ private struct PlayerView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
-                    ContentUnavailableView(
-                        "No Song Selected",
-                        systemImage: "music.note.list",
-                        description: Text("Import an audio file to begin.")
-                    )
+                    VStack(spacing: 12) {
+                        ContentUnavailableView(
+                            "No Song Selected",
+                            systemImage: "music.note.list",
+                            description: Text("Import an audio file to begin.")
+                        )
+                        // Import failures must be visible HERE too: with no song selected the
+                        // editor pane (and its error label) doesn't exist, so a failed first
+                        // import on a fresh library used to fail completely silently.
+                        if let error = model.projectErrorMessage {
+                            Label(error, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(Color.swCoral)
+                                .textSelection(.enabled)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 16)
+                        }
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
