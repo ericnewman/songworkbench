@@ -280,4 +280,114 @@ final class ChordTimelineDecoderTests: XCTestCase {
         XCTAssertEqual(events.map(\.chord), ["C#", "F#"])
         XCTAssertEqual(events[1].time, 2.0, accuracy: 1e-9)
     }
+
+    // MARK: - Metric (downbeat-aware) switch penalty
+
+    private func dummyWindows(_ count: Int) -> [ChordTimelineDecoder.WindowEvidence] {
+        (0..<count).map {
+            ChordTimelineDecoder.WindowEvidence(
+                start: TimeInterval($0) * 0.5, scores: [:], meanRawConfidence: [:])
+        }
+    }
+
+    private func assertPenalties(
+        _ actual: [Float], _ expected: [Float], file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+        for (a, e) in zip(actual, expected) {
+            XCTAssertEqual(a, e, accuracy: 1e-5, file: file, line: line)
+        }
+    }
+
+    func testWindowSwitchPenaltiesApplyMetricFactorsByBarPosition() {
+        // Meter (4 beats/bar, phase 1): window 1 is the downbeat. Positions by index:
+        // 0→3 (weak), 1→0 (downbeat), 2→1 (weak), 3→2 (half-bar), 4→3 (weak), 5→0 (downbeat).
+        let penalties = ChordTimelineDecoder.windowSwitchPenalties(
+            windows: dummyWindows(6),
+            onsets: [],
+            basePenalty: 1.5,
+            onsetPenaltyFactor: 0.5,
+            onsetTolerance: 0.12,
+            meter: .init(beatsPerBar: 4, barPhase: 1)
+        )
+        assertPenalties(penalties, [1.95, 1.05, 1.95, 1.275, 1.95, 1.05])
+    }
+
+    func testNilMeterKeepsFlatPenalties() {
+        let penalties = ChordTimelineDecoder.windowSwitchPenalties(
+            windows: dummyWindows(4),
+            onsets: [0.5],
+            basePenalty: 1.5,
+            onsetPenaltyFactor: 0.5,
+            onsetTolerance: 0.12
+        )
+        assertPenalties(penalties, [1.5, 0.75, 1.5, 1.5])
+    }
+
+    func testCombinedMetricAndOnsetDiscountIsFloored() {
+        // Downbeat factor 0.4 x onset 0.5 = raw 0.3 < floor 0.35 x 1.5 = 0.525 -> floored.
+        let penalties = ChordTimelineDecoder.windowSwitchPenalties(
+            windows: dummyWindows(1),
+            onsets: [0.0],
+            basePenalty: 1.5,
+            onsetPenaltyFactor: 0.5,
+            onsetTolerance: 0.12,
+            meter: .init(beatsPerBar: 4, barPhase: 0),
+            downbeatFactor: 0.4
+        )
+        assertPenalties(penalties, [0.525])
+    }
+
+    func testWeakBeatExcursionAbsorbedByMeterButDownbeatExcursionSurvives() {
+        // A two-beat F# excursion whose per-window dominance over C# is ~0.9 nats
+        // (2x0.7 F# vs one 0.57 C# frame -> ln(1.4/0.57) = 0.899; total ~1.8), with
+        // onsets flanking both possible excursion placements. Flat onset-discounted cost
+        // is 2 x 0.75 = 1.5 < 1.8, so WITHOUT meter the excursion always survives.
+        // WITH meter (phase 0: downbeats at windows 0 and 4):
+        //  - starting on WEAK window 5 (exit weak window 7): 0.975 + 0.975 = 1.95 > 1.8
+        //    -> absorbed (harmonic rhythm says mid-bar two-beat blips are usually jitter);
+        //  - starting on DOWNBEAT window 4 (exit half-bar window 6): 0.525 + 0.6375 =
+        //    1.1625 < 1.8 -> survives (changes on the downbeat stay cheap).
+        func observations(excursionAt startBeat: Int) -> [ChordObservation] {
+            var result: [ChordObservation] = []
+            for beatIndex in 0..<8 {
+                let t = TimeInterval(beatIndex) * 0.5
+                if beatIndex == startBeat || beatIndex == startBeat + 1 {
+                    result.append(obs(t + 0.1, .fSharp, .major, 0.7))
+                    result.append(obs(t + 0.3, .fSharp, .major, 0.7))
+                    result.append(obs(t + 0.4, .cSharp, .major, 0.57))
+                } else {
+                    result.append(obs(t + 0.1, .cSharp, .major, 0.7))
+                    result.append(obs(t + 0.3, .cSharp, .major, 0.7))
+                }
+            }
+            return result
+        }
+        let beats = (0...8).map { TimeInterval($0) * 0.5 }
+        let onsets = [2.0, 2.5, 3.0, 3.5]
+        let meter = ChordTimelineDecoder.BarMeter(beatsPerBar: 4, barPhase: 0)
+
+        let weakNoMeter = ChordTimelineDecoder().events(
+            from: analysis(observations(excursionAt: 5), beats: beats), key: dbMajor,
+            instrumentOnsets: onsets)
+        XCTAssertEqual(
+            weakNoMeter.map(\.chord), ["C#", "F#", "C#"],
+            "without a meter the onset discount lets the weak-beat excursion through")
+
+        let weakWithMeter = ChordTimelineDecoder().events(
+            from: analysis(observations(excursionAt: 5), beats: beats), key: dbMajor,
+            instrumentOnsets: onsets, meter: meter)
+        XCTAssertEqual(
+            weakWithMeter.map(\.chord), ["C#"],
+            "the weak-beat premium should absorb the mid-bar excursion")
+
+        let downbeatWithMeter = ChordTimelineDecoder().events(
+            from: analysis(observations(excursionAt: 4), beats: beats), key: dbMajor,
+            instrumentOnsets: onsets, meter: meter)
+        XCTAssertEqual(
+            downbeatWithMeter.map(\.chord), ["C#", "F#", "C#"],
+            "the same excursion starting on the downbeat must survive")
+        XCTAssertEqual(downbeatWithMeter[1].time, 2.0, accuracy: 1e-9)
+    }
 }

@@ -12,7 +12,23 @@ import Foundation
 /// 117 events (28% non-diatonic, 26 sub-beat, 31% chorus self-agreement); this decoder with
 /// the key prior produced ~58 events, ~12% non-diatonic, ~4 sub-beat, 67% chorus agreement
 /// before repeated-section consensus.
+///
+/// When a `BarMeter` is supplied, the switch penalty additionally depends on METRIC position:
+/// harmonic rhythm overwhelmingly changes on downbeats (and secondarily at the half-bar), so
+/// switches are cheaper there and dearer on weak beats. This is the harmonic-rhythm prior the
+/// pure onset discount lacked — pop instrumentation fires onsets on most beats, so onset
+/// proximity alone let one-beat passing chords through nearly free (the Task #46 density that
+/// breaks chord-signature clustering downstream).
 struct ChordTimelineDecoder: Sendable {
+    /// Bar meter on the decode beat grid: window `i` starts at `beatTimes[i]`, so its position
+    /// in the bar is `((i - barPhase) % beatsPerBar + beatsPerBar) % beatsPerBar` — 0 is the
+    /// downbeat. Must be derived on the SAME beat grid passed to `events` (the drum-locked
+    /// `resolvedBeatTimes`), or metric positions are meaningless.
+    struct BarMeter: Sendable, Equatable {
+        var beatsPerBar: Int
+        var barPhase: Int
+    }
+
     /// Log-domain cost of switching chords between adjacent beat windows. Higher = smoother.
     /// 2.5 rode the tonic straight through the reference song's real mid-verse changes
     /// (author-confirmed); 2.0 recovered them but still absorbed one-beat passing chords
@@ -27,6 +43,18 @@ struct ChordTimelineDecoder: Sendable {
     /// A window start within this distance of an onset counts as "on" it (matches the
     /// change-point detector's minimum spacing).
     var onsetTolerance: TimeInterval = 0.12
+    /// Switch-penalty multiplier for windows starting ON a bar downbeat (meter required):
+    /// chord changes prefer downbeats even without a detected attack.
+    var downbeatFactor: Float = 0.7
+    /// Multiplier at the half-bar (beat 3 in 4/4) — the second most common harmonic-rhythm
+    /// change point.
+    var halfBarFactor: Float = 0.85
+    /// Multiplier on weak beats (2 and 4 in 4/4): passing-chord flicker pays a premium here,
+    /// which is what actually caps the per-bar chord density.
+    var weakBeatFactor: Float = 1.3
+    /// Floor on the COMBINED (metric × onset) discount, as a fraction of the base penalty —
+    /// stacked discounts must never make switching effectively free.
+    var minimumPenaltyFraction: Float = 0.35
     /// Evidence mass assigned to the no-chord state in every window. Windows whose total
     /// label evidence is comparable to this floor decode as "no chord" and emit nothing
     /// (the previous chord sustains).
@@ -47,7 +75,11 @@ struct ChordTimelineDecoder: Sendable {
         // the drum-locked grid meant windows here could straddle real beats slightly differently
         // than where everything else thinks the beats fall. `nil` (the default, and every
         // existing caller/test) preserves the old behavior exactly.
-        beatTimes explicitBeatTimes: [TimeInterval]? = nil
+        beatTimes explicitBeatTimes: [TimeInterval]? = nil,
+        // Optional harmonic-rhythm prior: bar meter on the SAME grid as `beatTimes`. `nil`
+        // (the default, and every existing caller/test) preserves the old flat-metric
+        // behavior exactly.
+        meter: BarMeter? = nil
     ) -> [EditableChordEvent] {
         let beatTimes = explicitBeatTimes ?? (analysis.beat?.beatTimes ?? [])
         guard beatTimes.count >= 2 else {
@@ -74,7 +106,12 @@ struct ChordTimelineDecoder: Sendable {
             onsets: instrumentOnsets,
             basePenalty: switchPenalty,
             onsetPenaltyFactor: onsetPenaltyFactor,
-            onsetTolerance: onsetTolerance
+            onsetTolerance: onsetTolerance,
+            meter: meter,
+            downbeatFactor: downbeatFactor,
+            halfBarFactor: halfBarFactor,
+            weakBeatFactor: weakBeatFactor,
+            minimumPenaltyFraction: minimumPenaltyFraction
         )
         let path = Self.decode(
             windows: windows,
@@ -186,27 +223,48 @@ struct ChordTimelineDecoder: Sendable {
     // MARK: - Viterbi
 
     /// Per-window switch penalty: base everywhere, discounted for windows that start on an
-    /// instrumental onset. Two-pointer over the sorted onsets — O(windows + onsets).
+    /// instrumental onset, and (when `meter` is present) scaled by metric position — cheaper
+    /// on downbeats, dearer on weak beats. The combined discount is floored at
+    /// `minimumPenaltyFraction × basePenalty` so stacked discounts never make switching free.
+    /// Two-pointer over the sorted onsets — O(windows + onsets).
     static func windowSwitchPenalties(
         windows: [WindowEvidence],
         onsets: [TimeInterval],
         basePenalty: Float,
         onsetPenaltyFactor: Float,
-        onsetTolerance: TimeInterval
+        onsetTolerance: TimeInterval,
+        meter: BarMeter? = nil,
+        downbeatFactor: Float = 0.7,
+        halfBarFactor: Float = 0.85,
+        weakBeatFactor: Float = 1.3,
+        minimumPenaltyFraction: Float = 0.35
     ) -> [Float] {
+        func metricFactor(_ windowIndex: Int) -> Float {
+            guard let meter, meter.beatsPerBar > 1 else { return 1 }
+            let bar = meter.beatsPerBar
+            let position = ((windowIndex - meter.barPhase) % bar + bar) % bar
+            if position == 0 { return downbeatFactor }
+            if bar >= 4, position == bar / 2 { return halfBarFactor }
+            return weakBeatFactor
+        }
+        // The floor guards DISCOUNTS only — a weak-beat premium may exceed the base.
+        func combined(_ windowIndex: Int, onOnset: Bool) -> Float {
+            let raw = basePenalty * metricFactor(windowIndex) * (onOnset ? onsetPenaltyFactor : 1)
+            return max(raw, basePenalty * minimumPenaltyFraction)
+        }
         guard !onsets.isEmpty else {
-            return [Float](repeating: basePenalty, count: windows.count)
+            return windows.indices.map { combined($0, onOnset: false) }
         }
         let sorted = onsets.sorted()
         var cursor = 0
-        return windows.map { window in
+        return windows.enumerated().map { index, window in
             while cursor < sorted.count - 1, sorted[cursor] < window.start - onsetTolerance {
                 cursor += 1
             }
             let near =
                 abs(sorted[cursor] - window.start) <= onsetTolerance
                 || (cursor > 0 && abs(sorted[cursor - 1] - window.start) <= onsetTolerance)
-            return near ? basePenalty * onsetPenaltyFactor : basePenalty
+            return combined(index, onOnset: near)
         }
     }
 

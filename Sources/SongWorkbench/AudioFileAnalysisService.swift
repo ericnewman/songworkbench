@@ -532,6 +532,71 @@ enum InstrumentOnsetDetector {
     }
 }
 
+/// Per-beat accent strengths from the drums stem, for downbeat (bar-phase) estimation at
+/// analysis time. Mirrors the preview's `refreshGrid` beat-strength logic (max envelope energy
+/// within ±quarter-beat of each beat) but runs on raw RMS instead of a display waveform, so the
+/// harmony stage can feed `DownbeatEstimator.barPhase(beatStrengths:)` without any UI state.
+enum DrumAccentProfile {
+    /// Max per-hop RMS within ±`beatLength/4` of each beat. Pure, deterministic, no I/O.
+    /// Returns [] for degenerate input.
+    static func beatStrengths(
+        beatTimes: [TimeInterval],
+        rms: [Float],
+        hopSeconds: Double,
+        beatLength: TimeInterval
+    ) -> [Double] {
+        guard !beatTimes.isEmpty, !rms.isEmpty, hopSeconds > 0, beatLength > 0 else { return [] }
+        let half = beatLength * 0.25
+        return beatTimes.map { beat in
+            let lo = max(0, Int((beat - half) / hopSeconds))
+            let hi = min(rms.count, max(lo + 1, Int((beat + half) / hopSeconds) + 1))
+            guard lo < rms.count else { return 0 }
+            var peak: Float = 0
+            for i in lo..<hi { peak = max(peak, rms[i]) }
+            return Double(peak)
+        }
+    }
+
+    /// Loads the drums stem as mono and returns per-beat accent strengths, or [] on failure.
+    static func beatStrengths(
+        url: URL,
+        beatTimes: [TimeInterval],
+        bpm: Double
+    ) throws -> [Double] {
+        guard bpm > 0 else { return [] }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let capacity: AVAudioFrameCount = 16_384
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            return []
+        }
+        var samples: [Float] = []
+        samples.reserveCapacity(Int(file.length))
+        let channelCount = Int(format.channelCount)
+        while file.framePosition < file.length {
+            let remaining = file.length - file.framePosition
+            try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
+            guard let channels = buffer.floatChannelData else { return [] }
+            for frame in 0..<Int(buffer.frameLength) {
+                var value: Float = 0
+                for channel in 0..<channelCount { value += channels[channel][frame] }
+                samples.append(value / Float(max(channelCount, 1)))
+            }
+        }
+        let hopSeconds = 0.02
+        let rms = VocalRMSEnvelope.compute(
+            samples: samples,
+            sampleRate: format.sampleRate,
+            windowSeconds: 0.05,
+            hopSeconds: hopSeconds
+        )
+        return beatStrengths(
+            beatTimes: beatTimes, rms: rms, hopSeconds: hopSeconds, beatLength: 60.0 / bpm)
+    }
+}
+
 /// Snaps chord-change times to nearby instrumental onsets (from `InstrumentOnsetDetector`) so a
 /// detected chord change lands exactly where the instrumental actually changes. Non-destructive:
 /// the event count and order are preserved — each event is only moved in time, and never to a value

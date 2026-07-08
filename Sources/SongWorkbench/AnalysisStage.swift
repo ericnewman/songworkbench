@@ -337,7 +337,17 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // Grouping-version suffix: changes the stage record (so re-analysis
                     // re-groups from the cached raw transcription) without changing the raw
                     // transcription cache key, so no re-transcription is needed.
+                    // "|blend-row-overlap-merge": LyricBlendRowBuilder.mergeCrossModeDuplicates
+                    // gained a fallback overlap-merge pass (2026-07-06) that resolves stale
+                    // cached per-mode segments differently than before (Key West Bar field
+                    // case: two disjoint-mode clusters that overlap in time — one a run-on,
+                    // the other an orphaned single-mode fragment — now merge into one row
+                    // instead of printing as scrambled/doubled words). Without this tag,
+                    // songs analyzed before the fix keep their stale, already-corrupted
+                    // `lyricBlendRows` forever, since re-clicking "Analyze Song" only
+                    // re-groups when the stage record's version actually changes.
                     version: result.engine.engineVersion + "|grouping-42-degenerate-tail-prune"
+                        + "|blend-row-overlap-merge"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
                 modelIdentifier: result.engine.modelName,
@@ -615,7 +625,9 @@ struct HarmonyStage: AnalysisStageRunning {
                 engine: AnalysisEngineVersion(
                     identifier: harmonyEngine.metadata.identifier,
                     version: harmonyEngine.metadata.version
-                        + "|reduce-15-resolved-beatgrid"
+                        // reduce-16: metric-position-dependent switch penalty (downbeat-aware
+                        // harmonic-rhythm prior) — re-decode cached chroma on version change.
+                        + "|reduce-16-metric-switch-penalty"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -670,6 +682,24 @@ struct HarmonyStage: AnalysisStageRunning {
             let bassCues = (detectedBassNotes ?? context.document.bassNotes)
                 .filter { $0.confidence >= 0.5 }
                 .map(\.timestamp)
+            // Harmonic-rhythm prior for the decoder: estimate the bar phase from drum-stem
+            // accent energy at the resolved beats (kick/snare land on strong beats regardless
+            // of where anything else enters), mirroring the preview's `refreshGrid` cue with
+            // the same 0.08 confidence gate. Best-effort — an absent drums stem, degenerate
+            // strengths, or a flat/ambiguous accent profile yields `nil` and the decoder keeps
+            // its flat-metric behavior. 4/4 assumed, matching the rest of the pipeline.
+            var meter: ChordTimelineDecoder.BarMeter?
+            if let drumsURL = context.document.stems?.resolved().drums,
+                let bpm = estimatedBPM, bpm > 0,
+                let strengths = try? DrumAccentProfile.beatStrengths(
+                    url: drumsURL, beatTimes: resolvedBeatTimes, bpm: bpm),
+                DownbeatEstimator.downbeatConfidence(beatStrengths: strengths) >= 0.08
+            {
+                meter = ChordTimelineDecoder.BarMeter(
+                    beatsPerBar: 4,
+                    barPhase: DownbeatEstimator.barPhase(beatStrengths: strengths)
+                )
+            }
             var chords = BassInformedChordRefiner().refine(
                 ChordTimelineDecoder().events(
                     from: result,
@@ -679,7 +709,8 @@ struct HarmonyStage: AnalysisStageRunning {
                     // Decode on the SAME drum-locked grid every downstream consumer (snap,
                     // duration filter, consensus, ChordPro, playback) uses — not the harmony
                     // engine's own pre-lock estimate embedded in `result`.
-                    beatTimes: resolvedBeatTimes
+                    beatTimes: resolvedBeatTimes,
+                    meter: meter
                 ),
                 bassNotes: detectedBassNotes ?? []
             )

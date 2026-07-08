@@ -1231,14 +1231,13 @@ private struct ChordProTabEditor: View {
 
     private func legendRow(color: Color, label: String, outlined: Bool = false) -> some View {
         HStack(spacing: 8) {
+            // Swatches mirror the preview's outline-only confidence marker (see
+            // `chordConfidenceOutline(at:)`): tier color as a thin box, no fill.
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(color.opacity(0.3))
-                .overlay {
-                    if outlined {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .strokeBorder(Color.swTextSecondary.opacity(0.4), lineWidth: 1)
-                    }
-                }
+                .strokeBorder(
+                    outlined ? Color.swTextSecondary.opacity(0.4) : color.opacity(0.9),
+                    lineWidth: 1
+                )
                 .frame(width: 20, height: 14)
             Text(label)
                 .font(.swDisplay(12))
@@ -2584,11 +2583,18 @@ private struct ChordProAppPreview: View {
             after += 1
         }
         let resolvedStart = start ?? 0
-        // Outro fallback: the longest available envelope duration is the song length.
-        let songDuration =
+        // Outro fallback: the longest available envelope duration is the song length. When no
+        // envelope is loaded yet, fall back to the beat grid's extent (+ one bar so the final
+        // beats aren't zero-width) — otherwise `lineDuration` collapses to 0 and the row
+        // renders at character-count width, visibly narrower than every time-scaled row.
+        let beatGridEnd: TimeInterval =
+            beatTimes.last.map { $0 + 4 * (beatLengthSeconds > 0 ? beatLengthSeconds : 0.5) } ?? 0
+        let songDuration = max(
             [audioEnvelope, guitarEnvelope, pianoEnvelope]
-            .compactMap { $0?.duration }
-            .max() ?? 0
+                .compactMap { $0?.duration }
+                .max() ?? 0,
+            beatGridEnd
+        )
         let resolvedEnd = end ?? (songDuration > 0 ? songDuration : nil)
         guard let resolvedEnd, resolvedEnd > resolvedStart else { return nil }
         // A long instrumental span is emitted as several consecutive chord-only rows (see
@@ -3109,6 +3115,19 @@ private struct ChordProPreviewLineView: View {
         return ReviewConfidenceTier(event.confidence).tint
     }
 
+    /// Confidence marker drawn as a thin outline box around the chord glyph. A solid tinted
+    /// background made the light chord text hard to read (amber behind light blue especially),
+    /// so the tier color is now an outline only — same `chordTint(at:)` mapping, no fill.
+    @ViewBuilder
+    private func chordConfidenceOutline(at index: Int) -> some View {
+        let tint = chordTint(at: index)
+        if tint != .clear {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .strokeBorder(tint.opacity(0.9), lineWidth: 1)
+                .padding(-2)
+        }
+    }
+
     /// Drag-to-reposition (free timestamp, no snapping) + tap-to-accept for one chord glyph.
     /// A drag under 3pt of total travel counts as a tap (toggles `accepted`); anything past that
     /// commits a `manualTime` at the release position, converted from the drag's pixel delta
@@ -3189,7 +3208,7 @@ private struct ChordProPreviewLineView: View {
                 Text(chord.name)
                     .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
                     .foregroundStyle(.tint)
-                    .background(chordTint(at: index).opacity(0.3))
+                    .overlay(chordConfidenceOutline(at: index))
                     .offset(x: monospaceChordX(chord, at: index))
                     .onTapGesture {
                         if let event = chordEvent(at: index) {
@@ -3452,7 +3471,7 @@ private struct ChordProPreviewLineView: View {
                 Text(chord.name)
                     .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
                     .foregroundStyle(.tint)
-                    .background(chordTint(at: index).opacity(0.3))
+                    .overlay(chordConfidenceOutline(at: index))
                     .offset(x: chordXs[index], y: topReserve + bassReserve)
                     // Free-timestamp drag (no snapping) + tap-to-accept — rhythmic mode has a
                     // true, uniform time axis (`pixelsPerSecond`), so dragging here is exact.
@@ -3736,7 +3755,7 @@ private struct ChordProPreviewLineView: View {
                             )
                         )
                         .foregroundStyle(.tint)
-                        .background(chordTint(at: index).opacity(0.3))
+                        .overlay(chordConfidenceOutline(at: index))
                         .offset(x: monospaceChordX(chord, at: index))
                         // Monospace mode has no uniform time axis for lyric lines (columns are
                         // typeset over words, not seconds), so only tap-to-accept is offered
@@ -3779,7 +3798,12 @@ private struct ChordProPreviewLineView: View {
             bpm: beatDots.bpm
         )
         guard !beats.isEmpty else { return [] }
-        if !beatDots.words.isEmpty || !wordCenters.isEmpty {
+        // Instrumental (chord-only) rows must NOT take the word-center path: their rendered
+        // "lyric" is bar-grid text ("| . . |") whose pipes/dots masquerade as words, and those
+        // character columns live in a much narrower space than the time-scaled row width —
+        // which packed every dot near the line start. Route them to the time-spread branch
+        // below (the same axis the bouncing ball uses at `ballPosition`).
+        if !isInstrumentalLine, !beatDots.words.isEmpty || !wordCenters.isEmpty {
             return beats.map { wordCenterX(at: $0, beatBall: beatDots) }
         }
         guard !line.chords.isEmpty else { return [] }
