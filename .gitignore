@@ -13,3 +13,7 @@ Derived/
 SongWorkbench.xcodeproj/project.xcworkspace/xcuserdata/
 .claude/
 .worktrees/
+
+# Large exported model artifact (regenerate via tools/demucs_export)
+tools/demucs_export/*.onnx
+tools/demucs_export/*.onnx.data
