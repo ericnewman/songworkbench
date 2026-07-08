@@ -1095,3 +1095,40 @@ SUCCEEDED; installed + launched on that sim → runs the full analysis UI on a r
 song with no crash; call-graph audit confirms every `installModelPackage` caller is
 filtered. Committed as the iPad-fix commit; the unrelated chord-decoder / ChordPro-preview
 WIP was intentionally left uncommitted in the working tree.
+
+# Phase 2 plan (2026-07-08): short-segment 6-stem HTDemucs for iPad
+
+## Why
+iPad stem separation OOMs (jetsam per-process-limit ~4.8GB on 4GB iPad Pro 3rd-gen).
+Measured on Mac (exact demucsv4.onnx, fixed input 343,980 = 7.8s): FP32 fwd pass = 3.46GB;
+int8 = 3.23GB (activations dominate, weight-quant useless); fp16 export invalid + CPU EP
+won't use fp16 anyway. Input length hard-fixed → can't shorten segment on existing artifact.
+
+## Key finding (validated)
+htdemucs_6s internally pads any input UP to training_length (=segment*sr=343,980) then slices
+output back, so a short INPUT doesn't help. BUT setting `model.segment` smaller DOES reduce
+compute+memory and the transformer tolerates it (ran clean at 4s/3s/2s). Torch fwd RSS:
+7.8s=1.81GB, 3.0s=0.95GB. Projected onnxruntime @3s ≈ 1.5-1.9GB → fits 4GB with the
+increased-memory-limit entitlement (committed b4bb4f5) + Phase-1 buffer freeing.
+
+## Blocker to solve
+torch.onnx.export (TorchScript) fails: "STFT does not currently support complex types".
+dynamo export fails on a data-dependent assert in htdemucs forward. Fix = patch
+demucs/spec.py spectro/ispectro to a real-DFT (conv/matmul) STFT so the graph is all-real and
+ONNX-exportable, bit-matching demucs's params (n_fft, hop, hann, normalized=True, center,
+reflect pad). MansfieldPlumbing's public export solved the equivalent for the 7.8s model.
+
+## Steps
+1. Patch STFT, set segment ~3-3.5s, export htdemucs_6s → onnx. Verify onnxruntime loads + runs.
+2. Measure onnxruntime peak RSS at candidate segments; pick smallest-context that keeps quality
+   with headroom under ~2GB.
+3. Validate stem quality: compare separated stems (SDR / null test) vs the current 7.8s model on
+   a real song — overlap-add already smooths chunk seams; confirm no audible regression.
+4. Deliver artifact (~246MB, weights unchanged): DECISION — bundle in iPad app Resources
+   (offline, no hosting, +size, skip HTDemucs download on iPad) vs host at a URL (needs an
+   account) + add to ModelCatalog.
+5. Wire: platform-branch so iPad uses the short-segment model; update
+   ONNXSixStemChunkPredictor.frameCount + ONNXSixStemSeparationEngine.segmentFrames/overlapFrames
+   to the new length; bump engineVersion so cached stems regen.
+6. Device-test on the real iPad: confirm separation completes, no jetsam; keep macOS on the
+   7.8s model (more context, plenty of RAM).
