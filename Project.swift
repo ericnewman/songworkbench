@@ -100,9 +100,9 @@ let project = Project(
             ]),
             sources: ["Sources/SongWorkbench/**"],
             resources: ["Resources/**"],
-            // No .entitlements file: the macOS one is app-sandbox/app-scope-bookmark
-            // specific; iOS gets its sandbox implicitly and (for now) needs no extra
-            // entitlements. Add an iOS-specific file here when iCloud/documents land.
+            // iOS entitlements: increased-memory-limit so HTDemucs stem separation isn't
+            // jetsam-killed at the default per-process ceiling on 4GB iPads.
+            entitlements: .file(path: "SongWorkbenchiPad.entitlements"),
             dependencies: [
                 .package(product: "FluidAudio"),
                 .package(product: "onnxruntime"),

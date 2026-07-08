@@ -93,17 +93,22 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         defer {
             if accessing { request.inputURL.stopAccessingSecurityScopedResource() }
         }
-        let loadedAudio = try await Task.detached(priority: .userInitiated) {
+        var loadedAudio = try await Task.detached(priority: .userInitiated) {
             try Self.loadStereoFloatAudio(at: request.inputURL)
         }.value
         let normalization = normalizesAudio ? Self.normalized(loadedAudio) : nil
-        let audio = normalization?.audio ?? loadedAudio
+        var audio = normalization?.audio ?? loadedAudio
+        // When normalizing (the ONNX path), `audio` is a fresh full-length buffer, so the
+        // pre-normalization copy (~85MB for a 4-min song) is dead weight for the rest of the
+        // run. Drop it now to lower peak footprint on memory-constrained iPads.
+        if normalization != nil { loadedAudio = StereoAudio(channels: [[], []]) }
+        let frameCount = audio.frameCount
         try Task.checkCancellation()
 
         let strideFrames = segmentFrames - overlapFrames
         let chunkCount = max(
             1,
-            Int(ceil(Double(max(audio.frameCount - overlapFrames, 1)) / Double(strideFrames)))
+            Int(ceil(Double(max(frameCount - overlapFrames, 1)) / Double(strideFrames)))
         )
         let totalUnits = chunkCount + 2
         progress(
@@ -117,12 +122,12 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                 (
                     kind,
                     [
-                        [Float](repeating: 0, count: audio.frameCount),
-                        [Float](repeating: 0, count: audio.frameCount),
+                        [Float](repeating: 0, count: frameCount),
+                        [Float](repeating: 0, count: frameCount),
                     ]
                 )
             })
-        var weights = [Float](repeating: 0, count: audio.frameCount)
+        var weights = [Float](repeating: 0, count: frameCount)
 
         for chunkIndex in 0..<chunkCount {
             try Task.checkCancellation()
@@ -144,7 +149,7 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                 start: chunkStart,
                 chunkIndex: chunkIndex,
                 chunkCount: chunkCount,
-                outputFrameCount: audio.frameCount
+                outputFrameCount: frameCount
             )
             progress(
                 StemSeparationProgress(
@@ -156,6 +161,11 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         normalize(&stems, weights: weights)
         try validate(stems)
         try Task.checkCancellation()
+        // The accumulation inputs are no longer needed once every chunk has been folded in and
+        // normalized — release them before the write phase so their memory isn't held alongside
+        // the output AVAudioPCMBuffers (input ~85MB + weights ~42MB per 4-min song).
+        weights = []
+        audio = StereoAudio(channels: [[], []])
 
         progress(
             StemSeparationProgress(
@@ -164,8 +174,8 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                 totalUnits: totalUnits
             ))
         let stemFiles = try publishAtomically(
-            stems,
-            frameCount: audio.frameCount,
+            &stems,
+            frameCount: frameCount,
             outputDirectory: request.outputDirectory
         )
         progress(
@@ -257,8 +267,14 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         }
     }
 
+    /// Writes each stem to its WAV and **frees it from `stems` immediately after** (hence
+    /// `inout`), so the write phase never holds all six full-length stereo stems (~508MB for a
+    /// 4-min song) in RAM alongside the output buffers. Stems not needed for the accompaniment
+    /// mixdown are written and released first; the accompaniment inputs (other/guitar/piano) are
+    /// kept only until the mixdown is written, then released too. This ordering caps the write
+    /// phase near ~3 stems + one output buffer instead of all six.
     private func publishAtomically(
-        _ stems: [StemKind: [[Float]]],
+        _ stems: inout [StemKind: [[Float]]],
         frameCount: Int,
         outputDirectory: URL
     ) throws -> StemFiles {
@@ -278,23 +294,32 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
             channels: 2,
             interleaved: false
         )!
-        for kind in predictor.supportedStems {
+
+        func writeChannels(_ channels: [[Float]], named name: String) throws {
             try Task.checkCancellation()
             let buffer = AVAudioPCMBuffer(
                 pcmFormat: format,
                 frameCapacity: AVAudioFrameCount(frameCount)
             )!
             buffer.frameLength = AVAudioFrameCount(frameCount)
-            buffer.floatChannelData![0].update(from: stems[kind]![0], count: frameCount)
-            buffer.floatChannelData![1].update(from: stems[kind]![1], count: frameCount)
+            buffer.floatChannelData![0].update(from: channels[0], count: frameCount)
+            buffer.floatChannelData![1].update(from: channels[1], count: frameCount)
             let file = try AVAudioFile(
-                forWriting: staging.appendingPathComponent("\(kind.rawValue).wav"),
+                forWriting: staging.appendingPathComponent("\(name).wav"),
                 settings: format.settings,
                 commonFormat: .pcmFormatFloat32,
                 interleaved: false
             )
             try file.write(from: buffer)
         }
+
+        let accompanimentInputs: Set<StemKind> = [.other, .guitar, .piano]
+        // Write + free every stem the accompaniment mixdown does NOT depend on first.
+        for kind in predictor.supportedStems where !accompanimentInputs.contains(kind) {
+            try writeChannels(stems[kind]!, named: kind.rawValue)
+            stems[kind] = nil
+        }
+
         let accompanimentURL: URL?
         if predictor.supportedStems.contains(.guitar), predictor.supportedStems.contains(.piano) {
             var accompaniment = [
@@ -313,23 +338,15 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                     accompaniment[channel][frame] = other[frame] + guitar[frame] + piano[frame]
                 }
             }
-            let buffer = AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: AVAudioFrameCount(frameCount)
-            )!
-            buffer.frameLength = AVAudioFrameCount(frameCount)
-            buffer.floatChannelData![0].update(from: accompaniment[0], count: frameCount)
-            buffer.floatChannelData![1].update(from: accompaniment[1], count: frameCount)
-            let file = try AVAudioFile(
-                forWriting: staging.appendingPathComponent("accompaniment.wav"),
-                settings: format.settings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-            try file.write(from: buffer)
+            try writeChannels(accompaniment, named: "accompaniment")
             accompanimentURL = outputDirectory.appendingPathComponent("accompaniment.wav")
         } else {
             accompanimentURL = nil
+        }
+        // Now write + free the accompaniment-input stems that are still resident.
+        for kind in predictor.supportedStems where accompanimentInputs.contains(kind) {
+            try writeChannels(stems[kind]!, named: kind.rawValue)
+            stems[kind] = nil
         }
 
         if fileManager.fileExists(atPath: outputDirectory.path) {

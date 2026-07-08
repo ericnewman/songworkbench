@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Raises the per-process memory ceiling before iOS jetsam-kills the app. HTDemucs stem
+	     separation on a 4GB iPad Pro (3rd gen) was killed at ~4.8GB (per-process-limit); this
+	     entitlement, paired with the buffer-freeing in CoreMLStemSeparationEngine, is needed to
+	     let the separation forward pass fit. Freely usable, no App Store review gate. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>

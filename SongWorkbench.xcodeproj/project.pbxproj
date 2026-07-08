@@ -284,6 +284,7 @@
 		0C4C3D74E9AA41189464B86D /* LyricBlendRowBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricBlendRowBuilder.swift; sourceTree = "<group>"; };
 		0D93455B913B0C085B391007 /* WorkspaceEditorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceEditorsView.swift; sourceTree = "<group>"; };
 		0FA1A6AEFFBC10C04E93A31E /* AudioFileAnalysisService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFileAnalysisService.swift; sourceTree = "<group>"; };
+		11009B01AFD5B1EDCF7639E0 /* SongWorkbenchiPad.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SongWorkbenchiPad.entitlements; sourceTree = "<group>"; };
 		121B8B9FF8651A3647580810 /* MusicLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicLibrary.swift; sourceTree = "<group>"; };
 		13ACE737C45116476698E7F1 /* ChordClassification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordClassification.swift; sourceTree = "<group>"; };
 		184287BB28F49587B4BB773D /* ChordRowStringBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordRowStringBuilderTests.swift; sourceTree = "<group>"; };
@@ -659,6 +660,7 @@
 				476F0E7A237318F1D9B54E54 /* Sources */,
 				5A3BB175EE03688BEF6FE94F /* Tests */,
 				681718C17588BE7E931E8E03 /* SongWorkbench.entitlements */,
+				11009B01AFD5B1EDCF7639E0 /* SongWorkbenchiPad.entitlements */,
 			);
 			name = Project;
 			sourceTree = "<group>";
@@ -1209,6 +1211,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = SongWorkbenchiPad.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -1244,6 +1247,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = SongWorkbenchiPad.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
