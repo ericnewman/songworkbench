@@ -997,6 +997,8 @@ private struct ChordProTabEditor: View {
     /// people reading the chart want to see. Off by default (Eric: make these labels optional,
     /// default off).
     @AppStorage("reviewShowChordTimeLabels") private var showChordTimeLabels = false
+    /// Drives the small chord-confidence-shading legend popover in the toolbar (backlog #15).
+    @State private var showConfidenceLegend = false
 
     /// Lyric segments sorted into the order the highlight/ball ordinals use (so ordinal N indexes
     /// the same line across words, windows, and highlight).
@@ -1168,6 +1170,14 @@ private struct ChordProTabEditor: View {
                 "Show/hide the bouncing ball, beat dots, measure barlines, "
                     + "the per-line waveform, the detected bass note row, "
                     + "and each chord's raw detected timestamp")
+            Button("Chord Shading Legend", systemImage: "questionmark.circle") {
+                showConfidenceLegend = true
+            }
+            .labelStyle(.iconOnly)
+            .help("What the shaded backgrounds behind chord names mean")
+            .popover(isPresented: $showConfidenceLegend, arrowEdge: .bottom) {
+                confidenceLegendContent
+            }
             if config.supportsMarkReviewed {
                 Button("Mark Reviewed", systemImage: "checkmark.seal") {
                     model.markChordProReviewed()
@@ -1201,6 +1211,39 @@ private struct ChordProTabEditor: View {
             }
         }
         .fixedSize()
+    }
+
+    /// Small popover explaining the shaded backgrounds behind chord names: reuses
+    /// `ReviewConfidenceTier`'s existing tint/label mapping directly rather than duplicating it,
+    /// so this legend can't drift out of sync with what `chordTint(at:)` actually renders.
+    private var confidenceLegendContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Chord Shading")
+                .font(.swDisplay(12, weight: .semibold))
+                .foregroundStyle(Color.swTextPrimary)
+            legendRow(color: .swCoral, label: "Low confidence")
+            legendRow(color: .swAmber, label: "Uncertain")
+            legendRow(color: .clear, label: "Reviewed / high confidence", outlined: true)
+        }
+        .padding(12)
+        .frame(width: 220, alignment: .leading)
+    }
+
+    private func legendRow(color: Color, label: String, outlined: Bool = false) -> some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(color.opacity(0.3))
+                .overlay {
+                    if outlined {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .strokeBorder(Color.swTextSecondary.opacity(0.4), lineWidth: 1)
+                    }
+                }
+                .frame(width: 20, height: 14)
+            Text(label)
+                .font(.swDisplay(12))
+                .foregroundStyle(Color.swTextPrimary)
+        }
     }
 
     @ViewBuilder
