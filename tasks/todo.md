@@ -1143,3 +1143,17 @@ iSTFT (windowed overlap-add + NOLA window-sq normalization) replacing demucs.spe
 ispectro, then A/B the separated stems vs the stock 7.8s model (null test) before trusting it.
 demucs spec params: n_fft=4096, hop=1024, win=hann(4096), win_length=4096, normalized=True,
 center=True, pad_mode=reflect, freqs=2049.
+
+## Phase 2 RESULT (2026-07-08) — export DONE + validated, wiring pending
+Short-segment 6-stem export SUCCEEDED. Pipeline in tools/demucs_export/ (realstft.py +
+export_dyn.py). Real-valued STFT (conv1d framing + matmul IDFT + F.fold OLA) replaces demucs
+complex STFT; exported via dynamo (opset 18) after monkeypatching pad1d to drop its data-dependent
+.all() assert. Model: demucsv4_3p5s.onnx (248MB embedded, gitignored).
+Validated: onnx vs torch 5.7e-6; real-STFT vs stock full model 79dB SDR; onnxruntime CPU peak RSS
+1.95GB @3.5s (vs 3.46GB @7.8s) -> fits 4GB iPad w/ entitlement; quality A/B 3.5 vs 7.8s on real
+song: vocals 20/bass 18.6/drums 16.9/guitar 7.6 dB (piano/other near-silent in that track).
+REMAINING (wiring): bundle demucsv4_3p5s.onnx in iPad Resources; ONNXSixStemChunkPredictor.frameCount
+343980->154350; ONNXSixStemSeparationEngine.segmentFrames->154350 (overlap /4); platform-branch so
+macOS keeps the 7.8s downloaded model and iPad uses the bundled 3.5s one; make htdemucs count as
+installed-on-iPad (bundled, not downloaded) so the onboarding gate passes; bump engineVersion to
+regen cached stems; rebuild+device test peak (uninstall wipes container -> re-onboard).
