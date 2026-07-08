@@ -112,6 +112,42 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(model.analysisJobSnapshot)
     }
 
+    /// `reanalyzeAllSongs()` and the auto-analyze-on-import path in `importSongs` share one
+    /// `analysisQueue` (see the comment on that property) so a drag-drop import landing mid-run
+    /// gets queued instead of silently dropped or interrupting the song in progress. This
+    /// verifies the queue's dedup: calling `reanalyzeAllSongs()` again while it's already
+    /// draining must NOT restart from song 1 or double the total — both `isSongAnalysisRunning`
+    /// and `reanalyzeAllStatus` flip synchronously (before any yield), same as
+    /// `testSelectingDifferentSongResetsSelectedSongProgress` above, so this is deterministic:
+    /// no real analysis pipeline work has had a chance to run yet.
+    func testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart() async throws {
+        let firstURL = try makeSilentWAV()
+        let secondURL = try makeSilentWAV()
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [firstURL, secondURL])
+        try await waitUntil { model.songs.count >= 2 }
+
+        model.reanalyzeAllSongs()
+
+        XCTAssertTrue(model.isSongAnalysisRunning)
+        let firstStatus = try XCTUnwrap(model.reanalyzeAllStatus)
+        XCTAssertEqual(firstStatus.index, 1)
+        XCTAssertEqual(firstStatus.total, 2)
+
+        // A second call (e.g. the user clicking "Re-analyze All" again, or an import landing)
+        // must not re-seed the queue from scratch — same song, same index/total.
+        model.reanalyzeAllSongs()
+
+        let secondStatus = try XCTUnwrap(model.reanalyzeAllStatus)
+        XCTAssertEqual(secondStatus.index, 1)
+        XCTAssertEqual(secondStatus.total, 2)
+        XCTAssertEqual(secondStatus.title, firstStatus.title)
+    }
+
     func testRemovingSelectedSongPreservesSourceFileSelectsNeighborAndPersists() async throws {
         let firstURL = try makeSilentWAV()
         let secondURL = try makeSilentWAV()

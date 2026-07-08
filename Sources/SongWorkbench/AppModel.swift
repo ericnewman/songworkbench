@@ -776,26 +776,62 @@ final class AppModel: ObservableObject {
     /// a bulk re-analyze and running Analyze again on it individually will populate its blend
     /// candidates.
     func reanalyzeAllSongs() {
-        guard !isSongAnalysisRunning else { return }
-        reanalyzeNext(in: songs, total: songs.count)
+        enqueueForAnalysis(songs)
     }
 
-    private func reanalyzeNext(in queue: [Song], total: Int) {
-        guard let song = queue.first else {
-            reanalyzeAllStatus = nil
-            return
-        }
-        reanalyzeAllStatus = ReanalyzeAllStatus(
-            index: total - queue.count + 1, total: total, title: song.title)
+    /// Songs waiting for their turn to be analyzed, drained one at a time. Backs BOTH
+    /// `reanalyzeAllSongs()` and the auto-analyze-on-import path in `importSongs` — sharing one
+    /// queue means a drag-drop import that lands while ANOTHER song is already analyzing (from
+    /// "Analyze Song", "Re-analyze All", or an earlier import batch) gets appended here instead
+    /// of being silently dropped from auto-analysis or interrupting the song in progress (Eric:
+    /// "just queue the new songs to be done, and don't interrupt the song in process").
+    /// `beginAnalysis`'s completion always calls `startNextQueuedAnalysisIfIdle()` after
+    /// handling its own outcome, so whichever analysis finishes next — queue-driven or a direct
+    /// `analyzeSelectedSong` call — automatically picks up anything still waiting here.
+    private var analysisQueue: [Song] = []
+    private var analysisQueueCompletedCount = 0
+
+    /// Adds songs to `analysisQueue` (skipping ones already queued) and starts draining it if
+    /// nothing is currently analyzing. Never interrupts an in-flight analysis — new arrivals
+    /// just wait their turn.
+    private func enqueueForAnalysis(_ newSongs: [Song]) {
+        let queuedIDs = Set(analysisQueue.map(\.id))
+        let additions = newSongs.filter { !queuedIDs.contains($0.id) }
+        guard !additions.isEmpty else { return }
+        if analysisQueue.isEmpty { analysisQueueCompletedCount = 0 }
+        analysisQueue.append(contentsOf: additions)
+        startNextQueuedAnalysisIfIdle()
+    }
+
+    /// Starts the next queued song's analysis, but only if nothing is already running — safe to
+    /// call opportunistically (it's a no-op otherwise). This is the single place that decides
+    /// "what runs next," called both when queueing new work and from `beginAnalysis`'s
+    /// completion after every analysis run finishes.
+    private func startNextQueuedAnalysisIfIdle() {
+        guard !isSongAnalysisRunning, let song = analysisQueue.first else { return }
+        let index = analysisQueueCompletedCount + 1
+        let total = analysisQueueCompletedCount + analysisQueue.count
+        reanalyzeAllStatus = ReanalyzeAllStatus(index: index, total: total, title: song.title)
         runAnalysis(
             for: song,
             stages: Set(SongAnalysisStage.allCases)
         ) { [weak self] cancelled in
-            guard let self, !cancelled else {
-                self?.reanalyzeAllStatus = nil
+            guard let self else { return }
+            guard !cancelled else {
+                analysisQueue.removeAll()
+                reanalyzeAllStatus = nil
+                analysisQueueCompletedCount = 0
                 return
             }
-            reanalyzeNext(in: Array(queue.dropFirst()), total: total)
+            if !analysisQueue.isEmpty { analysisQueue.removeFirst() }
+            analysisQueueCompletedCount += 1
+            if analysisQueue.isEmpty {
+                reanalyzeAllStatus = nil
+                analysisQueueCompletedCount = 0
+            }
+            // Deliberately doesn't call startNextQueuedAnalysisIfIdle() itself — beginAnalysis's
+            // onFinish does that unconditionally after every run, queued or not, so this stays
+            // the one place that decides what runs next.
         }
     }
 
@@ -973,6 +1009,12 @@ final class AppModel: ObservableObject {
                     }
                 }
                 completion?(cancelled)
+                // Whatever just finished — a queue-driven run or a direct `analyzeSelectedSong`
+                // call — this is the single spot that decides what runs next. By the time we get
+                // here, `completion` (if this WAS queue-driven) has already popped the
+                // just-finished song off `analysisQueue`, so this correctly starts the NEXT one
+                // rather than re-running the one that just completed.
+                startNextQueuedAnalysisIfIdle()
             }
         )
     }
@@ -1243,16 +1285,24 @@ final class AppModel: ObservableObject {
             let newSongs = localizedSongs.filter { !existingIDs.contains($0.id) }
             self.songs.append(contentsOf: newSongs)
             self.songs.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-            if let first = newSongs.first, selectImmediately || self.selectedSongID == nil {
+            // Auto-select is skipped while a song is already analyzing: `select()` calls
+            // `resetSelectedSongProgressState()`, which cancels whatever's currently in flight
+            // in `analysisCoordinator` (a single shared, one-at-a-time coordinator) — so forcing
+            // selection onto a just-dropped song would interrupt the song already in progress
+            // (Eric: "don't interrupt the song in process"). The new song still gets queued for
+            // analysis below; it just isn't auto-selected until analysis is idle again.
+            if let first = newSongs.first, !self.isSongAnalysisRunning,
+                selectImmediately || self.selectedSongID == nil
+            {
                 self.select(first)
             }
             if let firstFailure { self.projectErrorMessage = firstFailure }
             self.scheduleSave()
-            // Newly imported songs go straight into analysis (sequentially for bulk
-            // imports), so a fresh song is ready to practice without another click.
-            if !newSongs.isEmpty, !self.isSongAnalysisRunning {
-                self.reanalyzeNext(in: newSongs, total: newSongs.count)
-            }
+            // Newly imported songs go straight into the shared analysis queue (sequentially for
+            // bulk imports), so a fresh song is ready to practice without another click — if
+            // something else is already analyzing, these just wait their turn instead of being
+            // dropped or interrupting it (see `enqueueForAnalysis`).
+            self.enqueueForAnalysis(newSongs)
         }
     }
 
