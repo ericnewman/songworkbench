@@ -339,19 +339,18 @@ private struct AnalysisProgressSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Label(
-                    model.reanalyzeAllStatus == nil ? "Analyzing Song" : "Re-analyzing Library",
-                    systemImage: "sparkles"
-                )
-                .font(.swDisplay(15, weight: .semibold))
-                .foregroundStyle(Color.swTextPrimary)
+                Label(analysisSheetTitle, systemImage: "sparkles")
+                    .font(.swDisplay(15, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
                 Spacer()
                 Text(percentComplete, format: .percent.precision(.fractionLength(0)))
                     .font(.swMono(15, weight: .semibold))
                     .foregroundStyle(Color.swMint)
             }
 
-            if let bulk = model.reanalyzeAllStatus {
+            // Per-song line only when there's genuinely a batch of more than one; a single
+            // (e.g. first-time import) song would read a pointless "Song 1 of 1".
+            if let bulk = model.reanalyzeAllStatus, bulk.total > 1 {
                 Text("Song \(bulk.index) of \(bulk.total): \(bulk.title)")
                     .font(.swDisplay(13, weight: .medium))
                     .foregroundStyle(Color.swTextPrimary)
@@ -394,6 +393,16 @@ private struct AnalysisProgressSheet: View {
 
     private var percentComplete: Double {
         model.songAnalysisProgress?.fractionCompleted ?? 0
+    }
+
+    /// The queue backs both first-time imports and "Re-analyze All", so title by count rather
+    /// than assuming any batch is a re-analyze — a first import was reading "Re-analyzing
+    /// Library".
+    private var analysisSheetTitle: String {
+        if let bulk = model.reanalyzeAllStatus, bulk.total > 1 {
+            return "Analyzing \(bulk.total) Songs"
+        }
+        return "Analyzing Song"
     }
 }
 
