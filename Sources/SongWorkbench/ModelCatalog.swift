@@ -24,9 +24,10 @@ enum ModelCatalog {
         ]),
         entryPointRelativePath: "demucsv4.onnx",
         // On iPad the 7.8s FP32 forward pass OOMs (per-process-limit ~4.8GB). Ship a
-        // shorter-segment (3.5s) 6-stem re-export inside the app bundle instead — it fits
-        // (~1.95GB peak) and is used directly, so htdemucs is never downloaded on iPad.
-        bundledResourceNameiOS: "demucsv4_3p5s"
+        // shorter-segment (2.5s) 6-stem re-export inside the app bundle instead — warms to
+        // ~2.1GB (under the ~3GB ceiling) and is used directly, so htdemucs is never
+        // downloaded on iPad.
+        bundledResourceNameiOS: "demucsv4_2p5s"
     )
 
     static let whisperAccuracy = ModelPackageDescriptor(

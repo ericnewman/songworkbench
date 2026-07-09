@@ -5,10 +5,14 @@ struct ONNXSixStemSeparationEngine: StemSeparationEngine, Sendable {
     /// Full-quality 7.8s segment used on macOS (ample RAM). Must match the stock
     /// demucsv4.onnx fixed input length.
     static let defaultSegmentFrames = 343_980
-    /// Shorter 3.5s segment bundled on iPad so the FP32 forward pass fits the per-process
-    /// memory limit (onnxruntime peak ~1.95GB vs ~3.46GB at 7.8s). Same six stems; validated
-    /// against the 7.8s model at 79dB SDR. Must match the bundled export's fixed input length.
-    static let iPadSegmentFrames = 154_350
+    /// Shorter 2.5s segment bundled on iPad so the FP32 forward pass fits the per-process
+    /// memory ceiling. The 3.5s export still peaked ~2.5-2.8GB warmed (arena grows across the
+    /// whole song) and tipped the ~3GB increased-memory-limit cap late in a run; 2.5s warms to
+    /// ~2.1GB, leaving ~0.6GB headroom for the Swift accumulation + app baseline. Same six
+    /// stems; real-STFT export matches the stock model to ~5e-6, and a 7.8s-vs-2.5s A/B keeps
+    /// the energy-bearing stems strong (vocals/bass/drums 15-18dB, guitar ~7dB). Must match the
+    /// bundled export's fixed input length.
+    static let iPadSegmentFrames = 110_250
 
     private let engine: CoreMLStemSeparationEngine
 
@@ -31,7 +35,7 @@ struct ONNXSixStemSeparationEngine: StemSeparationEngine, Sendable {
     static let coreMLMetadata = metadata(usesCoreML: true, segmentFrames: defaultSegmentFrames)
 
     /// Metadata for the stem engine actually used on THIS platform — the caching policy must
-    /// key on this so iPad's 3.5s stems and macOS's 7.8s stems never alias.
+    /// key on this so iPad's short-segment stems and macOS's 7.8s stems never alias.
     static var currentPlatformMetadata: StemSeparationEngineMetadata {
         #if os(macOS)
             return cpuMetadata
@@ -89,7 +93,16 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
         let environment = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setGraphOptimizationLevel(.all)
-        let threadCount = Int32(max(ProcessInfo.processInfo.activeProcessorCount - 1, 1))
+        #if os(macOS)
+            let threadCount = Int32(max(ProcessInfo.processInfo.activeProcessorCount - 1, 1))
+        #else
+            // iPad: cap intra-op threads so the long stem-separation run doesn't peg every core.
+            // At a 2.5s segment there are many chunks; pinning all 8 cores at 100% thermally
+            // throttles the device (net slower) and trips iOS's sustained-CPU diagnostics. 4
+            // threads balances throughput and heat; thread count barely affects peak memory.
+            let threadCount = Int32(
+                min(max(ProcessInfo.processInfo.activeProcessorCount - 1, 1), 4))
+        #endif
         try options.setIntraOpNumThreads(threadCount)
         if usesCoreMLExecutionProvider, ORTIsCoreMLExecutionProviderAvailable() {
             let coreMLOptions = ORTCoreMLExecutionProviderOptions()
