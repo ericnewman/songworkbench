@@ -28,6 +28,29 @@ struct ModelPackageDescriptor: Codable, Equatable, Sendable {
     let license: ModelArtifactLicense
     let source: ModelPackageSource
     let entryPointRelativePath: String
+    /// When set, on iOS this package ships INSIDE the app bundle as `<name>.onnx` instead of
+    /// being downloaded (the shorter-segment iPad stem model). Such a package counts as
+    /// always-installed on iOS and is never offered for download. No effect on macOS.
+    var bundledResourceNameiOS: String? = nil
+
+    /// Whether this package is shipped in the app bundle on the RUNNING platform.
+    var isBundledOnCurrentPlatform: Bool {
+        #if os(macOS)
+            return false
+        #else
+            return bundledResourceNameiOS != nil
+        #endif
+    }
+
+    /// URL of the bundled model file on the current platform, if any.
+    var bundledResourceURL: URL? {
+        #if os(macOS)
+            return nil
+        #else
+            guard let name = bundledResourceNameiOS else { return nil }
+            return Bundle.main.url(forResource: name, withExtension: "onnx")
+        #endif
+    }
 
     var expectedDownloadBytes: Int64 {
         switch source {
@@ -57,6 +80,13 @@ struct ModelPackageDescriptor: Codable, Equatable, Sendable {
         #else
             return !requiresArchiveExtraction
         #endif
+    }
+
+    /// Whether this package must be DOWNLOADED and installed on the running platform — i.e.
+    /// installable here and not already shipped in the bundle. The first-run onboarding gate,
+    /// the required-set check, and the Models popover all offer exactly these.
+    var requiresDownloadOnCurrentPlatform: Bool {
+        isInstallableOnCurrentPlatform && !isBundledOnCurrentPlatform
     }
 }
 

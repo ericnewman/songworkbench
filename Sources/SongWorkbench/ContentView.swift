@@ -84,7 +84,7 @@ private struct ModelOnboardingSheet: View {
     @ObservedObject var model: AppModel
 
     private var descriptors: [ModelPackageDescriptor] {
-        ModelCatalog.all.filter(\.isInstallableOnCurrentPlatform)
+        ModelCatalog.all.filter(\.requiresDownloadOnCurrentPlatform)
     }
 
     var body: some View {

@@ -325,7 +325,7 @@ final class AppModel: ObservableObject {
     /// behind the first-run onboarding sheet (Eric: models must be installed "before
     /// anything else is enabled"; required set = ALL platform-installable models).
     var requiredModelsInstalled: Bool {
-        ModelCatalog.all.filter(\.isInstallableOnCurrentPlatform).allSatisfy {
+        ModelCatalog.all.filter(\.requiresDownloadOnCurrentPlatform).allSatisfy {
             if case .installed = modelPackageStatuses[$0.id] { return true }
             return false
         }
@@ -2169,7 +2169,7 @@ final class AppModel: ObservableObject {
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {
-        SeparationCachingPolicy(currentEngine: ONNXSixStemSeparationEngine.cpuMetadata)
+        SeparationCachingPolicy(currentEngine: ONNXSixStemSeparationEngine.currentPlatformMetadata)
     }
 
     private func isCurrentSeparation(record: AnalysisStageRecord?) -> Bool {

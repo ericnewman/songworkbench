@@ -27,9 +27,31 @@ struct SongAnalysisPipelineFactory: Sendable {
             return package
         }
 
-        let stemPackage = await installedPackage(ModelCatalog.htdemucs)
         let stemEngine: (any StemSeparationEngine)?
-        if let stemPackage {
+        if ModelCatalog.htdemucs.isBundledOnCurrentPlatform,
+            let bundledURL = ModelCatalog.htdemucs.bundledResourceURL
+        {
+            // iPad: the shorter-segment 6-stem model ships in the app bundle (the full 7.8s
+            // model OOMs). Use it directly and publish htdemucs as installed so nothing waits
+            // on a download for it.
+            let size = Int64(
+                (try? FileManager.default.attributesOfItem(atPath: bundledURL.path)[.size]
+                    as? Int) ?? 0)
+            statuses[ModelCatalog.htdemucs.id] = .installed(
+                InstalledModelPackage(
+                    descriptorID: ModelCatalog.htdemucs.id,
+                    version: ModelCatalog.htdemucs.version,
+                    packageDirectoryURL: bundledURL.deletingLastPathComponent(),
+                    entryPointURL: bundledURL,
+                    sizeBytes: size
+                ))
+            stemEngine = try await Task.detached(priority: .userInitiated) {
+                try ONNXSixStemSeparationEngine(
+                    modelURL: bundledURL,
+                    segmentFrames: ONNXSixStemSeparationEngine.iPadSegmentFrames
+                )
+            }.value
+        } else if let stemPackage = await installedPackage(ModelCatalog.htdemucs) {
             stemEngine = try await Task.detached(priority: .userInitiated) {
                 // CPU execution provider (known-good). The CoreML/ANE provider was tried for
                 // speed but reverted until it can be verified not to break separation output.

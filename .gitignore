@@ -17,3 +17,6 @@ SongWorkbench.xcodeproj/project.xcworkspace/xcuserdata/
 # Large exported model artifact (regenerate via tools/demucs_export)
 tools/demucs_export/*.onnx
 tools/demucs_export/*.onnx.data
+
+# iPad-bundled short-segment stem model (regenerate via tools/demucs_export)
+BundledModels/*.onnx

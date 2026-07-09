@@ -99,7 +99,10 @@ let project = Project(
                 "LSSupportsOpeningDocumentsInPlace": true,
             ]),
             sources: ["Sources/SongWorkbench/**"],
-            resources: ["Resources/**"],
+            // BundledModels (iPad only): the shorter-segment 6-stem HTDemucs export, shipped in
+            // the app so stem separation fits memory without a 246MB download. macOS downloads
+            // the full 7.8s model instead, so it does NOT bundle this.
+            resources: ["Resources/**", "BundledModels/**"],
             // iOS entitlements: increased-memory-limit so HTDemucs stem separation isn't
             // jetsam-killed at the default per-process ceiling on 4GB iPads.
             entitlements: .file(path: "SongWorkbenchiPad.entitlements"),

@@ -58,20 +58,31 @@ struct AnalysisWorkspaceView: View {
                         + "singing; timestamps are mapped back. 100% = off. Changing this "
                         + "re-transcribes on the next Analyze.")
 
-                HStack {
+                // The workspace lives in a fixed 360pt column; on iOS the bordered buttons
+                // render large and, with full text labels, wrapped to multiple lines and
+                // overflowed. Keep the primary Analyze button labeled but make the secondary
+                // actions icon-only (with accessibility labels + help), and shrink the whole
+                // row to a small control size so it fits the column on every platform.
+                HStack(spacing: 8) {
                     // Compact re-run right where the settings live, so changing the
                     // transcription mode / decode speed can be applied without reaching
                     // for the header's Analyze button.
                     AnalyzeSongButton(model: model)
-                        .controlSize(.small)
                         .buttonStyle(.borderedProminent)
+                        .lineLimit(1)
+                        .fixedSize()
                     Button("Reference Lyrics", systemImage: "text.alignleft") {
                         showReferenceLyrics = true
                     }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Reference Lyrics")
                     .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+                    .help("Paste the real lyrics to align words and line breaks exactly.")
                     Button("Live Capture", systemImage: "dot.radiowaves.left.and.right") {
                         showLiveCapture = true
                     }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Live Capture")
                     .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
                     .help(
                         "Detect chords in real time from a loopback device, mic, or another app.")
@@ -84,6 +95,7 @@ struct AnalysisWorkspaceView: View {
                     }
                     Spacer()
                 }
+                .controlSize(.small)
 
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(SongAnalysisStage.allCases, id: \.self) { stage in
@@ -366,7 +378,7 @@ private struct ModelPackagesView: View {
                 // Whisper's Core ML encoder needs zip extraction, which is macOS-only — on
                 // iPad the row is hidden entirely instead of offering an install that can
                 // only fail (Eric: "the option to load it should be hidden").
-                let installable = ModelCatalog.all.filter(\.isInstallableOnCurrentPlatform)
+                let installable = ModelCatalog.all.filter(\.requiresDownloadOnCurrentPlatform)
                 ForEach(installable, id: \.id) { descriptor in
                     modelRow(descriptor)
                     if descriptor.id != installable.last?.id { Divider() }
