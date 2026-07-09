@@ -30,6 +30,23 @@ struct AnalysisWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help(isExpanded ? "Collapse Song Analysis" : "Expand Song Analysis")
+                // Always-visible activity indicator so a long background run (stem separation
+                // can take minutes on iPad) never looks stalled — shows even when the card is
+                // collapsed.
+                if model.isSongAnalysisRunning, let p = model.songAnalysisProgress {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text(
+                            "\(p.stage.map(stageTitle) ?? "Analyzing")… "
+                                + "\(Int((p.fractionCompleted * 100).rounded()))%"
+                        )
+                        .font(.swMono(11, weight: .medium))
+                        .foregroundStyle(Color.swMint)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .padding(.leading, 8)
+                }
                 Spacer()
                 ModelPackagesView(model: model)
             }
@@ -143,13 +160,26 @@ struct AnalysisWorkspaceView: View {
 
     private func stageRow(_ stage: SongAnalysisStage) -> some View {
         let record = model.analysisStageRecords[stage]
-        return VStack(alignment: .leading, spacing: 2) {
+        // The stage currently being worked on: show a live spinner + percent + progress bar so
+        // a long-running stage (stem separation) is visibly progressing, not stuck.
+        let progress = model.songAnalysisProgress
+        let isActive = model.isSongAnalysisRunning && progress?.stage == stage
+        return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label(stageTitle(stage), systemImage: stageSymbol(record?.state))
+                if isActive {
+                    ProgressView().controlSize(.mini)
+                }
                 Spacer()
-                Text(stageStatus(record))
-                    .foregroundStyle(
-                        record?.state == .failed ? Color.swCoral : Color.swTextSecondary)
+                if isActive, let progress {
+                    Text(progress.stageFraction, format: .percent.precision(.fractionLength(0)))
+                        .font(.swMono(11, weight: .medium))
+                        .foregroundStyle(Color.swMint)
+                } else {
+                    Text(stageStatus(record))
+                        .foregroundStyle(
+                            record?.state == .failed ? Color.swCoral : Color.swTextSecondary)
+                }
                 if record?.state == .failed || record?.state == .stale {
                     Button("Retry") {
                         if stage == .chordPro && model.requiresChordProReplacementConfirmation {
@@ -161,10 +191,19 @@ struct AnalysisWorkspaceView: View {
                     .buttonStyle(.borderless)
                 }
             }
-            Text(stageDetail(record))
-                .font(.swMono(10))
-                .foregroundStyle(Color.swTextSecondary)
-                .lineLimit(1)
+            if isActive, let progress {
+                ProgressView(value: progress.stageFraction)
+                    .tint(Color.swMint)
+                Text(progress.message)
+                    .font(.swMono(10))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .lineLimit(1)
+            } else {
+                Text(stageDetail(record))
+                    .font(.swMono(10))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .lineLimit(1)
+            }
         }
     }
 
