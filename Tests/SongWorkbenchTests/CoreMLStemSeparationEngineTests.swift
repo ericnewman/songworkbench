@@ -114,6 +114,55 @@ final class CoreMLStemSeparationEngineTests: XCTestCase {
         }
     }
 
+    /// The streaming writer replaced a whole-song accumulation buffer with an incremental
+    /// cross-fade. `QuarterMixStemPredictor` returns `input / 4` for every stem, so a correct
+    /// overlap-add must reconstruct exactly `input / 4` sample-for-sample across chunk seams —
+    /// this catches any off-by-one or weight error in the carry/finalize boundaries.
+    func testStreamingOverlapAddReconstructsQuarterMixExactly() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.wav")
+        let frameCount = 5_000
+        try writeStereoFixture(to: sourceURL, frameCount: frameCount)
+        let outputURL = directory.appendingPathComponent("stems", isDirectory: true)
+        // Segment/overlap chosen so the song spans several chunks with real overlap seams.
+        let engine = CoreMLStemSeparationEngine(
+            predictor: QuarterMixStemPredictor(),
+            segmentFrames: 1_000,
+            overlapFrames: 250
+        )
+
+        let result = try await engine.separate(
+            request: StemSeparationRequest(inputURL: sourceURL, outputDirectory: outputURL)
+        ) { _ in }
+
+        for kind in [StemKind.vocals, .drums, .bass, .guitar, .piano, .other] {
+            guard let url = result.stems[kind] else {
+                XCTFail("missing \(kind.rawValue) stem")
+                continue
+            }
+            let file = try AVAudioFile(forReading: url)
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: file.processingFormat,
+                frameCapacity: AVAudioFrameCount(file.length)
+            )!
+            try file.read(into: buffer)
+            XCTAssertEqual(Int(buffer.frameLength), frameCount, "\(kind.rawValue) length")
+            let left = buffer.floatChannelData![0]
+            let right = buffer.floatChannelData![1]
+            for frame in 0..<frameCount {
+                XCTAssertEqual(
+                    left[frame], sin(Float(frame) * 0.01) * 0.4 / 4, accuracy: 1e-4,
+                    "\(kind.rawValue) L @\(frame)")
+                XCTAssertEqual(
+                    right[frame], cos(Float(frame) * 0.01) * 0.3 / 4, accuracy: 1e-4,
+                    "\(kind.rawValue) R @\(frame)")
+            }
+        }
+    }
+
     private func writeStereoFixture(
         to url: URL, frameCount: Int, sampleRate: Double = 44_100
     ) throws {

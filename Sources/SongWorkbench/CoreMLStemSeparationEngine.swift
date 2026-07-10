@@ -117,17 +117,24 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                 completedUnits: 1,
                 totalUnits: totalUnits
             ))
-        var stems = Dictionary(
-            uniqueKeysWithValues: predictor.supportedStems.map { kind in
-                (
-                    kind,
-                    [
-                        [Float](repeating: 0, count: frameCount),
-                        [Float](repeating: 0, count: frameCount),
-                    ]
-                )
-            })
-        var weights = [Float](repeating: 0, count: frameCount)
+        // Stream each finalized region straight to disk as chunks complete, instead of
+        // accumulating all six full-length stems in RAM until the end. HTDemucs overlap-add only
+        // ever blends two ADJACENT chunks (overlap < stride), so we keep just a one-overlap
+        // "carry" of the previous chunk's fade-out tail and write each stride-sized finalized
+        // block to the stem WAVs immediately. This bounds accumulation memory to ~one segment
+        // regardless of song length — the whole-song buffers scaled with duration and pushed long
+        // songs past the iPad memory ceiling.
+        let writer = try StreamingStemWriter(
+            outputDirectory: request.outputDirectory,
+            stems: predictor.supportedStems,
+            sampleRate: Self.sampleRate
+        )
+        var writerFinalized = false
+        defer { if !writerFinalized { writer.cleanupStaging() } }
+
+        // Previous chunk's fade-out tail over its overlap region, folded into this chunk's head.
+        var carry: [StemKind: [[Float]]]?
+        var carryWeights = [Float]()
 
         for chunkIndex in 0..<chunkCount {
             try Task.checkCancellation()
@@ -142,15 +149,71 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                 )
             }
             try validate(prediction)
-            accumulate(
-                prediction,
-                into: &stems,
-                weights: &weights,
-                start: chunkStart,
-                chunkIndex: chunkIndex,
-                chunkCount: chunkCount,
-                outputFrameCount: frameCount
-            )
+
+            let isLast = chunkIndex == chunkCount - 1
+            // Frames finalized by this chunk: [chunkStart, finalizeEnd). Every chunk but the last
+            // finalizes its stride-sized lead (the trailing overlap is carried forward); the last
+            // chunk finalizes everything remaining to the end of the song.
+            let finalizeEnd = isLast ? frameCount : min(chunkStart + strideFrames, frameCount)
+            let regionLength = max(0, finalizeEnd - chunkStart)
+
+            var regionStems = Dictionary(
+                uniqueKeysWithValues: predictor.supportedStems.map {
+                    (
+                        $0,
+                        [
+                            [Float](repeating: 0, count: regionLength),
+                            [Float](repeating: 0, count: regionLength),
+                        ]
+                    )
+                })
+            for localFrame in 0..<regionLength {
+                let w0 = chunkWeight(
+                    localFrame: localFrame, chunkIndex: chunkIndex, chunkCount: chunkCount)
+                let inHead = carry != nil && localFrame < overlapFrames
+                let wTotal = inHead ? w0 + carryWeights[localFrame] : w0
+                let inverse = 1 / max(wTotal, 1e-6)
+                for kind in predictor.supportedStems {
+                    for channel in 0..<2 {
+                        var value = prediction.samplesByStem[kind]![channel][localFrame] * w0
+                        if inHead { value += carry![kind]![channel][localFrame] }
+                        regionStems[kind]![channel][localFrame] = value * inverse
+                    }
+                }
+            }
+            try writer.append(regionStems, frameCount: regionLength)
+
+            // Carry this chunk's fade-out tail (its overlap with the next chunk) forward.
+            if !isLast {
+                let tailGlobal = chunkStart + strideFrames
+                let tailLength = min(overlapFrames, max(0, frameCount - tailGlobal))
+                var nextCarry = Dictionary(
+                    uniqueKeysWithValues: predictor.supportedStems.map {
+                        (
+                            $0,
+                            [
+                                [Float](repeating: 0, count: overlapFrames),
+                                [Float](repeating: 0, count: overlapFrames),
+                            ]
+                        )
+                    })
+                var nextWeights = [Float](repeating: 0, count: overlapFrames)
+                for j in 0..<tailLength {
+                    let localFrame = strideFrames + j
+                    let w = chunkWeight(
+                        localFrame: localFrame, chunkIndex: chunkIndex, chunkCount: chunkCount)
+                    nextWeights[j] = w
+                    for kind in predictor.supportedStems {
+                        for channel in 0..<2 {
+                            nextCarry[kind]![channel][j] =
+                                prediction.samplesByStem[kind]![channel][localFrame] * w
+                        }
+                    }
+                }
+                carry = nextCarry
+                carryWeights = nextWeights
+            }
+
             progress(
                 StemSeparationProgress(
                     phase: .separating,
@@ -158,26 +221,17 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                     totalUnits: totalUnits
                 ))
         }
-        normalize(&stems, weights: weights)
-        try validate(stems)
-        try Task.checkCancellation()
-        // The accumulation inputs are no longer needed once every chunk has been folded in and
-        // normalized — release them before the write phase so their memory isn't held alongside
-        // the output AVAudioPCMBuffers (input ~85MB + weights ~42MB per 4-min song).
-        weights = []
-        audio = StereoAudio(channels: [[], []])
 
+        try Task.checkCancellation()
+        audio = StereoAudio(channels: [[], []])
         progress(
             StemSeparationProgress(
                 phase: .writingOutputs,
                 completedUnits: totalUnits - 1,
                 totalUnits: totalUnits
             ))
-        let stemFiles = try publishAtomically(
-            &stems,
-            frameCount: frameCount,
-            outputDirectory: request.outputDirectory
-        )
+        let stemFiles = try writer.finalize()
+        writerFinalized = true
         progress(
             StemSeparationProgress(
                 phase: .writingOutputs,
@@ -215,161 +269,20 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         }
     }
 
-    private func accumulate(
-        _ prediction: StemChunkPrediction,
-        into stems: inout [StemKind: [[Float]]],
-        weights: inout [Float],
-        start: Int,
-        chunkIndex: Int,
-        chunkCount: Int,
-        outputFrameCount: Int
-    ) {
-        for localFrame in 0..<segmentFrames {
-            let globalFrame = start + localFrame
-            guard globalFrame < outputFrameCount else { break }
-            let fadeIn =
-                chunkIndex == 0
-                ? Float(1)
-                : min(1, Float(localFrame + 1) / Float(max(overlapFrames, 1)))
-            let fadeOut =
-                chunkIndex == chunkCount - 1
-                ? Float(1)
-                : min(1, Float(segmentFrames - localFrame) / Float(max(overlapFrames, 1)))
-            let weight = min(fadeIn, fadeOut)
-            weights[globalFrame] += weight
-            for kind in predictor.supportedStems {
-                for channel in 0..<2 {
-                    stems[kind]![channel][globalFrame] +=
-                        prediction.samplesByStem[kind]![channel][localFrame] * weight
-                }
-            }
-        }
-    }
-
-    private func normalize(
-        _ stems: inout [StemKind: [[Float]]],
-        weights: [Float]
-    ) {
-        for frame in weights.indices {
-            let weight = max(weights[frame], 1e-6)
-            for kind in predictor.supportedStems {
-                stems[kind]![0][frame] /= weight
-                stems[kind]![1][frame] /= weight
-            }
-        }
-    }
-
-    private func validate(_ stems: [StemKind: [[Float]]]) throws {
-        for kind in predictor.supportedStems {
-            guard let channels = stems[kind], channels.joined().allSatisfy(\.isFinite) else {
-                throw CoreMLStemSeparationError.invalidOutput(kind)
-            }
-        }
-    }
-
-    /// Writes each stem to its WAV and **frees it from `stems` immediately after** (hence
-    /// `inout`), so the write phase never holds all six full-length stereo stems (~508MB for a
-    /// 4-min song) in RAM alongside the output buffers. Stems not needed for the accompaniment
-    /// mixdown are written and released first; the accompaniment inputs (other/guitar/piano) are
-    /// kept only until the mixdown is written, then released too. This ordering caps the write
-    /// phase near ~3 stems + one output buffer instead of all six.
-    private func publishAtomically(
-        _ stems: inout [StemKind: [[Float]]],
-        frameCount: Int,
-        outputDirectory: URL
-    ) throws -> StemFiles {
-        let fileManager = FileManager.default
-        let parent = outputDirectory.deletingLastPathComponent()
-        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
-        let staging = parent.appendingPathComponent(
-            ".\(outputDirectory.lastPathComponent)-\(UUID().uuidString)",
-            isDirectory: true
-        )
-        defer { try? fileManager.removeItem(at: staging) }
-        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
-
-        let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.sampleRate,
-            channels: 2,
-            interleaved: false
-        )!
-
-        func writeChannels(_ channels: [[Float]], named name: String) throws {
-            try Task.checkCancellation()
-            let buffer = AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: AVAudioFrameCount(frameCount)
-            )!
-            buffer.frameLength = AVAudioFrameCount(frameCount)
-            buffer.floatChannelData![0].update(from: channels[0], count: frameCount)
-            buffer.floatChannelData![1].update(from: channels[1], count: frameCount)
-            let file = try AVAudioFile(
-                forWriting: staging.appendingPathComponent("\(name).wav"),
-                settings: format.settings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-            try file.write(from: buffer)
-        }
-
-        let accompanimentInputs: Set<StemKind> = [.other, .guitar, .piano]
-        // Write + free every stem the accompaniment mixdown does NOT depend on first.
-        for kind in predictor.supportedStems where !accompanimentInputs.contains(kind) {
-            try writeChannels(stems[kind]!, named: kind.rawValue)
-            stems[kind] = nil
-        }
-
-        let accompanimentURL: URL?
-        if predictor.supportedStems.contains(.guitar), predictor.supportedStems.contains(.piano) {
-            var accompaniment = [
-                [Float](repeating: 0, count: frameCount),
-                [Float](repeating: 0, count: frameCount),
-            ]
-            for channel in 0..<2 {
-                guard
-                    let other = stems[.other]?[channel],
-                    let guitar = stems[.guitar]?[channel],
-                    let piano = stems[.piano]?[channel]
-                else {
-                    throw CoreMLStemSeparationError.invalidPrediction
-                }
-                for frame in 0..<frameCount {
-                    accompaniment[channel][frame] = other[frame] + guitar[frame] + piano[frame]
-                }
-            }
-            try writeChannels(accompaniment, named: "accompaniment")
-            accompanimentURL = outputDirectory.appendingPathComponent("accompaniment.wav")
-        } else {
-            accompanimentURL = nil
-        }
-        // Now write + free the accompaniment-input stems that are still resident.
-        for kind in predictor.supportedStems where accompanimentInputs.contains(kind) {
-            try writeChannels(stems[kind]!, named: kind.rawValue)
-            stems[kind] = nil
-        }
-
-        if fileManager.fileExists(atPath: outputDirectory.path) {
-            _ = try fileManager.replaceItemAt(
-                outputDirectory,
-                withItemAt: staging,
-                backupItemName: nil,
-                options: []
-            )
-        } else {
-            try fileManager.moveItem(at: staging, to: outputDirectory)
-        }
-        return StemFiles(
-            vocals: outputDirectory.appendingPathComponent("vocals.wav"),
-            drums: outputDirectory.appendingPathComponent("drums.wav"),
-            bass: outputDirectory.appendingPathComponent("bass.wav"),
-            guitar: predictor.supportedStems.contains(.guitar)
-                ? outputDirectory.appendingPathComponent("guitar.wav") : nil,
-            piano: predictor.supportedStems.contains(.piano)
-                ? outputDirectory.appendingPathComponent("piano.wav") : nil,
-            other: outputDirectory.appendingPathComponent("other.wav"),
-            accompaniment: accompanimentURL
-        )
+    /// The overlap-add fade weight for a frame of a chunk: fade in over the first `overlapFrames`
+    /// (except the first chunk) and fade out over the last `overlapFrames` (except the last), so
+    /// two adjacent chunks cross-fade across their shared overlap. Identical to the previous
+    /// whole-song `accumulate`, just evaluated per frame for the streaming writer.
+    private func chunkWeight(localFrame: Int, chunkIndex: Int, chunkCount: Int) -> Float {
+        let fadeIn =
+            chunkIndex == 0
+            ? Float(1)
+            : min(1, Float(localFrame + 1) / Float(max(overlapFrames, 1)))
+        let fadeOut =
+            chunkIndex == chunkCount - 1
+            ? Float(1)
+            : min(1, Float(segmentFrames - localFrame) / Float(max(overlapFrames, 1)))
+        return min(fadeIn, fadeOut)
     }
 
     private static func normalized(
@@ -631,5 +544,113 @@ actor CoreMLStemChunkPredictor: StemChunkPredicting {
             }
             return StemChunkPrediction(samplesByStem: stems)
         }
+    }
+}
+
+/// Writes stem WAVs incrementally as the separation streams finalized regions, so the whole song
+/// never has to be held in RAM at once. Each stem (plus the guitar+piano+other accompaniment
+/// mixdown) gets one `AVAudioFile` opened up front in a staging directory; `append` writes the
+/// next block to every file, and `finalize` closes them and atomically swaps staging into place.
+private final class StreamingStemWriter {
+    private let fileManager = FileManager.default
+    private let outputDirectory: URL
+    private let staging: URL
+    private let format: AVAudioFormat
+    private let stems: [StemKind]
+    private let includeAccompaniment: Bool
+    private var files: [StemKind: AVAudioFile] = [:]
+    private var accompanimentFile: AVAudioFile?
+
+    init(outputDirectory: URL, stems: [StemKind], sampleRate: Double) throws {
+        self.outputDirectory = outputDirectory
+        self.stems = stems
+        self.includeAccompaniment = stems.contains(.guitar) && stems.contains(.piano)
+        self.format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 2,
+            interleaved: false)!
+        let parent = outputDirectory.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        staging = parent.appendingPathComponent(
+            ".\(outputDirectory.lastPathComponent)-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+        for kind in stems {
+            files[kind] = try AVAudioFile(
+                forWriting: staging.appendingPathComponent("\(kind.rawValue).wav"),
+                settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        }
+        if includeAccompaniment {
+            accompanimentFile = try AVAudioFile(
+                forWriting: staging.appendingPathComponent("accompaniment.wav"),
+                settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        }
+    }
+
+    func append(_ region: [StemKind: [[Float]]], frameCount: Int) throws {
+        guard frameCount > 0 else { return }
+        for kind in stems {
+            guard let channels = region[kind], channels.count == 2 else {
+                throw CoreMLStemSeparationError.invalidPrediction
+            }
+            guard channels.allSatisfy({ $0.allSatisfy(\.isFinite) }) else {
+                throw CoreMLStemSeparationError.invalidOutput(kind)
+            }
+            try write(channels, to: files[kind]!, frameCount: frameCount)
+        }
+        if includeAccompaniment, let accompanimentFile {
+            var accompaniment = [
+                [Float](repeating: 0, count: frameCount),
+                [Float](repeating: 0, count: frameCount),
+            ]
+            for channel in 0..<2 {
+                guard
+                    let other = region[.other]?[channel],
+                    let guitar = region[.guitar]?[channel],
+                    let piano = region[.piano]?[channel]
+                else { throw CoreMLStemSeparationError.invalidPrediction }
+                for frame in 0..<frameCount {
+                    accompaniment[channel][frame] = other[frame] + guitar[frame] + piano[frame]
+                }
+            }
+            try write(accompaniment, to: accompanimentFile, frameCount: frameCount)
+        }
+    }
+
+    private func write(_ channels: [[Float]], to file: AVAudioFile, frameCount: Int) throws {
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount))!
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        buffer.floatChannelData![0].update(from: channels[0], count: frameCount)
+        buffer.floatChannelData![1].update(from: channels[1], count: frameCount)
+        try file.write(from: buffer)
+    }
+
+    func finalize() throws -> StemFiles {
+        // Close every file (AVAudioFile flushes/closes on deinit) before moving the directory.
+        files.removeAll()
+        accompanimentFile = nil
+        if fileManager.fileExists(atPath: outputDirectory.path) {
+            _ = try fileManager.replaceItemAt(
+                outputDirectory, withItemAt: staging, backupItemName: nil, options: [])
+        } else {
+            try fileManager.moveItem(at: staging, to: outputDirectory)
+        }
+        return StemFiles(
+            vocals: outputDirectory.appendingPathComponent("vocals.wav"),
+            drums: outputDirectory.appendingPathComponent("drums.wav"),
+            bass: outputDirectory.appendingPathComponent("bass.wav"),
+            guitar: stems.contains(.guitar)
+                ? outputDirectory.appendingPathComponent("guitar.wav") : nil,
+            piano: stems.contains(.piano)
+                ? outputDirectory.appendingPathComponent("piano.wav") : nil,
+            other: outputDirectory.appendingPathComponent("other.wav"),
+            accompaniment: includeAccompaniment
+                ? outputDirectory.appendingPathComponent("accompaniment.wav") : nil
+        )
+    }
+
+    func cleanupStaging() {
+        files.removeAll()
+        accompanimentFile = nil
+        try? fileManager.removeItem(at: staging)
     }
 }
