@@ -20,6 +20,14 @@ struct StemChunkPrediction: Sendable {
 protocol StemChunkPredicting: Sendable {
     var supportedStems: [StemKind] { get }
     func predict(_ chunk: StereoAudioChunk) async throws -> StemChunkPrediction
+    /// Release heavyweight inference resources (e.g. the onnxruntime session and its multi-GB
+    /// CPU arena) as soon as separation finishes, so they aren't held resident through the later
+    /// transcription/harmony stages — on iPad that retained arena starved the Core ML lyric model.
+    func releaseResources() async
+}
+
+extension StemChunkPredicting {
+    func releaseResources() async {}
 }
 
 enum CoreMLStemSeparationError: Error, LocalizedError {
@@ -232,6 +240,11 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
             ))
         let stemFiles = try writer.finalize()
         writerFinalized = true
+        // Free the predictor's inference session (onnxruntime's ~2GB CPU arena) NOW that
+        // separation is done — the transcription + harmony stages run next (concurrently), and on
+        // iPad holding this arena resident alongside them exhausted memory and failed/crashed the
+        // Core ML lyric model.
+        await predictor.releaseResources()
         progress(
             StemSeparationProgress(
                 phase: .writingOutputs,

@@ -250,10 +250,20 @@ struct SongAnalysisPipeline: Sendable {
                     stageProgress: harmonyProgress
                 )
 
-                async let transcriptionOutcome = TranscriptionStage().run(transcriptionContext)
-                async let harmonyOutcome = HarmonyStage().run(harmonyContext)
-
-                let (transcription, harmony) = await (transcriptionOutcome, harmonyOutcome)
+                let transcription: AnalysisStageOutcome
+                let harmony: AnalysisStageOutcome
+                #if os(iOS)
+                    // On memory-constrained iPads, run these two heavy stages SERIALLY. Run
+                    // concurrently they doubled peak memory right after separation and
+                    // starved/crashed the Core ML lyric model; the small wall-clock cost buys the
+                    // headroom. macOS keeps them concurrent.
+                    transcription = await TranscriptionStage().run(transcriptionContext)
+                    harmony = await HarmonyStage().run(harmonyContext)
+                #else
+                    async let transcriptionOutcome = TranscriptionStage().run(transcriptionContext)
+                    async let harmonyOutcome = HarmonyStage().run(harmonyContext)
+                    (transcription, harmony) = await (transcriptionOutcome, harmonyOutcome)
+                #endif
 
                 // A cancelled run publishes no freshly-computed results: record
                 // cancellation only for the stage(s) actually interrupted and do

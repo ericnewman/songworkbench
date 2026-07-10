@@ -81,8 +81,13 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
 
     let supportedStems = StemKind.allCases
 
-    private let session: ORTSession
+    private var session: ORTSession?
     private let frameCount: Int
+
+    /// Drop the onnxruntime session (and its retained ~2GB CPU arena) once separation is done.
+    func releaseResources() {
+        session = nil
+    }
 
     init(
         modelURL: URL,
@@ -137,6 +142,9 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
             elementType: .float,
             shape: [1, 2, NSNumber(value: frameCount)]
         )
+        guard let session else {
+            throw CoreMLStemSeparationError.invalidPrediction
+        }
         let outputs = try session.run(
             withInputs: ["input": input],
             outputNames: ["output"],
