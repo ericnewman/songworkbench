@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 #if os(macOS)
     import AppKit
 #endif
+#if canImport(UIKit)
+    import UIKit
+#endif
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
@@ -48,6 +51,23 @@ struct ContentView: View {
                 spaceBarMonitor = nil
             }
         #endif
+        #if os(iOS)
+            // Keep the iPad awake while analysis runs — stem separation can take minutes, and if
+            // the device auto-locks the app is suspended and the run stalls. Tie it to the whole
+            // batch (queue included), and always release on disappear so we never leave the idle
+            // timer disabled after analysis ends.
+            .onChange(of: analysisKeepsDeviceAwake) { _, keepAwake in
+                UIApplication.shared.isIdleTimerDisabled = keepAwake
+            }
+            .onAppear { UIApplication.shared.isIdleTimerDisabled = analysisKeepsDeviceAwake }
+            .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        #endif
+    }
+
+    /// True while any analysis is in flight (a single run or a draining import/re-analyze queue),
+    /// used on iOS to hold off auto-lock so a multi-minute separation isn't suspended midway.
+    private var analysisKeepsDeviceAwake: Bool {
+        model.isSongAnalysisRunning || model.reanalyzeAllStatus != nil
     }
 
     #if os(macOS)
