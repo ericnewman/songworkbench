@@ -502,6 +502,77 @@ with `ChordPro Catalog/Summertime's here with you.cho` (reviewed — NOT the top
 `Somertime's Here with You.cho`, which is a different, best-effort chart), `Key West Bar.cho`
 (transcribed), `ChordPro Catalog/Flip Flops and Barbeque.cho` (automated).
 
+## Phase 0c — Over-segmentation: NO-GO, and the premise is largely an artifact (2026-07-30)
+
+Attacks lever (2) from the Phase 0 FINAL RESULT. **Result: do not tune, and re-frame the lever.**
+
+- [x] **Harness parameterised for sweeps.** `StemSourceChordAccuracyTests.tunedDecoder()` reads
+      `SW_CHORD_SWITCH_PENALTY`, `SW_CHORD_WEAK_BEAT_FACTOR`, `SW_CHORD_ONSET_PENALTY_FACTOR`,
+      `SW_CHORD_MIN_PENALTY_FRACTION`; the duration filter reads `SW_CHORD_MIN_BEAT_FRACTION`.
+      Unset = shipping defaults, verified byte-identical to the pre-change run
+      (root F1 52.0 / full 46.6 / over-seg 2.11). The active knobs are echoed into the report as
+      a `tuning=` line so a sweep's rows are self-identifying.
+
+### Sweep results (guitar arm, 3 songs, mean)
+
+| config | root F1 | full F1 | root prec | root recall | over-seg |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **baseline** (switch 1.5, weak 1.3, minbeat 0.8) | 52.0 | 46.6 | 42.0 | **78.2** | 2.11 |
+| switch 2.0 | 52.0 | 47.6 | 42.7 | 75.4 | 1.96 |
+| switch 2.5 | 51.9 | 47.0 | 43.5 | 72.9 | 1.81 |
+| switch 3.0 | 52.7 | 48.2 | 44.8 | 71.9 | **1.72** |
+| weak 1.8 | **50.6** | 46.4 | 41.2 | 75.9 | 2.06 |
+| weak 2.4 | 52.6 | 47.5 | 43.5 | 76.8 | 1.97 |
+| minbeat 1.0 | 52.2 | 47.2 | 43.6 | 76.0 | 2.00 |
+| minbeat 1.25 | **52.9** | 48.1 | **46.1** | 73.1 | 1.81 |
+| weak 1.8 + minbeat 1.0 | 51.0 | 46.7 | 42.9 | 74.2 | 1.96 |
+
+**DECISION: NO-GO. No parameter changed.** Three reasons:
+
+1. **Every knob slides along the precision/recall curve; none moves it.** Every config that cuts
+   over-segmentation pays for it in recall, roughly 1:1. Total root-F1 spread across the whole
+   grid is 50.6-52.9 — about two points.
+2. **The response is non-monotonic, which at N=3 means noise.** `weakBeatFactor` 1.3 -> 1.8 makes
+   root F1 *worse* (52.0 -> 50.6), then 1.8 -> 2.4 makes it *better* than baseline (52.6). A
+   monotone knob cannot really produce that; the corpus cannot resolve differences of this size.
+   The combined config is also worse than either of its parts alone. Treat every delta in the
+   table above as within noise.
+3. **Eric has already listened.** `ChordTimelineDecoder`'s own comments record switch penalty 2.5
+   "rode the tonic straight through the reference song's real mid-verse changes (author-confirmed)"
+   and 2.0 "absorbed one-beat passing chords ... field reports confirmed many real changes missed."
+   The sweep reproduces exactly that as recall falling 78.2 -> 71.9. A metric gain of ~1 F1 point
+   at N=3 is not evidence against direct listening — and missing a real change is worse for a
+   practice tool than showing an extra one, since a player can ignore a spurious chord but cannot
+   play one that was never displayed.
+
+### The premise itself needs re-framing
+
+Over-segmentation is **not uniform across the corpus — it tracks chart granularity, inversely to
+chart quality**:
+
+| song | tier | truth chords | detected | over-seg |
+| --- | --- | ---: | ---: | ---: |
+| 1c2f744d326b | **reviewed** | 75 | 83 | **1.11** |
+| 3ba46cbaba9c | transcribed | 84 | 128 | 1.52 |
+| f1145c16433f | **automated** | **34** | 126 | **3.71** |
+
+On the ONE human-authored performance chart the detector is within **11 %** of the chart's own
+event count — essentially correct. The 3.71x figure comes from a chart carrying **34 chords for an
+entire song**, i.e. a sparse skeleton rather than a per-bar chart; that measures the chart's
+granularity, not the detector's error. Tightening to `minbeat 1.25` drives the Reviewed song to
+over-seg **0.83** — actively UNDER-segmenting — and its root F1 down 41.8 -> 38.0.
+
+**So the recorded "over-segmentation 1.1x to 3.6x" lever overstates the problem** by averaging
+charts of wildly different granularity. It should not be treated as an open defect on this
+evidence.
+
+- [ ] **Prerequisite before any further chord tuning: more Reviewed-tier charts.** This is now
+      demonstrated rather than asserted — the non-monotonic sweep response is the proof that N=3
+      cannot resolve the effect sizes in play. Every remaining chord-accuracy question is blocked
+      on the corpus, not on ideas.
+- [ ] If over-segmentation is still suspected after that, measure it against Reviewed charts only,
+      and prefer a lever that uses evidence the decoder currently ignores over another threshold.
+
 ## Phase 1 — BS-RoFormer 6-stem guitar as a selectable alternate
 
 Only after Phase 0 clears the gate.

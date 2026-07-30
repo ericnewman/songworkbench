@@ -412,6 +412,7 @@ final class StemSourceChordAccuracyTests: XCTestCase {
         sink.emit(Self.sequenceCapoNote)
         sink.emit(Self.sequenceScoringNote)
         sink.emit("manifest=\(manifestPath)")
+        sink.emit("tuning=\(Self.tuningDescription)")
         sink.emit("candidate_songs=\(rows.count)")
 
         var results: [SequenceSongResult] = []
@@ -496,6 +497,50 @@ final class StemSourceChordAccuracyTests: XCTestCase {
     /// duration filter, the onset snap), so per-arm grids would confound "which chroma source is
     /// better" with "whose grid drifted", and the experiment would measure nothing. Only the chroma
     /// source — and the per-arm instrument onsets that follow from it — varies.
+    // MARK: - Segmentation sweep knobs
+
+    /// Decoder parameters, overridable from the environment so the SAME scoring path can be run
+    /// across a parameter grid without editing code between runs. Unset (the normal case) means
+    /// the shipping defaults, so every existing invocation is byte-identical to before.
+    ///
+    /// Exists because over-segmentation — 1.1x to 3.7x more chord events than the reference
+    /// charts carry — is the dominant F1 term (one song scores 100 % recall against 27 %
+    /// precision), and stage attribution showed the excess comes out of the Viterbi decode
+    /// itself, not the downstream filters: the extension merge and duration filter together
+    /// only take 192 events to 174.
+    static func tunedDecoder() -> ChordTimelineDecoder {
+        var decoder = ChordTimelineDecoder()
+        if let value = envFloat("SW_CHORD_SWITCH_PENALTY") { decoder.switchPenalty = value }
+        if let value = envFloat("SW_CHORD_WEAK_BEAT_FACTOR") { decoder.weakBeatFactor = value }
+        if let value = envFloat("SW_CHORD_ONSET_PENALTY_FACTOR") {
+            decoder.onsetPenaltyFactor = value
+        }
+        if let value = envFloat("SW_CHORD_MIN_PENALTY_FRACTION") {
+            decoder.minimumPenaltyFraction = value
+        }
+        return decoder
+    }
+
+    static var tunedMinimumBeatFraction: Double {
+        envDouble("SW_CHORD_MIN_BEAT_FRACTION") ?? 0.8
+    }
+
+    /// One line describing the active knobs, so a sweep's output rows are self-identifying.
+    static var tuningDescription: String {
+        let decoder = tunedDecoder()
+        return "switch=\(decoder.switchPenalty) weak=\(decoder.weakBeatFactor) "
+            + "onset=\(decoder.onsetPenaltyFactor) minfrac=\(decoder.minimumPenaltyFraction) "
+            + "minbeat=\(tunedMinimumBeatFraction)"
+    }
+
+    private static func envFloat(_ key: String) -> Float? {
+        ProcessInfo.processInfo.environment[key].flatMap(Float.init)
+    }
+
+    private static func envDouble(_ key: String) -> Double? {
+        ProcessInfo.processInfo.environment[key].flatMap(Double.init)
+    }
+
     func evaluate(
         arms: [(name: String, url: URL)],
         bassURL: URL?,
@@ -555,7 +600,7 @@ final class StemSourceChordAccuracyTests: XCTestCase {
             let sourceDuration = Self.duration(of: arm.url)
 
             var events = BassInformedChordRefiner().refine(
-                ChordTimelineDecoder().events(
+                Self.tunedDecoder().events(
                     from: analysis,
                     key: key,
                     bassNotes: sharedBassNotes,
@@ -570,7 +615,10 @@ final class StemSourceChordAccuracyTests: XCTestCase {
                     events, toOnsets: instrumentOnsets, beatTimes: resolvedBeatTimes)
             }
             events = ChordEventDurationFilter.merge(
-                events, beatTimes: resolvedBeatTimes, sourceDuration: sourceDuration)
+                events,
+                beatTimes: resolvedBeatTimes,
+                minimumBeatFraction: Self.tunedMinimumBeatFraction,
+                sourceDuration: sourceDuration)
             // ChorusChordConsensus is skipped on purpose: it rewrites labels using lyric sections
             // and is a no-op without lyrics, so including it would add a dependency this harness
             // cannot feed.
