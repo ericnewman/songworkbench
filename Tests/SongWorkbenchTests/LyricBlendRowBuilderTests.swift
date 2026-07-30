@@ -183,6 +183,36 @@ final class LyricBlendRowBuilderTests: XCTestCase {
         XCTAssertEqual(rows[0].start, 20.26, accuracy: 0.000_001)
     }
 
+    func testEffectiveLyricsUsesSelectedCandidateWordBoundsAfterCrossModeMerge() {
+        let balanced = [segment("Grass between my toes, warm and dry", start: 24.9, end: 26.3)]
+        let accuracy = [segment("Grass between my toes warm and dry", start: 20.26, end: 23.08)]
+        var rows = LyricBlendRowBuilder.buildRows(
+            fastDraft: [], balancedDraft: balanced, accuracy: accuracy)
+        XCTAssertEqual(rows.count, 1)
+
+        rows[0].selectedMode = .balancedDraft
+        var effective = LyricBlendRowBuilder.effectiveLyrics(from: rows)
+        XCTAssertEqual(effective[0].start, 24.9, accuracy: 0.000_001)
+        XCTAssertEqual(effective[0].end, 26.3, accuracy: 0.000_001)
+
+        rows[0].selectedMode = nil
+        effective = LyricBlendRowBuilder.effectiveLyrics(from: rows)
+        XCTAssertEqual(effective[0].start, 20.26, accuracy: 0.000_001)
+        XCTAssertEqual(effective[0].end, 23.08, accuracy: 0.000_001)
+    }
+
+    func testEffectiveLyricsFallsBackToRowBoundsWhenCandidateHasNoWords() {
+        let row = LyricBlendRow(
+            start: 10, end: 15,
+            candidates: [LyricBlendCandidate(mode: .accuracy, text: "legacy line")],
+            selectedMode: nil)
+
+        let effective = LyricBlendRowBuilder.effectiveLyrics(from: [row])
+
+        XCTAssertEqual(effective[0].start, 10)
+        XCTAssertEqual(effective[0].end, 15)
+    }
+
     func testTwoModeClusterStillMatchesItsSingleModeDuplicate() {
         // The exact field shape that escaped the first fix: BOTH balanced and fast heard
         // "Grass…" at 20.26s (one cluster holding the line TWICE, once per mode), while
@@ -428,6 +458,17 @@ final class LyricBlendRowBuilderTests: XCTestCase {
             LyricBlendRowBuilder.onsetCorroboration(words: [], vocalOnsets: [1]), 0)
         XCTAssertEqual(
             LyricBlendRowBuilder.onsetCorroboration(words: words, vocalOnsets: []), 0)
+    }
+
+    func testOnsetCorroborationCountsOneBurstForOnlyOneWord() {
+        let words = timedWords([1.00, 1.05])
+
+        let score = LyricBlendRowBuilder.onsetCorroboration(
+            words: words, vocalOnsets: [1.02], tolerance: 0.1)
+
+        XCTAssertEqual(
+            score, 0.5, accuracy: 1e-9,
+            "one vocal burst cannot independently corroborate two word starts")
     }
 
     func testOnsetPreferredModeFlipsToTheCorroboratedCandidate() {

@@ -319,7 +319,8 @@ private struct TimedLyricsEditor: View {
             lyrics: model.lyricSegments,
             beatTimes: model.beatTimes,
             tempo: model.estimatedBPM,
-            sourceDuration: model.sourceDuration)
+            sourceDuration: model.sourceDuration,
+            untranscribedVocalRegions: model.untranscribedVocalRegions)
     }
 
     /// 1-based line number for each lyric line (section headers don't count), shown in a left
@@ -337,14 +338,14 @@ private struct TimedLyricsEditor: View {
     }
 
     /// Lyric lines that look like mis-splits, keyed by id → reason. Shown as a review flag; use
-    /// Merge/Split to correct. Combines two independent signals: the acoustic beat-grid
-    /// heuristic (off the probable beats-per-line or off the beat grid) and the structural
-    /// meter/rhyme/chord-count deviation from the section's established `PhraseTemplate` (see
-    /// `StructureAlignmentDiagnostics`) — a line flagged by both gets both reasons concatenated.
+    /// Merge/Split to correct. Combines two independent signals: duration relative to the song's
+    /// probable beats-per-line and structural meter/rhyme/chord-count deviation from the section's
+    /// established `PhraseTemplate` (see `StructureAlignmentDiagnostics`) — a line flagged by both
+    /// gets both reasons concatenated.
     private var suspectReasons: [TimedLyricSegment.ID: String] {
         guard showSuspectFlags else { return [:] }
         var reasons = LyricLineDiagnostics.suspectReasons(
-            model.lyricSegments, beatTimes: model.beatTimes, tempo: model.estimatedBPM)
+            model.lyricSegments, tempo: model.estimatedBPM)
         if let overview = model.songStructureOverview() {
             for (id, reason) in StructureAlignmentDiagnostics.anomalies(in: overview) {
                 reasons[id] = reasons[id].map { $0 + " " + reason } ?? reason
@@ -448,7 +449,7 @@ private struct TimedLyricsEditor: View {
                 .disabled(model.lyricSegments.isEmpty || showPlainText)
                 .help(
                     "Show/hide review flags on lines that look like mis-splits (short/long vs the "
-                        + "typical line, or starting off the beat). Off by default.")
+                        + "typical line, or inconsistent with a repeated section). Off by default.")
                 Button("Mark Reviewed", systemImage: "checkmark.seal") {
                     model.markLyricsReviewed()
                 }
@@ -642,7 +643,7 @@ private struct ReferenceLyricsPromptBanner: View {
             }
             Spacer()
             Button("Paste Lyrics", action: pasteAction)
-                .buttonStyle(.borderedProminent)
+                .swProminentButtonStyle()
                 .controlSize(.small)
             Button("Dismiss", systemImage: "xmark", action: dismissAction)
                 .labelStyle(.iconOnly)
@@ -695,6 +696,7 @@ private struct LyricSectionHeaderRow: View {
         case .intro: "arrow.right.to.line"
         case .instrumental: "music.note"
         case .outro: "arrow.left.to.line"
+        case .untranscribedVocal: "waveform"
         case .vocal: "text.quote"
         }
     }
@@ -909,7 +911,7 @@ private struct ChordTimelineEditor: View {
 /// a single `ChordProTabEditor` can render both. Model-dependent behavior (status text,
 /// preview source, export, empty state) is keyed off `kind` inside the editor; everything
 /// else is shared.
-private struct ChordProTabConfig: Sendable {
+struct ChordProTabConfig: Sendable {
     /// Identifies which tab this is; drives the model-dependent branches in the editor.
     enum Kind: Sendable, Equatable {
         case chordPro
@@ -937,6 +939,9 @@ private struct ChordProTabConfig: Sendable {
     let supportsImport: Bool
     /// Whether the Mark Reviewed button is shown.
     let supportsMarkReviewed: Bool
+    /// Whether the App Preview/Edit-or-Source segmented picker is visible.
+    /// Playback-only surfaces keep the shared preview renderer fixed onscreen.
+    let showsSecondaryMode: Bool
     /// Footer caption shown beneath the body, if any.
     let footerNote: String?
 
@@ -951,6 +956,22 @@ private struct ChordProTabConfig: Sendable {
         supportsTranspose: true,
         supportsImport: true,
         supportsMarkReviewed: true,
+        showsSecondaryMode: true,
+        footerNote: nil
+    )
+
+    static let chordProPlayback = ChordProTabConfig(
+        kind: .chordPro,
+        title: "ChordPro",
+        pickerAccessibilityLabel: "ChordPro view",
+        secondaryModeLabel: "Source",
+        secondaryMode: .source,
+        highlightStyle: .chord,
+        exportFileName: "Song.cho",
+        supportsTranspose: true,
+        supportsImport: false,
+        supportsMarkReviewed: false,
+        showsSecondaryMode: false,
         footerNote: nil
     )
 
@@ -965,13 +986,14 @@ private struct ChordProTabConfig: Sendable {
         supportsTranspose: true,
         supportsImport: false,
         supportsMarkReviewed: false,
+        showsSecondaryMode: true,
         footerNote:
             "Bass notes are detected from the separated bass stem when available; "
             + "otherwise they fall back to chord roots (slash-bass first, else the chord root)."
     )
 }
 
-private struct ChordProTabEditor: View {
+struct ChordProTabEditor: View {
     private enum Mode: Hashable {
         case preview
         case secondary
@@ -1069,15 +1091,12 @@ private struct ChordProTabEditor: View {
                             showWaveform: showWaveform,
                             audioEnvelope: model.vocalWaveform ?? model.waveform,
                             audioEnvelopeIsVocals: model.vocalWaveform != nil,
-                            guitarEnvelope: model.stemWaveforms.first { $0.kind == .guitar }?
-                                .envelope,
-                            pianoEnvelope: model.stemWaveforms.first { $0.kind == .piano }?
-                                .envelope,
-                            drumsEnvelope: model.stemWaveforms.first { $0.kind == .drums }?
-                                .envelope,
-                            bassEnvelope: model.stemWaveforms.first { $0.kind == .bass }?
-                                .envelope,
+                            guitarEnvelope: model.stemWaveformEnvelope(for: .guitar),
+                            pianoEnvelope: model.stemWaveformEnvelope(for: .piano),
+                            drumsEnvelope: model.stemWaveformEnvelope(for: .drums),
+                            bassEnvelope: model.stemWaveformEnvelope(for: .bass),
                             lyricLineWindows: sortedLyricLineWindows,
+                            songDuration: model.timelineDuration,
                             bpm: model.estimatedBPM,
                             beatTimes: model.beatTimes,
                             chordOnsetTimes: model.chordEvents.map(\.time).sorted(),
@@ -1143,13 +1162,15 @@ private struct ChordProTabEditor: View {
                 .labelStyle(.iconOnly)
                 .help("Import a ChordPro file")
             }
-            Picker(config.pickerAccessibilityLabel, selection: $mode) {
-                Text("App Preview").tag(Mode.preview)
-                Text(config.secondaryModeLabel).tag(Mode.secondary)
+            if config.showsSecondaryMode {
+                Picker(config.pickerAccessibilityLabel, selection: $mode) {
+                    Text("App Preview").tag(Mode.preview)
+                    Text(config.secondaryModeLabel).tag(Mode.secondary)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 190)
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 190)
             timingOffsetControl
             // The four display toggles live in one compact "View" menu so their labels can't
             // wrap and crowd the toolbar.
@@ -1764,6 +1785,9 @@ private struct ChordProAppPreview: View {
     var bassEnvelope: WaveformEnvelope?
     /// Each lyric line's [start, end] time window, by ordinal, for slicing the strip.
     var lyricLineWindows: [ClosedRange<TimeInterval>] = []
+    /// Known full-song duration from the analysis timeline, used as the authoritative trailing
+    /// bound for outro chord-only rows even when waveforms/beat dots are not loaded.
+    var songDuration: TimeInterval = 0
     /// Song tempo, used to size a 4/4 measure so a line that starts mid-measure is indented to its
     /// beat rather than pinned flush-left.
     var bpm: Double?
@@ -1830,7 +1854,7 @@ private struct ChordProAppPreview: View {
     }
 
     /// The detected bass note(s) sounding during a lyric line's time window, formatted for
-    /// display (e.g. "E · A · D") — `nil` when the toggle is off, there's no bass data, or
+    /// display (e.g. "E (D string) · A (G string)") — `nil` when the toggle is off, there's no
     /// nothing falls in the window (mirrors the removed `ChordProReviewAnnotationsPanel`'s
     /// `bassNoteLabel(forLyricIndex:)`, now computed per rendered row instead of a flat list).
     private func bassLabel(forLyricOrdinal ordinal: Int?) -> String? {
@@ -2582,30 +2606,21 @@ private struct ChordProAppPreview: View {
             }
             after += 1
         }
-        let resolvedStart = start ?? 0
-        // Outro fallback: the longest available envelope duration is the song length. When no
-        // envelope is loaded yet, fall back to the beat grid's extent (+ one bar so the final
-        // beats aren't zero-width) — otherwise `lineDuration` collapses to 0 and the row
-        // renders at character-count width, visibly narrower than every time-scaled row.
-        let beatGridEnd: TimeInterval =
-            beatTimes.last.map { $0 + 4 * (beatLengthSeconds > 0 ? beatLengthSeconds : 0.5) } ?? 0
-        let songDuration = max(
-            [audioEnvelope, guitarEnvelope, pianoEnvelope]
-                .compactMap { $0?.duration }
-                .max() ?? 0,
-            beatGridEnd
+        let envelopeDurations = [audioEnvelope, guitarEnvelope, pianoEnvelope].compactMap {
+            $0?.duration
+        }
+        return ChordProPreviewLineWindowResolver.chordOnlyLineWindow(
+            items: items,
+            index: index,
+            lyricLineWindows: lyricLineWindows,
+            explicitStart: start,
+            explicitEnd: end,
+            songDuration: songDuration,
+            envelopeDurations: envelopeDurations,
+            beatTimes: beatTimes,
+            beatLengthSeconds: beatLengthSeconds,
+            chordOnsetTimes: chordOnsetTimes
         )
-        let resolvedEnd = end ?? (songDuration > 0 ? songDuration : nil)
-        guard let resolvedEnd, resolvedEnd > resolvedStart else { return nil }
-        // A long instrumental span is emitted as several consecutive chord-only rows (see
-        // ChordProDraftBuilder.instrumentalLines). Give each row an equal slice of the gap so their
-        // widths and waveforms match that split, instead of every row spanning the whole gap.
-        let (rowCount, position) = ChordProPreviewIndexing.chordOnlyRunPosition(
-            in: items, at: index)
-        let span = resolvedEnd - resolvedStart
-        let sliceStart = resolvedStart + span * Double(position) / Double(rowCount)
-        let sliceEnd = resolvedStart + span * Double(position + 1) / Double(rowCount)
-        return (sliceStart, sliceEnd)
     }
 }
 
@@ -2740,6 +2755,95 @@ enum ChordProPreviewIndexing {
             }
         }
         return mapping
+    }
+}
+
+enum ChordProPreviewLineWindowResolver {
+    static func chordOnlyLineWindow(
+        items: [ChordProPreviewIndexedBlock],
+        index: Int,
+        lyricLineWindows: [ClosedRange<TimeInterval>],
+        explicitStart: TimeInterval? = nil,
+        explicitEnd: TimeInterval? = nil,
+        songDuration: TimeInterval,
+        envelopeDurations: [TimeInterval],
+        beatTimes: [TimeInterval],
+        beatLengthSeconds: TimeInterval,
+        chordOnsetTimes: [TimeInterval]
+    ) -> (start: TimeInterval, end: TimeInterval)? {
+        guard items.indices.contains(index), ChordProPreviewIndexing.isChordOnlyRow(items, index)
+        else { return nil }
+
+        func window(at i: Int) -> ClosedRange<TimeInterval>? {
+            guard let ordinal = items[i].lyricOrdinal,
+                lyricLineWindows.indices.contains(ordinal)
+            else { return nil }
+            return lyricLineWindows[ordinal]
+        }
+
+        var start = explicitStart
+        if start == nil {
+            var before = index - 1
+            while before >= 0 {
+                if let segment = window(at: before) {
+                    start = segment.upperBound
+                    break
+                }
+                before -= 1
+            }
+        }
+
+        var end = explicitEnd
+        if end == nil {
+            var after = index + 1
+            while after < items.count {
+                if let segment = window(at: after) {
+                    end = segment.lowerBound
+                    break
+                }
+                after += 1
+            }
+        }
+
+        let resolvedStart = start ?? 0
+        let resolvedEnd =
+            end
+            ?? trailingEndBound(
+                after: resolvedStart,
+                songDuration: songDuration,
+                envelopeDurations: envelopeDurations,
+                beatTimes: beatTimes,
+                beatLengthSeconds: beatLengthSeconds,
+                chordOnsetTimes: chordOnsetTimes
+            )
+        guard let resolvedEnd, resolvedEnd > resolvedStart else { return nil }
+
+        let (rowCount, position) = ChordProPreviewIndexing.chordOnlyRunPosition(
+            in: items, at: index)
+        let span = resolvedEnd - resolvedStart
+        let sliceStart = resolvedStart + span * Double(position) / Double(rowCount)
+        let sliceEnd = resolvedStart + span * Double(position + 1) / Double(rowCount)
+        return (sliceStart, sliceEnd)
+    }
+
+    private static func trailingEndBound(
+        after start: TimeInterval,
+        songDuration: TimeInterval,
+        envelopeDurations: [TimeInterval],
+        beatTimes: [TimeInterval],
+        beatLengthSeconds: TimeInterval,
+        chordOnsetTimes: [TimeInterval]
+    ) -> TimeInterval? {
+        let beatLength = beatLengthSeconds > 0 ? beatLengthSeconds : 0.5
+        let oneBar = 4 * beatLength
+        let candidates: [TimeInterval] = [
+            songDuration,
+            envelopeDurations.max() ?? 0,
+            beatTimes.last.map { $0 + oneBar } ?? 0,
+            chordOnsetTimes.filter { $0 >= start }.max().map { $0 + oneBar } ?? 0,
+        ]
+        let end = candidates.max() ?? 0
+        return end > start ? end : nil
     }
 }
 
@@ -2983,6 +3087,27 @@ private struct ChordProPreviewBlockView: View {
             .font(.system(.body, design: .monospaced))
             .onExitCommandCompat { isEditingLyric = false }
         }
+    }
+}
+
+enum ChordProPreviewLineLayout {
+    static let instrumentalReadableScale: CGFloat = 1.35
+
+    /// Lyric rows are allowed to grow beyond raw time width when word text would collide. A
+    /// chord-only row has no words to apply that floor, so use a modest readability scale to keep
+    /// equal-duration instrumental rows visually comparable to sung rows.
+    static func instrumentalWidth(
+        rhythmicSpacing: Bool,
+        lineDuration: TimeInterval,
+        chordColumnExtent: CGFloat,
+        characterWidth: CGFloat,
+        pixelsPerSecond: CGFloat
+    ) -> CGFloat {
+        let chordExtentWidth = chordColumnExtent * characterWidth
+        guard rhythmicSpacing, lineDuration > 0 else { return chordExtentWidth }
+        let readableTimeWidth =
+            CGFloat(lineDuration) * pixelsPerSecond * instrumentalReadableScale
+        return max(chordExtentWidth, readableTimeWidth)
     }
 }
 
@@ -3253,30 +3378,18 @@ private struct ChordProPreviewLineView: View {
         CGFloat(line.chords.map { $0.column + $0.name.count }.max() ?? 0)
     }
 
-    /// Width for an instrumental line's content + strip.
-    ///
-    /// In rhythmic mode, a SUNG line's width comes from `rhythmicX`/`metricX`, which place words
-    /// (and everything else) on the shared `pixelsPerSecond` time scale — NOT from the character
-    /// count of the words themselves. An instrumental (chord-only) line has no words to lay out
-    /// on that axis, so nothing ever put it on the same scale; it fell back to sizing itself from
-    /// the bar-grid TEXT's character extent (`chordColumnExtent`) instead. A chord symbol like
-    /// "D#" is far more compact, per bar, than the words a singer actually fits into that bar, so
-    /// a same-duration instrumental row rendered a fraction of a sung row's width (reported:
-    /// "intro/outro instrumental parts... compressed to roughly 1/3 the expected width").
-    ///
-    /// The fix: put instrumental rows on the SAME `pixelsPerSecond` time scale sung rows use in
-    /// rhythmic mode, keyed off the row's own real duration (already split to ~one verse line's
-    /// worth of bars by `ChordProDraftBuilder.instrumentalRows`, so this doesn't reintroduce the
-    /// earlier "long interlude runs off the right edge" bug — that fix lives in the row-splitting,
-    /// not in how each already-short row is scaled). Falls back to the old character-extent sizing
-    /// when rhythmic spacing is off (monospace mode sizes sung lines by their own text length too,
-    /// so matching that convention keeps both line kinds on the same footing there) or duration is
-    /// unknown.
+    /// Width for an instrumental line's content + strip. Rhythmic chord-only rows use their real
+    /// duration plus a lyric-like readability scale; without this, lyric rows can grow wider from
+    /// word collision avoidance while equal-duration instrumental rows stay on the raw time axis.
+    /// Non-rhythmic and unknown-duration rows keep the old chord-text fallback.
     private var instrumentalTimeWidth: CGFloat {
-        if rhythmicSpacing, lineDuration > 0 {
-            return CGFloat(lineDuration) * Self.pixelsPerSecond
-        }
-        return chordColumnExtent * Self.characterWidth
+        ChordProPreviewLineLayout.instrumentalWidth(
+            rhythmicSpacing: rhythmicSpacing,
+            lineDuration: lineDuration,
+            chordColumnExtent: chordColumnExtent,
+            characterWidth: Self.characterWidth,
+            pixelsPerSecond: Self.pixelsPerSecond
+        )
     }
 
     /// X of a chord on an instrumental line. In rhythmic mode (once `instrumentalTimeWidth` is
@@ -4122,8 +4235,8 @@ struct StemMixSidebar: View {
                 // Slim console: the SAME channel strips as the Stems editor (full-height
                 // vertical fader + segmented VU meter, M/S, scribble label), just narrower.
                 HStack(alignment: .bottom, spacing: 3) {
-                    ForEach(StemKind.allCases, id: \.self) { kind in
-                        slimStrip(kind)
+                    ForEach(mixerChannels) { channel in
+                        slimStrip(channel)
                     }
                     slimClickStrip
                     Divider().padding(.horizontal, 2)
@@ -4158,53 +4271,55 @@ struct StemMixSidebar: View {
         )
     }
 
-    private func slimStrip(_ kind: StemKind) -> some View {
-        let state = model.stemMixer[kind]
-        let isAvailable = model.stemFiles?[kind] != nil
+    private var mixerChannels: [StemMixerChannel] {
+        guard let manifest = model.stemSet ?? model.stemFiles?.stemSetManifest else { return [] }
+        return StemMixerChannelProjector.channels(for: manifest)
+    }
+
+    private func slimStrip(_ channel: StemMixerChannel) -> some View {
+        let state = model.stemMixer[channel.id]
         return VStack(spacing: 4) {
             // Horizontal L/R signal level at the top of the channel, like a console's
             // stereo input meter (post-fader, post-pan).
-            HorizontalLRMeter(level: stemPlayback.stemStereoLevels[kind] ?? .zero)
-                .help("\(kind.rawValue.capitalized) left/right signal level")
+            HorizontalLRMeter(level: stemPlayback.stemStereoLevels[channel.id] ?? .zero)
+                .help("\(channel.displayName) left/right signal level")
 
             PanKnob(
                 value: Binding(
-                    get: { Double(model.stemMixer[kind].pan) },
-                    set: { model.setStemPan(Float($0), for: kind) }
+                    get: { Double(model.stemMixer[channel.id].pan) },
+                    set: { model.setStemPan(Float($0), for: channel.id) }
                 )
             )
-            .help(panHelp(for: state.pan, name: kind.rawValue.capitalized))
+            .help(panHelp(for: state.pan, name: channel.displayName))
 
             HStack(spacing: 2) {
                 VerticalFader(
                     value: Binding(
-                        get: { Double(model.stemMixer[kind].gain) },
-                        set: { model.setStemGain(Float($0), for: kind) }
+                        get: { Double(model.stemMixer[channel.id].gain) },
+                        set: { model.setStemGain(Float($0), for: channel.id) }
                     ),
                     range: 0...Double(StemMixState.maximumGain),
                     thumbWidth: 14,
                     controlWidth: 15
                 )
                 SegmentedLevelMeter(
-                    level: stemPlayback.stemLevels[kind] ?? 0, meterWidth: 7)
+                    level: stemPlayback.stemLevels[channel.id] ?? 0, meterWidth: 7)
             }
             .frame(maxHeight: .infinity)
-            .help("\(kind.rawValue.capitalized): \(Int((state.gain * 100).rounded()))%")
+            .help("\(channel.displayName): \(Int((state.gain * 100).rounded()))%")
 
             VStack(spacing: 2) {
                 miniToggle("M", isOn: state.isMuted, tint: Color.swCoral) {
-                    model.setStemMuted($0, for: kind)
+                    model.setStemMuted($0, for: channel.id)
                 }
                 miniToggle("S", isOn: state.isSoloed, tint: Color.swAccent) {
-                    model.setStemSoloed($0, for: kind)
+                    model.setStemSoloed($0, for: channel.id)
                 }
             }
 
-            ScribbleStrip(text: shortName(kind))
+            ScribbleStrip(text: shortName(channel.displayName))
         }
         .frame(maxWidth: 38)
-        .disabled(!isAvailable)
-        .opacity(isAvailable ? 1 : 0.4)
     }
 
     private func panHelp(for pan: Float, name: String) -> String {
@@ -4282,8 +4397,22 @@ struct StemMixSidebar: View {
         .frame(maxWidth: 38)
     }
 
-    private func shortName(_ kind: StemKind) -> String {
-        String(kind.rawValue.prefix(3)).capitalized
+    private func shortName(_ displayName: String) -> String {
+        switch displayName.lowercased() {
+        case "kick": return "Kik"
+        case "snare": return "Snr"
+        case "cymbals": return "Cym"
+        case "toms": return "Tom"
+        case "lead": return "Ld"
+        case "rhythm": return "Rhy"
+        case "vocals": return "Voc"
+        case "drums": return "Drm"
+        case "bass": return "Bas"
+        case "guitar": return "Gtr"
+        case "piano": return "Pno"
+        case "other": return "Oth"
+        default: return String(displayName.prefix(3)).capitalized
+        }
     }
 
     private func miniToggle(

@@ -229,8 +229,11 @@ enum LyricBlendRowBuilder {
                 }
             }
             guard let candidate = row.effectiveCandidate() else { return nil }
+            let candidateStart = candidate.words.map(\.start).min() ?? row.start
+            let candidateEnd = candidate.words.map(\.end).max() ?? row.end
             return TimedLyricSegment(
-                start: row.start, end: row.end, text: candidate.text, words: candidate.words)
+                start: candidateStart, end: max(candidateEnd, candidateStart),
+                text: candidate.text, words: candidate.words)
         }.sorted { $0.start < $1.start }
     }
 
@@ -244,19 +247,9 @@ enum LyricBlendRowBuilder {
         words: [TimedLyricWord], vocalOnsets: [TimeInterval], tolerance: TimeInterval = 0.18
     ) -> Double {
         guard !words.isEmpty, !vocalOnsets.isEmpty else { return 0 }
-        let sorted = vocalOnsets.sorted()
-        var hits = 0
-        for word in words {
-            var low = 0
-            var high = sorted.count - 1
-            while low < high {
-                let mid = (low + high) / 2
-                if sorted[mid] < word.start { low = mid + 1 } else { high = mid }
-            }
-            var nearest = abs(sorted[low] - word.start)
-            if low > 0 { nearest = min(nearest, abs(sorted[low - 1] - word.start)) }
-            if nearest <= tolerance { hits += 1 }
-        }
+        let hits = VocalOnsetMatcher.matchedOnsets(
+            for: words, onsets: vocalOnsets, tolerance: tolerance
+        ).compactMap { $0 }.count
         return Double(hits) / Double(words.count)
     }
 

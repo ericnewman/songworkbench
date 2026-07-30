@@ -20,3 +20,4 @@ tools/demucs_export/*.onnx.data
 
 # iPad-bundled short-segment stem model (regenerate via tools/demucs_export)
 BundledModels/*.onnx
+.scratch/

@@ -44,14 +44,14 @@ struct StemMixerModel: Codable, Equatable, Sendable {
     /// is only valid in 0...1 — so there's no +6 dB boost room here, just attenuation.
     static let maximumMasterGain: Float = 1
 
-    private var states: [StemKind: StemMixState]
+    private var states: [StemID: StemMixState]
     /// Overall output level, applied downstream of every stem (and the click). Always
     /// available regardless of which stems are loaded — it isn't gated by per-stem state the
     /// way `effectiveGain(for:)` is.
     var masterGain: Float
 
     init() {
-        states = Dictionary(uniqueKeysWithValues: StemKind.allCases.map { ($0, StemMixState()) })
+        states = Dictionary(uniqueKeysWithValues: StemKind.allCases.map { ($0.id, StemMixState()) })
         masterGain = Self.maximumMasterGain
     }
 
@@ -62,7 +62,12 @@ struct StemMixerModel: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        states = try container.decode([StemKind: StemMixState].self, forKey: .states)
+        if let idStates = try? container.decode([StemID: StemMixState].self, forKey: .states) {
+            states = idStates
+        } else {
+            let legacyStates = try container.decode([StemKind: StemMixState].self, forKey: .states)
+            states = Dictionary(uniqueKeysWithValues: legacyStates.map { ($0.key.id, $0.value) })
+        }
         // `masterGain` arrived after documents were already in the field; missing = unity.
         masterGain =
             try container.decodeIfPresent(Float.self, forKey: .masterGain)
@@ -75,41 +80,114 @@ struct StemMixerModel: Codable, Equatable, Sendable {
         try container.encode(masterGain, forKey: .masterGain)
     }
 
+    subscript(id: StemID) -> StemMixState {
+        states[id] ?? StemMixState()
+    }
+
     subscript(kind: StemKind) -> StemMixState {
-        states[kind] ?? StemMixState()
+        self[kind.id]
+    }
+
+    mutating func setGain(_ gain: Float, for id: StemID) {
+        update(id) { $0.gain = min(max(gain, 0), StemMixState.maximumGain) }
     }
 
     mutating func setGain(_ gain: Float, for kind: StemKind) {
-        update(kind) { $0.gain = min(max(gain, 0), StemMixState.maximumGain) }
+        setGain(gain, for: kind.id)
+    }
+
+    mutating func setMuted(_ isMuted: Bool, for id: StemID) {
+        update(id) { $0.isMuted = isMuted }
     }
 
     mutating func setMuted(_ isMuted: Bool, for kind: StemKind) {
-        update(kind) { $0.isMuted = isMuted }
+        setMuted(isMuted, for: kind.id)
+    }
+
+    mutating func setSoloed(_ isSoloed: Bool, for id: StemID) {
+        update(id) { $0.isSoloed = isSoloed }
     }
 
     mutating func setSoloed(_ isSoloed: Bool, for kind: StemKind) {
-        update(kind) { $0.isSoloed = isSoloed }
+        setSoloed(isSoloed, for: kind.id)
+    }
+
+    mutating func setPan(_ pan: Float, for id: StemID) {
+        update(id) { $0.pan = min(max(pan, -1), 1) }
     }
 
     mutating func setPan(_ pan: Float, for kind: StemKind) {
-        update(kind) { $0.pan = min(max(pan, -1), 1) }
+        setPan(pan, for: kind.id)
     }
 
     mutating func setMasterGain(_ gain: Float) {
         masterGain = min(max(gain, 0), Self.maximumMasterGain)
     }
 
-    func effectiveGain(for kind: StemKind) -> Float {
-        let state = self[kind]
+    func effectiveGain(for id: StemID, activeIDs: [StemID]? = nil) -> Float {
+        let state = self[id]
         guard !state.isMuted else { return 0 }
-        let hasSolo = StemKind.allCases.contains { self[$0].isSoloed }
+        let soloScope = activeIDs ?? Array(states.keys)
+        let hasSolo = soloScope.contains { self[$0].isSoloed }
         guard !hasSolo || state.isSoloed else { return 0 }
         return state.gain
     }
 
-    private mutating func update(_ kind: StemKind, _ change: (inout StemMixState) -> Void) {
-        var state = self[kind]
+    func effectiveGain(for kind: StemKind) -> Float {
+        effectiveGain(for: kind.id, activeIDs: StemKind.allCases.map(\.id))
+    }
+
+    private mutating func update(_ id: StemID, _ change: (inout StemMixState) -> Void) {
+        var state = self[id]
         change(&state)
-        states[kind] = state
+        states[id] = state
+    }
+}
+
+struct StemMixerChannel: Identifiable, Equatable, Sendable {
+    let id: StemID
+    let displayName: String
+    let order: Int
+}
+
+enum StemMixerChannelProjector {
+    static func channels(for manifest: StemSetManifest) -> [StemMixerChannel] {
+        let descriptors = manifest.descriptorsByID
+        return StemMixGraph(manifest: manifest).activeNodes.compactMap { node in
+            guard let descriptor = descriptors[node.id] else { return nil }
+            return StemMixerChannel(
+                id: node.id,
+                displayName: descriptor.displayName,
+                order: descriptor.order
+            )
+        }
+    }
+}
+
+/// One waveform-card lane for an active frontier stem (base or refined child).
+struct StemWaveformLaneModel: Identifiable, Equatable, Sendable {
+    let id: StemID
+    let displayName: String
+    let envelope: WaveformEnvelope
+}
+
+enum StemWaveformLaneProjector {
+    struct Target: Equatable, Sendable {
+        let id: StemID
+        let displayName: String
+        let audioURL: URL
+    }
+
+    /// Same active parent/child frontier as the mixer: children replace their parent.
+    static func targets(for manifest: StemSetManifest) -> [Target] {
+        let descriptors = manifest.descriptorsByID
+        return StemMixGraph(manifest: manifest).activeNodes.compactMap { node in
+            guard let descriptor = descriptors[node.id] else { return nil }
+            return Target(
+                id: node.id,
+                displayName: descriptor.displayName,
+                audioURL: node.audioURL
+            )
+        }
     }
 }

@@ -36,6 +36,7 @@ struct AnalysisStageContext: Sendable {
     let digest: @Sendable (URL) -> String?
     let cache: AnalysisResultDiskCache?
     let stemEngine: (any StemSeparationEngine)?
+    let stemRefiners: [any StemRefinementEngine]
     let transcriptionEngineFactory: TranscriptionEngineFactory
     let harmonyEngine: any SongHarmonyAnalyzing
     let chordProBuilder: ChordProDraftBuilder
@@ -126,11 +127,11 @@ struct SeparationStage: AnalysisStageRunning {
 
             // Cache hit: reuse the existing record, marking it loaded-from-cache,
             // and mutate nothing else.
-            if let stemEngine = context.stemEngine,
-                SeparationCachingPolicy(currentEngine: stemEngine.metadata).isCacheHit(
-                    record: document.stageRecords[.separation],
-                    sourceDigest: sourceDigest,
-                    storedStems: document.stems
+            if let stemEngine = context.effectiveStemEngine,
+                context.isSeparationCacheHit(
+                    currentEngine: stemEngine.metadata,
+                    document: document,
+                    sourceDigest: sourceDigest
                 ),
                 let existingRecord = document.stageRecords[.separation]
             {
@@ -146,7 +147,7 @@ struct SeparationStage: AnalysisStageRunning {
                 }
             }
 
-            guard let stemEngine = context.stemEngine else {
+            guard let stemEngine = context.effectiveStemEngine else {
                 throw SongAnalysisPipelineError.missingStemEngine
             }
             let stageProgress = context.stageProgress
@@ -159,6 +160,10 @@ struct SeparationStage: AnalysisStageRunning {
                 stageProgress(value.fractionCompleted, value.phase.rawValue)
             }
             let stems = StoredStemFiles(files: result.stems)
+            let stemSet = StoredStemSetManifest(manifest: result.stemSet)
+            let configurationIdentifier =
+                result.stemSet.recipeIdentity.map { "stem-recipe-\($0.stableStorageName)" }
+                ?? "six-stem-44.1k-stereo"
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: .recording,
@@ -168,11 +173,12 @@ struct SeparationStage: AnalysisStageRunning {
                 ),
                 modelIdentifier: stemEngine.metadata.modelIdentifier,
                 modelVersion: stemEngine.metadata.modelVersion,
-                configurationIdentifier: "six-stem-44.1k-stereo",
+                configurationIdentifier: configurationIdentifier,
                 confidence: nil
             )
             return AnalysisStageOutcome { document in
                 document.stems = stems
+                document.stemSet = stemSet
                 document.stageRecords[.separation] = record
             }
         } catch is CancellationError {
@@ -185,6 +191,52 @@ struct SeparationStage: AnalysisStageRunning {
                 document.stageRecords[.separation] = record
             }
         }
+    }
+}
+
+extension AnalysisStageContext {
+    var effectiveStemEngine: (any StemSeparationEngine)? {
+        guard let stemEngine else { return nil }
+        guard !stemRefiners.isEmpty else { return stemEngine }
+        return StemRefinementPipelineEngine(
+            baseEngine: stemEngine,
+            refiners: stemRefiners,
+            sourceDigest: sourceDigest,
+            segmentConfiguration: "six-stem-44.1k-stereo"
+        )
+    }
+
+    var expectedStemRecipeIdentity: StemRecipeIdentity? {
+        guard let stemEngine, !stemRefiners.isEmpty else { return nil }
+        return StemRecipeIdentity(
+            sourceDigest: sourceDigest,
+            baseEngine: stemEngine.metadata,
+            segmentConfiguration: "six-stem-44.1k-stereo",
+            refiners: stemRefiners.map(\.cacheIdentity),
+            taxonomyVersion: stemRefiners.map(\.taxonomyVersion).max() ?? 1,
+            outputFormat: "wav"
+        )
+    }
+
+    func isSeparationCacheHit(
+        currentEngine: StemSeparationEngineMetadata,
+        document: SongAnalysisDocument,
+        sourceDigest: String
+    ) -> Bool {
+        let policy = SeparationCachingPolicy(currentEngine: currentEngine)
+        if let expectedStemRecipeIdentity {
+            return policy.isStemSetCacheHit(
+                record: document.stageRecords[.separation],
+                sourceDigest: sourceDigest,
+                storedStemSet: document.stemSet,
+                expectedRecipe: expectedStemRecipeIdentity
+            )
+        }
+        return policy.isCacheHit(
+            record: document.stageRecords[.separation],
+            sourceDigest: sourceDigest,
+            storedStems: document.stems
+        )
     }
 }
 
@@ -225,7 +277,9 @@ struct TranscriptionStage: AnalysisStageRunning {
                     engine.metadata.engineVersion,
                     engine.metadata.modelVersion ?? "unknown",
                     "schema-\(SongAnalysisDocument.currentSchemaVersion)",
-                    "decode2-\(String(format: "%.2f", decodeRate))",
+                    request.transcriptionMode == .accuracy
+                        ? "decode3-\(String(format: "%.2f", decodeRate))-opening-rescue"
+                        : "decode2-\(String(format: "%.2f", decodeRate))",
                 ].joined(separator: "|")
             )
             // Strict VAD is needed both for the decode-collapse check below and for the tail
@@ -234,6 +288,8 @@ struct TranscriptionStage: AnalysisStageRunning {
             let strictVoiced =
                 (try? VocalActivityEnvelope.voicedIntervals(
                     url: audioURL, configuration: strictVAD)) ?? []
+            let vocalOnset: TimeInterval? =
+                hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
 
             /// One transcription pass at `rate` (slow-rendering a temp copy when < 1.0), with
             /// timestamps mapped back to the real timeline.
@@ -260,8 +316,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     rawResult = try await engine.transcribe(
                         request: TranscriptionRequest(
                             id: requestID,
-                            audioURL: decodeURL,
-                            localeIdentifier: Locale.current.language.languageCode?.identifier
+                            audioURL: decodeURL
                         )
                     ) { value in
                         stageProgress(value.fractionCompleted, value.phase.rawValue)
@@ -277,6 +332,31 @@ struct TranscriptionStage: AnalysisStageRunning {
                 return usesSlowDecode
                     ? TranscriptionTimeScaler.scaled(rawResult, by: rate)
                     : rawResult
+            }
+
+            func transcribeRegion(_ range: ClosedRange<TimeInterval>) async throws
+                -> TranscriptionResult
+            {
+                let requestID = UUID()
+                let regionURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("opening-retry-\(requestID.uuidString).wav")
+                defer { try? FileManager.default.removeItem(at: regionURL) }
+                stageProgress(0, "retryingOpeningPhrase")
+                try AudioRegionExporter().export(
+                    sourceURL: audioURL,
+                    destinationURL: regionURL,
+                    range: range
+                )
+                do {
+                    return try await engine.transcribe(
+                        request: TranscriptionRequest(id: requestID, audioURL: regionURL)
+                    ) { value in
+                        stageProgress(value.fractionCompleted, value.phase.rawValue)
+                    }
+                } catch is CancellationError {
+                    await engine.cancel(requestID: requestID)
+                    throw CancellationError()
+                }
             }
 
             let result: TranscriptionResult
@@ -322,6 +402,28 @@ struct TranscriptionStage: AnalysisStageRunning {
                         transcribed = retry
                     }
                 }
+                if request.transcriptionMode == .accuracy,
+                    let vocalOnset,
+                    let retryRange = SparseOpeningTranscriptionRescuer.retryRange(
+                        for: transcribed,
+                        vocalOnset: vocalOnset
+                    )
+                {
+                    do {
+                        let retry = try await transcribeRegion(retryRange)
+                        transcribed = SparseOpeningTranscriptionRescuer.merged(
+                            primary: transcribed,
+                            retry: retry,
+                            retryStart: retryRange.lowerBound,
+                            replacementEnd: transcribed.segments.dropFirst().first?.startTime
+                                ?? retryRange.upperBound
+                        )
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // Optional quality rescue: retain the complete primary pass on failure.
+                    }
+                }
                 result = transcribed
                 try await context.cache?.store(
                     result, forSourceHash: audioDigest, engine: cacheEngine)
@@ -346,7 +448,8 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // songs analyzed before the fix keep their stale, already-corrupted
                     // `lyricBlendRows` forever, since re-clicking "Analyze Song" only
                     // re-groups when the stage record's version actually changes.
-                    version: result.engine.engineVersion + "|grouping-42-degenerate-tail-prune"
+                    version: result.engine.engineVersion
+                        + "|grouping-44-degenerate-leadin-merge"
                         + "|blend-row-overlap-merge"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
@@ -362,8 +465,6 @@ struct TranscriptionStage: AnalysisStageRunning {
             // the last detected vocal offset before grouping.
             let sourceDuration = result.sourceDuration
             let normalizedDuration = sourceDuration > 0 ? sourceDuration : nil
-            let vocalOnset: TimeInterval? =
-                hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
             // Every vocal onset on the stem, used to snap each word to the actual energy burst in
             // the final timing pass below. Only meaningful on the isolated vocals stem.
             let vocalOnsets: [TimeInterval] =
@@ -799,13 +900,14 @@ struct ChordProStage: AnalysisStageRunning {
                     confidenceThreshold: document.chordConfidenceThreshold,
                     beatTimes: document.beatTimes,
                     sourceDuration: document.sourceDuration,
+                    untranscribedVocalRegions: document.untranscribedVocalRegions,
                     estimatedKey: document.estimatedKey
                 ))
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: .recording,
                 // 4: {key}/{time} directives + trailing chords typeset past the last word.
-                engine: AnalysisEngineVersion(identifier: "chordpro-draft-builder", version: "4"),
+                engine: AnalysisEngineVersion(identifier: "chordpro-draft-builder", version: "5"),
                 modelIdentifier: nil,
                 modelVersion: nil,
                 configurationIdentifier:

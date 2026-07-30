@@ -59,13 +59,13 @@ enum LyricLineEdit {
     }
 }
 
-/// Flags lyric lines that look like mis-splits / mis-timings, for review in the editor. Uses a
-/// probable line length (the median line's beats) and the beat grid: a line far off the typical
-/// length, or whose onset sits well off any beat, is suspect. Pure so it can be unit-tested.
+/// Flags lyric lines that look like mis-splits / mis-timings, for review in the editor. A line far
+/// from the median duration is suspect. Onset phase alone is not: valid pickups and syncopated
+/// phrases routinely begin between beats. Pure so it can be unit-tested.
 enum LyricLineDiagnostics {
     /// Reason strings keyed by segment id. Empty without a tempo or with too few lines to judge.
     static func suspectReasons(
-        _ segments: [TimedLyricSegment], beatTimes: [TimeInterval], tempo: Double?
+        _ segments: [TimedLyricSegment], tempo: Double?
     ) -> [TimedLyricSegment.ID: String] {
         guard let tempo, tempo > 0, segments.count >= 4 else { return [:] }
         let beatDuration = 60.0 / tempo
@@ -73,7 +73,6 @@ enum LyricLineDiagnostics {
         let lengths = segments.map { max(0, ($0.end - $0.start) / beatDuration) }.sorted()
         let median = lengths[lengths.count / 2]
         guard median > 0 else { return [:] }
-        let sortedBeats = beatTimes.sorted()
         func fmt(_ value: Double) -> String { String(format: "%.1f", value) }
         var result: [TimedLyricSegment.ID: String] = [:]
         for segment in segments {
@@ -83,12 +82,6 @@ enum LyricLineDiagnostics {
                 reasons.append("short — \(fmt(length)) beats vs ~\(fmt(median)) typical")
             } else if length > median * 1.9 {
                 reasons.append("long — \(fmt(length)) beats vs ~\(fmt(median)) typical")
-            }
-            if let nearest = sortedBeats.min(by: {
-                abs($0 - segment.start) < abs($1 - segment.start)
-            }) {
-                let off = abs(nearest - segment.start) / beatDuration
-                if off > 0.3 { reasons.append("starts \(fmt(off)) beat off the grid") }
             }
             if !reasons.isEmpty {
                 result[segment.id] = "Possible mis-split — " + reasons.joined(separator: "; ")
@@ -134,10 +127,9 @@ final class AppModel: ObservableObject {
     /// to render a per-lyric-line audio strip so word↔voice alignment is directly visible. `nil`
     /// when the song has no vocals stem (the preview falls back to the full-mix `waveform`).
     @Published private(set) var vocalWaveform: WaveformEnvelope?
-    /// Per-stem waveform envelopes, one lane per available stem, in a fixed display order. Rendered
-    /// as stacked lanes beneath the full-mix waveform so each instrument's energy lines up with the
-    /// mix on a shared time axis. Empty when the song has no separated stems.
-    @Published private(set) var stemWaveforms: [(kind: StemKind, envelope: WaveformEnvelope)] = []
+    /// Per-stem waveform envelopes for the active mixer frontier (base stems or refined
+    /// children). Rendered as stacked lanes beneath the full-mix waveform on a shared time axis.
+    @Published private(set) var stemWaveforms: [StemWaveformLaneModel] = []
     @Published private(set) var projectErrorMessage: String?
     @Published private(set) var isExporting = false
     @Published private(set) var exportProgress = 0.0
@@ -242,6 +234,9 @@ final class AppModel: ObservableObject {
     @Published var stemFiles: StemFiles? {
         didSet { persistSelectedAnalysis() }
     }
+    @Published var stemSet: StemSetManifest? {
+        didSet { persistSelectedAnalysis() }
+    }
     @Published var stemMixer = StemMixerModel() {
         didSet { persistSelectedAnalysis() }
     }
@@ -317,6 +312,21 @@ final class AppModel: ObservableObject {
     @Published private(set) var activePlaybackSource = PlaybackSource.recording
     @Published private(set) var modelPackageStatuses: [String: ModelPackageStatus] = [:]
     @Published private(set) var modelInstallProgress: [String: Double] = [:]
+    /// Active analysis capability tier. Re-reads Advanced Desktop preference each access.
+    var analysisCapabilityProfile: AnalysisCapabilityProfile {
+        AnalysisCapabilityProfile.current
+    }
+
+    /// Opt-in Advanced Desktop stem refinement (DrumSep children, future guitar parts).
+    var advancedStemRefinementEnabled: Bool {
+        get { AnalysisCapabilityProfile.prefersAdvancedStemRefinement }
+        set {
+            AnalysisCapabilityProfile.prefersAdvancedStemRefinement = newValue
+            objectWillChange.send()
+            Task { await refreshModelPackageStatuses() }
+        }
+    }
+
     /// True once the initial on-disk model status scan has completed — the onboarding gate
     /// must not flash open before the app KNOWS what's installed.
     @Published private(set) var modelStatusesLoaded = false
@@ -325,7 +335,10 @@ final class AppModel: ObservableObject {
     /// behind the first-run onboarding sheet (Eric: models must be installed "before
     /// anything else is enabled"; required set = ALL platform-installable models).
     var requiredModelsInstalled: Bool {
-        ModelCatalog.all.filter(\.requiresDownloadOnCurrentPlatform).allSatisfy {
+        ModelCatalog.all.filter {
+            $0.requiresDownloadOnCurrentPlatform
+                && analysisCapabilityProfile.requiresModelPackage($0)
+        }.allSatisfy {
             if case .installed = modelPackageStatuses[$0.id] { return true }
             return false
         }
@@ -421,7 +434,12 @@ final class AppModel: ObservableObject {
     private var exportTask: Task<Void, Never>?
     private var analysisControlTask: Task<Void, Never>?
     private var analysisMonitorTask: Task<Void, Never>?
+    private var analysisPreflightTask: Task<Void, Never>?
+    private var analysisPreflightGeneration: UUID?
+    private var lyricBlendTask: Task<Void, Never>?
+    private var lyricBlendGeneration: UUID?
     private let analysisCoordinator: SongAnalysisCoordinator
+    private var activeAnalysisRunID: UUID?
     private var modelInstallTasks: [String: Task<Void, Never>] = [:]
     private var currentAnalysisJobID: BackgroundJobID?
     private var currentExportID: UUID?
@@ -462,12 +480,20 @@ final class AppModel: ObservableObject {
             .appendingPathComponent("SongWorkbench", isDirectory: true)
             .appendingPathComponent("Analysis", isDirectory: true)
         analysisCache = AnalysisResultDiskCache(directoryURL: cacheDirectory)
+        let packageManager = modelPackageManager
+        let harmonyEngine = audioAnalysisService
+        let cache = analysisCache
         analysisCoordinator = SongAnalysisCoordinator(
-            pipelineFactory: SongAnalysisPipelineFactory(
-                modelPackageManager: modelPackageManager,
-                harmonyEngine: audioAnalysisService,
-                cache: analysisCache
-            )
+            makePipeline: {
+                var factory = SongAnalysisPipelineFactory(
+                    modelPackageManager: packageManager,
+                    harmonyEngine: harmonyEngine,
+                    cache: cache
+                )
+                factory.capabilityProfile = AnalysisCapabilityProfile.current
+                factory.stemRefinementEngineFactory = .production
+                return try await factory.makePipeline()
+            }
         )
         Task { await restoreProjects() }
         Task { await refreshModelPackageStatuses() }
@@ -495,6 +521,8 @@ final class AppModel: ObservableObject {
         exportTask?.cancel()
         analysisControlTask?.cancel()
         analysisMonitorTask?.cancel()
+        analysisPreflightTask?.cancel()
+        lyricBlendTask?.cancel()
         analysisCoordinator.cancel()
         for task in modelInstallTasks.values { task.cancel() }
     }
@@ -589,7 +617,9 @@ final class AppModel: ObservableObject {
                     lyrics: lyricSegments,
                     chords: detectedEvents,
                     confidenceThreshold: chordConfidenceThreshold,
-                    beatTimes: beatTimes
+                    beatTimes: beatTimes,
+                    sourceDuration: sourceDuration,
+                    untranscribedVocalRegions: untranscribedVocalRegions
                 ),
                 comment: ChordProDraftBuilder.bassNoteDraftComment,
                 chordLabel: { $0.chord }
@@ -602,7 +632,9 @@ final class AppModel: ObservableObject {
                 lyrics: lyricSegments,
                 chords: chordEvents,
                 confidenceThreshold: chordConfidenceThreshold,
-                beatTimes: beatTimes
+                beatTimes: beatTimes,
+                sourceDuration: sourceDuration,
+                untranscribedVocalRegions: untranscribedVocalRegions
             ),
             comment: ChordProDraftBuilder.bassNoteDraftComment,
             chordLabel: { BassNote(chordSymbol: $0.chord)?.label }
@@ -746,7 +778,7 @@ final class AppModel: ObservableObject {
         if case .installed = modelPackageStatuses[ModelCatalog.whisperAccuracy.id] {
             modes.insert(.accuracy)
         }
-        return modes
+        return modes.intersection(analysisCapabilityProfile.transcriptionModes)
     }
 
     /// The mode used for a song's OFFICIAL lyrics/ChordPro before any Lyric Blend pick — prefers
@@ -756,7 +788,11 @@ final class AppModel: ObservableObject {
     /// of always running every installed mode and letting the blend UI be the tuning).
     private var primaryTranscriptionMode: TranscriptionMode {
         let available = availableTranscriptionModes
-        return LyricBlendRowBuilder.modeOrder.first { available.contains($0) } ?? .accuracy
+        return LyricBlendRowBuilder.modeOrder.first { available.contains($0) }
+            ?? LyricBlendRowBuilder.modeOrder.first {
+                analysisCapabilityProfile.allowsTranscriptionMode($0)
+            }
+            ?? .fastDraft
     }
 
     /// Re-aligns the lyrics to the audio from the current `referenceLyrics` by re-running the
@@ -864,6 +900,15 @@ final class AppModel: ObservableObject {
             completion?(false)
             return
         }
+        lyricBlendTask?.cancel()
+        lyricBlendTask = nil
+        lyricBlendGeneration = nil
+        lyricBlendStatus = nil
+        isComputingLyricBlend = false
+        analysisPreflightTask?.cancel()
+        analysisCoordinator.cancel()
+        let preflightGeneration = UUID()
+        analysisPreflightGeneration = preflightGeneration
         // Detection-only guard for cloud-stored sources (iCloud / Google Drive / network or
         // removable volumes): such files are often online-only/dataless or refuse a direct
         // open() with EPERM, which otherwise produces a silent no-stems analysis. Verify the
@@ -875,11 +920,15 @@ final class AppModel: ObservableObject {
             stage: nil, completedStages: 0, totalStages: stages.count,
             stageFraction: 0, message: "Checking source file")
         let sourceURL = song.url
-        Task { [weak self] in
+        analysisPreflightTask = Task { [weak self] in
             let availability = await Task.detached(priority: .userInitiated) {
                 AppModel.sourceAvailability(of: sourceURL)
             }.value
-            guard let self else { return }
+            guard let self, !Task.isCancelled,
+                analysisPreflightGeneration == preflightGeneration
+            else { return }
+            analysisPreflightTask = nil
+            analysisPreflightGeneration = nil
             switch availability {
             case .available:
                 self.beginAnalysis(
@@ -970,17 +1019,25 @@ final class AppModel: ObservableObject {
                 ? .replaceExisting : .preserveExisting,
             transcriptionDecodeRate: min(max(accuracyDecodeSpeed, 0.75), 1.0)
         )
-        analysisCoordinator.run(
+        activeAnalysisRunID = analysisCoordinator.run(
             request: request,
-            onStatuses: { [weak self] statuses in
+            onStatuses: { [weak self] runID, statuses in
+                guard self?.activeAnalysisRunID == runID else { return }
                 for (id, status) in statuses { self?.modelPackageStatuses[id] = status }
             },
-            onProgress: { [weak self] value in
-                guard self?.isSongAnalysisRunning == true else { return }
+            onProgress: { [weak self] runID, value in
+                guard self?.activeAnalysisRunID == runID,
+                    self?.isSongAnalysisRunning == true
+                else { return }
                 self?.songAnalysisProgress = value
             },
-            onFinish: { [weak self] outcome in
+            onFinish: { [weak self] runID, outcome in
                 guard let self else { return }
+                guard activeAnalysisRunID == runID else {
+                    completion?(true)
+                    return
+                }
+                activeAnalysisRunID = nil
                 var cancelled = false
                 switch outcome {
                 case .success(let result):
@@ -1056,19 +1113,29 @@ final class AppModel: ObservableObject {
         }
         guard !otherModes.isEmpty else { return }
 
+        lyricBlendTask?.cancel()
+        let generation = UUID()
+        lyricBlendGeneration = generation
         isComputingLyricBlend = true
-        Task { [weak self] in
+        lyricBlendTask = Task { [weak self] in
             guard let self else { return }
             // Whatever path exits this task, the status line must clear — a stuck
             // "Preparing…" is worse than none.
             defer {
-                self.lyricBlendStatus = nil
-                self.isComputingLyricBlend = false
+                if self.lyricBlendGeneration == generation {
+                    self.lyricBlendTask = nil
+                    self.lyricBlendGeneration = nil
+                    self.lyricBlendStatus = nil
+                    self.isComputingLyricBlend = false
+                }
             }
             var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
                 primaryMode: primaryDocument.lyrics
             ]
             for (index, mode) in otherModes.enumerated() {
+                guard !Task.isCancelled, self.lyricBlendGeneration == generation else {
+                    return
+                }
                 self.lyricBlendStatus =
                     "Preparing Lyric Blend — \(Self.blendModeLabel(mode)) pass "
                     + "(\(index + 1) of \(otherModes.count))…"
@@ -1077,6 +1144,9 @@ final class AppModel: ObservableObject {
                 {
                     lyricsByMode[mode] = segments
                 }
+            }
+            guard !Task.isCancelled, self.lyricBlendGeneration == generation else {
+                return
             }
             self.lyricBlendStatus = "Preparing Lyric Blend — matching lines to the vocal stem…"
             // The song may have been removed from the library while these passes ran.
@@ -1137,6 +1207,7 @@ final class AppModel: ObservableObject {
                         confidenceThreshold: updated.chordConfidenceThreshold,
                         beatTimes: updated.beatTimes,
                         sourceDuration: updated.sourceDuration,
+                        untranscribedVocalRegions: updated.untranscribedVocalRegions,
                         estimatedKey: updated.estimatedKey
                     ))
             }
@@ -1178,11 +1249,11 @@ final class AppModel: ObservableObject {
             )
             analysisCoordinator.run(
                 request: request,
-                onStatuses: { [weak self] statuses in
+                onStatuses: { [weak self] _, statuses in
                     for (id, status) in statuses { self?.modelPackageStatuses[id] = status }
                 },
-                onProgress: { _ in },
-                onFinish: { outcome in
+                onProgress: { _, _ in },
+                onFinish: { _, outcome in
                     switch outcome {
                     case .success(let result):
                         continuation.resume(
@@ -1261,7 +1332,19 @@ final class AppModel: ObservableObject {
     }
 
     func cancelSongAnalysis() {
+        analysisPreflightTask?.cancel()
+        analysisPreflightTask = nil
+        analysisPreflightGeneration = nil
+        lyricBlendTask?.cancel()
+        lyricBlendTask = nil
+        lyricBlendGeneration = nil
+        lyricBlendStatus = nil
+        isComputingLyricBlend = false
         analysisCoordinator.cancel()
+        if activeAnalysisRunID == nil {
+            isSongAnalysisRunning = false
+            songAnalysisProgress = nil
+        }
     }
 
     func importSongs(from urls: [URL]) {
@@ -1541,7 +1624,16 @@ final class AppModel: ObservableObject {
     }
 
     private func resetSelectedSongProgressState() {
+        analysisPreflightTask?.cancel()
+        analysisPreflightTask = nil
+        analysisPreflightGeneration = nil
+        lyricBlendTask?.cancel()
+        lyricBlendTask = nil
+        lyricBlendGeneration = nil
+        lyricBlendStatus = nil
+        isComputingLyricBlend = false
         analysisCoordinator.cancel()
+        activeAnalysisRunID = nil
         isSongAnalysisRunning = false
         songAnalysisProgress = nil
 
@@ -1594,6 +1686,7 @@ final class AppModel: ObservableObject {
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
         stemFiles = nil
+        stemSet = nil
         stemMixer = StemMixerModel()
         lyricReviewState = .draft
         chordReviewState = .draft
@@ -1815,6 +1908,7 @@ final class AppModel: ObservableObject {
             piano: optionalFile(for: .piano),
             other: file(for: .other)
         )
+        stemSet = stemFiles?.stemSetManifest
         if let stemFiles {
             try stemPlayback.load(stemFiles, mixer: stemMixer)
             stemPlayback.loadClickTrack(beatTimes: beatTimes)
@@ -1824,22 +1918,38 @@ final class AppModel: ObservableObject {
     }
 
     func setStemGain(_ gain: Float, for kind: StemKind) {
-        stemMixer.setGain(gain, for: kind)
+        setStemGain(gain, for: kind.id)
+    }
+
+    func setStemGain(_ gain: Float, for id: StemID) {
+        stemMixer.setGain(gain, for: id)
         stemPlayback.apply(stemMixer)
     }
 
     func setStemMuted(_ muted: Bool, for kind: StemKind) {
-        stemMixer.setMuted(muted, for: kind)
+        setStemMuted(muted, for: kind.id)
+    }
+
+    func setStemMuted(_ muted: Bool, for id: StemID) {
+        stemMixer.setMuted(muted, for: id)
         stemPlayback.apply(stemMixer)
     }
 
     func setStemSoloed(_ soloed: Bool, for kind: StemKind) {
-        stemMixer.setSoloed(soloed, for: kind)
+        setStemSoloed(soloed, for: kind.id)
+    }
+
+    func setStemSoloed(_ soloed: Bool, for id: StemID) {
+        stemMixer.setSoloed(soloed, for: id)
         stemPlayback.apply(stemMixer)
     }
 
     func setStemPan(_ pan: Float, for kind: StemKind) {
-        stemMixer.setPan(pan, for: kind)
+        setStemPan(pan, for: kind.id)
+    }
+
+    func setStemPan(_ pan: Float, for id: StemID) {
+        stemMixer.setPan(pan, for: id)
         stemPlayback.apply(stemMixer)
     }
 
@@ -1863,6 +1973,7 @@ final class AppModel: ObservableObject {
 
     func exportStemMix(to destinationURL: URL) {
         guard let stemFiles else { return }
+        let exportStemSet = stemSet ?? stemFiles.stemSetManifest
         exportTask?.cancel()
         let exportID = UUID()
         currentExportID = exportID
@@ -1873,7 +1984,7 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             do {
                 try await stemMixExporter.export(
-                    stems: stemFiles,
+                    manifest: exportStemSet,
                     to: destinationURL,
                     mixer: mixer
                 ) { progress in
@@ -2135,6 +2246,7 @@ final class AppModel: ObservableObject {
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
         stemFiles = analysis.stems?.resolved()
+        stemSet = analysis.stemSet?.resolved() ?? stemFiles?.stemSetManifest
         stemMixer = analysis.stemMixer
         lyricReviewState = analysis.lyricReviewState
         chordReviewState = analysis.chordReviewState
@@ -2148,7 +2260,11 @@ final class AppModel: ObservableObject {
         rebuildGeneratedChordProDraft()
         let chordProRebuilt = chordProSource != chordProBeforeRebuild
         if let stemFiles, isCurrentSeparation(record: analysisStageRecords[.separation]) {
-            try? stemPlayback.load(stemFiles, mixer: stemMixer)
+            if let stemSet {
+                try? stemPlayback.load(stemSet, mixer: stemMixer)
+            } else {
+                try? stemPlayback.load(stemFiles, mixer: stemMixer)
+            }
             stemPlayback.loadClickTrack(beatTimes: beatTimes)
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
@@ -2200,6 +2316,8 @@ final class AppModel: ObservableObject {
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
             stems: stemFiles.map(StoredStemFiles.init(files:)),
+            stemSet: (stemSet ?? stemFiles?.stemSetManifest).map(
+                StoredStemSetManifest.init(manifest:)),
             stemMixer: stemMixer,
             lyricReviewState: lyricReviewState,
             chordReviewState: chordReviewState,
@@ -2237,57 +2355,60 @@ final class AppModel: ObservableObject {
     /// Validity is proven, not assumed: the timeline is used only when rebuilding the draft from
     /// the current analysis reproduces `chordProSource` byte-for-byte, so timeline row N is
     /// exactly the preview's numbered musical line N (audit RC-2's single alignment routine).
-    private var timelineCache: (source: String, timeline: SongTimeline)?
+    private var timelineCache: (input: ChordProDraftInput, source: String, timeline: SongTimeline)?
     func songTimelineForPreview() -> SongTimeline? {
         guard !chordProSource.isEmpty else { return nil }
-        if let cached = timelineCache, cached.source == chordProSource {
+        guard let song = selectedSong else { return nil }
+        let input = ChordProDraftInput(
+            title: song.title,
+            tempo: estimatedBPM,
+            lyrics: lyricSegments,
+            chords: chordEvents,
+            confidenceThreshold: chordConfidenceThreshold,
+            beatTimes: beatTimes,
+            sourceDuration: sourceDuration,
+            untranscribedVocalRegions: untranscribedVocalRegions,
+            estimatedKey: estimatedKey
+        )
+        if let cached = timelineCache,
+            cached.source == chordProSource,
+            cached.input == input
+        {
             return cached.timeline
         }
-        guard let song = selectedSong else { return nil }
-        let result = chordProBuilder.buildResult(
-            ChordProDraftInput(
-                title: song.title,
-                tempo: estimatedBPM,
-                lyrics: lyricSegments,
-                chords: chordEvents,
-                confidenceThreshold: chordConfidenceThreshold,
-                beatTimes: beatTimes,
-                sourceDuration: sourceDuration,
-                untranscribedVocalRegions: untranscribedVocalRegions,
-                estimatedKey: estimatedKey
-            ))
+        let result = chordProBuilder.buildResult(input)
         guard result.source == chordProSource else {
             timelineCache = nil
             return nil
         }
-        timelineCache = (chordProSource, result.timeline)
+        timelineCache = (input, chordProSource, result.timeline)
         return result.timeline
     }
 
     /// Cached `SongStructureOverview` (the Structure tab's Form/Harmony/Meter/Rhyme/Melody-
-    /// proxy breakdown) for the current analysis. Keyed by `chordProSource` purely as a cheap
-    /// "has the underlying analysis changed" signal — unlike `songTimelineForPreview`, this
-    /// doesn't need byte-for-byte round-trip validation, since the overview isn't tied to
-    /// `chordProSource`'s exact rendered text.
-    private var structureOverviewCache: (source: String, overview: SongStructureOverview?)?
+    /// proxy breakdown) for the current analysis. The complete derived input is the cache key:
+    /// reviewed ChordPro text may stay unchanged while chords, lyrics, beats, or missed-vocal
+    /// regions are edited underneath it.
+    private var structureOverviewCache:
+        (input: ChordProDraftInput, overview: SongStructureOverview?)?
     func songStructureOverview() -> SongStructureOverview? {
         guard let song = selectedSong, !lyricSegments.isEmpty else { return nil }
-        if let cached = structureOverviewCache, cached.source == chordProSource {
+        let input = ChordProDraftInput(
+            title: song.title,
+            tempo: estimatedBPM,
+            lyrics: lyricSegments,
+            chords: chordEvents,
+            confidenceThreshold: chordConfidenceThreshold,
+            beatTimes: beatTimes,
+            sourceDuration: sourceDuration,
+            untranscribedVocalRegions: untranscribedVocalRegions,
+            estimatedKey: estimatedKey
+        )
+        if let cached = structureOverviewCache, cached.input == input {
             return cached.overview
         }
-        let overview = SongStructureOverviewBuilder().build(
-            ChordProDraftInput(
-                title: song.title,
-                tempo: estimatedBPM,
-                lyrics: lyricSegments,
-                chords: chordEvents,
-                confidenceThreshold: chordConfidenceThreshold,
-                beatTimes: beatTimes,
-                sourceDuration: sourceDuration,
-                untranscribedVocalRegions: untranscribedVocalRegions,
-                estimatedKey: estimatedKey
-            ))
-        structureOverviewCache = (chordProSource, overview)
+        let overview = SongStructureOverviewBuilder().build(input)
+        structureOverviewCache = (input, overview)
         return overview
     }
 
@@ -2309,6 +2430,7 @@ final class AppModel: ObservableObject {
                 confidenceThreshold: chordConfidenceThreshold,
                 beatTimes: beatTimes,
                 sourceDuration: sourceDuration,
+                untranscribedVocalRegions: untranscribedVocalRegions,
                 estimatedKey: estimatedKey
             ))
         if var record = analysisStageRecords[.chordPro], var provenance = record.provenance {
@@ -2371,24 +2493,21 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             let accessing = vocalsURL.startAccessingSecurityScopedResource()
             defer { if accessing { vocalsURL.stopAccessingSecurityScopedResource() } }
-            let intervals =
-                (try? await audioAnalysisService.vocalActivityIntervals(url: vocalsURL)) ?? []
-            let envelope = try? await waveformAnalyzer.analyze(
-                url: vocalsURL, targetSampleCount: 4_000)
+            let summary = try? await audioAnalysisService.vocalActivitySummary(url: vocalsURL)
             guard !Task.isCancelled, selectedSongID == song.id else { return }
-            vocalActivityIntervals = intervals
-            vocalWaveform = envelope
+            vocalActivityIntervals = summary?.intervals ?? []
+            vocalWaveform = summary?.waveform
         }
     }
 
-    /// Computes a waveform envelope for each available stem (off the main actor) so the waveform
-    /// panel can render one lane per instrument beneath the full mix. Lanes are produced in a fixed
-    /// display order; missing stems are skipped. No-op when the song has no separated stems.
+    /// Computes a waveform envelope for each active frontier stem (off the main actor) so the
+    /// waveform panel can render one lane per mixer channel — including refined children such as
+    /// `drums.kick` when a parent has been replaced. Missing/unreadable stems are skipped.
     private func loadStemWaveforms(for song: Song) {
         stemWaveformsTask?.cancel()
         stemWaveforms = []
-        let stems = stemFiles
-        guard stems != nil else {
+        let manifest = stemSet ?? stemFiles?.stemSetManifest
+        guard let manifest else {
             // Diagnostic: separation reported success but no stem references reached the model —
             // the stem panel will be empty for a reason the user can't otherwise see.
             if analysisBySongID[song.id]?.stageRecords[.separation]?.state == .succeeded {
@@ -2398,20 +2517,27 @@ final class AppModel: ObservableObject {
             }
             return
         }
+        let targets = StemWaveformLaneProjector.targets(for: manifest)
+        guard !targets.isEmpty else { return }
         stemWaveformsTask = Task { [weak self] in
             guard let self else { return }
-            let order: [StemKind] = [.vocals, .drums, .bass, .guitar, .piano, .other]
-            var lanes: [(kind: StemKind, envelope: WaveformEnvelope)] = []
+            var lanes: [StemWaveformLaneModel] = []
             var firstFailure: String?
-            for kind in order {
-                guard let url = stems?[kind] else { continue }
+            for target in targets {
                 if Task.isCancelled { return }
+                let url = target.audioURL
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                 do {
                     let envelope = try await waveformAnalyzer.analyze(
                         url: url, targetSampleCount: 1_200)
-                    lanes.append((kind: kind, envelope: envelope))
+                    lanes.append(
+                        StemWaveformLaneModel(
+                            id: target.id,
+                            displayName: target.displayName,
+                            envelope: envelope
+                        )
+                    )
                 } catch {
                     if firstFailure == nil {
                         firstFailure = "\(url.lastPathComponent): \(error.localizedDescription)"
@@ -2426,6 +2552,15 @@ final class AppModel: ObservableObject {
                 projectErrorMessage = "Stem waveforms couldn’t be read — \(firstFailure)"
             }
         }
+    }
+
+    /// Envelope for a base stem kind, or the first active child of that kind when refined.
+    func stemWaveformEnvelope(for kind: StemKind) -> WaveformEnvelope? {
+        if let exact = stemWaveforms.first(where: { $0.id == kind.id }) {
+            return exact.envelope
+        }
+        let prefix = kind.rawValue + "."
+        return stemWaveforms.first(where: { $0.id.rawValue.hasPrefix(prefix) })?.envelope
     }
 
     private func loadWaveform(for song: Song) {

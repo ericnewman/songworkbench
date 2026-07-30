@@ -64,12 +64,12 @@ final class StemPlaybackServiceTests: XCTestCase {
         service.play()
         try await Task.sleep(for: .milliseconds(180))
 
-        XCTAssertGreaterThan(service.stemLevels[.vocals] ?? 0, 0.05)
+        XCTAssertGreaterThan(service.stemLevels[StemKind.vocals.id] ?? 0, 0.05)
 
         service.pause()
 
-        XCTAssertEqual(service.stemLevels[.vocals] ?? 1, 0)
-        XCTAssertEqual(service.stemLevels[.drums] ?? 1, 0)
+        XCTAssertEqual(service.stemLevels[StemKind.vocals.id] ?? 1, 0)
+        XCTAssertEqual(service.stemLevels[StemKind.drums.id] ?? 1, 0)
     }
 
     func testMasterGainAttenuatesMeteredStemLevels() async throws {
@@ -83,7 +83,7 @@ final class StemPlaybackServiceTests: XCTestCase {
             try makeStemFiles(in: directory, sampleValue: 0.4), mixer: StemMixerModel())
         service.play()
         try await Task.sleep(for: .milliseconds(180))
-        let fullLevel = service.stemLevels[.vocals] ?? 0
+        let fullLevel = service.stemLevels[StemKind.vocals.id] ?? 0
         XCTAssertGreaterThan(fullLevel, 0.05)
 
         // Pulling the master fader down must attenuate the metered level too — the meters
@@ -93,7 +93,7 @@ final class StemPlaybackServiceTests: XCTestCase {
         halved.setMasterGain(0.5)
         service.apply(halved)
         try await Task.sleep(for: .milliseconds(180))
-        let halvedLevel = service.stemLevels[.vocals] ?? 0
+        let halvedLevel = service.stemLevels[StemKind.vocals.id] ?? 0
         service.pause()
 
         XCTAssertEqual(halvedLevel, fullLevel * 0.5, accuracy: 0.05)
@@ -119,6 +119,16 @@ final class StemPlaybackServiceTests: XCTestCase {
         XCTAssertThrowsError(try service.load(missingBass, mixer: StemMixerModel()))
         XCTAssertFalse(service.isLoaded)
         XCTAssertFalse(service.isPlaying)
+    }
+
+    func testClickSampleMemoryDoesNotScaleWithSongDuration() throws {
+        let sampleRate = 44_100.0
+        let sample = try XCTUnwrap(
+            StemPlaybackService.makeClickSample(sampleRate: sampleRate)
+        )
+
+        XCTAssertEqual(sample.frameLength, AVAudioFrameCount(sampleRate * 0.03))
+        XCTAssertLessThan(sample.frameCapacity, 2_000)
     }
 
     private func makeStemFiles(in directory: URL, sampleValue: Float = 0) throws -> StemFiles {

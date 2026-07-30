@@ -25,6 +25,9 @@ struct SongStructureOverview: Equatable, Sendable {
             /// usually a solo") — distinct from a generic `.instrumental` fill/break.
             case solo
             case instrumental
+            /// The vocal stem contains singing here, but ASR produced no words. This remains
+            /// separate from instrumental/solo so a missed lyric cannot change the song form.
+            case untranscribedVocal
             case outro
         }
 
@@ -154,6 +157,31 @@ enum RomanNumeralMapper {
 /// syllable count — usually true in verse/chorus pop/country form, where the tune repeats
 /// under different words (that's exactly what makes an AABA verse over an ABCB rhyme
 /// scheme possible), but a stand-in. Callers should label output as approximate.
+enum ChordSequenceMatcher {
+    /// Exact equality, or one inserted/deleted embellishing chord while every shared chord keeps
+    /// the same order. A permutation is a different progression even when its chord set is equal.
+    static func matches(_ a: [String], _ b: [String]) -> Bool {
+        if a == b { return true }
+        guard !a.isEmpty, !b.isEmpty, abs(a.count - b.count) == 1 else { return false }
+        let shorter = a.count < b.count ? a : b
+        let longer = a.count < b.count ? b : a
+        var shortIndex = 0
+        var longIndex = 0
+        var skipped = false
+        while shortIndex < shorter.count, longIndex < longer.count {
+            if shorter[shortIndex] == longer[longIndex] {
+                shortIndex += 1
+                longIndex += 1
+            } else {
+                guard !skipped else { return false }
+                skipped = true
+                longIndex += 1
+            }
+        }
+        return shortIndex == shorter.count
+    }
+}
+
 enum MelodyPhraseProxy {
     static func phraseLetters(
         chordSignatures: [[String]], syllableCounts: [Int], syllableTolerance: Int = 1
@@ -180,23 +208,10 @@ enum MelodyPhraseProxy {
         return letters
     }
 
-    /// Two per-line chord signatures cluster as the same melodic phrase when identical, or — to
-    /// tolerate real per-line chord-window timing jitter/an embellishing passing chord some
-    /// occurrences don't have — when their SET overlap (Jaccard) is at least 0.75. Mirrors
-    /// `SongStructureOverviewBuilder.signaturesMatch`'s existing section-level tolerance; without
-    /// it, real per-line chord data (`chords.filter { $0.time >= line.start && $0.time < line.end
-    /// }`) almost never produces byte-identical arrays across two melodically-identical lines, so
-    /// EVERY line ends up in its own cluster (Eric, live review, 2026-07-07: a 9-line chorus
-    /// showed phrase pattern "A B C D E F G H" — essentially zero detected repetition — where a
-    /// real chorus melody normally reuses just a handful of phrase shapes, e.g. AABA/ABAB).
+    /// Two per-line chord signatures cluster as the same melodic phrase when identical or when
+    /// one has a single inserted/deleted passing chord and the shared sequence remains ordered.
     private static func chordSignaturesMatch(_ a: [String], _ b: [String]) -> Bool {
-        if a == b { return true }
-        guard !a.isEmpty, !b.isEmpty else { return false }
-        let setA = Set(a)
-        let setB = Set(b)
-        let union = setA.union(setB).count
-        guard union > 0 else { return false }
-        return Double(setA.intersection(setB).count) / Double(union) >= 0.75
+        ChordSequenceMatcher.matches(a, b)
     }
 }
 
@@ -219,9 +234,28 @@ struct SongStructureOverviewBuilder: Sendable {
         }
         guard !bodyLyrics.isEmpty else { return nil }
 
-        let markers = LyricSectionDeriver().sections(
+        var markers = LyricSectionDeriver().sections(
             lyrics: bodyLyrics, beatTimes: input.beatTimes, tempo: input.tempo,
-            sourceDuration: input.sourceDuration)
+            sourceDuration: input.sourceDuration,
+            untranscribedVocalRegions: input.untranscribedVocalRegions)
+        // The lyrics editor suppresses a lone "Verse 1" header as visual noise, but the
+        // arrangement overview requires complete timeline coverage. Add every analyzer-defined
+        // vocal start that the shared marker derivation intentionally omitted.
+        for section in SongStructureAnalyzer().vocalSections(for: bodyLyrics)
+        where !markers.contains(where: {
+            if case .vocal = $0.kind {
+                return abs($0.start - section.start) <= 0.001
+            }
+            return false
+        }) {
+            markers.append(
+                LyricTimelineSection(
+                    kind: .vocal(section.label), start: section.start, label: section.label))
+        }
+        markers.sort {
+            if $0.start == $1.start { return $0.label < $1.label }
+            return $0.start < $1.start
+        }
         guard !markers.isEmpty else { return nil }
 
         let lastKnownEnd = max(
@@ -241,6 +275,9 @@ struct SongStructureOverviewBuilder: Sendable {
             case .instrumental:
                 kind = .instrumental
                 label = "Instrumental"
+            case .untranscribedVocal:
+                kind = .untranscribedVocal
+                label = "Vocals not transcribed"
             case .outro:
                 kind = .outro
                 label = "Outro"
@@ -288,7 +325,9 @@ struct SongStructureOverviewBuilder: Sendable {
 
         // Only reclassify against a majority template shared by >= 2 occurrences — a single
         // verse has nothing to compare against, so nothing gets relabeled Bridge.
-        if let verseTemplate, verseSignatures.filter({ $0 == verseTemplate }).count >= 2 {
+        if let verseTemplate,
+            verseSignatures.filter({ signaturesMatch($0, verseTemplate) }).count >= 2
+        {
             for index in verseIndices {
                 let signature = chordSignature(sections[index].chords, key: key)
                 if !signature.isEmpty, !signaturesMatch(signature, verseTemplate) {
@@ -381,33 +420,27 @@ struct SongStructureOverviewBuilder: Sendable {
         return out
     }
 
-    /// Two chord signatures "match" when identical, or — to tolerate a single passing/
-    /// embellishing chord — when their SET overlap (Jaccard) is at least 0.75.
+    /// Two chord signatures match when identical or when one has a single inserted/deleted
+    /// passing chord while preserving the order of every shared chord.
     private func signaturesMatch(_ a: [String], _ b: [String]) -> Bool {
-        if a == b { return true }
-        guard !a.isEmpty, !b.isEmpty else { return false }
-        let setA = Set(a)
-        let setB = Set(b)
-        let union = setA.union(setB).count
-        guard union > 0 else { return false }
-        return Double(setA.intersection(setB).count) / Double(union) >= 0.75
+        ChordSequenceMatcher.matches(a, b)
     }
 
     private func mostCommon(_ signatures: [[String]]) -> [String]? {
-        var counts: [[String]: Int] = [:]
-        var firstSeenOrder: [[String]] = []
-        for signature in signatures where !signature.isEmpty {
-            if counts[signature] == nil { firstSeenOrder.append(signature) }
-            counts[signature, default: 0] += 1
+        var firstSeen: [[String]] = []
+        for signature in signatures where !signature.isEmpty && !firstSeen.contains(signature) {
+            firstSeen.append(signature)
         }
-        guard let maxCount = counts.values.max() else { return nil }
-        // A genuine tie between two DIFFERENT chord signatures must not resolve via
-        // `Dictionary`'s randomized-per-process iteration order — that made the representative-
-        // occurrence pick unstable across runs (SongStructureOverviewTests caught this: passed
-        // in isolation, failed as part of the full suite, purely from hash-seed luck). Break
-        // ties on first appearance in `signatures` instead — stable, deterministic, and a
-        // reasonable product default (the earliest-occurring pattern wins).
-        return firstSeenOrder.first { counts[$0] == maxCount }
+        guard var best = firstSeen.first else { return nil }
+        var bestSupport = signatures.filter { signaturesMatch($0, best) }.count
+        for candidate in firstSeen.dropFirst() {
+            let support = signatures.filter { signaturesMatch($0, candidate) }.count
+            if support > bestSupport {
+                best = candidate
+                bestSupport = support
+            }
+        }
+        return best
     }
 
     /// Picks the occurrence that best represents this kind's canonical shape. Prefers a musical

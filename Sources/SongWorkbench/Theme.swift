@@ -1,5 +1,46 @@
 import SwiftUI
 
+struct SWRGBColor: Equatable, Sendable {
+    let red: Double
+    let green: Double
+    let blue: Double
+
+    static let white = SWRGBColor(red: 1, green: 1, blue: 1)
+
+    init(hex: UInt32) {
+        red = Double((hex >> 16) & 0xFF) / 255.0
+        green = Double((hex >> 8) & 0xFF) / 255.0
+        blue = Double(hex & 0xFF) / 255.0
+    }
+
+    init(red: Double, green: Double, blue: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+    }
+
+    func contrastRatio(against other: SWRGBColor) -> Double {
+        let lighter = max(relativeLuminance, other.relativeLuminance)
+        let darker = min(relativeLuminance, other.relativeLuminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private var relativeLuminance: Double {
+        func linearized(_ component: Double) -> Double {
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linearized(red) + 0.7152 * linearized(green)
+            + 0.0722 * linearized(blue)
+    }
+}
+
+enum SWColorPalette {
+    /// Open Color blue 8. Dark enough for normal-sized white button labels to exceed 4.5:1.
+    static let prominentControlTint = SWRGBColor(hex: 0x1971C2)
+}
+
 // MARK: - Color Palette
 //
 // A single, centralized source of truth for SongWorkbench's dark theme.
@@ -28,6 +69,14 @@ extension Color {
     static let swSurfaceRaised = Color(hex: 0x2C2E34)
     /// Primary accent: active selection / focus.
     static let swAccent = Color(hex: 0x339AF0)
+    /// Filled command controls. Kept darker than `swAccent` for readable white labels.
+    static let swProminentControl = Color(
+        .sRGB,
+        red: SWColorPalette.prominentControlTint.red,
+        green: SWColorPalette.prominentControlTint.green,
+        blue: SWColorPalette.prominentControlTint.blue,
+        opacity: 1
+    )
     /// Secondary accent: errors / alerts ONLY.
     static let swCoral = Color(hex: 0xFF6B6B)
     /// Data highlight: waveform peaks / data values.
@@ -55,6 +104,17 @@ extension StemKind {
         case .piano: .swTextPrimary
         case .other: .swTextSecondary
         }
+    }
+}
+
+extension StemID {
+    /// Waveform/mixer lane color for base stems and refined children (`drums.kick` → drums coral).
+    var laneColor: Color {
+        if let kind = legacyKind {
+            return kind.laneColor
+        }
+        let root = rawValue.split(separator: ".").first.map(String.init) ?? rawValue
+        return StemKind(rawValue: root)?.laneColor ?? .swTextSecondary
     }
 }
 
@@ -131,6 +191,12 @@ private struct SWAccentHoverBorder: ViewModifier {
 }
 
 extension View {
+    /// Filled primary command with a WCAG AA-compliant white-label background.
+    func swProminentButtonStyle() -> some View {
+        buttonStyle(.borderedProminent)
+            .tint(Color.swProminentControl)
+    }
+
     /// Surface-grey panel: fill + subtle 1px white stroke. For cards,
     /// editor containers, sidebars, inspector panels. `fill` defaults to `swSurface`; pass
     /// `swSurfaceRaised` for a panel that should read slightly lighter than its neighbors.

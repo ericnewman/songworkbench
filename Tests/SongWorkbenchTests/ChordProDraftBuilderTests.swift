@@ -20,6 +20,26 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertTrue(document.contains("{comment: Instrumental"), document)
     }
 
+    func testKnownUntranscribedVocalsAreNotLabeledInstrumental() {
+        let beats = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        let input = ChordProDraftInput(
+            title: "Missed Vocal Gap",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "First line"),
+                TimedLyricSegment(start: 12, end: 14, text: "Second line"),
+            ],
+            chords: [],
+            beatTimes: beats,
+            untranscribedVocalRegions: [3...11]
+        )
+
+        let document = ChordProDraftBuilder().build(input)
+
+        XCTAssertTrue(document.contains("{comment: Vocals not transcribed"), document)
+        XCTAssertFalse(document.contains("{comment: Instrumental"), document)
+    }
+
     func testStructureAnalyzerLabelsRepeatedSectionsAsChorus() {
         let lyrics = [
             TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
@@ -258,6 +278,38 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertTrue(sections.contains { $0.kind == .intro && $0.label.hasPrefix("Intro") })
         XCTAssertTrue(sections.contains { $0.kind == .instrumental })
         XCTAssertTrue(sections.contains { $0.kind == .outro && $0.label == "Outro" })
+    }
+
+    func testLyricSectionDeriverKeepsKnownVocalGapOutOfInstrumentalSections() {
+        let beats = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "First line"),
+            TimedLyricSegment(start: 12, end: 14, text: "Second line"),
+        ]
+
+        let sections = LyricSectionDeriver().sections(
+            lyrics: lyrics,
+            beatTimes: beats,
+            tempo: 120,
+            sourceDuration: 16,
+            untranscribedVocalRegions: [3...11])
+
+        XCTAssertTrue(sections.contains { $0.kind == .untranscribedVocal })
+        XCTAssertFalse(sections.contains { $0.kind == .instrumental })
+    }
+
+    func testLyricSectionDeriverClosesShortMissedVocalRegionAtNextLine() {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "First line"),
+            TimedLyricSegment(start: 4, end: 6, text: "Second line"),
+        ]
+
+        let sections = LyricSectionDeriver().sections(
+            lyrics: lyrics,
+            untranscribedVocalRegions: [2.5...3.5])
+
+        XCTAssertEqual(sections.map(\.kind), [.untranscribedVocal, .vocal("Vocals")])
+        XCTAssertEqual(sections.map(\.start), [2.5, 4])
     }
 
     func testLyricSectionDeriverOutroNotChorusAfterTailHallucination() {

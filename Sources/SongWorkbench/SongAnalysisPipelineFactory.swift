@@ -10,10 +10,13 @@ struct SongAnalysisPipelineFactory: Sendable {
     let modelPackageManager: ModelPackageManager
     let harmonyEngine: AudioFileAnalysisService
     let cache: AnalysisResultDiskCache
+    var capabilityProfile: AnalysisCapabilityProfile = .current
+    var stemRefinementEngineFactory: StemRefinementEngineFactory = .empty
 
     struct Assembly: Sendable {
         let pipeline: SongAnalysisPipeline
         let statuses: [String: ModelPackageStatus]
+        let capabilityProfile: AnalysisCapabilityProfile
     }
 
     func makePipeline() async throws -> Assembly {
@@ -21,14 +24,16 @@ struct SongAnalysisPipelineFactory: Sendable {
         func installedPackage(
             _ descriptor: ModelPackageDescriptor
         ) async -> InstalledModelPackage? {
-            let status = await modelPackageManager.status(for: descriptor)
+            let status = await modelPackageManager.statusForAnalysis(for: descriptor)
             statuses[descriptor.id] = status
             guard case .installed(let package) = status else { return nil }
             return package
         }
 
         let stemEngine: (any StemSeparationEngine)?
-        if ModelCatalog.htdemucs.isBundledOnCurrentPlatform,
+        let baseStemPackage: InstalledModelPackage?
+        if capabilityProfile.stemSeparationTier == .reducedSixStem,
+            ModelCatalog.htdemucs.isBundledOnCurrentPlatform,
             let bundledURL = ModelCatalog.htdemucs.bundledResourceURL
         {
             // iPad: the shorter-segment 6-stem model ships in the app bundle (the full 7.8s
@@ -45,20 +50,55 @@ struct SongAnalysisPipelineFactory: Sendable {
                     entryPointURL: bundledURL,
                     sizeBytes: size
                 ))
-            stemEngine = try await Task.detached(priority: .userInitiated) {
-                try ONNXSixStemSeparationEngine(
-                    modelURL: bundledURL,
-                    segmentFrames: ONNXSixStemSeparationEngine.iPadSegmentFrames
+            let segmentFrames = ONNXSixStemSeparationEngine.iPadSegmentFrames
+            stemEngine = DeferredStemSeparationEngine(
+                metadata: ONNXSixStemSeparationEngine.metadata(
+                    usesCoreML: false,
+                    segmentFrames: segmentFrames
                 )
-            }.value
-        } else if let stemPackage = await installedPackage(ModelCatalog.htdemucs) {
-            stemEngine = try await Task.detached(priority: .userInitiated) {
-                // CPU execution provider (known-good). The CoreML/ANE provider was tried for
-                // speed but reverted until it can be verified not to break separation output.
-                try ONNXSixStemSeparationEngine(modelURL: stemPackage.entryPointURL)
-            }.value
+            ) {
+                try await Task.detached(priority: .userInitiated) {
+                    try ONNXSixStemSeparationEngine(
+                        modelURL: bundledURL,
+                        segmentFrames: segmentFrames
+                    )
+                }.value
+            }
+            baseStemPackage = nil
+        } else if capabilityProfile.stemSeparationTier == .fullSixStem
+            || capabilityProfile.stemSeparationTier == .advancedDesktop,
+            let stemPackage = await installedPackage(ModelCatalog.htdemucs)
+        {
+            baseStemPackage = stemPackage
+            stemEngine = DeferredStemSeparationEngine(
+                metadata: ONNXSixStemSeparationEngine.cpuMetadata
+            ) {
+                try await Task.detached(priority: .userInitiated) {
+                    // CPU execution provider (known-good). The CoreML/ANE provider was tried for
+                    // speed but reverted until it can be verified not to break separation output.
+                    try ONNXSixStemSeparationEngine(modelURL: stemPackage.entryPointURL)
+                }.value
+            }
         } else {
             stemEngine = nil
+            baseStemPackage = nil
+        }
+        if capabilityProfile.stemSeparationTier == .advancedDesktop {
+            // Populate optional refiner package status for factory assembly without
+            // making DrumSep required for onboarding.
+            _ = await installedPackage(ModelCatalog.drumsep)
+        }
+        let stemRefiners: [any StemRefinementEngine]
+        if capabilityProfile.stemSeparationTier == .advancedDesktop, stemEngine != nil {
+            stemRefiners = try await stemRefinementEngineFactory.engines(
+                for: StemRefinementEngineFactory.Context(
+                    capabilityProfile: capabilityProfile,
+                    baseStemPackage: baseStemPackage,
+                    modelStatuses: statuses
+                )
+            )
+        } else {
+            stemRefiners = []
         }
 
         let fastPackage = await installedPackage(ModelCatalog.parakeetFastDraft)
@@ -76,22 +116,80 @@ struct SongAnalysisPipelineFactory: Sendable {
                 profile: .balancedDraft
             )
         }
-        let accuracyPackage = await installedPackage(ModelCatalog.whisperAccuracy)
-        let accuracyEngine: (any TranscriptionEngine)? = accuracyPackage.map {
-            WhisperCPPTranscriptionEngine(
-                modelURL: $0.entryPointURL,
-                modelSizeBytes: UInt64(max($0.sizeBytes, 0))
-            )
+        let accuracyEngine: (any TranscriptionEngine)?
+        if capabilityProfile.allowsTranscriptionMode(.accuracy) {
+            let accuracyPackage = await installedPackage(ModelCatalog.whisperAccuracy)
+            accuracyEngine = accuracyPackage.map {
+                WhisperCPPTranscriptionEngine(
+                    modelURL: $0.entryPointURL,
+                    modelSizeBytes: UInt64(max($0.sizeBytes, 0))
+                )
+            }
+        } else {
+            accuracyEngine = nil
         }
 
         let pipeline = SongAnalysisPipeline(
             stemEngine: stemEngine,
-            fastTranscriptionEngine: fastEngine,
-            balancedTranscriptionEngine: balancedEngine,
-            accuracyTranscriptionEngine: accuracyEngine,
+            stemRefiners: stemRefiners,
+            transcriptionEngineFactory: TranscriptionEngineFactory(
+                fast: fastEngine,
+                balanced: balancedEngine,
+                accuracy: accuracyEngine
+            ).filtered(to: capabilityProfile),
             harmonyEngine: harmonyEngine,
-            cache: cache
+            cache: cache,
+            executionPolicy: capabilityProfile.executionPolicy
         )
-        return Assembly(pipeline: pipeline, statuses: statuses)
+        return Assembly(
+            pipeline: pipeline,
+            statuses: statuses,
+            capabilityProfile: capabilityProfile
+        )
+    }
+}
+
+struct StemRefinementEngineFactory: Sendable {
+    struct Context: Sendable {
+        let capabilityProfile: AnalysisCapabilityProfile
+        let baseStemPackage: InstalledModelPackage?
+        let modelStatuses: [String: ModelPackageStatus]
+    }
+
+    var makeEngines: @Sendable (Context) async throws -> [any StemRefinementEngine]
+
+    static let empty = StemRefinementEngineFactory { _ in [] }
+
+    /// Production desktop refiners. Currently registers DrumSep when its package is installed;
+    /// guitar lead/rhythm remains unregistered until a verified model artifact exists.
+    static let production = StemRefinementEngineFactory { context in
+        guard context.capabilityProfile.stemSeparationTier == .advancedDesktop else {
+            return []
+        }
+        #if os(macOS)
+            var engines: [any StemRefinementEngine] = []
+            if case .installed(let package) = context.modelStatuses[ModelCatalog.drumsep.id] {
+                let deferred = DeferredStemSeparationEngine(
+                    metadata: ONNXDrumPieceSeparationEngine.metadata
+                ) {
+                    try ONNXDrumPieceSeparationEngine(modelURL: package.entryPointURL)
+                }
+                engines.append(
+                    NativeStemRefinementEngine(
+                        identifier: "drumsep-onnx-v1",
+                        parentStemID: StemKind.drums.id,
+                        outputs: ONNXDrumPieceSeparationEngine.refinementOutputs,
+                        engine: deferred
+                    )
+                )
+            }
+            return engines
+        #else
+            return []
+        #endif
+    }
+
+    func engines(for context: Context) async throws -> [any StemRefinementEngine] {
+        try await makeEngines(context)
     }
 }

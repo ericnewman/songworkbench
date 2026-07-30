@@ -131,7 +131,7 @@ enum LyricPhraseGrouper {
             period: Int, confidence: Double
         )? {
             let labels = barLabels(startDownbeat: startDownbeat, endDownbeat: endDownbeat)
-            guard labels.count >= 2 else { return nil }
+            guard labels.count >= 2, Set(labels).count >= 2 else { return nil }
             var best: (period: Int, confidence: Double)?
             for period in configuration.candidatePeriodsInBars {
                 guard period > 0, labels.count >= period * configuration.minimumFullPeriods else {
@@ -178,17 +178,23 @@ enum LyricPhraseGrouper {
                 var matches = 0
                 var total = 0
                 var totalBars = 0
+                var hasHarmonicVariation = false
                 for index in indices {
                     guard let barRange = sectionBarRange[index] else { continue }
                     let labels = barLabels(startDownbeat: barRange.start, endDownbeat: barRange.end)
                     totalBars += labels.count
+                    hasHarmonicVariation = hasHarmonicVariation || Set(labels).count >= 2
                     guard labels.count > period else { continue }
                     for i in 0..<(labels.count - period) {
                         total += 1
                         if labels[i] == labels[i + period] { matches += 1 }
                     }
                 }
-                guard totalBars >= period * configuration.minimumFullPeriods, total > 0 else {
+                guard
+                    hasHarmonicVariation,
+                    totalBars >= period * configuration.minimumFullPeriods,
+                    total > 0
+                else {
                     continue
                 }
                 let confidence = Double(matches) / Double(total)

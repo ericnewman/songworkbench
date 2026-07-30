@@ -75,12 +75,12 @@ struct LiveCaptureSheet: View {
                     Button("Stop & Save", systemImage: "stop.fill") {
                         finish()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .swProminentButtonStyle()
                 } else {
                     Button("Start", systemImage: "record.circle") {
                         session.start()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .swProminentButtonStyle()
                     .disabled(model.selectedSong == nil)
                 }
             }

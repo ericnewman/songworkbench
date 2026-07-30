@@ -22,3 +22,7 @@ Makefile text eol=lf
 *.mlpackage binary
 *.ggml binary
 *.gguf binary
+
+# Preserved git patches keep their diff bytes verbatim (context lines can legitimately
+# carry trailing whitespace); do not whitespace-check or eol-normalise them.
+*.patch -text -whitespace

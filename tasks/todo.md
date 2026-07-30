@@ -1,3 +1,899 @@
+# Track B — Richer Stems as a Playback Feature (2026-07-29, NOT STARTED)
+
+Captured on Eric's request so it is not lost. **Do not start** — recorded only.
+
+Independent of Track A below. Track A asks "do better stems improve transcription?" (answer so
+far: no). Track B asks for richer stems as a **product feature in their own right** — separately
+playable parts for practice — **explicitly worth doing even if transcription never improves**.
+The Phase 0 no-go on Track A therefore does NOT block this.
+
+- [ ] **Lead vs backing vocals** — *feasible now*. Design below.
+- [ ] **Lead vs rhythm guitar** — *frontier, R&D*. No open weights; the known implementations are
+      closed (Moises). `StemID.guitarLead` / `.guitarRhythm` are declared and unregistered
+      (`StemSeparation.swift:91-92`). Do not promise this on a schedule.
+
+## Track B design — lead vs backing vocals (PLANNING ONLY, not approved to build)
+
+### Model candidates
+
+| candidate | arch / size | runs on | licence | note |
+| --- | --- | --- | --- | --- |
+| Mel-Band RoFormer karaoke (aufr33/viperx checkpoint) | Mel-Band RoFormer, ~200 MB | CPU ok, GPU faster | **community-trained, terms unclear** | best quality reported for lead/backing |
+| UVR-MDX-NET Karaoke 2 | MDX-Net, ~60 MB ONNX | CPU fine | code MIT; **weights unclear** | smallest, proven, weaker on dense harmony |
+| MVSEP MDX23 karaoke | ensemble | heavier | service-linked, **check terms** | ensemble cost probably not worth it here |
+
+Recommendation: **UVR-MDX-NET Karaoke 2 first** — it is the smallest, is ONNX already (so it fits
+the existing `StemChunkPredicting` path with no new runtime), and lead/backing is a coarse split
+where the quality gap matters less than for chord work. Promote to Mel-Band RoFormer only if a
+listening pass rejects it.
+
+**Licence is a genuine blocker to resolve BEFORE download**, not after: the base model is already
+CC-BY-NC-4.0 (non-commercial), and these karaoke weights are community-trained with unclear
+terms. Two unclear-licence models is a materially worse position than one. Get a definite answer
+per artifact, and record `name` + `attribution` in `ModelArtifactLicense` like every other entry.
+
+### Integration — refiner cascade (recommended)
+
+This is a same-instrument split of an existing stem, which is exactly the shape
+`NativeStemRefinementEngine` already implements: it feeds a refiner ONLY its parent stem
+(`StemSeparation.swift:483-500`) and maps model outputs onto stable child IDs. **DrumSep is the
+working precedent** — drums → kick/snare/cymbals/toms, registered in
+`StemRefinementEngineFactory.production` (`SongAnalysisPipelineFactory.swift:165`).
+
+So: `parentStemID: StemKind.vocals.id`, outputs mapped to `.vocalLead` / `.vocalBacking`. Cascade
+runs after base separation, on the vocals stem only — roughly 1/6th the audio content of a full
+mix pass.
+
+Rejected alternatives: a **base-engine swap** is wrong (this splits an existing stem rather than
+producing a full stem set) and **`ExternalStemRefinementEngine`** is macOS-only by construction,
+which forecloses the iPad path Track B eventually wants.
+
+### Registration and cache impact
+
+- `StemID.vocalLead` / `.vocalBacking` already exist (`StemSeparation.swift:85-86`) — no taxonomy
+  change needed.
+- Add a `ModelPackageDescriptor` to `ModelCatalog`, add its id to
+  `ModelCatalog.optionalRefinementIDs`, or it **blocks first-run onboarding for every user**.
+- Cache: `StemRecipeIdentity` already hashes the refiner list
+  (`refiners: [String]`, `StemSeparation.swift:138-174`), so adding a refiner changes
+  `cacheKey` → existing stems are correctly invalidated and re-derived. **No manual cache work.**
+- Bump `taxonomyVersion` on the refiner so older manifests do not alias.
+
+### macOS vs iPad — macOS-first, and now we have the number
+
+Measured 2026-07-29 on this Mac (12-core, 24 GB): the base 6-stem pass peaks at **3.91 GB RSS**
+at the 7.8 s segment. That is already **above the iPad ~3 GB per-process ceiling** — which is
+exactly why iPad ships the 2.5 s re-export.
+
+The cascade runs sequentially and the ORT session is released after the base pass (commit
+`121ecd5`), so peak should be `max(base, refiner)` not the sum. But on iPad the base pass already
+warms to ~2.1 GB against a ~3 GB cap, leaving ~0.9 GB — tight for a second model even at ~60 MB
+of weights, since the arena dominates, not the weights.
+**Ship macOS/Advanced-Desktop only initially; treat iPad as a separate proof.**
+
+### Downstream risk — vocals is NOT presentation-only (verified)
+
+Consumers of `stems.vocals` today:
+
+| consumer | site | risk |
+| --- | --- | --- |
+| **Transcription (ASR)** | `AnalysisStage.swift:250`, `SongAnalysisPipeline.swift:369` | highest |
+| Vocal activity envelope / waveform | `AppModel.swift:1175, 2491` | medium |
+| Stem mix export | `StemMixExporter.swift:47` | medium |
+
+The protective detail: those all read the **flat legacy `StemFiles.vocals`**, not the
+hierarchical frontier. `StemMixGraph.activeNodes` hides a parent once it has children
+(`StemSeparation.swift:347-355`), so the **mixer and waveform lanes switch to lead/backing
+automatically while transcription keeps reading the untouched parent**. That is the desired
+default: richer playback, zero transcription change.
+
+Two things to verify rather than assume:
+1. `StemMixExporter` keys off `files[StemKind.vocals.id]` as its reference file — confirm it
+   still resolves when the frontier exposes children instead of the parent.
+2. Per `tasks/lessons.md` (2026-07-28), do not call this delivered until catalog, factory
+   registration, installed artifact, persisted manifest, AND visible mixer channels are verified
+   end to end.
+
+**Opportunity flagged, deliberately out of scope:** pointing ASR at `vocals.lead` instead of the
+full vocals could improve transcription by removing backing harmonies. That is a Track A-style
+accuracy change and must be measured, not assumed — Track B ships playback only.
+
+### Phased checklist (next pass, mechanical)
+
+- [x] B1 — Licence gate cleared 2026-07-29: SongWorkbench is personal/hobby, so the unclear-terms
+      community karaoke weights are acceptable. (Note this does NOT clear a future commercial
+      ship; the base model is CC-BY-NC-4.0 and these weights are unclear.)
+- [x] B2 — Artifact acquired and contract verified. **THE CONTRACT CHECK FAILED — B3-B8 BLOCKED.**
+      `UVR_MDXNET_KARA_2.onnx`, 52,786,726 bytes,
+      sha256 `bf32e15105a09c0f7dddd2b67346146334d6f3ecb399ed7638eba2ab07cbf5f4`,
+      from `github.com/TRvlvr/model_repo` `all_public_uvr_models`.
+      Probed with `Tests/SongWorkbenchTests/KaraokeModelProbeTests.swift`:
+      - rank-3 waveform `[1,2,N]` → **rejected**: "Invalid rank for input: Got: 3 Expected: 4"
+      - `[1,4,2048,256]` → **accepted**, output `[1,4,2048,256]`
+      This is **spectrogram in → spectrogram out**. Every existing engine is waveform-out, so
+      nothing in the codebase can consume it.
+
+### B2 BLOCKER — the model needs an inverse STFT this codebase does not have
+
+`StemChunkPredicting` is a waveform contract (`CoreMLStemSeparationEngine.swift:20`). DrumSep
+looks like a counterexample but is not: it feeds BOTH a waveform `[1,2,N]` and a packed
+spectrogram `[1,4,F,T]` and receives a **waveform** `[1,4,2,N]` back
+(`ONNXDrumPieceSeparationEngine.swift`), so `HybridDemucsFrequencyFeatures` only ever runs
+**forward**. There is no ISTFT anywhere in `Sources/`.
+
+Making KARA_2 work therefore requires NEW DSP, not mirroring DrumSep:
+1. STFT at this model's parameters (n_fft ~5120 / dim_f 2048 / dim_t 256 ≈ 5.9 s chunks);
+   `HybridDemucsFrequencyFeatures` hardcodes n_fft 4096 (`:11`), so it would need
+   generalising — a shared path DrumSep depends on.
+2. **Inverse STFT with overlap-add and exact window normalisation** — entirely new.
+3. Complement derivation for the backing stem (`vocals − lead`).
+
+Why this is a stop-and-ask rather than just work: a hand-rolled ISTFT produces artifacts that are
+**indistinguishable from model quality problems**, which would invalidate the B8 listening test —
+the very gate meant to judge backing-stem quality. The repo already carries an unvalidated
+instance of this risk: the DrumSep note says "STFT packing still needs PyTorch golden parity".
+Adding a second, larger unvalidated DSP path on top is how this becomes unfalsifiable.
+
+### Options (need a decision before B3)
+
+- **(a) Find a waveform-in/waveform-out karaoke export.** Zero new DSP; drops straight into the
+  existing refiner path. Cost: Mel-Band RoFormer karaoke weights ship as PyTorch `.ckpt`, so this
+  likely needs an export step — precedent exists in `tools/demucs_export/`, which is how the
+  current 6-source model was produced. **Recommended if an export is achievable.**
+- **(b) Build the STFT/ISTFT pipeline natively.** Keeps the iPad path open long-term. Cost:
+  several hundred lines of new DSP, generalising a shared helper DrumSep depends on, and it needs
+  a golden-reference parity test or the B8 listening result cannot be trusted.
+- **(c) `ExternalStemRefinementEngine` + Python `audio-separator`.** Zero new DSP and the adapter
+  already exists and already takes the original mix. macOS-only, and `tasks/lessons.md` allows
+  subprocess/Python explicitly as an optional macOS extension but "never the iPad path".
+  **Fastest route to actually hearing lead/backing stems.**
+
+Recommendation: **(c) to get playable stems now, (a) as the shipping path.** (b) only if native
+iPad lead/backing becomes a firm requirement.
+- [ ] B3 — Add `ModelPackageDescriptor` + `optionalRefinementIDs` entry.
+- [ ] B4 — Add an ONNX predictor + engine modelled on `ONNXDrumPieceSeparationEngine.swift`
+      (transport-slot mapping, `refinementOutputs` → `.vocalLead` / `.vocalBacking`).
+- [ ] B5 — Register in `StemRefinementEngineFactory.production` behind Advanced Desktop.
+- [ ] B6 — Verify mixer + waveform lanes show the children; verify transcription still reads the
+      parent and its output is byte-identical to before.
+- [ ] B7 — Reconstruction check: lead + backing should sum to the parent within tolerance. Per
+      `tasks/lessons.md`, "finite WAV files were written" is NOT validation.
+- [ ] B8 — Listening pass. Backing vocals are the weak side; ship lead-only if backing fails.
+
+Reuses machinery that already ships: the refinement engine protocol, `StemSetManifest` hierarchy,
+`StemMixerChannelProjector`, and the waveform lane projector all already handle child stems — the
+DrumSep kick/snare/cymbals/toms refiner is the working precedent. Per `tasks/lessons.md`
+(2026-07-28), do not describe advanced-stem infrastructure as delivered stem output: verify
+catalog, factory registration, installed artifact, persisted manifest, and visible mixer channels
+end to end.
+
+Cross-cutting constraints from the findings doc still apply: iPad ~3 GB ceiling, per-combination
+storage growth with no eviction policy, and licensing (base model is CC-BY-NC).
+
+---
+
+# Per-Instrument Stem Algorithm Selection (2026-07-29)
+
+Investigation findings: `tasks/stem-algorithm-selection-findings.md`.
+
+**Thesis under test:** guitar separation quality is the lever on chord accuracy
+(htdemucs_6s isolates guitar ~5 dB; BS-RoFormer 6-stem ~9 dB, and chords read the guitar
+stem first). **Counter-thesis we must disprove before spending:** the literature is mixed —
+there is a published case where Demucs preprocessing made a chord model *worse*, and SDR does
+not predict downstream accuracy. So Phase 0 measures real chord/note output, never separation
+metrics, and Phase 1 does not start until Phase 0 reports a number.
+
+## Phase 0 — Validation harness (offline, additive, no shipping behavior change)
+
+Goal: measure whether the chord source stem actually moves chord accuracy, before investing
+in any new model.
+
+- [x] **Harness host DECIDED: the existing test target.** Every declaration in `Sources/` is
+      `internal` — `grep public` returns **zero** — so a standalone `Benchmarks/Tools` binary
+      or a new SPM executable target cannot reach the analysis code without restructuring
+      `Package.swift` into a library. The test target already has `@testable import` access in
+      all 65 files, and `Project.swift:132` globs `Tests/SongWorkbenchTests/**` so a new file
+      is picked up by SwiftPM *and* Tuist for free. (`Benchmarks/Tools/native_analysis_benchmark.swift`
+      is a stale template — it calls internal types it does not define and the documented bare
+      `xcrun swiftc` recipe cannot compile it.)
+- [x] **Precedent found:** `Tests/SongWorkbenchTests/ChordDecoderOfflineValidationTests.swift`
+      is already an env-gated (`SW_OFFLINE_VALIDATION=1`) offline A/B harness that reads the
+      app container's analysis cache and diffs two decoder configurations. Same shape as what
+      we need — swap "decoder config A/B" for "stem source A/B".
+- [ ] **ACCEPTED COST — harness mirrors rather than calls `HarmonyStage`.** `HarmonyStage.run`
+      requires a full `AnalysisStageContext` (request, document, digest closure, cache, stem
+      engine, refiners, transcription factory, ChordPro builder, progress closure —
+      `AnalysisStage.swift:32-45`), which is not practical to construct offline. The harness
+      therefore re-implements the ~40-line stage 1-8 sequence. **This can silently drift from
+      production.** Mitigation: a prominent comment pinning the mirrored line range. Upgrade
+      path if it bites: extract the sequence into one shared internal function both call —
+      deliberately deferred, since that is a change to shipping code.
+- [ ] **Hold the beat grid FIXED across arms.** The grid is derived from the DRUMS stem
+      (`DrumBeatGrid`, `AnalysisStage.swift:747`) and every downstream step — the 0.8-beat
+      filter, onset snapping, consensus — quantizes to it. Compute `beatTimes` once and inject
+      the identical grid into all three arms, or the experiment confounds chroma source with
+      grid drift and measures nothing.
+- [ ] Arms: chords derived from `guitar` stem vs `accompaniment` stem vs full mix. (These are
+      the real branches of `HarmonyAudioSourceSelector`, `HarmonyAudioSource.swift:35-40`.)
+- [ ] Also run the bass-note arm: `BassLineAnalyzer` on the `bass` stem vs full mix, since
+      bass onsets feed back into the chord decoder as switch cues (`AnalysisStage.swift:783`).
+- [x] **Ground-truth question RESOLVED.** A full bidirectional ChordPro parser already exists
+      (`ChordProDocument.init(parsing:)` → `ChordProParser.parse`, `ChordProDocument.swift:200`),
+      and `ChordProChord` is structured (root / suffix / slash bass, with `pitchClass(for:)`)
+      — so labels compare as integers, not strings. Timing IS recoverable: the builder emits
+      an `{x_chord_times: …}` directive before every row and
+      `ChordProChordTimeCarrier.parse(_:)` (`ChordProDraftBuilder.swift:809-824`) already
+      returns `(time, label)` pairs. **No new parsing work needed.**
+- [ ] **But treat that ground truth as a LABEL oracle only, never a timing oracle.** Three
+      caveats: (1) the carrier is deliberately not wired into any import path
+      (`ChordProDraftBuilder.swift:795-798`) — it exists as a round-trip proof; (2) timing
+      survives only in files this app's builder generated, and only if the user did not delete
+      the directive lines — a hand-authored or foreign chart yields chord ORDER only; (3) the
+      timestamps in a *user-reviewed* chart were still produced by the decoder, so scoring
+      timing against them is **circular**. Compare labels on a shared time grid; do not report
+      timing accuracy against a reviewed chart.
+- [ ] There is **no labeled corpus and no audio at all in the repo** — zero `.wav/.mp3/.m4a`
+      outside `.build`, and `tasks/backlog.md:85` states the catalog "is original songs with
+      no ground truth." All existing test audio is synthesized in Swift. So the harness must
+      (a) synthesize its own smoke-test song for the always-on path, and (b) take real songs by
+      path from the environment. Never commit audio.
+- [ ] Report **cross-arm agreement** (pairwise % of time two arms emit the same chord) as well
+      as accuracy — it needs no labels, so the harness produces a usable signal on any song
+      immediately, before any reviewed chart exists.
+- [ ] Metrics, reported per arm:
+      - time-weighted root accuracy (fraction of song duration with the correct root)
+      - time-weighted full accuracy (root + quality)
+      - event count vs ground truth (over/under-segmentation)
+      - **vocabulary ceiling:** % of ground-truth chords not representable in the 5-quality
+        vocabulary (`ChordQuality` is exactly major/minor/major7/minor7/dominant7,
+        `ChordClassification.swift:4-10`). If root accuracy is high but full accuracy is
+        capped near this ceiling, the vocabulary is the binding constraint and Phase 1 is the
+        wrong investment — say so and stop.
+- [ ] Emit a comparison table in the style of `Benchmarks/CHORD_ANALYSIS.md`; write results to
+      `Benchmarks/STEM_SOURCE_CHORD_ACCURACY.md`.
+- [ ] Song set: start with the existing fixed 60 s benchmark excerpt (sha256
+      `47881ae9…f3803`, already shared by `CHORD_ANALYSIS.md` and `STEM_SEPARATION.md`), then
+      extend to a small set of the user's reviewed songs. Songs live outside the repo — the
+      harness must take a path and skip cleanly when absent, never commit audio.
+- [ ] Harness must run with ZERO changes to shipping pipeline behavior. Additive files only.
+
+### Phase 0 acceptance criteria
+
+- [x] Harness runs end-to-end and emits a three-arm comparison (synthetic song; real-song run
+      still pending — see Review).
+- [x] Identical beat grid across arms is asserted, not assumed.
+- [x] Result reports both root and full accuracy plus the vocabulary-ceiling figure.
+- [x] `git status` confirms no shipping source file changed.
+
+### Phase 0 review (2026-07-29 — scaffold complete, not yet run on real audio)
+
+Scaffolded `Tests/SongWorkbenchTests/StemSourceChordAccuracyTests.swift` (586 lines, one new
+file, zero `Sources/` changes). Two tests: an always-on synthetic 4-bar C-F-G-C smoke test,
+and `testRealSongThreeArmComparison` gated on `SW_STEM_SOURCE_EVAL=1` plus
+`SW_STEM_SOURCE_EVAL_DIR` / `SW_STEM_SOURCE_EVAL_MIX` / optional `SW_STEM_SOURCE_EVAL_CHART`.
+Verified independently of the subagent: `swift test --filter StemSourceChordAccuracyTests`
+passes (4.3 s, 1 passed / 1 skipped), `swift format lint --strict` clean, `git status` shows
+exactly one added file against the pre-work baseline.
+
+**The synthetic numbers (99% on every arm) are evidence of NOTHING** beyond working plumbing —
+sine triads on a hard-coded progression are trivially separable. There is no accuracy
+assertion, by design.
+
+Design notes that matter for interpreting the real run:
+
+- **`instrumentOnsets` deliberately varies per arm.** The shared grid, bass notes, and meter
+  are held identical, but each arm derives its own onsets from its own audio — because that is
+  what production does (`AnalysisStage.swift:766-771` reads onsets from the guitar/other stem).
+  So the experiment isolates *audio source*, not *chroma alone*. That is the faithful
+  comparison, but it means a win could come from cleaner onsets rather than cleaner chroma.
+  If the real run shows a guitar-arm win, re-run with onsets pinned to decide which.
+- **The shared grid is anchored to arm 0's bpm.** `DrumBeatGrid` needs a tempo prior and the
+  drums stem gives only onsets, so production takes bpm from the harmony result; the harness
+  mirrors that using the FIRST arm's bpm. Keep `guitar` first across runs or the grid can shift
+  between invocations.
+- **Vocabulary ceiling is count-weighted, not time-weighted.** A rare `sus4` held for 30 s is
+  under-counted relative to its effect on time-weighted full accuracy. If full accuracy lands
+  noticeably below `1 − ceiling`, check this before blaming the stem.
+- **Slash bass is stripped** (`C/G` scores as C major), so inversions do not count against the
+  ceiling. Marked with a `ponytail:` comment and an upgrade path.
+
+Remaining before the decision gate:
+
+- [x] Run against real separated stems — done, 25 songs / 5,527.9 s from the app container.
+- [x] Extend to a small song set — batch mode added (`testBatchAgreementAcrossSeparatedSongs`,
+      gated on `SW_STEM_BATCH=1`). Ran 742.6 s, 1 test, 0 failures.
+- [x] Write `Benchmarks/STEM_SOURCE_CHORD_ACCURACY.md` from the real results — done.
+- [ ] Capture current 6-stem ONNX CPU separation timing (still missing — this run reused
+      existing stems and never invoked the separator, so it produced no timing datum).
+
+### Phase 0 RESULT (2026-07-29) — agreement-only, no ground truth
+
+| pair | songs | agree % | root div % | qual div % |
+| --- | ---: | ---: | ---: | ---: |
+| guitar vs accompaniment | 25 | 79.8 | 15.1 | 5.0 |
+| guitar vs fullmix | 5 | 49.8 | 36.7 | 13.5 |
+| accompaniment vs fullmix | 5 | 53.1 | 34.7 | 12.2 |
+
+Emitted quality, guitar arm: major 71.8 / minor 20.8 / maj7 6.8 / **m7 0.0** / dom7 0.6.
+
+**DECISION GATE: HELD. Do not start Phase 1 yet.**
+
+Sensitivity is proven — 20 % of song duration changes between guitar and accompaniment, 15.1 %
+of it at root level, despite accompaniment *containing* the guitar stem. But high sensitivity is
+precisely the precondition for the published failure mode (separation preprocessing degrading a
+chord model), and these numbers cannot say which arm is right. Phase 1 would buy a better guitar
+stem with no way to evaluate it.
+
+Two findings that redirect the next step:
+
+1. **Ground truth is now a hard prerequisite, not a nice-to-have.** Phase 1's A/B needs it too.
+   3-5 hand-verified songs converts this harness from a sensitivity meter to an accuracy meter.
+2. **The vocabulary may be the real ceiling.** `m7` is emitted 0.0 % of the time across 92
+   minutes; 92.6 % of detected time is a plain triad. No separation improvement recovers a chord
+   the classifier will not emit. Worth pricing a vocabulary/classifier experiment against Phase 1
+   before committing to either.
+
+- [x] **Ground-truth mode RUN (2026-07-29).** Independent charts found in `~/Documents/CCS
+      Files 2` (NOT the app's `draft` documents, and NOT `Desktop/Settle Down.cho`, which is a
+      SongWorkbench export and would be circular). Charts are UNTIMED, so scoring is LCS over
+      collapsed chord sequences; charts are capo-shape and are transposed to concert pitch.
+
+### Phase 0 FINAL RESULT — accuracy mode (3 songs)
+
+| arm | mean root seq % | mean full seq % |
+| --- | ---: | ---: |
+| guitar | 77.1 | 72.6 |
+| accompaniment | **77.1** | **73.2** |
+| fullmix | 76.4 | 65.3 |
+
+Vocabulary ceiling MEASURED: **1.4 % out-of-vocabulary** over 2,361 chord tokens in 37 charts
+(0.0 % on all three scored songs). The 5-quality vocabulary covers 98.6 % of the repertoire.
+
+**DECISION: Phase 1 is NO-GO on current evidence.**
+
+- Guitar and accompaniment tie on root accuracy to the decimal (77.1 / 77.1); accompaniment is
+  marginally ahead on full quality. The 15.1 % root divergence from the sensitivity run buys no
+  accuracy. Output moves; quality does not. The premise "better guitar stem → better chords"
+  is not supported.
+- Separation vs no separation IS worth its keep (+7.3 pts full-quality over full mix) — but
+  that is the shipped benefit, not an argument for a second model.
+- **Vocabulary hypothesis REFUTED** (1.4 % OOV). It is not the ceiling.
+- **The real levers are stem-independent:** (1) seventh confusion — `maj7` emitted 6.8 % where
+  ground truth has literally 0, `m7` emitted 0.0 % where truth has 2.8 %; (2) over-segmentation
+  — 1.1× to 3.6× more chord events than the charts carry.
+
+Caveats bounding this: N=3, only ONE a Reviewed chart; LCS is recall-only so absolute levels are
+inflated (the guitar-vs-accompaniment comparison is unaffected — near-identical sequence
+lengths — but fullmix over-detects more, so separation's edge is understated).
+
+- [ ] **NEXT (supersedes Phase 1):** attack seventh misclassification and over-segmentation,
+      both stem-independent and cheaper than a new separation model.
+- [ ] Add a precision term to the scorer (F1, not recall-only) so over-segmentation is
+      penalised rather than rewarded.
+- [ ] Get more Reviewed-tier charts; N=1 at the strong tier cannot carry a decision this size.
+- [ ] Capture 6-stem ONNX CPU separation timing (still missing — both runs reused existing
+      stems and never invoked the separator).
+- [ ] **Decision gate:** Phase 1 starts only if the guitar arm beats the others by a margin
+      that survives the song count. A null result is a valid, valuable outcome — it saves the
+      entire Phase 1/2 spend.
+
+## Phase 0b — Seventh misclassification: ROOT-CAUSED, fix measured, NOT SHIPPED (2026-07-30)
+
+Attacks lever (1) from the Phase 0 FINAL RESULT. Stem-independent, as predicted.
+
+- [x] **Stage-attribution diagnostic built and run.**
+      `Tests/SongWorkbenchTests/ChordQualityStageAttributionTests.swift` (new, additive, zero
+      `Sources/` changes), gated `SW_CHORD_STAGE_ATTR=1` + `SW_CHORD_STAGE_ATTR_OUT=<path>`.
+      Replays the container's cached harmony analyses through every stage of the real decode
+      path (S0 cached frames -> S1 `refineObservations` -> S2 confidence floor -> S3 Viterbi ->
+      S4 `mergeSameRootExtensions` -> S5 `decoder.events` cross-check -> S6 event re-root ->
+      S7 onset snap -> S8 duration filter -> S9 `ChorusChordConsensus`), tallying the
+      chord-quality distribution after each. S5 asserts S1-S4 replicated the real entry point.
+
+### ROOT CAUSE — `BassInformedChordRefiner.refineObservations` (ChordClassification.swift:251-289)
+
+**One stage produces the entire defect.** Every stage after S1 is quality-neutral (Viterbi,
+merge, snap, duration filter, and chorus consensus each move 0-2 labels).
+
+| song | S0 maj7 frames | S1 maj7 frames | `major->major7` rewrites | inflation |
+| --- | ---: | ---: | ---: | ---: |
+| 394f79dd | 8 (0.3 %) | 336 (11.8 %) | 327 | 42x |
+| 3af767ca | 17 (0.8 %) | 248 (11.8 %) | 231 | 15x |
+| 77e2f562 | 5 (0.2 %) | 441 (13.7 %) | 436 | 88x |
+| 89c28733 | 9 (0.4 %) | 257 (10.3 %) | 248 | 29x |
+
+Two independent defects in the same 4 lines:
+
+1. **First-match, not argmax.** `.minor` returns as soon as it shares 2 tones, so a seventh
+   sharing all 3 is never considered — and `.minor7` is absent from the candidate list entirely,
+   so it can never be produced at any time. A Cm7 (C-Eb-G-Bb) is note-identical to Eb6, so the
+   chroma classifier hears Eb major; under a C bass the scan emits a bare `Cm`.
+2. **Un-normalised threshold.** A flat "shares >= 2 tones" bar is easier for a 4-note seventh to
+   clear than for a 3-note triad, purely because it has more tones to clear it with. B major
+   under a G bass shares only {B, F#} with Gmaj7 — promoted anyway.
+
+**`ChorusChordConsensus` is EXONERATED** (1-2 label rewrites/song), but note it runs in
+production (`AnalysisStage.swift:847`) and `StemSourceChordAccuracyTests` skips it (:574) — so
+the 6.8 % harness figure and the persisted x20 `Gmaj7` count describe DIFFERENT pipelines.
+The new diagnostic covers both.
+
+### Candidate fix — measured, then REVERTED. Preserved at `tasks/seventh-reroot-fix.patch`
+
+Argmax over all five qualities; threshold normalised to the CANDIDATE's own size (triad 2-of-3,
+seventh 3-of-4); ties to the plain triad. Validated by simulating all three rules against the
+same frames in the diagnostic, with the shipping rule reproduced exactly (`faithful=true`) to
+prove the simulation trustworthy before any code changed.
+
+Event-level distribution, before -> after (ground truth: maj7 **0 %**, m7 **2.8 %**):
+
+| song | maj7 | m7 |
+| --- | --- | --- |
+| 394f79dd | 9.8 % -> **2.7 %** | 0.0 % -> **6.7 %** |
+| 3af767ca | 7.8 % -> **1.5 %** | 0.0 % -> **3.1 %** |
+| 77e2f562 | 15.4 % -> **1.5 %** | 0.0 % -> **3.7 %** |
+
+**But downstream F1 did not follow** (3 charted songs, guitar arm — the arm production uses):
+
+| metric | before | after |
+| --- | ---: | ---: |
+| mean root F1 | 51.5 | 52.0 |
+| mean full F1 | 46.9 | 46.6 |
+| mean over-seg ratio | 2.07 | 2.11 |
+
+By chart tier it splits hard: **reviewed 35.2 -> 41.8 root F1 (+6.6)**, transcribed 76.0 -> 71.7
+(-4.3), automated 43.3 -> 42.5 (-0.8). The accompaniment arm fell on both (51.8 -> 50.9,
+47.4 -> 46.6).
+
+**DECISION: reverted, pending a human call.** Two reasons, neither of them "it doesn't work":
+
+1. The plan's own bar was "maj7 -> ~0 % AND m7 -> ~2.8 % AND F1 does not fall." The distribution
+   half passed decisively; the F1 half is a wash, not a gain.
+2. It breaks two EXISTING tests that encode the old rule as deliberate, documented intent:
+   `testBassRerootRecoversUpperStructureSeventh` (C# over F# shares only 2 tones with F#maj7 —
+   the old >= 2 bar promoted it on purpose; the new 3-of-4 bar rejects it) and
+   `testBassRerootRecoversChordMaskedByChromaConfusion` (expects `Ab`, argmax prefers `Abmaj7`,
+   which is what C-Eb-G over an Ab bass literally is). **The old >= 2 threshold IS both the
+   deliberate upper-structure feature and the maj7 inflation — you cannot keep one without the
+   other.** Deleting a tested feature on N=3 with no F1 gain is not a call to make silently.
+
+- [ ] **DECISION NEEDED:** ship `tasks/seventh-reroot-fix.patch` (and rewrite the two tests to
+      encode the new intent), or keep the current behaviour. Weighting by chart trustworthiness
+      favours shipping — the only Reviewed-tier chart gained +6.6 root F1, while the tier that
+      lost is itself "transcribed from the supplied recording." Weighting by test intent favours
+      holding.
+- [ ] Either way, get more Reviewed-tier charts first. N=1 at the strong tier still cannot carry
+      this, exactly as the Phase 0 review said.
+- [ ] Over-segmentation (lever 2) untouched — over-seg ratio is 1.1x-3.7x and dominates F1 on
+      the automated-tier song (100 % recall, 27 % precision). Likely the bigger remaining win.
+
+### Reproduce
+
+```sh
+# stage attribution (no ground truth needed)
+SW_CHORD_STAGE_ATTR=1 SW_CHORD_STAGE_ATTR_OUT=/tmp/stage_attr.txt \
+  swift test --filter ChordQualityStageAttributionTests
+
+# accuracy, before/after a fix
+SW_STEM_GT=1 SW_STEM_GT_MANIFEST=/tmp/gt_manifest.tsv SW_STEM_GT_OUT=/tmp/gt_before.txt \
+  swift test --jobs 1 --filter testGroundTruthSequenceAccuracy
+```
+
+`gt_manifest.tsv` rows (mix column intentionally empty -> guitar + accompaniment arms only;
+this reproduces the recorded 77.1/77.1 root recall exactly):
+`<stemDirHash>\t<container>/Analysis/Stems/<stemDirHash>\t\t<chart .cho>\t<tier>`
+with `ChordPro Catalog/Summertime's here with you.cho` (reviewed — NOT the top-level
+`Somertime's Here with You.cho`, which is a different, best-effort chart), `Key West Bar.cho`
+(transcribed), `ChordPro Catalog/Flip Flops and Barbeque.cho` (automated).
+
+## Phase 1 — BS-RoFormer 6-stem guitar as a selectable alternate
+
+Only after Phase 0 clears the gate.
+
+- [ ] Fill the already-declared-but-empty guitar slot: `StemID.guitarLead`/`.guitarRhythm`
+      exist (`StemSeparation.swift:91-92`), and the factory documents guitar as blocked
+      "until a verified model artifact exists" (`SongAnalysisPipelineFactory.swift:164`).
+- [ ] **Design fork — resolve first.** An alternate guitar model is not a refiner of the
+      guitar stem; it reads the ORIGINAL mix and produces a competing guitar stem.
+      `NativeStemRefinementEngine` feeds a refiner only its PARENT stem
+      (`StemSeparation.swift:483-500`), so one of: (a) register it as an alternate BASE
+      engine, (b) extend the native refiner to accept the original mix as parent, or (c) use
+      `ExternalStemRefinementEngine` — which already exists, already takes `request.inputURL`
+      (the original mix), and is macOS-only by design.
+- [ ] **Evaluate via the external adapter before building a native path.** `audio-separator`
+      behind `ExternalStemRefinementEngine` gets a real A/B with no ONNX export work. Per
+      `tasks/lessons.md`, a subprocess/Python integration is an optional macOS extension and
+      NEVER the iPad path — so this is an evaluation vehicle, not the shipping design. Only
+      port to a native ONNX predictor if the A/B wins.
+- [ ] Verify a BS-RoFormer ONNX export actually exists with a checkable license and checksum
+      before promising the native path. Do not register a catalog entry without both.
+- [ ] Register `ModelPackageDescriptor` with license, sha256, size, entry point — and add it
+      to `ModelCatalog.optionalRefinementIDs` or it will **block first-run onboarding for
+      every user** (`AnalysisCapabilityProfile.requiresModelPackage`).
+- [ ] A/B its chord output against the htdemucs_6s guitar on the SAME songs using the Phase 0
+      harness. Cache keys separate the two arms automatically via `StemRecipeIdentity`
+      (`StemSeparation.swift:138`) — no manual invalidation needed.
+- [ ] Per `tasks/lessons.md`: do not accept "finite WAV files were written" as validation.
+      Verify reconstruction error, headroom/clipping, and source mapping.
+
+## Phase 2 — Per-song, per-instrument selection (data model + UI)
+
+- [ ] **Gap 1 — plumbing.** `SongAnalysisCoordinator.makePipeline` is a zero-argument closure
+      (`SongAnalysisCoordinator.swift:14`) and `SongAnalysisPipelineRequest` has no separation
+      config. Thread a per-run recipe through, following the existing `transcriptionMode` /
+      `transcriptionDecodeRate` precedent (`AppModel.swift:1016`).
+- [ ] **Gap 2 — availability.** Engine choice is entangled with `AnalysisCapabilityProfile`
+      tiers plus a macOS-only `UserDefaults` toggle plus the onboarding gate. A per-song
+      choice must COMPOSE with tiers (iPad cannot offer what it cannot run), not bypass them.
+- [ ] **Gap 3 — THE SHARP EDGE.** Downstream reads the flat legacy `StemFiles`
+      (`stems.guitar`, `stems.bass`) rather than the hierarchical `StemSetManifest` — see
+      `HarmonyAudioSource.swift:35`, `AnalysisStage.swift:673,767`. Either an alternate guitar
+      lands at `guitar.wav`, or `HarmonyAudioSourceSelector` and friends move onto `StemID`.
+      Decide deliberately; this is where a per-instrument feature either stays clean or rots.
+- [ ] Persistence: `PracticeSettings` (`PracticeProject.swift:15`) is the natural home — user
+      choices, and its hand-written `init(from:)` already decodes-if-present with defaults, so
+      no schema migration. (`SongAnalysisDocument` is results, and already records what
+      produced the stems via `stemSet.recipeIdentity`.)
+- [ ] UI: extend the Models popover (`AnalysisWorkspaceView.swift:409`, where the "Advanced
+      stem refinement" toggle already lives) and/or a per-song control near Analyze.
+- [ ] **Consider the counter-design.** The per-song transcription-mode picker was deliberately
+      REMOVED in backlog #11 in favor of "run every installed mode, let the blend UI be the
+      tuning" (`AppModel.swift:789-800, 824`). Decide consciously whether per-song algorithm
+      choice is different in kind, or whether the same shape applies here. A picker nobody
+      touches is worse than a good default.
+- [ ] Storage policy: every algorithm combination is a full extra stem set on disk (6 ×
+      stereo float32 WAV per song). Per-song × per-instrument multiplies that and there is NO
+      eviction policy today. Decide one before shipping selection.
+
+## Phase 3 — Expansion by feasibility
+
+- [ ] Lead vs backing vocals — lead is strong, backing is rough. Ship lead-only if backing
+      does not clear a listening bar.
+- [ ] Per-drum-piece cascade — already feasible; DrumSep ships today (macOS + Advanced).
+      Mostly a promotion/validation exercise, not new modeling.
+- [ ] **Explicitly deferred as NOT FEASIBLE with open weights** (record the reason so this is
+      not re-litigated): lead vs rhythm guitar (closed/Moises only); distinct synth stem
+      (~2 dB, not usable). Revisit only if open weights appear.
+
+## Cross-cutting constraints and risks
+
+- [ ] **iPad ~3 GB per-process ceiling.** Already forced the 2.5 s bundled re-export (7.8 s
+      OOMs, 3.5 s tipped the cap). Running multiple separation models per song on iPad may be
+      impossible. Any per-song selection MUST degrade to a single model on iPad.
+- [ ] **No timing data for the current 6-stem ONNX CPU path.** The only recorded benchmark is
+      the older 4-stem CoreML FP16 engine (`Benchmarks/STEM_SEPARATION.md`). Measure the
+      current path before promising switchable models — capture it during Phase 0.
+- [ ] **Licensing.** The current base model is CC-BY-NC-4.0 (non-commercial), and the best
+      RoFormer weights are community-trained with unclear terms. Audit both before any
+      commercial ship. This is a pre-existing exposure, not one this feature creates.
+- [ ] **Do not trust `BUILD SUCCEEDED`** (`tasks/lessons.md`, 2026-07-05): CLI `xcodebuild`
+      can write to a different DerivedData folder than the running app.
+- [ ] Serialize: no second code session on this repo. In-session subagents only, disjoint file
+      scopes, and `git status` verified after every subagent reports.
+
+---
+
+# Drum Piece Refinement Registration (2026-07-28)
+
+## Plan
+
+- [x] Register a verified DrumSep ONNX package in `ModelCatalog` (kick/snare/cymbals/toms).
+- [x] Add Hybrid-Demucs-compatible frequency features + ONNX drum-piece predictor/engine.
+- [x] Wire production `StemRefinementEngineFactory` so Advanced Desktop injects a drums
+      parent → `drums.kick|snare|cymbals|toms` refiner when the package is installed.
+- [x] Keep default Desktop Full / iPad Reduced profiles unchanged; Advanced remains opt-in.
+- [x] Show DrumSep as an optional Models package on desktop without blocking onboarding.
+- [x] Document guitar lead/rhythm as blocked until a verified model artifact exists.
+- [x] **HARD:** Waveforms card shows a lane for every active frontier stem (including
+      refined drum/guitar children), with labels/colors consistent with the mixer.
+- [x] **HARD:** Stem Mix volume UI exposes mute/solo/gain/pan for every active frontier
+      stem (already channel-projected; verify + regression-test with drum children).
+- [x] Add focused tests for catalog/factory/STFT shape + waveform/mixer frontier; run
+      stem/factory suite + format check.
+
+## Acceptance criteria
+
+- [x] Catalog entry has license, checksum, size, and entry point for Gridshift DrumSep ONNX.
+- [x] Advanced Desktop + installed DrumSep produces a native drum-piece refiner in factory assembly.
+- [x] Default desktop/iPad profiles still request no refiners.
+- [x] Guitar lead/rhythm remains catalog-unregistered with an explicit follow-up decision.
+- [x] When a refined manifest is active, the Stem Mix rail shows child channels (not the
+      parent) with working mute/solo/gain/pan, matching existing six-stem UX.
+- [x] When a refined manifest is active, the Waveforms card stacks one labeled lane per
+      active frontier stem (including `drums.kick` etc.), not only the six `StemKind`s.
+- [x] Verification evidence recorded below.
+
+## Review
+
+- Registered `ModelCatalog.drumsep` (Gridshift `drumsep-onnx`, MIT, sha256
+  `ecb8509383ccd437…`, 335 071 223 bytes) as an optional refinement package.
+- Added `HybridDemucsFrequencyFeatures`, `ONNXDrumPieceSeparationEngine`, and
+  `StemRefinementEngineFactory.production` mapping drums → kick/snare/cymbals/toms.
+- Advanced Desktop is opt-in via Models → “Advanced stem refinement” (UserDefaults);
+  AppModel always assembles with `.production` and `AnalysisCapabilityProfile.current`.
+- **Mixer:** `StemMixerChannelProjector` already used the active frontier; added
+  scribble short-names for Kick/Snare/Cymbals/Toms and regression coverage.
+- **Waveforms:** `stemWaveforms` is now `[StemWaveformLaneModel]` driven by
+  `StemWaveformLaneProjector.targets(for:)` (same frontier as the mixer). ContentView
+  labels/colors use `StemID.laneColor`; ChordPro stem strips use
+  `stemWaveformEnvelope(for:)`.
+- Guitar lead/rhythm: taxonomy IDs exist; no verified public ONNX registered yet —
+  blocked on model choice (see decision below).
+- Verification: focused suite 39 passed (`StemMixerTests`,
+  `SongAnalysisPipelineFactoryTests`, `ModelPackageManagerTests`,
+  `HybridDemucsFrequencyFeaturesTests`, `StemSeparationTests`).
+- Follow-up before calling drum pieces “listening-ready”: install DrumSep, enable
+  Advanced, re-analyze a song, and validate reconstruction/listening quality (STFT
+  packing still needs PyTorch golden parity).
+
+## Decision needed (guitar)
+
+No verified lead/rhythm guitar ONNX is registered. Options: (a) wait for a community
+model with license/checksum, (b) heuristic split (not ML), (c) external Python
+refiner. Drum pieces can ship independently.
+
+---
+
+# Degenerate Lyric Lead-In Split (2026-07-28)
+
+## Plan
+
+- [x] Trace Doc Holiday lines 10/11 through persisted segment and word timing.
+- [x] Identify the grouping safeguard that preserves the invalid boundary.
+- [x] Add a regression for a zero-duration multiword lead-in followed
+  immediately by the rest of its phrase.
+- [x] Merge only timing-degenerate lead-ins without absorbing legitimate short
+  interjections.
+- [x] Verify Doc Holiday regrouping, focused/full tests, strict formatting,
+  diff checks, and macOS/iPad builds.
+
+## Review
+
+- Doc Holiday line 10 persisted as `Ain't no` with both words and the whole
+  segment timed `65.84-65.84`; line 11 began `runner` at `65.89`. The 50 ms
+  boundary had no acoustic or musical basis.
+- Root cause: the short-fragment merge deliberately protects lines ending in
+  `no` as possible standalone interjections. That lexical safeguard ignored
+  stronger evidence from the impossible zero-duration multiword timing.
+- The grouper now merges a multiword lead-in only when its total duration is at
+  most 50 ms and the continuation begins within 250 ms. Normally timed short
+  interjections remain protected.
+- Bumped the transcription grouping version to
+  `grouping-44-degenerate-leadin-merge`; existing projects also migrate through
+  the unconditional load-time regrouping pass without re-transcription.
+- Live verification: Doc Holiday now persists line 10 as
+  `Ain't no runner from the debt you owe.` at `65.84-69.30`, and the former
+  line 12 is naturally line 11.
+- Verification: all 55 transcription tests passed; full `swift test` passed
+  695 tests with 7 environment-dependent skips; strict recursive Swift format
+  lint and `git diff --check` passed; macOS Debug and generic physical-device
+  iPad Debug builds succeeded.
+
+# Xcode Progress Geometry Diagnostics (2026-07-28)
+
+## Plan
+
+- [x] Reproduce the reported geometry diagnostic under Xcode and capture its
+  exact native view and dimensions.
+- [x] Trace the invalid native `ProgressView` constraints to the mounted SwiftUI
+  control.
+- [x] Remove the unsupported transformed control geometry while preserving the
+  compact status indicator.
+- [x] Relaunch under Xcode and verify the diagnostic no longer appears.
+- [x] Run focused/full tests, strict formatting, diff checks, and macOS/iPad
+  builds.
+
+## Review
+
+- Reproduced under the Xcode debugger as an AppKit `ProgressView` constraint
+  diagnostic: maximum length `16.666667` failed the native minimum/maximum
+  validation.
+- Root cause was `BackgroundStatusBar` applying `scaleEffect(0.6)` to a native
+  small progress indicator inside a fixed 12-point frame. SwiftUI inverted the
+  transform into a fractional AppKit layout proposal whose rounded bounds
+  crossed.
+- Replaced the transform with the platform-supported `.mini` control size while
+  retaining the 12-point status slot.
+- Rebuilt and relaunched under Xcode; the geometry diagnostic did not return.
+- Verification: full `swift test` passed 694 tests with 7
+  environment-dependent skips; strict recursive Swift format lint and `git
+  diff --check` passed; macOS Debug and generic physical-device iPad Debug
+  builds succeeded.
+
+# Excessive Lyric Review Flags (2026-07-28)
+
+## Plan
+
+- [x] Reproduce the warning density against the current persisted song.
+- [x] Separate acoustic beat-grid flags from section-template flags and quantify
+  which rule dominates.
+- [x] Add a regression fixture that represents consistent vocal pickup timing
+  without hiding genuinely short, long, or structurally malformed lines.
+- [x] Fix the diagnostic baseline at its source and keep hover reasons specific.
+- [x] Re-run the live-song diagnostic, focused/full tests, strict formatting,
+  diff checks, and macOS/iPad builds.
+
+## Review
+
+- Root cause: `LyricLineDiagnostics` treated a lyric start more than 0.3 beat
+  from the nearest detected beat as a likely mis-split. Vocal pickups and
+  syncopated phrases do not have to begin on beat centers, so this flagged a
+  large fraction of valid lines by construction.
+- Removed nearest-beat onset distance as a standalone warning signal. Duration
+  outliers and section-template diagnostics remain, and the Review Flags help
+  text now describes only those evidence-backed checks.
+- On the current 37-line song, acoustic flags fell from 19 to 4: three long
+  lines and the short `Whoa-oh` line. Structural diagnostics add four
+  line-count mismatch flags, one overlapping a long line, for 7 unique review
+  flags instead of roughly half the song.
+- Added a regression proving equal-duration phrases with between-beat pickups
+  are accepted while the existing short-line regression still passes.
+- Verification: focused diagnostic and structure tests passed; full `swift
+  test` passed 694 tests with 7 environment-dependent skips; strict recursive
+  Swift format lint, `git diff --check`, macOS Debug build, and generic
+  physical-device iPad Debug build passed.
+
+# ChordPro and Review Playback Rendering Parity (2026-07-28)
+
+## Plan
+
+- [x] Add a ChordPro-only presentation configuration that uses the same
+  `ChordProAppPreview` renderer as Review without exposing the Edit mode.
+- [x] Route the ChordPro tab through the shared preview so font, line spacing,
+  rhythmic layout, lyric highlighting, bouncing ball, and auto-scroll are identical.
+- [x] Preserve ChordPro transpose, export, and display controls.
+- [x] Add regression coverage for the ChordPro presentation configuration.
+- [x] Run focused/full tests, strict formatting, diff checks, and macOS/iPad builds.
+
+## Review
+
+- `ChordProTrueView` now selects `ChordProTabConfig.chordProPlayback`, which
+  fixes `ChordProTabEditor` in App Preview mode while retaining timing, View,
+  transpose, export, and JustChords controls.
+- ChordPro and Review now instantiate the same `ChordProAppPreview`; typography,
+  rhythmic spacing, highlighting, bouncing ball, and auto-scroll have one owner.
+- Focused ChordPro layout/highlight suite: 23 passed. Full Swift suite:
+  693 passed, 7 environment-dependent tests skipped.
+- Strict Swift format lint, `git diff --check`, macOS Debug build, and generic
+  physical-device iPad Debug build passed.
+- Fresh-binary UI inspection confirmed the ChordPro tab exposes the timing/View
+  controls and `chordpro-app-preview`. Automated screenshot capture during live
+  playback timed out, so the test process was stopped; playback overlays retain
+  their existing focused unit coverage.
+
+# First-Line Lyric Regression and Missing Advanced Stems (2026-07-28)
+
+## Plan
+
+- [x] Reproduce first-line lyric loss from the current persisted analysis and
+  identify whether transcription, alignment, persistence, or rendering removes it.
+- [x] Reproduce the six-stem limitation from production capability/factory
+  configuration.
+- [x] Add regression tests at the real failing seams before changing behavior.
+- [x] Fix first-line preservation without restoring hallucinated/silent tokens.
+- [x] Make mixer controls and metering expose real refined/imported child stems
+  dynamically instead of assuming the six base stems.
+- [ ] Register verified native desktop refiner model artifacts; do not advertise
+  child stems without model files, licenses, checksums, and output taxonomies.
+- [x] Run focused and full tests, strict formatting, macOS/iPad builds, and inspect
+  representative persisted/rendered output.
+
+## Review
+
+- The live persisted transcription cache already contained only `Amen.` for the
+  opening line, proving the loss occurred in ASR rather than ChordPro rendering.
+- A bounded retry against the real 18-31 second vocal region recovered
+  `The saloon door swung up though he walks in.` with the installed Whisper model.
+- Accuracy mode now retries only sparse opening decodes after long intros and
+  merges the richer opening without replacing the rest of the full-song result.
+- Near-onset correction now preserves leading words in segments that straddle the
+  detected vocal onset.
+- Current production separation remains six stems because no verified lead/backing,
+  drum-piece, or lead/rhythm model artifacts are registered. The mixer and meters
+  now expose arbitrary real `StemID` children when a refined manifest exists.
+- Focused suite: 242 passed, 1 opt-in model test skipped. Full Swift suite:
+  692 passed, 7 environment-dependent tests skipped. Strict format lint and
+  `git diff --check` passed. macOS and generic physical-device iPad Debug builds
+  both succeeded.
+
+# Native Swift Stem Refinement (2026-07-28)
+
+- [x] Record native Swift/Xcode inference as the primary production direction.
+- [x] Add an in-process stem refiner that consumes a selected parent stem.
+- [x] Map native model outputs to hierarchical lead/backing, drum-piece, and
+  lead/rhythm track IDs without changing the base separator interface.
+- [x] Include wrapped engine/model identity in refined-stem cache identity.
+- [ ] Register concrete desktop refinement model artifacts after model files,
+  licenses, checksums, and output taxonomies are selected.
+- [ ] Register smaller iPad refinement artifacts only after device memory and
+  reconstruction-quality gates pass.
+
+## Review
+
+- `StemSeparationTests`: 14 passed.
+- Full Swift suite: 686 passed, 7 model/corpus-dependent tests skipped.
+- Strict Swift format lint passed.
+- macOS Debug `SongWorkbench` build succeeded.
+- Generic iOS Debug `SongWorkbenchiPad` build succeeded.
+- `git diff --check` passed.
+
+# External Stem Refiner Adapter (2026-07-28)
+
+## Plan
+
+- [x] Add a desktop command adapter that conforms to `StemRefinementEngine`.
+- [x] Define a small JSON contract for external refiners to return descriptors and audio assets.
+- [x] Make the command receive source audio, output directory, source digest, and current stem
+      manifest paths without coupling to a specific Python/model stack.
+- [x] Add tests for manifest parsing, relative output resolution, and command failure.
+- [x] Run focused tests, full tests, lint, diff check, and macOS/iPad builds.
+
+## Acceptance criteria
+
+- [x] A model runner can be integrated by producing a JSON manifest and WAV files in its assigned
+      output directory.
+- [x] The adapter remains desktop-only for command execution and fails explicitly elsewhere.
+- [x] Existing Swift-native refiner and six-stem behavior remains unchanged.
+- [x] Verification evidence is recorded here.
+
+## Review
+
+- Added `ExternalStemRefinementEngine`, `ExternalStemRefinementCommandInvocation`,
+  `ExternalStemRefinementCommandRunning`, and `ExternalStemRefinementManifest`. The adapter writes
+  the current `StemSetManifest` to `stem-refinement-request.json`, runs a desktop command, reads
+  `stem-refinement-result.json`, and maps returned tracks into descriptors/assets.
+- External commands receive templated arguments for `{input}`, `{outputDirectory}`,
+  `{sourceDigest}`, `{requestManifest}`, and `{responseManifest}`. This keeps Python/model runners
+  decoupled from Swift while giving them all paths required to produce refined stems.
+- Added explicit failures for unsupported platform command execution, non-zero command status, and
+  missing response manifest. The existing refinement pipeline still validates declared output stem
+  files before persisting a refined result as current.
+- Added tests covering command invocation, saved request manifest, relative audio path resolution,
+  missing response manifest, and command failure propagation.
+- Verification: focused `StemSeparationTests` passed 12 tests; broader stem/factory/pipeline/cache
+  tests passed 62 tests; full `swift test` passed 684 tests with 7 skipped and 0 failures; strict
+  Swift format lint and `git diff --check` passed; macOS Debug `SongWorkbench` build succeeded;
+  generic iOS Debug `SongWorkbenchiPad` build succeeded.
+
+---
+
+# Desktop Stem Refiner Assembly (2026-07-28)
+
+## Plan
+
+- [x] Add an injectable factory for desktop-only stem refinement engines.
+- [x] Expose an explicit advanced desktop capability profile without changing the default desktop
+      six-stem profile.
+- [x] Wire advanced desktop assembly to pass configured refiners into `SongAnalysisPipeline`.
+- [x] Add tests proving advanced desktop can inject refiners, while full desktop and iPad do not.
+- [x] Run focused tests, full tests, lint, diff check, and macOS/iPad builds.
+
+## Acceptance criteria
+
+- [x] Current desktop and iPad defaults produce no refinement engines unless explicitly configured.
+- [x] Advanced desktop has a stable product tier for model-backed stem refiners.
+- [x] Refiner assembly has access to the base stem package and current capability profile.
+- [x] Verification evidence is recorded here.
+
+## Review
+
+- Added `AnalysisCapabilityProfile.desktopAdvanced` as the opt-in tier for future model-backed
+  refiners. The default desktop profile remains `Desktop Full` / `.fullSixStem`, and iPad remains
+  `iPad Reduced` / `.reducedSixStem`.
+- Added `StemRefinementEngineFactory` with a small context object carrying the active capability
+  profile, base stem model package, and observed model statuses. The production default is empty,
+  so current behavior is unchanged.
+- `SongAnalysisPipelineFactory` now asks the refiner factory only for `.advancedDesktop` runs with
+  an available base stem engine, then passes those refiners into `SongAnalysisPipeline`.
+- Added tests proving advanced desktop refiner assembly participates in refined-stem cache identity
+  without constructing the heavyweight ONNX model, and proving default desktop/iPad profiles never
+  request refiners.
+- Verification: focused factory/pipeline/stem/cache tests passed 59 tests; full `swift test`
+  passed 681 tests with 7 skipped and 0 failures; strict Swift format lint and `git diff --check`
+  passed; macOS Debug `SongWorkbench` build succeeded; generic iOS Debug `SongWorkbenchiPad`
+  build succeeded.
+
+---
+
 # Plan: Structure tab accuracy — Settle Down live review (Task #43, drafted 2026-07-07)
 
 Eric live-reviewed the Structure tab on Settle Down and flagged 4 issues in one pass. All trace
@@ -390,7 +1286,9 @@ detector of that open bug, not a fix for it.
 ## Acceptance criteria
 
 - [x] The active Xcode iPad destination builds without macOS-only AppKit import errors.
-- [ ] If the build succeeds, launch the app on the connected iPad from Xcode.
+- [ ] If the build succeeds, launch the app on the connected iPad from Xcode. Still open:
+      later iPad work reached generic iOS builds, but physical connected-device launch evidence
+      is still blocked by device availability/discovery.
 
 ## Review
 
@@ -445,32 +1343,32 @@ Owner: `TrailingLyricTailPruner.lyricBodyEndBeforeInstrumentalTail`
 ## Fix plan
 
 ### Lyrics (do first — bigger, clearer win)
-- [ ] `lyricBodyEndBeforeInstrumentalTail`: only return a cutoff when the tail looks
+- [x] `lyricBodyEndBeforeInstrumentalTail`: only return a cutoff when the tail looks
       degenerate — every tail line is (a) ≤2 substantive words, or (b) a normalized
       duplicate of an earlier line or of another tail line. Keeps Summertime blips
       ("I", duplicated "Sunset winks…") cut; keeps real unique closing lines.
-- [ ] `resolvedCutoff`: geometry may only TIGHTEN the VAD signal cutoff by ≤3s
+- [x] `resolvedCutoff`: geometry may only TIGHTEN the VAD signal cutoff by ≤3s
       (never override a VAD that says vocals continue much later).
-- [ ] Add regression tests: normal final line + sourceDuration (Settle Down shape),
+- [x] Add regression tests: normal final line + sourceDuration (Settle Down shape),
       repeated-outro-hook kept, Summertime fixtures still pass.
 
 ### Chords
-- [ ] Lower `switchPenalty` 2.0 → 1.5 AND make it onset-aware: pass the instrument
+- [x] Lower `switchPenalty` 2.0 → 1.5 AND make it onset-aware: pass the instrument
       onsets (already computed for snapping) into the decoder; windows whose start
       lies within ~0.12s of an onset get a reduced penalty (~0.75). Real changes
       happen on attacks; flicker suppression stays for mid-note windows.
-- [ ] `ChordOnsetAligner.snap`: don't move an event if that compresses gap to the
+- [x] `ChordOnsetAligner.snap`: don't move an event if that compresses gap to the
       previous event below 0.8 of the local beat (kills the sliver source instead of
       deleting real events downstream).
-- [ ] Keep ChordEventDurationFilter as safety net; add A-B-A regression test proving
+- [x] Keep ChordEventDurationFilter as safety net; add A-B-A regression test proving
       genuine one-beat B on an onset survives the whole pipeline.
-- [ ] Bump reducer-version suffix in `AnalysisStage.swift:618` so cached raw frames
+- [x] Bump reducer-version suffix in `AnalysisStage.swift:618` so cached raw frames
       re-reduce without re-running chroma.
 
 ### Verify
-- [ ] Unit tests green; xcodebuild on Mac; re-analyze Settle Down + one more song;
-      confirm final lyrics reach ~230s and chord event count rises with changes
-      landing on onsets.
+- [x] Unit tests and format checks documented in the review below.
+- [ ] Live app re-analysis remains: re-analyze Settle Down + one more song; confirm final
+      lyrics reach ~230s and chord event count rises with changes landing on onsets.
 
 ## Review (2026-07-05)
 
@@ -964,23 +1862,23 @@ metric-position awareness. `DownbeatEstimator.barPhase(beatStrengths:)` (Measure
 already derives bar phase from drums+bass accent energy — NO lyrics needed, computable at
 analysis time from the same drum-locked grid the decoder already receives.
 
-- [ ] 1. AnalysisStage (HarmonyStage.run, ~:643-668): compute `beatsPerBar` via
+- [x] 1. AnalysisStage (HarmonyStage.run, ~:643-668): compute `beatsPerBar` via
       `DownbeatEstimator.estimateBeatsPerBar` and `barPhase` via `barPhase(beatStrengths:)`
       using drum-stem energy sampled at `resolvedBeatTimes`; pass both into the decoder.
-- [ ] 2. ChordTimelineDecoder: optional `meter: (beatsPerBar: Int, barPhase: Int)?` param
+- [x] 2. ChordTimelineDecoder: optional `meter: (beatsPerBar: Int, barPhase: Int)?` param
       (nil = exact old behavior, all callers/tests unchanged). In `windowSwitchPenalties`,
       multiply base penalty by a metric factor per window index i:
       downbeat ≈0.7, half-bar ≈0.85, weak beats ≈1.3 (constants to tune offline).
       Clamp combined (metric × onset) discount to ≥0.35 × base so discounts don't stack to
       free. Keep the onset discount — genuine syncopation must stay reachable.
-- [ ] 3. Bump harmony stage version tag (reduce-12 → reduce-13) so cached songs re-decode.
-- [ ] 4. Offline validation BEFORE app verification, same harness as the decoder's doc header
+- [x] 3. Bump harmony stage version tag (reduce-12 → reduce-13) so cached songs re-decode.
+- [x] 4. Offline validation BEFORE app verification, same harness as the decoder's doc header
       (ChordTimelineDecoder.swift:11-14): replay cached Analysis JSON for reference songs
       (Settle Down + the reference song). Metrics: event count, % non-diatonic, sub-beat
       count, chorus self-agreement, instrumental outro symbol count (currently ~19/36s),
       MelodyPhraseProxy chorus letters (currently A B C D E F G H — expect repeats to emerge).
       Guard: verify known-real mid-verse changes (the ones 2.5/2.0 lost) still detected.
-- [ ] 5. Unit tests: synthetic windows where a passing chord on a weak beat is absorbed but
+- [x] 5. Unit tests: synthetic windows where a passing chord on a weak beat is absorbed but
       the same evidence on a downbeat switches; nil-meter regression test.
 - [ ] 6. Live verify on Mac (xcodebuild default DerivedData — NOT a repo-local
       -derivedDataPath, iCloud xattrs break CodeSign; see memory), re-analyze, check
@@ -988,10 +1886,10 @@ analysis time from the same drum-locked grid the decoder already receives.
 
 ## Pure-time row axis (purple vs yellow width unification)
 
-- [ ] 1. Measure first (verify-numerically lesson): from cached transcription JSON, compute
+- [x] 1. Measure first (verify-numerically lesson): from cached transcription JSON, compute
       per-word textWidth(9px/char) vs duration×100px/s across songs → quantify how often
       words would collide without the monospace floor, worst-case overlap px.
-- [ ] 2. Based on data, pick mitigation: accept small overlaps (likely fine if rare), or
+- [x] 2. Based on data, pick mitigation: accept small overlaps (likely fine if rare), or
       derive global pixelsPerSecond from ~95th-pct char-rate (keeps ONE axis song-wide;
       chord-drag px↔s conversion must use the same constant), or per-row font shrink (last
       resort). Present numbers to Eric if ambiguous.
@@ -999,7 +1897,7 @@ analysis time from the same drum-locked grid the decoder already receives.
       max(desired, cursor) floor → x = metricX(word.start). totalWidth becomes
       duration-based + last-word glyph allowance. Verify strip/chords/dots/ball all follow
       (they map through rhythmicX/metricX, so they inherit the fix).
-- [ ] 4. Fix outro chord-only lineDuration=0 fallback: resolve end bound from song/beat
+- [x] 4. Fix outro chord-only lineDuration=0 fallback: resolve end bound from song/beat
       duration (as LyricSectionDeriver.resolvedSongEnd does) in chordOnlyLineWindow
       (~:2588-2593) so rows never collapse to char-count width.
 - [ ] 5. Rebuild app + live verify: equal-elapsed purple and yellow rows render equal width;
@@ -1157,3 +2055,398 @@ REMAINING (wiring): bundle demucsv4_3p5s.onnx in iPad Resources; ONNXSixStemChun
 macOS keeps the 7.8s downloaded model and iPad uses the bundled 3.5s one; make htdemucs count as
 installed-on-iPad (bundled, not downloaded) so the onboarding gate passes; bump engineVersion to
 regen cached stems; rebuild+device test peak (uninstall wipes container -> re-onboard).
+
+---
+
+# Accuracy and performance-decomposition refinement (2026-07-20)
+
+## Plan
+
+- [x] Establish deterministic feedback loops for word/onset alignment, lyric-candidate
+      timing quality, and section boundaries; inventory representative cached analyses
+      without changing corpus coverage.
+- [x] Replace greedy many-to-one vocal-onset matching with a monotonic assignment that
+      preserves ASR timings when no distinct supported onset exists.
+- [x] Make lyric timing corroboration use the same one-to-one matching semantics so a
+      single vocal burst cannot count as evidence for multiple words.
+- [x] Evaluate section-boundary inference against lyric, beat, chord, and stem-derived
+      evidence; implement only a signal that improves representative fixtures without
+      regressing established verse/chorus/bridge cases.
+- [x] Identify the smallest coherent performance-map/export addition that makes existing
+      stems, beats, chords, bass, lyrics, and structure easier to use for recreation.
+- [x] Run focused tests, the full Swift test suite, build validation, and any available
+      cached-song/offline harness; record exact evidence and remaining limitations below.
+
+## Acceptance criteria
+
+- [x] Adjacent words cannot be assigned to the same detected vocal onset or to fabricated
+      micro-offsets derived from that onset.
+- [x] Word order, positive durations, text, and segment count remain stable when alignment
+      evidence is missing or ambiguous.
+- [x] Candidate timing scores count distinct vocal evidence and preserve explicit user
+      selections.
+- [x] Any section-detection change is covered by both a positive field-shaped fixture and
+      regression cases for ordinary pauses, repeated hooks, and short bridges.
+- [x] Review notes distinguish landed accuracy improvements from larger model/data work
+      that still requires a labeled audio corpus.
+
+## Review
+
+- Replaced independent nearest-onset snapping and corroboration with one monotonic,
+  one-to-one matcher. Cached analyses showed repeated 20 ms word-start artifacts; regression
+  tests now prove one burst cannot move or corroborate several words.
+- Selected Lyric Blend candidates now own their word-derived start/end bounds. Rejected
+  candidates no longer expand the selected lyric's playback, phrase, or chord-placement window.
+- Vocal onset/VAD energy now combines stereo channels by RMS, preserving opposite-polarity
+  vocal energy. Whisper requests use automatic language detection; engine/grouping versions
+  were bumped so existing analyses do not retain stale English-forced or post-processing output.
+- Structure matching preserves chord order while tolerating one passing chord. Static harmony
+  no longer supplies false phrase-period evidence. Known sung-but-untranscribed spans are
+  explicit form regions and cannot be labeled Instrumental or promoted to Solo.
+- Timeline/structure caches now key the complete derived input, so chord, lyric, beat, key,
+  duration, and missed-vocal edits cannot leave stale placement data behind.
+- Field inventory: seven persisted song documents plus cached analyses/stems were inspected.
+  Several cached songs contained repeated ~20 ms adjacent word starts, directly supporting the
+  onset-assignment regression. The opt-in chord corpus was not run because no labeled corpus
+  environment was configured.
+- Verification: focused accuracy suites passed 199 tests with one environment-dependent skip;
+  full `swift test` passed 642 tests with seven skips and zero failures. Debug `xcodebuild`
+  succeeded for both `SongWorkbench` on macOS and `SongWorkbenchiPad` on generic iOS.
+- Next accuracy layer: persist a reviewed beat/bar-referenced performance map with section
+  confidence and contributing cues, then export JSON/CSV markers plus melody/drum/chord/bass
+  MIDI and aligned stems. Its boundary detector should fuse downbeat-synchronous chroma,
+  bass motion, drum accents, stem activity, and vocal/lyric evidence and be evaluated against
+  a labeled corpus. Vocal F0/melisma extraction, drum-event transcription, meter unification,
+  candidate confidence/consensus, and ASR-preserving VAD refinement remain separate work.
+
+---
+
+# iPad analysis stability and performance (2026-07-20)
+
+## Plan
+
+- [x] Trace the current iPad-only execution path after the existing 2.5-second stem model,
+      streamed stem writer, ONNX session release, and serialized transcription/harmony changes.
+- [x] Identify every heavyweight model/session/buffer retained across stage boundaries and
+      distinguish peak-memory overlap from cumulative allocator high-water behavior.
+- [x] Add bounded instrumentation for stage wall time, resident-memory checkpoints, model/session
+      lifetime, and cancellation so the next device run produces actionable evidence.
+- [x] Add deterministic tests for resource release and iPad stage scheduling; implement only
+      evidence-backed lifetime/concurrency fixes without removing stems or analysis stages.
+- [x] Verify focused and full tests plus macOS/iPad builds; document the exact connected-device
+      reproduction and jetsam/log collection procedure.
+
+## Acceptance criteria
+
+- [x] Separation inference resources are released on success, failure, and cancellation before
+      transcription or harmony can load another heavyweight model.
+- [x] iPad never overlaps stem inference, transcription, and harmony model execution.
+- [ ] Long songs do not accumulate whole-song decoded input, model output, or waveform buffers
+      beyond the bounded windows required by the active stage.
+- [x] Logs identify the active stage, elapsed time, and resident-memory checkpoint immediately
+      before and after each heavyweight model lifetime.
+- [x] No corpus or stem coverage is reduced to make the run fit.
+
+## Review
+
+- Root causes addressed: ONNX construction is deferred past transcription-only/cache-hit paths;
+  stem and ASR resources release on every exit; replacement analyses drain the old task before
+  loading another model; AppModel preflight/blend work is retained, cancellable, and generation
+  guarded; package verification is cached within the process; click synthesis uses one bounded
+  sample; and normalization no longer duplicates full-song mono/stereo arrays.
+- `analysis-performance` logs now record physical footprint, elapsed time, stage transitions,
+  model load/release, prepared audio, quarter-chunk progress, and output finalization.
+- Deterministic regressions cover deferred construction, stem release on success/failure/cancel,
+  serialized replacement runs, ASR cancellation/release, package-status reuse, and constant-size
+  click allocation.
+- Verification: `swift test` passed 653 tests with 7 skipped and 0 failures; strict Swift format,
+  `git diff --check`, macOS Debug build, and generic iOS Debug build all passed.
+- Connected-device validation is pending because the registered iPad
+  `DF63930D-D084-577A-ACA6-8311FEB0FE03` was unavailable. Launch with
+  `xcrun devicectl device process launch --device DF63930D-D084-577A-ACA6-8311FEB0FE03
+  --terminate-existing --console com.local.SongWorkbench.iPad`, then collect diagnostics with
+  `xcrun devicectl diagnose --devices DF63930D-D084-577A-ACA6-8311FEB0FE03
+  --archive-destination /tmp/songworkbench-ipad-diagnostics.zip --no-finder`.
+- Remaining scaling risks: full-song separation decode/resampling and output arrays, repeated
+  vocal-stem scans, harmony working arrays, and stem-writer conversion/I/O. Do not enable smaller
+  ONNX arenas without device A/B evidence because allocator retention and inference throughput
+  trade off directly.
+
+---
+
+# ChordPro Instrumental Row Width (2026-07-21)
+
+## Plan
+
+- [x] Reproduce the rendering asymmetry in the ChordPro App Preview layout code.
+- [x] Move instrumental row width math into a small tested helper.
+- [x] Scale rhythmic instrumental rows toward lyric readability width while preserving fallbacks.
+- [x] Run focused tests and a build/check appropriate for a SwiftUI layout change.
+
+## Acceptance criteria
+
+- [x] Equal-duration instrumental rows render closer to lyric rows in rhythmic ChordPro preview.
+- [x] Instrumental chord, beat-dot, ball, strip, and frame widths keep using the same row width.
+- [x] Non-rhythmic or unknown-duration chord-only rows keep the old character-extent fallback.
+- [x] Regression tests cover the width calculation.
+
+## Review
+
+- Root cause: lyric rows can expand past raw `duration * pixelsPerSecond` because word positions
+  are nudged apart to avoid text collisions, while instrumental rows had no equivalent readability
+  floor and stayed on the raw time width.
+- Fix: `ChordProPreviewLineLayout.instrumentalWidth` now gives rhythmic chord-only rows a modest
+  lyric-like scale (`1.35x`) over their real duration, while preserving wider chord-label extents
+  and the old fallback for non-rhythmic/unknown-duration rows. Existing chord, beat-dot, ball,
+  waveform strip, and frame calculations all still consume `instrumentalTimeWidth`.
+- Verification: `swift test --filter ChordProPreviewLineLayoutTests` passed 3 tests; strict
+  Swift format lint passed for touched Swift files; `git diff --check` passed for touched files;
+  macOS Debug `xcodebuild -project SongWorkbench.xcodeproj -scheme SongWorkbench -configuration
+  Debug build` succeeded.
+
+---
+
+# ChordPro Read-Only Instrumental Row Width (2026-07-21)
+
+## Plan
+
+- [x] Trace why the ChordPro tab still renders compact instrumental rows after the Review fix.
+- [x] Add a tested display-row helper for read-only ChordPro line rendering.
+- [x] Expand generated chord-only bar-grid rows in the read-only view while preserving normal
+      lyric rows.
+- [x] Run focused tests, format/diff checks, and the app build.
+
+## Acceptance criteria
+
+- [x] Chord-only bar-grid rows in the ChordPro tab render wider than their compact source text.
+- [x] Chords stay aligned with the expanded bar-grid lyric row.
+- [x] Sung lyric rows continue to render with spec-exact column placement.
+- [x] Focused regression tests cover chord-only expansion and normal lyric preservation.
+
+## Review
+
+- Root cause: the ChordPro tab uses `ChordProReadOnlyView`, a separate spec-only renderer that
+  only had compact `.cho` character columns. The Review fix changed `ChordProAppPreview` timing
+  width and therefore did not affect this path.
+- Fix: `ChordProReadOnlyLineRenderer` now expands generated chord-only bar-grid rows by `2x`
+  display columns and applies the same scaled columns to the chord row. Normal sung lyric rows
+  keep the existing `ChordRowStringBuilder` output and lyric text unchanged.
+- Verification: `swift test --filter ChordProReadOnlyLineRendererTests` passed 2 tests; strict
+  Swift format lint passed for touched Swift files; `git diff --check` passed for touched files;
+  macOS Debug `xcodebuild -project SongWorkbench.xcodeproj -scheme SongWorkbench -configuration
+  Debug build` succeeded.
+
+---
+
+# Backlog Parallel Cleanup (2026-07-21)
+
+## Plan
+
+- [x] Reconcile stale unchecked items where later review sections already document completed work.
+- [x] Finish the ChordPro timeline-width backlog item that remains after the Review/ChordPro
+      display-width fixes, especially chord-only outro/end-bound collapse.
+- [x] Attack one concrete iPad long-song memory risk without reducing analysis coverage.
+- [x] Integrate sub-agent results, run focused tests/builds, and update this review with evidence.
+
+## Acceptance criteria
+
+- [x] `tasks/todo.md` unchecked items reflect real remaining work, not stale pre-review checkboxes.
+- [x] Any code changes are covered by focused tests at the affected service/layout seam.
+- [x] iPad memory work improves boundedness or logs a measured blocker with exact next command.
+- [x] Final verification includes format/diff checks and the relevant macOS/iOS build or a
+      documented external blocker.
+
+## Review
+
+- Reconciled stale unchecked boxes in the 2026-07-04 lyric/chord fix plan: the current code has
+  `tailLooksDegenerate`, `maxSignalTightening = 3.0`, onset-aware decoder penalties, guarded
+  chord-onset snapping, regression coverage, and cache-version bumps. The remaining open item is
+  live app re-analysis of Settle Down plus one more song.
+- Reconciled stale unchecked boxes in Task #47 W1: the current code has `BarMeter`,
+  metric-position switch factors, the `reduce-16-metric-switch-penalty` cache suffix, the manual
+  offline validation harness, and unit tests. The remaining open item is live Mac app
+  re-analysis/Structure-tab verification.
+- Reconciled the pure-time row-axis section: measurement and mitigation choice were already
+  documented as completed/deferred, and `chordOnlyLineWindow` now falls back to beat-grid/song
+  extent for outro chord-only rows. The deeper `rhythmicWordXs` pure-time rewrite remains open
+  by design because the data showed many lyric word collisions at a fixed 100 px/s scale.
+- Added one bounded iPad improvement: `AudioFileAnalysisService.vocalActivitySummary` derives
+  vocal intervals and the vocal waveform from a single vocals-stem decode instead of scanning the
+  same full stem twice when a separated song is opened. This reduces repeated full-stem work but
+  does not close the broader whole-song buffer criterion.
+- Device status: `xcrun devicectl list devices` sees the registered iPad
+  `DF63930D-D084-577A-ACA6-8311FEB0FE03` as `unavailable`, so physical iPad launch/profiling is
+  still externally blocked. The iPhone is connected, but it does not satisfy iPad validation.
+- Verification: `swift test --filter ChordProPreviewLineLayoutTests` passed 5 tests;
+  `swift test --filter PracticeWorkspaceTests/testVocalActivitySummaryMatchesSeparateVocalStemPasses`
+  passed; strict Swift format lint and `git diff --check` passed for touched files; full
+  `swift test` passed 661 tests with 7 skipped and 0 failures; macOS Debug build succeeded;
+  generic iOS Debug build for `SongWorkbenchiPad` succeeded.
+
+---
+
+# Robust Stem Refinement Pipeline (2026-07-28)
+
+## Plan
+
+- [x] Extend separation results so engines can return a full stem manifest, not only legacy
+      `StemFiles`.
+- [x] Add a `StemRefinementEngine` seam and a pipeline wrapper that runs base separation then
+      optional desktop refiners.
+- [x] Store recipe identity in the produced manifest so base six-stem and refined recipes can be
+      distinguished by source, model, refiner list, taxonomy, and format.
+- [x] Keep legacy six-stem output and cache behavior unchanged when no refiners are configured.
+- [x] Add tests proving the wrapper runs refiners in order, preserves legacy stems, writes child
+      assets into the manifest, and records recipe identity.
+- [x] Re-run focused tests, full tests, lint, diff check, and macOS/iPad builds.
+
+## Acceptance criteria
+
+- [x] Existing separators still compile and return legacy-compatible `StemFiles`.
+- [x] A configured desktop refiner can add children such as `drums.kick` without changing
+      downstream persistence code.
+- [x] A no-refiner configuration produces the same legacy manifest and does not alter current
+      six-stem behavior.
+- [x] Refiner failure is explicit and does not silently persist a partial refined manifest as
+      current.
+- [x] Verification evidence is recorded here.
+
+## Review
+
+- Added `StemRefinementEngine`, `StemRefinementRequest`, `StemRefinementResult`, explicit
+  `StemRefinementError`, and `StemRefinementPipelineEngine`. The wrapper preserves the base
+  `StemFiles` alias, writes refinement assets under `Refined/<recipe>/<refiner>`, validates every
+  declared output file, merges descriptors/assets into `StemSetManifest`, and records a stable
+  recipe identity.
+- `SongAnalysisPipeline` now accepts configured stem refiners and `SeparationStage` constructs the
+  effective per-run engine once the source digest is known. Refined separation records use
+  `stem-recipe-<hash>` while no-refiner runs retain the legacy six-stem cache path.
+- Added manifest-aware separation cache validation so refined outputs are reused only when the
+  source digest, engine/model identity, recipe cache key, and every manifest asset path match.
+- Added regression coverage for refiner success, missing output failure, manifest recipe cache
+  hits/misses, and end-to-end persistence through the separation stage.
+- Verification: focused stem/cache/pipeline tests passed 52 tests; full `swift test` passed 679
+  tests with 7 skipped and 0 failures; strict Swift format lint and `git diff --check` passed;
+  macOS Debug `SongWorkbench` build succeeded; generic iOS Debug `SongWorkbenchiPad` build
+  succeeded.
+
+---
+
+# Extensible Stem Decomposition Foundation (2026-07-28)
+
+## Plan
+
+- [x] Add an extensible stem identifier, descriptor, asset, and manifest model beside the
+      legacy six-source `StemKind` model.
+- [x] Bridge legacy `StemFiles` and `StoredStemFiles` into that manifest so old documents
+      remain readable.
+- [x] Add a stem mix graph that selects one active parent/child frontier for playback/export.
+- [x] Preserve existing `StemKind` mixer calls while allowing ID-based mix state for future
+      stems such as `drums.kick` and `guitar.lead`.
+- [x] Add focused tests for legacy compatibility, unknown-ID preservation, and parent/child
+      non-duplication.
+- [x] Run focused tests and a build-oriented verification pass.
+
+## Acceptance criteria
+
+- [x] A legacy six-source separation can be represented as a `StemSetManifest`.
+- [x] A refined stem set can include children without changing the fixed `StemKind` enum.
+- [x] Playback/export planning includes child stems instead of their parent when children exist,
+      never both.
+- [x] Mixer persistence keeps old documents decoding while preserving unknown future stem IDs.
+- [x] Cache identity has a named recipe shape that can distinguish future model/refiner output
+      variants.
+
+## Review
+
+- Added `StemID`, `StemDescriptor`, `StemAsset`, `StemRecipeIdentity`, `StemSetManifest`, and
+  `StemMixGraph` beside the legacy `StemKind`/`StemFiles` model. Legacy six-source files now
+  bridge into a manifest without adding child cases to `StemKind`.
+- Added `StoredStemSetManifest` and live `AppModel.stemSet` persistence so future child stems
+  such as `drums.kick` and `guitar.lead` can survive document load/save while `stems` remains the
+  legacy alias.
+- Updated stem playback and mix export to use the graph's active frontier: when children have
+  audio, the parent is excluded so playback/export do not double the signal.
+- Extended `StemMixerModel` to persist unknown string stem IDs while preserving the existing
+  `StemKind` calls and legacy mixer JSON decoding.
+- Tightened separation cache currency to include model version and added a recipe cache key that
+  includes source digest, engine/model identity, segment config, refiners, taxonomy version, and
+  output format.
+- Verification: focused stem/cache/playback/export tests passed 50 tests; full `swift test`
+  passed 674 tests with 7 skipped and 0 failures; strict Swift format lint and `git diff --check`
+  passed; macOS Debug `SongWorkbench` build succeeded; generic iOS Debug `SongWorkbenchiPad`
+  build succeeded after rerunning serially because the first concurrent iPad build hit Xcode's
+  locked build database.
+
+---
+
+# Desktop Full / iPad Reduced Capability Split (2026-07-22)
+
+## Plan
+
+- [x] Introduce an explicit analysis capability profile for desktop-full and iPad-reduced runs.
+- [x] Route stem model selection and transcription-mode availability through that profile.
+- [x] Replace scattered platform execution branching with a testable pipeline execution policy.
+- [x] Surface the active capability tier in model UI without offering unavailable iPad-heavy tools.
+- [x] Add focused tests for profile defaults, mode filtering, and serial/concurrent execution.
+- [x] Run focused tests plus macOS and generic iOS builds.
+
+## Acceptance criteria
+
+- [x] Desktop profile keeps the full 7.8s HTDemucs download path, Whisper accuracy mode, and
+      concurrent lyric/harmony stages.
+- [x] iPad profile keeps the bundled 2.5s stem model path, excludes Whisper accuracy, and runs
+      lyric/harmony stages serially to reduce peak memory.
+- [x] Future advanced tracks such as lead/backing vocals, drum-piece stems, symbolic notes, and
+      performance events have named capability flags instead of new platform checks.
+- [x] Tests can validate desktop vs iPad behavior on a single host by injecting the profile.
+
+## Review
+
+- Added `AnalysisCapabilityProfile` with desktop-full and iPad-reduced product tiers, explicit
+  stem tier, allowed transcription modes, heavy-stage execution policy, and future performance
+  track flags for lead/backing vocals, drum pieces, notes, phrases, song parts, and chords.
+- `SongAnalysisPipelineFactory` now assembles engines through the profile: desktop keeps the full
+  downloaded HTDemucs and Whisper accuracy path; iPad keeps the bundled reduced HTDemucs path and
+  does not build a Whisper accuracy engine.
+- `SongAnalysisPipeline` now receives an injectable execution policy. iPad-reduced serializes
+  transcription and harmony to avoid overlapping heavy working sets; desktop-full keeps concurrent
+  independent stages.
+- `AppModel`, onboarding, and the Models popover now filter required/installable packages and
+  primary Lyric Blend modes through the active profile. The UI shows the active tier as
+  `Desktop Full` or `iPad Reduced`.
+- Verification: focused capability/scheduling tests passed 7 tests; full `swift test` passed
+  665 tests with 7 skipped and 0 failures; strict Swift format lint and `git diff --check`
+  passed; macOS Debug `SongWorkbench` build succeeded; generic iOS Debug `SongWorkbenchiPad`
+  build succeeded.
+
+---
+
+# UI Contrast and Bass String Guidance (2026-07-22)
+
+## Plan
+
+- [x] Add a semantic prominent-control tint whose white-label contrast meets WCAG AA.
+- [x] Apply the control tint centrally while preserving the brighter analysis/data accent.
+- [x] Derive an ergonomic standard four-string bass string for each detected bass pitch.
+- [x] Include the recommended string in both timed and fallback Review bass-note labels.
+- [x] Add focused regression tests and run formatting, test, and app-build verification.
+
+## Acceptance criteria
+
+- [x] White text on prominent blue controls has a contrast ratio of at least 4.5:1.
+- [x] Existing waveform, chord, focus, and selection accents retain the current bright blue.
+- [x] Displayed bass plucks name both the note and a playable recommended string.
+- [x] Transposition updates both the note name and its recommended string.
+
+## Review
+
+- Added `swProminentControl` (`#1971C2`) and a shared `swProminentButtonStyle`; only filled
+  command buttons use the darker tint, while `swAccent` remains `#339AF0` for analytical data,
+  focus, and selection. A WCAG contrast regression test protects the white-label ratio.
+- Review bass-note labels now include a lowest-fret recommendation for standard E-A-D-G tuning,
+  for example `E (D string)`. This is fingering guidance; monophonic pitch does not identify the
+  physical string used in the source performance.
+- Verification: focused tests passed 11 tests; full `swift test` passed 667 tests with 7 skipped
+  and 0 failures; strict Swift format lint and `git diff --check` passed; macOS Debug
+  `SongWorkbench` and generic iOS Debug `SongWorkbenchiPad` builds succeeded.

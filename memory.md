@@ -301,3 +301,50 @@
   either order, per neighbour candidate). Trade-off: demoting picks the split
   candidate's wording over the run-on's (split beats wording); synthesizing a
   SPLIT accuracy candidate would be the deeper fix if wording quality matters.
+- 2026-07-20 timing/structure accuracy invariants: vocal attacks are assigned to
+  words monotonically and one-to-one; unmatched words retain ASR timing rather
+  than receiving fabricated 20 ms offsets. Lyric Blend effective bounds come
+  from the selected candidate's words. Energy-only stereo analysis combines
+  channels by RMS to avoid phase cancellation, and Whisper auto-detects language.
+  Known sung-but-untranscribed spans are explicit form regions and can never be
+  Instrumental/Solo. Chord-pattern matching preserves order while tolerating one
+  passing chord; constant harmony supplies no phrase-period evidence. Derived
+  timeline/structure caches must key the complete `ChordProDraftInput`.
+- 2026-07-20 iPad analysis lifetime invariants: defer ONNX stem-engine construction
+  until a separation cache miss actually needs inference; drain a prior analysis
+  task before assembling its replacement; and generation-guard all AppModel
+  callbacks and retained preflight/Lyric Blend tasks. Stem and ASR engines release
+  heavyweight resources on success, failure, and cancellation, with iOS releasing
+  ASR before harmony starts. Per-pass assembly may reuse process-local package
+  verification, but explicit package status must still rehash for tamper detection.
+  Click playback schedules one bounded sample at beat times instead of allocating
+  song-duration PCM. Device profiling uses `analysis-performance` physical-footprint
+  logs. Remaining measured-device work is fully streamed input/resampling, shared
+  vocal feature extraction, harmony working-set reduction, stem-writer conversion,
+  and an evidence-based ONNX arena policy.
+## 2026-07-28 - Native inference direction
+
+- Advanced production analysis is primarily a Swift/Xcode feature. Use
+  in-process Core ML or ONNX Runtime Swift adapters for stem refinement and
+  symbolic analysis. External command/Python refiners are optional macOS
+  extensions and are not the iPad implementation path.
+- Accuracy transcription detects a sparse time-zero opening followed by a long
+  gap after vocal onset, transcribes a bounded onset window with the same native
+  engine, and replaces only the sparse opening when the retry is richer.
+  Near-onset alignment must not delete leading words from a straddling segment.
+- Refined/imported stem manifests can contain arbitrary `StemID` children; mixer
+  channels and metering derive from the active manifest frontier. Production
+  still generates six stems until verified native refiner model artifacts are
+  registered in the catalog and factory.
+- The ChordPro and Review tabs share `ChordProTabEditor` and
+  `ChordProAppPreview`. ChordPro uses the preview-only `chordProPlayback`
+  configuration, so font, rhythmic spacing, lyric highlighting, bouncing ball,
+  timing offset, and auto-scroll remain identical while Edit stays in Review.
+- 2026-07-28 drum-piece refinement: `ModelCatalog.drumsep` registers Gridshift
+  DrumSep ONNX (kick/snare/cymbals/toms, MIT). Advanced Desktop + installed
+  package injects `drumsep-onnx-v1` via `StemRefinementEngineFactory.production`.
+  Waveform lanes and Stem Mix strips both use the active `StemMixGraph` frontier
+  (`StemWaveformLaneProjector` / `StemMixerChannelProjector`), so refined children
+  replace their parent in both UIs. Guitar lead/rhythm IDs exist but have no
+  registered model yet. Native DrumSep STFT mag packing still needs listening /
+  PyTorch-parity validation before calling quality done.

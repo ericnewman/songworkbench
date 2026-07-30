@@ -13,6 +13,11 @@ struct SongAudioAnalysis: Codable, Equatable, Sendable {
     }
 }
 
+struct VocalStemActivitySummary: Equatable, Sendable {
+    let intervals: [ClosedRange<TimeInterval>]
+    let waveform: WaveformEnvelope
+}
+
 actor AudioFileAnalysisService {
     func analyze(url: URL) throws -> SongAudioAnalysis {
         let (samples, sampleRate) = try loadMonoSamples(url: url)
@@ -37,6 +42,76 @@ actor AudioFileAnalysisService {
         let (samples, sampleRate) = try loadMonoSamples(url: url)
         try Task.checkCancellation()
         return VocalActivityEnvelope.voicedIntervals(samples: samples, sampleRate: sampleRate)
+    }
+
+    /// Reads the vocals stem once and derives both UI outputs that need it: strict singing
+    /// intervals and a compact display waveform. Long iPad runs previously decoded the same full
+    /// stem twice when opening a separated song.
+    func vocalActivitySummary(
+        url: URL,
+        targetSampleCount: Int = 4_000
+    ) throws -> VocalStemActivitySummary {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { url.stopAccessingSecurityScopedResource() }
+        }
+
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        guard format.channelCount > 0, targetSampleCount > 0 else {
+            throw WaveformAnalyzerError.unsupportedAudioFormat
+        }
+
+        let totalFrames = max(Int(file.length), 1)
+        var peaks = [Float](repeating: 0, count: targetSampleCount)
+        var samples: [Float] = []
+        samples.reserveCapacity(Int(file.length))
+
+        let capacity: AVAudioFrameCount = 16_384
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            throw WaveformAnalyzerError.unsupportedAudioFormat
+        }
+
+        var absoluteFrame = 0
+        while file.framePosition < file.length {
+            try Task.checkCancellation()
+            let remaining = file.length - file.framePosition
+            try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
+            let frameCount = Int(buffer.frameLength)
+            guard frameCount > 0 else { break }
+            guard let channels = buffer.floatChannelData else {
+                throw WaveformAnalyzerError.unsupportedAudioFormat
+            }
+
+            for frame in 0..<frameCount {
+                var summedSample: Float = 0
+                var peakSample: Float = 0
+                for channel in 0..<Int(format.channelCount) {
+                    let value = channels[channel][frame]
+                    summedSample += value
+                    peakSample = max(peakSample, abs(value))
+                }
+                samples.append(summedSample / Float(format.channelCount))
+                let bin = min(
+                    (absoluteFrame + frame) * targetSampleCount / totalFrames,
+                    targetSampleCount - 1
+                )
+                peaks[bin] = max(peaks[bin], peakSample)
+            }
+            absoluteFrame += frameCount
+        }
+
+        try Task.checkCancellation()
+        return VocalStemActivitySummary(
+            intervals: VocalActivityEnvelope.voicedIntervals(
+                samples: samples,
+                sampleRate: format.sampleRate
+            ),
+            waveform: WaveformEnvelope(
+                peaks: peaks,
+                duration: Double(file.length) / format.sampleRate
+            )
+        )
     }
 
     private func loadMonoSamples(url: URL) throws -> ([Float], Double) {
@@ -84,6 +159,21 @@ extension Chord {
         case .minor7: return rootName + "m7"
         case .dominant7: return rootName + "7"
         }
+    }
+}
+
+/// Per-frame channel energy for onset/VAD analysis. Waveform averaging can cancel opposite-polarity
+/// stereo channels; root-mean-square channel combination preserves energy without affecting the
+/// later RMS envelope's scale for ordinary dual-mono stems.
+enum PhaseInvariantChannelEnergy {
+    static func sample(_ channelValues: [Float]) -> Float {
+        let sumOfSquares = channelValues.reduce(Float(0)) { $0 + $1 * $1 }
+        return sample(sumOfSquares: sumOfSquares, channelCount: channelValues.count)
+    }
+
+    static func sample(sumOfSquares: Float, channelCount: Int) -> Float {
+        guard channelCount > 0, sumOfSquares > 0 else { return 0 }
+        return (sumOfSquares / Float(channelCount)).squareRoot()
     }
 }
 
@@ -235,9 +325,14 @@ enum VocalOnsetDetector {
             try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
             guard let channels = buffer.floatChannelData else { return nil }
             for frame in 0..<Int(buffer.frameLength) {
-                var value: Float = 0
-                for channel in 0..<channelCount { value += channels[channel][frame] }
-                samples.append(value / Float(max(channelCount, 1)))
+                var sumOfSquares: Float = 0
+                for channel in 0..<channelCount {
+                    let value = channels[channel][frame]
+                    sumOfSquares += value * value
+                }
+                samples.append(
+                    PhaseInvariantChannelEnergy.sample(
+                        sumOfSquares: sumOfSquares, channelCount: channelCount))
             }
         }
         return firstOnset(
@@ -332,9 +427,14 @@ enum VocalOffsetDetector {
             try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
             guard let channels = buffer.floatChannelData else { return nil }
             for frame in 0..<Int(buffer.frameLength) {
-                var value: Float = 0
-                for channel in 0..<channelCount { value += channels[channel][frame] }
-                samples.append(value / Float(max(channelCount, 1)))
+                var sumOfSquares: Float = 0
+                for channel in 0..<channelCount {
+                    let value = channels[channel][frame]
+                    sumOfSquares += value * value
+                }
+                samples.append(
+                    PhaseInvariantChannelEnergy.sample(
+                        sumOfSquares: sumOfSquares, channelCount: channelCount))
             }
         }
         return lastOffset(
@@ -522,9 +622,14 @@ enum InstrumentOnsetDetector {
             try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
             guard let channels = buffer.floatChannelData else { return [] }
             for frame in 0..<Int(buffer.frameLength) {
-                var value: Float = 0
-                for channel in 0..<channelCount { value += channels[channel][frame] }
-                samples.append(value / Float(max(channelCount, 1)))
+                var sumOfSquares: Float = 0
+                for channel in 0..<channelCount {
+                    let value = channels[channel][frame]
+                    sumOfSquares += value * value
+                }
+                samples.append(
+                    PhaseInvariantChannelEnergy.sample(
+                        sumOfSquares: sumOfSquares, channelCount: channelCount))
             }
         }
         return onsets(
@@ -580,9 +685,14 @@ enum DrumAccentProfile {
             try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
             guard let channels = buffer.floatChannelData else { return [] }
             for frame in 0..<Int(buffer.frameLength) {
-                var value: Float = 0
-                for channel in 0..<channelCount { value += channels[channel][frame] }
-                samples.append(value / Float(max(channelCount, 1)))
+                var sumOfSquares: Float = 0
+                for channel in 0..<channelCount {
+                    let value = channels[channel][frame]
+                    sumOfSquares += value * value
+                }
+                samples.append(
+                    PhaseInvariantChannelEnergy.sample(
+                        sumOfSquares: sumOfSquares, channelCount: channelCount))
             }
         }
         let hopSeconds = 0.02
@@ -958,54 +1068,171 @@ enum VocalWordSpanNormalizer {
     }
 }
 
-/// Snaps each sung word's onset to the nearest vocal-stem onset (from `InstrumentOnsetDetector`
-/// run on the vocals stem), so words — and everything anchored to them (the ChordPro word layout,
-/// the per-line waveform strip, the bouncing ball, and chords placed over words) — sit on the
-/// actual vocal energy instead of the ASR's approximate onset. Non-destructive: word/segment count,
-/// order, and text are preserved; only onset times move, never before the previous word by less
-/// than `minimumWordGap` (so adjacent words can never land on the exact same onset — see below),
-/// and never past a word's own end. Each segment's `start`/`end` are re-derived from its snapped
-/// words. Returns the input unchanged when `onsets` is empty.
+/// Monotonic, one-to-one assignment between ASR words and detected vocal attacks.
+///
+/// Independent nearest-neighbour matching lets one energy burst "support" several adjacent words.
+/// Moving the duplicates a fixed number of milliseconds apart only fabricates precision. This
+/// sequence matcher instead maximizes the number of distinct word/onset pairs, then minimizes total
+/// displacement from the ASR timings. Words without their own supported onset remain untouched.
+enum VocalOnsetMatcher {
+    private struct Score {
+        var matches: Int
+        var error: TimeInterval
+    }
+
+    private enum Step: UInt8 {
+        case none
+        case skipWord
+        case skipOnset
+        case match
+    }
+
+    static func matchedOnsets(
+        for words: [TimedLyricWord],
+        onsets: [TimeInterval],
+        tolerance: TimeInterval
+    ) -> [TimeInterval?] {
+        guard !words.isEmpty, !onsets.isEmpty, tolerance >= 0 else {
+            return [TimeInterval?](repeating: nil, count: words.count)
+        }
+        let minimumWordStart = words.map(\.start).min() ?? 0
+        let maximumWordStart = words.map(\.start).max() ?? minimumWordStart
+        let relevantOnsets = Array(
+            Set(
+                onsets.filter {
+                    $0 >= minimumWordStart - tolerance && $0 <= maximumWordStart + tolerance
+                })
+        ).sorted()
+        guard !relevantOnsets.isEmpty else {
+            return [TimeInterval?](repeating: nil, count: words.count)
+        }
+
+        let rowWidth = relevantOnsets.count + 1
+        let cellCount = (words.count + 1) * rowWidth
+        var scores = [Score?](repeating: nil, count: cellCount)
+        var steps = [Step](repeating: .none, count: cellCount)
+        func offset(_ wordCount: Int, _ onsetCount: Int) -> Int {
+            wordCount * rowWidth + onsetCount
+        }
+        scores[offset(0, 0)] = Score(matches: 0, error: 0)
+        for onsetCount in 1...relevantOnsets.count {
+            scores[offset(0, onsetCount)] = Score(matches: 0, error: 0)
+            steps[offset(0, onsetCount)] = .skipOnset
+        }
+        for wordCount in 1...words.count {
+            scores[offset(wordCount, 0)] = Score(matches: 0, error: 0)
+            steps[offset(wordCount, 0)] = .skipWord
+        }
+
+        for wordCount in 1...words.count {
+            let word = words[wordCount - 1]
+            for onsetCount in 1...relevantOnsets.count {
+                let index = offset(wordCount, onsetCount)
+                let skipWordScore = scores[offset(wordCount - 1, onsetCount)]!
+                var best = skipWordScore
+                var bestStep = Step.skipWord
+
+                let skipOnsetScore = scores[offset(wordCount, onsetCount - 1)]!
+                if isBetter(skipOnsetScore, than: best) {
+                    best = skipOnsetScore
+                    bestStep = .skipOnset
+                }
+
+                let onset = relevantOnsets[onsetCount - 1]
+                let latestStart =
+                    word.end > word.start ? word.end - 0.01 : TimeInterval.infinity
+                if abs(onset - word.start) <= tolerance, onset <= latestStart,
+                    let preceding = scores[offset(wordCount - 1, onsetCount - 1)]
+                {
+                    let matched = Score(
+                        matches: preceding.matches + 1,
+                        error: preceding.error + abs(onset - word.start))
+                    if isBetter(matched, than: best) {
+                        best = matched
+                        bestStep = .match
+                    }
+                }
+                scores[index] = best
+                steps[index] = bestStep
+            }
+        }
+
+        var result = [TimeInterval?](repeating: nil, count: words.count)
+        var wordCount = words.count
+        var onsetCount = relevantOnsets.count
+        while wordCount > 0 || onsetCount > 0 {
+            switch steps[offset(wordCount, onsetCount)] {
+            case .match:
+                result[wordCount - 1] = relevantOnsets[onsetCount - 1]
+                wordCount -= 1
+                onsetCount -= 1
+            case .skipWord:
+                wordCount -= 1
+            case .skipOnset:
+                onsetCount -= 1
+            case .none:
+                wordCount = 0
+                onsetCount = 0
+            }
+        }
+
+        // A matched onset can cross an unmatched neighbour's original ASR time. Reject only the
+        // conflicting match; preserving an ASR onset is preferable to manufacturing a new one.
+        var changed = true
+        while changed {
+            changed = false
+            let starts = words.indices.map { result[$0] ?? words[$0].start }
+            guard starts.count > 1 else { break }
+            for index in 1..<starts.count where starts[index] < starts[index - 1] {
+                if result[index] != nil {
+                    result[index] = nil
+                    changed = true
+                    break
+                }
+                if result[index - 1] != nil {
+                    result[index - 1] = nil
+                    changed = true
+                    break
+                }
+            }
+        }
+        return result
+    }
+
+    private static func isBetter(_ candidate: Score, than incumbent: Score) -> Bool {
+        if candidate.matches != incumbent.matches {
+            return candidate.matches > incumbent.matches
+        }
+        return candidate.error < incumbent.error - 1e-9
+    }
+}
+
+/// Snaps each sung word's onset to a distinct nearby vocal-stem onset (from
+/// `InstrumentOnsetDetector` run on the vocals stem), so words and their timeline consumers sit on
+/// observed vocal energy instead of approximate ASR onsets. Word/segment count, order, text, and
+/// unmatched ASR starts are preserved. Each segment's bounds are re-derived from its final words.
 enum VocalWordOnsetAligner {
     static func snapped(
         _ segments: [TimedLyricSegment],
         toOnsets onsets: [TimeInterval],
-        tolerance: TimeInterval = 0.15,
-        // Two adjacent ASR words both within `tolerance` of the SAME onset (a common case:
-        // several short words land inside one energy burst) previously both snapped to that
-        // identical onset time — a floor of merely "nondecreasing" lets equal-to-previous
-        // through. Stacked word anchors then render on top of each other and inflate
-        // onset-corroboration scores (every stacked word counts as a separate "onset match"
-        // for what is really one burst). Enforcing a minimum gap keeps every word's onset
-        // distinct while staying far below any real syllable duration.
-        minimumWordGap: TimeInterval = 0.02
+        tolerance: TimeInterval = 0.15
     ) -> [TimedLyricSegment] {
         guard !onsets.isEmpty, !segments.isEmpty else { return segments }
-        let sortedOnsets = onsets.sorted()
-        var floor = -TimeInterval.infinity
         var result = segments
         for segmentIndex in result.indices {
             guard !result[segmentIndex].words.isEmpty else { continue }
             var words = result[segmentIndex].words
+            let matched = VocalOnsetMatcher.matchedOnsets(
+                for: words, onsets: onsets, tolerance: tolerance)
             for wordIndex in words.indices {
-                let time = words[wordIndex].start
-                var nearest = sortedOnsets[0]
-                for onset in sortedOnsets where abs(onset - time) < abs(nearest - time) {
-                    nearest = onset
+                if let onset = matched[wordIndex] {
+                    words[wordIndex].start = onset
                 }
-                var newStart = abs(nearest - time) <= tolerance ? nearest : time
-                // Keep word order STRICTLY increasing (never equal to the previous word,
-                // never decreasing) and a positive duration.
-                newStart = max(newStart, floor + minimumWordGap)
-                if words[wordIndex].end > words[wordIndex].start {
-                    newStart = min(newStart, words[wordIndex].end - 0.01)
-                }
-                words[wordIndex].start = newStart
-                floor = newStart
             }
             result[segmentIndex].words = words
-            result[segmentIndex].start = words.first!.start
-            result[segmentIndex].end = max(words.last!.end, words.first!.start + 0.01)
+            result[segmentIndex].start = words.map(\.start).min() ?? result[segmentIndex].start
+            let latestEnd = words.map(\.end).max() ?? result[segmentIndex].end
+            result[segmentIndex].end = max(latestEnd, result[segmentIndex].start + 0.01)
         }
         return result
     }
@@ -1035,7 +1262,9 @@ enum VocalOnsetReanchor {
         for index in result.indices {
             let seg = result[index]
             guard seg.start < onset else { break }  // reached lines already at/after the onset
-            guard onset - seg.start >= minLeadToReanchor else {
+            let wouldDropLeadingWords =
+                seg.end > onset && seg.words.contains { $0.end <= onset }
+            guard onset - seg.start >= minLeadToReanchor || wouldDropLeadingWords else {
                 floor = max(floor, seg.end)  // basically correct already; just advance the floor
                 continue
             }
@@ -1303,9 +1532,14 @@ enum VocalActivityEnvelope {
             try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
             guard let channels = buffer.floatChannelData else { return [] }
             for frame in 0..<Int(buffer.frameLength) {
-                var value: Float = 0
-                for channel in 0..<channelCount { value += channels[channel][frame] }
-                samples.append(value / Float(max(channelCount, 1)))
+                var sumOfSquares: Float = 0
+                for channel in 0..<channelCount {
+                    let value = channels[channel][frame]
+                    sumOfSquares += value * value
+                }
+                samples.append(
+                    PhaseInvariantChannelEnergy.sample(
+                        sumOfSquares: sumOfSquares, channelCount: channelCount))
             }
         }
         return voicedIntervals(

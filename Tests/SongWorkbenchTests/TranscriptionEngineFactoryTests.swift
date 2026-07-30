@@ -51,6 +51,45 @@ final class TranscriptionEngineFactoryTests: XCTestCase {
         XCTAssertEqual(all.availableModes(), [.fastDraft, .balancedDraft, .accuracy])
     }
 
+    func testFilteringDropsModesOutsideCapabilityProfile() {
+        let factory = TranscriptionEngineFactory(
+            fast: StubTranscriptionEngine(name: "fast"),
+            balanced: StubTranscriptionEngine(name: "balanced"),
+            accuracy: StubTranscriptionEngine(name: "accuracy")
+        )
+
+        let filtered = factory.filtered(to: .profile(for: .iPad))
+
+        XCTAssertEqual(filtered.availableModes(), [.fastDraft, .balancedDraft])
+        XCTAssertNil(filtered.engine(for: .accuracy))
+    }
+
+    func testCapabilityProfilesEncodeDesktopAndIPadProductTiers() {
+        let desktop = AnalysisCapabilityProfile.profile(for: .desktop)
+        XCTAssertEqual(desktop.displayName, "Desktop Full")
+        XCTAssertEqual(desktop.stemSeparationTier, .fullSixStem)
+        XCTAssertTrue(desktop.allowsTranscriptionMode(.accuracy))
+        XCTAssertEqual(desktop.executionPolicy, .concurrentIndependentStages)
+        XCTAssertTrue(desktop.supportsPerformanceTrack(.leadVocals))
+        XCTAssertTrue(desktop.supportsPerformanceTrack(.drumPieces))
+
+        let iPad = AnalysisCapabilityProfile.profile(for: .iPad)
+        XCTAssertEqual(iPad.displayName, "iPad Reduced")
+        XCTAssertEqual(iPad.stemSeparationTier, .reducedSixStem)
+        XCTAssertFalse(iPad.allowsTranscriptionMode(.accuracy))
+        XCTAssertEqual(iPad.executionPolicy, .serialHeavyStages)
+        XCTAssertFalse(iPad.supportsPerformanceTrack(.leadVocals))
+        XCTAssertFalse(iPad.supportsPerformanceTrack(.drumPieces))
+        XCTAssertTrue(iPad.supportsPerformanceTrack(.chordTimeline))
+
+        let advanced = AnalysisCapabilityProfile.desktopAdvanced
+        XCTAssertEqual(advanced.displayName, "Desktop Advanced")
+        XCTAssertEqual(advanced.stemSeparationTier, .advancedDesktop)
+        XCTAssertTrue(advanced.allowsTranscriptionMode(.accuracy))
+        XCTAssertTrue(advanced.supportsPerformanceTrack(.leadVocals))
+        XCTAssertTrue(advanced.supportsPerformanceTrack(.drumPieces))
+    }
+
     private func engineName(_ engine: (any TranscriptionEngine)?) -> String? {
         (engine as? StubTranscriptionEngine)?.name
     }

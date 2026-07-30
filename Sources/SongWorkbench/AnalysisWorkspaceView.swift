@@ -85,7 +85,7 @@ struct AnalysisWorkspaceView: View {
                     // transcription mode / decode speed can be applied without reaching
                     // for the header's Analyze button.
                     AnalyzeSongButton(model: model)
-                        .buttonStyle(.borderedProminent)
+                        .swProminentButtonStyle()
                         .lineLimit(1)
                         .fixedSize()
                     Button("Reference Lyrics", systemImage: "text.alignleft") {
@@ -323,7 +323,7 @@ struct ReferenceLyricsSheet: View {
                     model.applyReferenceLyrics()
                     dismiss()
                 }
-                .buttonStyle(.borderedProminent)
+                .swProminentButtonStyle()
                 .disabled(draft == model.referenceLyrics || model.selectedSong == nil)
             }
         }
@@ -419,14 +419,36 @@ private struct ModelPackagesView: View {
                 HStack {
                     Text("Analysis Models").font(.swDisplay(15, weight: .semibold))
                     Spacer()
+                    Label(
+                        model.analysisCapabilityProfile.displayName,
+                        systemImage: model.analysisCapabilityProfile.platform == .desktop
+                            ? "desktopcomputer" : "ipad"
+                    )
+                    .font(.swDisplay(12, weight: .medium))
+                    .foregroundStyle(Color.swMint)
                     Text(model.totalInstalledModelBytes, format: .byteCount(style: .file))
                         .font(.swMono(12))
                         .foregroundStyle(Color.swTextSecondary)
                 }
-                // Whisper's Core ML encoder needs zip extraction, which is macOS-only — on
-                // iPad the row is hidden entirely instead of offering an install that can
-                // only fail (Eric: "the option to load it should be hidden").
-                let installable = ModelCatalog.all.filter(\.requiresDownloadOnCurrentPlatform)
+                #if os(macOS)
+                    Toggle(
+                        "Advanced stem refinement",
+                        isOn: Binding(
+                            get: { model.advancedStemRefinementEnabled },
+                            set: { model.advancedStemRefinementEnabled = $0 }
+                        )
+                    )
+                    .font(.swDisplay(12))
+                    .help(
+                        "When enabled and DrumSep is installed, Analyze refines drums into kick, snare, cymbals, and toms. Mixer and waveforms follow those children."
+                    )
+                #endif
+                // Hide packages outside the active product tier instead of offering installs
+                // that cannot be used by that build. Includes optional refiners via offersModelPackage.
+                let installable = ModelCatalog.all.filter {
+                    $0.requiresDownloadOnCurrentPlatform
+                        && model.analysisCapabilityProfile.offersModelPackage($0)
+                }
                 ForEach(installable, id: \.id) { descriptor in
                     modelRow(descriptor)
                     if descriptor.id != installable.last?.id { Divider() }

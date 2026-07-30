@@ -708,14 +708,26 @@ final class AppModelTests: XCTestCase {
 
     func testLyricDiagnosticsFlagsShortLineNotNormalLines() {
         // 120 BPM → 1 beat = 0.5s. Four 4-beat (2s) lines + one 1.2-beat (0.6s) short line.
-        let beats = stride(from: 0.0, through: 12.0, by: 0.5).map { $0 }
         func seg(_ start: Double, _ end: Double) -> TimedLyricSegment {
             TimedLyricSegment(start: start, end: end, text: "x", words: [])
         }
         let segments = [seg(0, 2), seg(2, 4), seg(4, 6), seg(6, 8), seg(8, 8.6)]
-        let flags = LyricLineDiagnostics.suspectReasons(segments, beatTimes: beats, tempo: 120)
+        let flags = LyricLineDiagnostics.suspectReasons(segments, tempo: 120)
         XCTAssertNotNil(flags[segments[4].id], "the 1.2-beat line should be flagged")
         XCTAssertNil(flags[segments[0].id], "a normal 4-beat line should not be flagged")
+    }
+
+    func testLyricDiagnosticsAllowsConsistentLengthPhrasesWithOffbeatPickups() {
+        // Vocal phrases routinely begin between beats. Onset phase alone is not evidence of a
+        // bad split unless there is an expected phrase template to compare it against.
+        let starts = [0.18, 2.37, 4.71, 7.20, 9.44]
+        let segments = starts.map {
+            TimedLyricSegment(start: $0, end: $0 + 2, text: "normal phrase", words: [])
+        }
+
+        let flags = LyricLineDiagnostics.suspectReasons(segments, tempo: 120)
+
+        XCTAssertTrue(flags.isEmpty)
     }
 }
 

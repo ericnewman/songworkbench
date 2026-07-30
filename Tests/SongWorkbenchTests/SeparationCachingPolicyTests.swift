@@ -42,10 +42,9 @@ final class SeparationCachingPolicyTests: XCTestCase {
         XCTAssertFalse(policy.isCurrentEngine(record))
     }
 
-    func testIsCurrentEngineIgnoresModelVersion() {
-        // modelVersion is intentionally not part of the identity check.
+    func testIsCurrentEngineFalseOnModelVersionMismatch() {
         let record = record(state: .succeeded, provenance: provenance(modelVersion: "deadbeef"))
-        XCTAssertTrue(policy.isCurrentEngine(record))
+        XCTAssertFalse(policy.isCurrentEngine(record))
     }
 
     func testIsCurrentEngineFalseOnNonSucceededStates() {
@@ -108,6 +107,143 @@ final class SeparationCachingPolicyTests: XCTestCase {
                 ),
                 sourceDigest: "digest",
                 storedStems: stems
+            )
+        )
+    }
+
+    func testIsCacheHitFalseWhenModelVersionDiffers() throws {
+        let directory = try makeStemDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stems = StoredStemFiles(files: sixStemFiles(in: directory))
+
+        XCTAssertFalse(
+            policy.isCacheHit(
+                record: record(
+                    state: .succeeded,
+                    provenance: provenance(modelVersion: "older-model")
+                ),
+                sourceDigest: "digest",
+                storedStems: stems
+            )
+        )
+    }
+
+    func testStemRecipeIdentityCacheKeyDistinguishesRefinersAndTaxonomy() {
+        let base = StemRecipeIdentity(
+            sourceDigest: "digest",
+            baseEngine: engine,
+            refiners: ["drum-piece-v1"],
+            taxonomyVersion: 1
+        )
+        let differentRefiner = StemRecipeIdentity(
+            sourceDigest: "digest",
+            baseEngine: engine,
+            refiners: ["drum-piece-v2"],
+            taxonomyVersion: 1
+        )
+        let differentTaxonomy = StemRecipeIdentity(
+            sourceDigest: "digest",
+            baseEngine: engine,
+            refiners: ["drum-piece-v1"],
+            taxonomyVersion: 2
+        )
+
+        XCTAssertNotEqual(base.cacheKey, differentRefiner.cacheKey)
+        XCTAssertNotEqual(base.cacheKey, differentTaxonomy.cacheKey)
+    }
+
+    func testStemSetCacheHitRequiresMatchingRecipeAndExistingAssets() throws {
+        let directory = try makeStemDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recipe = StemRecipeIdentity(
+            sourceDigest: "digest",
+            baseEngine: engine,
+            refiners: ["drum-piece-v1"]
+        )
+        let kick = directory.appendingPathComponent("kick.wav")
+        try Data().write(to: kick)
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.drums.id,
+                    role: .source,
+                    displayName: "Drums",
+                    order: 1
+                ),
+                StemDescriptor(
+                    id: .drumKick,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Kick",
+                    order: 2
+                ),
+            ],
+            assets: [
+                StemAsset(
+                    id: StemKind.drums.id,
+                    audioURL: directory.appendingPathComponent("drums.wav"),
+                    producerID: "base"
+                ),
+                StemAsset(id: .drumKick, audioURL: kick, producerID: "drum-piece-v1"),
+            ],
+            recipeIdentity: recipe
+        )
+
+        XCTAssertTrue(
+            policy.isStemSetCacheHit(
+                record: record(state: .succeeded, provenance: provenance()),
+                sourceDigest: "digest",
+                storedStemSet: StoredStemSetManifest(manifest: manifest),
+                expectedRecipe: recipe
+            )
+        )
+    }
+
+    func testStemSetCacheHitFalseWhenChildAssetIsMissing() throws {
+        let directory = try makeStemDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recipe = StemRecipeIdentity(
+            sourceDigest: "digest",
+            baseEngine: engine,
+            refiners: ["drum-piece-v1"]
+        )
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.drums.id,
+                    role: .source,
+                    displayName: "Drums",
+                    order: 1
+                ),
+                StemDescriptor(
+                    id: .drumKick,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Kick",
+                    order: 2
+                ),
+            ],
+            assets: [
+                StemAsset(
+                    id: StemKind.drums.id,
+                    audioURL: directory.appendingPathComponent("drums.wav"),
+                    producerID: "base"
+                ),
+                StemAsset(
+                    id: .drumKick,
+                    audioURL: directory.appendingPathComponent("missing-kick.wav"),
+                    producerID: "drum-piece-v1"
+                ),
+            ],
+            recipeIdentity: recipe
+        )
+
+        XCTAssertFalse(
+            policy.isStemSetCacheHit(
+                record: record(state: .succeeded, provenance: provenance()),
+                sourceDigest: "digest",
+                storedStemSet: StoredStemSetManifest(manifest: manifest),
+                expectedRecipe: recipe
             )
         )
     }

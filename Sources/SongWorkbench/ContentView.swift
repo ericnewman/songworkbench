@@ -104,7 +104,10 @@ private struct ModelOnboardingSheet: View {
     @ObservedObject var model: AppModel
 
     private var descriptors: [ModelPackageDescriptor] {
-        ModelCatalog.all.filter(\.requiresDownloadOnCurrentPlatform)
+        ModelCatalog.all.filter {
+            $0.requiresDownloadOnCurrentPlatform
+                && model.analysisCapabilityProfile.requiresModelPackage($0)
+        }
     }
 
     var body: some View {
@@ -120,6 +123,13 @@ private struct ModelOnboardingSheet: View {
                 .font(.swDisplay(13))
                 .foregroundStyle(Color.swTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+                Label(
+                    model.analysisCapabilityProfile.displayName,
+                    systemImage: model.analysisCapabilityProfile.platform == .desktop
+                        ? "desktopcomputer" : "ipad"
+                )
+                .font(.swDisplay(12, weight: .medium))
+                .foregroundStyle(Color.swMint)
             }
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(descriptors, id: \.id) { descriptor in
@@ -144,7 +154,7 @@ private struct ModelOnboardingSheet: View {
                         model.installModelPackage(descriptor)
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .swProminentButtonStyle()
                 .disabled(pendingDownloadBytes == 0)
             }
         }
@@ -382,8 +392,7 @@ private struct BackgroundStatusBar: View {
         HStack(spacing: 6) {
             if let status = model.backgroundActivityStatus {
                 ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
+                    .controlSize(.mini)
                     .frame(width: 12, height: 12)
                 Text(status)
                     .font(.swDisplay(11))
@@ -442,7 +451,7 @@ private struct SongActionsCard: View {
             .disabled(model.selectedSong == nil)
             .help("Remove the selected song from the library (the file is kept)")
             AnalyzeSongButton(model: model)
-                .buttonStyle(.borderedProminent)
+                .swProminentButtonStyle()
         }
         .buttonStyle(.bordered)
         .padding(.horizontal, 12)
@@ -725,17 +734,17 @@ private struct PlayerView: View {
                             // each instrument's energy lines up vertically with the mix above.
                             if !model.stemWaveforms.isEmpty {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    ForEach(model.stemWaveforms, id: \.kind) { entry in
+                                    ForEach(model.stemWaveforms) { entry in
                                         ZStack(alignment: .leading) {
                                             StemWaveformLane(
                                                 envelope: entry.envelope,
-                                                color: Self.stemColor(for: entry.kind),
+                                                color: entry.id.laneColor,
                                                 totalDuration: waveform.duration
                                             )
                                             .frame(width: laneWidth)
-                                            Text(entry.kind.rawValue.capitalized)
+                                            Text(entry.displayName)
                                                 .font(.swDisplay(11))
-                                                .foregroundStyle(Self.stemColor(for: entry.kind))
+                                                .foregroundStyle(entry.id.laneColor)
                                                 .padding(.horizontal, 4)
                                                 .padding(.vertical, 1)
                                                 .background(
@@ -782,11 +791,6 @@ private struct PlayerView: View {
         let stackHeight =
             CGFloat(laneCount) * laneHeight + CGFloat(max(laneCount - 1, 0)) * laneSpacing
         return topPadding + mixHeight + mixToStackGap + stackHeight
-    }
-
-    /// Distinct color per stem so each lane is visually identifiable at a glance.
-    private static func stemColor(for kind: StemKind) -> Color {
-        kind.laneColor
     }
 
 }

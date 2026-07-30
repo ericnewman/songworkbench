@@ -30,6 +30,12 @@ protocol WhisperCPPTranscribing: Sendable {
         languageCode: String?,
         cancellation: WhisperCPPCancellationToken
     ) async throws -> WhisperCPPTranscript
+
+    func releaseResources() async
+}
+
+extension WhisperCPPTranscribing {
+    func releaseResources() async {}
 }
 
 final class WhisperCPPCancellationToken: @unchecked Sendable {
@@ -71,7 +77,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 name: "MIT",
                 url: URL(string: "https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE")
             ),
-            engineVersion: "7"
+            engineVersion: "8"
         )
         self.runtime = runtime ?? WhisperCPPRuntime(modelURL: modelURL, useGPU: useGPU)
     }
@@ -194,6 +200,16 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
     func cancel(requestID: UUID) async {
         activeRequests[requestID]?.cancellation.cancel()
         activeRequests[requestID]?.task.cancel()
+    }
+
+    func releaseResources() async {
+        let requests = Array(activeRequests.values)
+        activeRequests.removeAll()
+        for request in requests {
+            request.cancellation.cancel()
+            request.task.cancel()
+        }
+        await runtime.releaseResources()
     }
 
     /// Maps a BCP-47 locale (e.g. `en_US`) to whisper.cpp's two-letter language code.
@@ -349,6 +365,10 @@ private actor WhisperCPPRuntime: WhisperCPPTranscribing {
             languageCode: languageCode,
             segments: segments
         )
+    }
+
+    func releaseResources() {
+        contextHandle = nil
     }
 
     private func loadedContext() throws -> OpaquePointer {

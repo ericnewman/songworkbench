@@ -20,6 +20,12 @@ protocol FluidAudioTranscribing: Sendable {
         audioURL: URL,
         progress: @escaping @Sendable (Double, String) -> Void
     ) async throws -> FluidAudioTranscript
+
+    func releaseResources() async
+}
+
+extension FluidAudioTranscribing {
+    func releaseResources() async {}
 }
 
 enum FluidAudioDraftProfile: String, Equatable, Sendable {
@@ -101,7 +107,11 @@ actor FluidAudioTranscriptionEngine: TranscriptionEngine {
         activeTasks[request.id] = task
         defer { activeTasks[request.id] = nil }
 
-        let transcript = try await task.value
+        let transcript = try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
         try Task.checkCancellation()
         progress(
             TranscriptionProgress(
@@ -138,6 +148,15 @@ actor FluidAudioTranscriptionEngine: TranscriptionEngine {
 
     func cancel(requestID: UUID) async {
         activeTasks[requestID]?.cancel()
+    }
+
+    func releaseResources() async {
+        let tasks = Array(activeTasks.values)
+        activeTasks.removeAll()
+        for task in tasks {
+            task.cancel()
+        }
+        await runtime.releaseResources()
     }
 }
 
@@ -229,6 +248,12 @@ actor FluidAudioRuntime: FluidAudioTranscribing {
             confidence: result.confidence,
             tokens: tokens
         )
+    }
+
+    func releaseResources() {
+        manager = nil
+        modelLayout?.removeStagingDirectory()
+        modelLayout = nil
     }
 
     private func loadedManager(

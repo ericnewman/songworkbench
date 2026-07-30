@@ -4,6 +4,81 @@ import XCTest
 @testable import SongWorkbench
 
 final class TranscriptionTests: XCTestCase {
+    func testSparseOpeningRescueRequestsBoundedRetryForLongIntroDecode() {
+        let result = transcriptionResult(
+            segments: [
+                transcriptionSegment("Amen.", start: 0, end: 1),
+                transcriptionSegment("Whiskey in trouble", start: 30, end: 33),
+            ],
+            sourceDuration: 299
+        )
+
+        XCTAssertEqual(
+            SparseOpeningTranscriptionRescuer.retryRange(
+                for: result,
+                vocalOnset: 25.38
+            ),
+            17.38...31
+        )
+    }
+
+    func testSparseOpeningRescueReplacesOnlySparseLeadWithRicherOffsetRetry() {
+        let primary = transcriptionResult(
+            segments: [
+                transcriptionSegment("Amen.", start: 0, end: 1),
+                transcriptionSegment("Whiskey in trouble", start: 30, end: 33),
+            ],
+            sourceDuration: 299
+        )
+        let retry = transcriptionResult(
+            segments: [
+                transcriptionSegment(
+                    "The saloon door swung open", start: 6.8, end: 10.7),
+                transcriptionSegment("Whiskey", start: 12.8, end: 13.0),
+            ],
+            sourceDuration: 14
+        )
+
+        let merged = SparseOpeningTranscriptionRescuer.merged(
+            primary: primary,
+            retry: retry,
+            retryStart: 17.38,
+            replacementEnd: 30
+        )
+
+        XCTAssertEqual(
+            merged.segments.map(\.text),
+            ["The saloon door swung open", "Whiskey in trouble"]
+        )
+        XCTAssertEqual(merged.segments[0].startTime, 24.18, accuracy: 1e-9)
+        XCTAssertEqual(merged.segments[0].tokens[0].startTime, 24.18, accuracy: 1e-9)
+        XCTAssertEqual(merged.sourceDuration, primary.sourceDuration)
+    }
+
+    func testSparseOpeningRescueKeepsPrimaryWhenRetryIsNotRicher() {
+        let primary = transcriptionResult(
+            segments: [
+                transcriptionSegment("Amen.", start: 0, end: 1),
+                transcriptionSegment("Next line", start: 20, end: 22),
+            ],
+            sourceDuration: 60
+        )
+        let retry = transcriptionResult(
+            segments: [transcriptionSegment("Amen.", start: 4, end: 5)],
+            sourceDuration: 10
+        )
+
+        XCTAssertEqual(
+            SparseOpeningTranscriptionRescuer.merged(
+                primary: primary,
+                retry: retry,
+                retryStart: 10,
+                replacementEnd: 20
+            ),
+            primary
+        )
+    }
+
     func testMetadataAndTimestampedResultRoundTripThroughCodable() throws {
         let result = makeResult(segments: [
             TimedTranscriptionSegment(
@@ -473,6 +548,25 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(segs.count, 2, segs.map(\.text).joined(separator: " | "))
     }
 
+    func testZeroDurationMultiwordLeadInMergesWithImmediateContinuation() {
+        // Doc Holiday field case: Whisper assigned both lead-in words the same zero-duration
+        // timestamp and opened another segment 50 ms later. "No" is normally protected as a
+        // possible interjection, but impossible timing proves this is one broken phrase.
+        let tokens = [
+            token("Ain't", 65.84, 65.84), token("no", 65.84, 65.84),
+            token("runner", 65.89, 66.75), token("from", 66.73, 67.32),
+            token("the", 67.36, 67.74), token("debt", 67.66, 68.31),
+            token("you", 68.29, 68.73), token("owe.", 68.62, 69.30),
+        ]
+
+        let segments = TimedLyricSegmentGrouper.group(
+            tokens: tokens, lineStartOnsets: [65.84, 65.89])
+
+        XCTAssertEqual(segments.map(\.text), ["Ain't no runner from the debt you owe."])
+        XCTAssertEqual(segments[0].start, 65.84, accuracy: 1e-9)
+        XCTAssertEqual(segments[0].end, 69.30, accuracy: 1e-9)
+    }
+
     func testGroupingPopulatesWordTimingsWithCharacterRangesIntoSegmentText() {
         let tokens = [
             token("  Hello  ", 0, 0.4),
@@ -890,6 +984,51 @@ final class TranscriptionTests: XCTestCase {
             return token(String(word), start, time - 0.02)
         }
         return TimedLyricSegmentGrouper.group(tokens: tokens)[0]
+    }
+
+    private func transcriptionSegment(
+        _ text: String,
+        start: TimeInterval,
+        end: TimeInterval
+    ) -> TimedTranscriptionSegment {
+        let words = text.split(separator: " ")
+        let duration = max(end - start, 0)
+        let step = words.isEmpty ? 0 : duration / Double(words.count)
+        let tokens = words.enumerated().map { index, word in
+            TimedTranscriptionToken(
+                text: String(word),
+                startTime: start + Double(index) * step,
+                endTime: start + Double(index + 1) * step,
+                confidence: 0.9
+            )
+        }
+        return TimedTranscriptionSegment(
+            text: text,
+            startTime: start,
+            endTime: end,
+            tokens: tokens,
+            confidence: 0.9
+        )
+    }
+
+    private func transcriptionResult(
+        segments: [TimedTranscriptionSegment],
+        sourceDuration: TimeInterval
+    ) -> TranscriptionResult {
+        TranscriptionResult(
+            text: segments.map(\.text).joined(separator: " "),
+            languageCode: "en",
+            sourceDuration: sourceDuration,
+            completedAt: Date(timeIntervalSince1970: 0),
+            segments: segments,
+            engine: TranscriptionEngineMetadata(
+                engineName: "test",
+                modelName: "test",
+                modelVersion: "1",
+                modelSizeBytes: 1,
+                license: TranscriptionModelLicense(name: "test", url: nil)
+            )
+        )
     }
 
     private func assertSendable<T: Sendable>(_ value: T) {}

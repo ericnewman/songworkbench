@@ -176,7 +176,7 @@ struct ChordProHighlightDeriver: Sendable {
         case .outro:
             let songEnd = sourceDuration ?? lyrics.map(\.end).max() ?? section.start
             return max(songEnd, section.start + 0.001)
-        case .intro, .instrumental:
+        case .intro, .instrumental, .untranscribedVocal:
             return min(nextSectionStart, nextLyricStart)
         case .vocal:
             return nextLyricStart

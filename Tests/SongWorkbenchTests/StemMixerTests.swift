@@ -5,6 +5,179 @@ import XCTest
 @testable import SongWorkbench
 
 final class StemMixerTests: XCTestCase {
+    func testMixerChannelsExposeRefinedChildrenInsteadOfTheirParent() {
+        let root = URL(fileURLWithPath: "/tmp/refined-stems")
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.drums.id,
+                    role: .source,
+                    displayName: "Drums",
+                    order: 1
+                ),
+                StemDescriptor(
+                    id: .drumKick,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Kick",
+                    order: 2
+                ),
+                StemDescriptor(
+                    id: .drumSnare,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Snare",
+                    order: 3
+                ),
+                StemDescriptor(
+                    id: StemKind.bass.id,
+                    role: .source,
+                    displayName: "Bass",
+                    order: 4
+                ),
+            ],
+            assets: [
+                StemAsset(
+                    id: StemKind.drums.id,
+                    audioURL: root.appendingPathComponent("drums.wav"),
+                    producerID: "base"
+                ),
+                StemAsset(
+                    id: .drumKick,
+                    audioURL: root.appendingPathComponent("kick.wav"),
+                    producerID: "refiner"
+                ),
+                StemAsset(
+                    id: .drumSnare,
+                    audioURL: root.appendingPathComponent("snare.wav"),
+                    producerID: "refiner"
+                ),
+                StemAsset(
+                    id: StemKind.bass.id,
+                    audioURL: root.appendingPathComponent("bass.wav"),
+                    producerID: "base"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            StemMixerChannelProjector.channels(for: manifest),
+            [
+                StemMixerChannel(id: .drumKick, displayName: "Kick", order: 2),
+                StemMixerChannel(id: .drumSnare, displayName: "Snare", order: 3),
+                StemMixerChannel(id: StemKind.bass.id, displayName: "Bass", order: 4),
+            ]
+        )
+    }
+
+    func testWaveformLaneTargetsMatchMixerFrontierIncludingDrumChildren() {
+        let root = URL(fileURLWithPath: "/tmp/refined-waveforms")
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.vocals.id,
+                    role: .source,
+                    displayName: "Vocals",
+                    order: 0
+                ),
+                StemDescriptor(
+                    id: StemKind.drums.id,
+                    role: .source,
+                    displayName: "Drums",
+                    order: 1
+                ),
+                StemDescriptor(
+                    id: .drumKick,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Kick",
+                    order: 2
+                ),
+                StemDescriptor(
+                    id: .drumSnare,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Snare",
+                    order: 3
+                ),
+                StemDescriptor(
+                    id: .drumCymbals,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Cymbals",
+                    order: 4
+                ),
+                StemDescriptor(
+                    id: .drumToms,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Toms",
+                    order: 5
+                ),
+                StemDescriptor(
+                    id: StemKind.bass.id,
+                    role: .source,
+                    displayName: "Bass",
+                    order: 6
+                ),
+            ],
+            assets: [
+                StemAsset(
+                    id: StemKind.vocals.id,
+                    audioURL: root.appendingPathComponent("vocals.wav"),
+                    producerID: "base"
+                ),
+                StemAsset(
+                    id: StemKind.drums.id,
+                    audioURL: root.appendingPathComponent("drums.wav"),
+                    producerID: "base"
+                ),
+                StemAsset(
+                    id: .drumKick,
+                    audioURL: root.appendingPathComponent("kick.wav"),
+                    producerID: "drumsep"
+                ),
+                StemAsset(
+                    id: .drumSnare,
+                    audioURL: root.appendingPathComponent("snare.wav"),
+                    producerID: "drumsep"
+                ),
+                StemAsset(
+                    id: .drumCymbals,
+                    audioURL: root.appendingPathComponent("cymbals.wav"),
+                    producerID: "drumsep"
+                ),
+                StemAsset(
+                    id: .drumToms,
+                    audioURL: root.appendingPathComponent("toms.wav"),
+                    producerID: "drumsep"
+                ),
+                StemAsset(
+                    id: StemKind.bass.id,
+                    audioURL: root.appendingPathComponent("bass.wav"),
+                    producerID: "base"
+                ),
+            ]
+        )
+
+        let targets = StemWaveformLaneProjector.targets(for: manifest)
+        XCTAssertEqual(
+            targets.map(\.id),
+            [
+                StemKind.vocals.id, .drumKick, .drumSnare, .drumCymbals, .drumToms,
+                StemKind.bass.id,
+            ])
+        XCTAssertEqual(
+            targets.map(\.displayName),
+            [
+                "Vocals", "Kick", "Snare", "Cymbals", "Toms", "Bass",
+            ])
+        XCTAssertFalse(targets.contains { $0.id == StemKind.drums.id })
+        XCTAssertEqual(
+            StemMixerChannelProjector.channels(for: manifest).map(\.id), targets.map(\.id))
+        XCTAssertEqual(StemID.drumKick.laneColor, StemKind.drums.laneColor)
+    }
+
     func testEffectiveGainsRespectGainMuteAndSolo() {
         var mixer = StemMixerModel()
         mixer.setGain(0.75, for: .vocals)
@@ -96,6 +269,22 @@ final class StemMixerTests: XCTestCase {
 
         mixer.setMasterGain(0.5)
         XCTAssertNotEqual(mixer, StemMixerModel())
+    }
+
+    func testMixerPersistsUnknownStemIDs() throws {
+        var mixer = StemMixerModel()
+        let leadID: StemID = "guitar.lead"
+        mixer.setGain(0.4, for: leadID)
+        mixer.setMuted(true, for: leadID)
+        mixer.setPan(0.75, for: leadID)
+
+        let data = try JSONEncoder().encode(mixer)
+        let decoded = try JSONDecoder().decode(StemMixerModel.self, from: data)
+
+        XCTAssertEqual(decoded[leadID].gain, 0.4)
+        XCTAssertTrue(decoded[leadID].isMuted)
+        XCTAssertEqual(decoded[leadID].pan, 0.75)
+        XCTAssertEqual(decoded[StemKind.vocals].gain, 1)
     }
 
     func testExporterAppliesMasterGainToTheWholeRenderedMix() async throws {
@@ -262,6 +451,50 @@ final class StemMixerTests: XCTestCase {
         XCTAssertEqual(right[1_000], 0.3, accuracy: 0.02)
         XCTAssertEqual(left[6_000], 0.2, accuracy: 0.02)
         XCTAssertEqual(right[6_000], 0.2, accuracy: 0.02)
+    }
+
+    func testHierarchicalExportDoesNotRenderParentAndChildrenTogether() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parentURL = directory.appendingPathComponent("drums.wav")
+        let kickURL = directory.appendingPathComponent("kick.wav")
+        try writeConstantWAV(to: parentURL, value: 0.5, frames: 8_000, sampleRate: 8_000)
+        try writeConstantWAV(to: kickURL, value: 0.25, frames: 8_000, sampleRate: 8_000)
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.drums.id, role: .source, displayName: "Drums", order: 1),
+                StemDescriptor(
+                    id: .drumKick,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Kick",
+                    order: 2
+                ),
+            ],
+            assets: [
+                StemAsset(id: StemKind.drums.id, audioURL: parentURL, producerID: "base"),
+                StemAsset(id: .drumKick, audioURL: kickURL, producerID: "drum-refiner"),
+            ]
+        )
+
+        let destination = directory.appendingPathComponent("hierarchical.wav")
+        try await StemMixExporter().export(
+            manifest: manifest,
+            to: destination,
+            mixer: StemMixerModel()
+        )
+
+        let output = try AVAudioFile(forReading: destination)
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: output.processingFormat,
+            frameCapacity: AVAudioFrameCount(output.length)
+        )!
+        try output.read(into: buffer)
+        let left = abs(buffer.floatChannelData![0][4_000])
+        let right = abs(buffer.floatChannelData![1][4_000])
+        XCTAssertEqual(left, 0.25, accuracy: 0.02)
+        XCTAssertEqual(right, 0.25, accuracy: 0.02)
     }
 
     func testCancelledExportDoesNotCreateDestination() async throws {

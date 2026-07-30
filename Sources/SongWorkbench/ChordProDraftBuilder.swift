@@ -17,6 +17,38 @@ struct ChordProDraftInput: Equatable, Sendable {
     var estimatedKey: MusicalKey? = nil
 }
 
+enum UntranscribedVocalRegionResolver {
+    static func overlaps(
+        _ regions: [ClosedRange<TimeInterval>],
+        start: TimeInterval,
+        end: TimeInterval
+    ) -> Bool {
+        regions.contains { $0.lowerBound < end && start < $0.upperBound }
+    }
+
+    static func clippedMerged(
+        _ regions: [ClosedRange<TimeInterval>],
+        start: TimeInterval,
+        end: TimeInterval
+    ) -> [ClosedRange<TimeInterval>] {
+        let clipped = regions.compactMap { region -> ClosedRange<TimeInterval>? in
+            let lower = max(start, region.lowerBound)
+            let upper = min(end, region.upperBound)
+            return lower < upper ? lower...upper : nil
+        }.sorted { $0.lowerBound < $1.lowerBound }
+
+        var merged: [ClosedRange<TimeInterval>] = []
+        for region in clipped {
+            if let last = merged.last, region.lowerBound <= last.upperBound + 0.02 {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, region.upperBound)
+            } else {
+                merged.append(region)
+            }
+        }
+        return merged
+    }
+}
+
 /// The generated draft plus its typed timeline — same build pass, so `timeline.rows[i].number`
 /// matches the preview's numbered musical lines of `source` exactly.
 struct ChordProDraftResult: Equatable, Sendable {
@@ -183,7 +215,12 @@ struct ChordProDraftBuilder: Sendable {
             var leadingChords: [RenderableChordEvent] = []
             if gapBars >= 4 {
                 if index > 0 { lines.append("") }
-                let role = index == 0 ? "Intro" : "Instrumental"
+                let containsMissedVocals = UntranscribedVocalRegionResolver.overlaps(
+                    input.untranscribedVocalRegions, start: gapStart, end: segment.start)
+                let role =
+                    containsMissedVocals
+                    ? "Vocals not transcribed"
+                    : (index == 0 ? "Intro" : "Instrumental")
                 lines.append(
                     "{comment: \(directiveValue("\(role) · \(barCount(gapBars)) bars"))}")
                 if !gapChords.isEmpty {
@@ -1004,6 +1041,7 @@ struct LyricTimelineSection: Identifiable, Equatable, Sendable {
         case intro
         case instrumental
         case outro
+        case untranscribedVocal
         case vocal(String)
     }
 
@@ -1016,7 +1054,7 @@ struct LyricTimelineSection: Identifiable, Equatable, Sendable {
     var isInstrumentalMarker: Bool {
         switch kind {
         case .intro, .instrumental, .outro: true
-        case .vocal: false
+        case .untranscribedVocal, .vocal: false
         }
     }
 }
@@ -1032,7 +1070,8 @@ struct LyricSectionDeriver: Sendable {
         beatTimes: [TimeInterval] = [],
         tempo: Double? = nil,
         sourceDuration: TimeInterval? = nil,
-        vocalTailCutoff: TimeInterval? = nil
+        vocalTailCutoff: TimeInterval? = nil,
+        untranscribedVocalRegions: [ClosedRange<TimeInterval>] = []
     ) -> [LyricTimelineSection] {
         let lines =
             lyrics
@@ -1057,6 +1096,58 @@ struct LyricSectionDeriver: Sendable {
         }
 
         var markers: [LyricTimelineSection] = []
+        @discardableResult
+        func appendGapMarkers(
+            from start: TimeInterval,
+            to end: TimeInterval,
+            instrumentalKind: LyricTimelineSection.Kind,
+            instrumentalLabel: (Double) -> String
+        ) -> Bool {
+            let vocalRegions = UntranscribedVocalRegionResolver.clippedMerged(
+                untranscribedVocalRegions, start: start, end: end)
+            if vocalRegions.isEmpty {
+                let gapBars = Self.bars(
+                    from: start, to: end, beatTimes: beatTimes, tempo: tempo)
+                if gapBars >= instrumentalGapBars {
+                    markers.append(
+                        LyricTimelineSection(
+                            kind: instrumentalKind,
+                            start: start,
+                            label: instrumentalLabel(gapBars)))
+                }
+                return false
+            }
+
+            var cursor = start
+            for region in vocalRegions {
+                let precedingBars = Self.bars(
+                    from: cursor, to: region.lowerBound, beatTimes: beatTimes, tempo: tempo)
+                if precedingBars >= instrumentalGapBars {
+                    markers.append(
+                        LyricTimelineSection(
+                            kind: instrumentalKind,
+                            start: cursor,
+                            label: instrumentalLabel(precedingBars)))
+                }
+                markers.append(
+                    LyricTimelineSection(
+                        kind: .untranscribedVocal,
+                        start: region.lowerBound,
+                        label: "Vocals not transcribed"))
+                cursor = max(cursor, region.upperBound)
+            }
+
+            let trailingBars = Self.bars(
+                from: cursor, to: end, beatTimes: beatTimes, tempo: tempo)
+            if trailingBars >= instrumentalGapBars {
+                markers.append(
+                    LyricTimelineSection(
+                        kind: instrumentalKind,
+                        start: cursor,
+                        label: instrumentalLabel(trailingBars)))
+            }
+            return true
+        }
         let vocalSections = SongStructureAnalyzer().vocalSections(for: bodyLines)
         let sectionLabelByStart =
             vocalSections.count >= 2
@@ -1070,21 +1161,22 @@ struct LyricSectionDeriver: Sendable {
                     TrailingLyricTailPruner.substantiveLineStart(segment) >= $0 - lineStartEpsilon
                 } ?? false
             let gapStart = index > 0 ? lines[index - 1].end : 0
-            let gapBars = Self.bars(
-                from: gapStart, to: segment.start, beatTimes: beatTimes, tempo: tempo)
-            if gapBars >= instrumentalGapBars {
-                let role = index == 0 ? "Intro" : "Instrumental"
-                let barLabel = Self.barCountLabel(gapBars)
-                markers.append(
-                    LyricTimelineSection(
-                        kind: index == 0 ? .intro : .instrumental,
-                        start: gapStart,
-                        label: "\(role) · \(barLabel) bars"))
-            }
+            let role = index == 0 ? "Intro" : "Instrumental"
+            let containsUntranscribedVocals = appendGapMarkers(
+                from: gapStart,
+                to: segment.start,
+                instrumentalKind: index == 0 ? .intro : .instrumental,
+                instrumentalLabel: { "\(role) · \(Self.barCountLabel($0)) bars" })
             if !inTail, let sectionLabel = sectionLabelByStart[segment.start] {
                 markers.append(
                     LyricTimelineSection(
                         kind: .vocal(sectionLabel), start: segment.start, label: sectionLabel))
+            } else if !inTail, containsUntranscribedVocals {
+                // Close the explicit missed-vocal span even when the next line remains inside the
+                // same verse/chorus and therefore has no normal section boundary.
+                markers.append(
+                    LyricTimelineSection(
+                        kind: .vocal("Vocals"), start: segment.start, label: "Vocals"))
             }
         }
 
@@ -1092,12 +1184,11 @@ struct LyricSectionDeriver: Sendable {
         if let lastEnd = lastBodyEnd {
             let songEnd = resolvedSongEnd(
                 lastLyricEnd: lastEnd, beatTimes: beatTimes, sourceDuration: sourceDuration)
-            let outroBars = Self.bars(
-                from: lastEnd, to: songEnd, beatTimes: beatTimes, tempo: tempo)
-            if outroBars >= instrumentalGapBars {
-                markers.append(
-                    LyricTimelineSection(kind: .outro, start: lastEnd, label: "Outro"))
-            }
+            appendGapMarkers(
+                from: lastEnd,
+                to: songEnd,
+                instrumentalKind: .outro,
+                instrumentalLabel: { _ in "Outro" })
         }
         return markers.sorted {
             if $0.start == $1.start { return $0.label < $1.label }

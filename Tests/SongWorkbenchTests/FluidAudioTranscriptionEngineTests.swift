@@ -123,6 +123,34 @@ final class FluidAudioTranscriptionEngineTests: XCTestCase {
         XCTAssertEqual(result.engine.engineVersion, "2")
     }
 
+    func testOuterCancellationCancelsRuntimeInferenceTask() async throws {
+        let runtime = CancellationRecordingFluidAudioRuntime()
+        let engine = FluidAudioTranscriptionEngine(
+            modelDirectory: URL(fileURLWithPath: "/models/parakeet-tdt-0.6b-v3-coreml"),
+            modelSizeBytes: 500_000_000,
+            runtime: runtime
+        )
+        let task = Task {
+            try await engine.transcribe(
+                request: TranscriptionRequest(
+                    audioURL: URL(fileURLWithPath: "/audio/vocals.wav")
+                )
+            ) { _ in }
+        }
+        await runtime.waitUntilStarted()
+
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let observedCancellation = await runtime.observedCancellation()
+        XCTAssertTrue(observedCancellation)
+    }
+
     func testSentencePieceFragmentsAreCombinedIntoTimedWords() {
         let words = FluidAudioWordTokenGrouper.group([
             FluidAudioTranscriptToken(text: " Tak", start: 1, end: 1.2, confidence: 0.8),
@@ -149,5 +177,34 @@ private struct StubFluidAudioRuntime: FluidAudioTranscribing {
     ) async throws -> FluidAudioTranscript {
         progress(1, "complete")
         return transcript
+    }
+}
+
+private actor CancellationRecordingFluidAudioRuntime: FluidAudioTranscribing {
+    private var started = false
+    private var wasCancelled = false
+
+    func transcribe(
+        audioURL: URL,
+        progress: @escaping @Sendable (Double, String) -> Void
+    ) async throws -> FluidAudioTranscript {
+        started = true
+        do {
+            try await Task.sleep(for: .seconds(30))
+            throw CancellationError()
+        } catch is CancellationError {
+            wasCancelled = true
+            throw CancellationError()
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !started {
+            await Task.yield()
+        }
+    }
+
+    func observedCancellation() -> Bool {
+        wasCancelled
     }
 }

@@ -12,7 +12,16 @@ final class ModelPackageManagerTests: XCTestCase {
                 "htdemucs-6s-onnx",
                 "parakeet-tdt-0.6b-v3-coreml-int8",
                 "whisper-large-v3-turbo-q5-0",
+                "drumsep-onnx",
             ])
+        )
+        XCTAssertTrue(ModelCatalog.optionalRefinementIDs.contains(ModelCatalog.drumsep.id))
+        XCTAssertFalse(
+            AnalysisCapabilityProfile.profile(for: .desktop)
+                .requiresModelPackage(ModelCatalog.drumsep)
+        )
+        XCTAssertTrue(
+            AnalysisCapabilityProfile.desktopAdvanced.offersModelPackage(ModelCatalog.drumsep)
         )
         XCTAssertTrue(
             ModelCatalog.all.allSatisfy {
@@ -156,6 +165,46 @@ final class ModelPackageManagerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: extractedFileURL), Data("extracted model".utf8))
         guard case .installed = await manager.status(for: descriptor) else {
             return XCTFail("Expected verified installed package with extracted archive component")
+        }
+    }
+
+    func testAnalysisStatusReusesLastFullVerificationUntilNextExplicitRefresh() async throws {
+        let payload = Data("model payload".utf8)
+        let sourceURL = URL(string: "https://example.invalid/model.bin")!
+        let descriptor = ModelPackageDescriptor(
+            id: "cached-status-model",
+            displayName: "Cached Status",
+            purpose: "Test",
+            version: "1",
+            minimumOSVersion: "14.0",
+            license: ModelArtifactLicense(name: "MIT", attribution: "Test"),
+            source: .files([
+                component(path: "model.bin", url: sourceURL, data: payload)
+            ]),
+            entryPointRelativePath: "model.bin"
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = ModelPackageManager(
+            directoryURL: directory,
+            downloader: PackageStubDownloader(payloads: [sourceURL: payload])
+        )
+        let installed = try await manager.install(descriptor) { _ in }
+
+        guard case .installed = await manager.statusForAnalysis(for: descriptor) else {
+            return XCTFail("Expected installed analysis status")
+        }
+        try Data("tampered".utf8).write(to: installed.entryPointURL)
+        guard case .installed = await manager.statusForAnalysis(for: descriptor) else {
+            return XCTFail("Analysis assembly should reuse the process-local verified status")
+        }
+
+        guard case .invalid = await manager.status(for: descriptor) else {
+            return XCTFail("Explicit status refresh must still detect tampering")
+        }
+        guard case .invalid = await manager.statusForAnalysis(for: descriptor) else {
+            return XCTFail("Failed full verification must invalidate the analysis status")
         }
     }
 

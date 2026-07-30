@@ -49,15 +49,14 @@ final class MelodyPhraseProxyTests: XCTestCase {
     /// phrase's chord signature sometimes carries one extra/missing passing chord from one
     /// occurrence to the next. Under the OLD exact-`==` clustering, only the byte-identical
     /// occurrences of each phrase matched (["A","B","C","D","A","B"] — 4 distinct letters for 2
-    /// real phrases); with the tolerant Jaccard match (>= 0.75, mirroring
-    /// `SongStructureOverviewBuilder.signaturesMatch`) the jittery occurrences correctly fold
-    /// into their real phrase (["A","B","A","B","A","B"] — exactly 2).
+    /// real phrases); allowing one inserted passing chord while preserving sequence order folds
+    /// the jittery occurrences into their real phrase (["A","B","A","B","A","B"] — exactly 2).
     func testJitteryChordSignaturesWithOnePassingChordStillClusterAsTheSamePhrase() {
         let signatures: [[String]] = [
             ["I", "IV", "V"],  // A
             ["vi", "ii", "V"],  // B
-            ["I", "IV", "V", "vi"],  // A + one passing chord -> Jaccard 3/4 = 0.75, matches A
-            ["vi", "ii", "V", "I"],  // B + one passing chord -> Jaccard 3/4 = 0.75, matches B
+            ["I", "IV", "V", "vi"],  // A + one passing chord, ordered shared sequence
+            ["vi", "ii", "V", "I"],  // B + one passing chord, ordered shared sequence
             ["I", "IV", "V"],  // A exactly
             ["vi", "ii", "V"],  // B exactly
         ]
@@ -65,6 +64,18 @@ final class MelodyPhraseProxyTests: XCTestCase {
         XCTAssertEqual(
             MelodyPhraseProxy.phraseLetters(chordSignatures: signatures, syllableCounts: syllables),
             ["A", "B", "A", "B", "A", "B"])
+    }
+
+    func testReorderedChordSignaturesAreDifferentPhrases() {
+        let signatures: [[String]] = [
+            ["I", "V", "vi", "IV"],
+            ["IV", "vi", "V", "I"],
+        ]
+
+        XCTAssertEqual(
+            MelodyPhraseProxy.phraseLetters(
+                chordSignatures: signatures, syllableCounts: [8, 8]),
+            ["A", "B"])
     }
 
     /// Two lines with NO detected chord data at all must not blindly cluster together just
@@ -88,7 +99,10 @@ final class SongStructureOverviewBuilderTests: XCTestCase {
     /// section whose chords don't match either verse (should read as a **Bridge**, not
     /// "Verse 3"). No `sourceDuration` is set, so `TrailingLyricTailPruner` never activates
     /// and the default empty `words: []` on these fixtures is harmless.
-    private func chordAndSoloFixture() -> ChordProDraftInput {
+    private func chordAndSoloFixture(
+        soloPattern: [String] = ["C", "G", "Am", "F"],
+        finalPattern: [String] = ["Eb", "Bb", "Cm", "Gm"]
+    ) -> ChordProDraftInput {
         ChordProDraftInput(
             title: "Bridge and Solo Song",
             tempo: 120,
@@ -111,17 +125,15 @@ final class SongStructureOverviewBuilderTests: XCTestCase {
                 EditableChordEvent(time: 15, chord: "G", confidence: 0.9),
                 EditableChordEvent(time: 16, chord: "Am", confidence: 0.9),
                 EditableChordEvent(time: 17, chord: "F", confidence: 0.9),
-                // Wordless gap [18, 38): reuses the verse pattern exactly -> should read Solo.
-                EditableChordEvent(time: 28, chord: "C", confidence: 0.9),
-                EditableChordEvent(time: 29, chord: "G", confidence: 0.9),
-                EditableChordEvent(time: 30, chord: "Am", confidence: 0.9),
-                EditableChordEvent(time: 31, chord: "F", confidence: 0.9),
-                // Worded section with an unrelated chord pattern -> should read Bridge.
-                EditableChordEvent(time: 38, chord: "Eb", confidence: 0.9),
-                EditableChordEvent(time: 38.5, chord: "Bb", confidence: 0.9),
-                EditableChordEvent(time: 39, chord: "Cm", confidence: 0.9),
-                EditableChordEvent(time: 39.5, chord: "Gm", confidence: 0.9),
-            ],
+            ]
+                + soloPattern.enumerated().map {
+                    EditableChordEvent(
+                        time: 28 + Double($0.offset), chord: $0.element, confidence: 0.9)
+                }
+                + finalPattern.enumerated().map {
+                    EditableChordEvent(
+                        time: 38 + Double($0.offset) * 0.35, chord: $0.element, confidence: 0.9)
+                },
             estimatedKey: MusicalKey(root: .c, quality: .major)
         )
     }
@@ -144,11 +156,78 @@ final class SongStructureOverviewBuilderTests: XCTestCase {
         XCTAssertEqual(bridge?.lines.first?.text, "Nothing stays the same forever now")
     }
 
+    func testBridgeClassificationRejectsSameChordSetInDifferentOrder() {
+        let overview = SongStructureOverviewBuilder().build(
+            chordAndSoloFixture(finalPattern: ["F", "Am", "G", "C"]))
+
+        let finalWordedSection = overview?.form.first {
+            $0.lines.first?.text == "Nothing stays the same forever now"
+        }
+        XCTAssertEqual(finalWordedSection?.kind, .bridge)
+    }
+
+    func testSoloClassificationRejectsSameChordSetInDifferentOrder() {
+        let overview = SongStructureOverviewBuilder().build(
+            chordAndSoloFixture(soloPattern: ["F", "Am", "G", "C"]))
+
+        let reorderedInstrumental = overview?.form.first { $0.start == 18 }
+        XCTAssertEqual(reorderedInstrumental?.kind, .instrumental)
+    }
+
+    func testBridgeClassificationStillToleratesOneInsertedPassingChord() {
+        let overview = SongStructureOverviewBuilder().build(
+            chordAndSoloFixture(finalPattern: ["C", "G", "D", "Am", "F"]))
+
+        let finalWordedSection = overview?.form.first {
+            $0.lines.first?.text == "Nothing stays the same forever now"
+        }
+        XCTAssertEqual(finalWordedSection?.kind, .verse)
+    }
+
     func testGenericInstrumentalGapWithNoChordsIsNotReclassifiedAsSolo() {
         let overview = SongStructureOverviewBuilder().build(chordAndSoloFixture())
         let plainGap = overview?.form.first { $0.label == "Instrumental" }
         XCTAssertNotNil(plainGap)
         XCTAssertEqual(plainGap?.kind, .instrumental)
+    }
+
+    func testKnownUntranscribedVocalGapCannotBeReclassifiedAsSolo() {
+        var input = chordAndSoloFixture()
+        input.untranscribedVocalRegions = [20...34]
+
+        let overview = SongStructureOverviewBuilder().build(input)
+        let missedVocalSection = overview?.form.first { $0.kind == .untranscribedVocal }
+
+        XCTAssertNotNil(missedVocalSection)
+        XCTAssertEqual(missedVocalSection?.label, "Vocals not transcribed")
+        XCTAssertFalse(
+            overview?.form.contains {
+                ($0.kind == .instrumental || $0.kind == .solo)
+                    && $0.start < 34 && $0.end > 20
+            } ?? true)
+    }
+
+    func testShortUntranscribedVocalGapPreservesSurroundingVocalSections() {
+        let input = ChordProDraftInput(
+            title: "Continuous Verse",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 0, end: 2, text: "First line"),
+                TimedLyricSegment(start: 4, end: 6, text: "Second line"),
+            ],
+            chords: [],
+            untranscribedVocalRegions: [2.5...3.5]
+        )
+
+        let overview = SongStructureOverviewBuilder().build(input)
+
+        XCTAssertEqual(
+            overview.map { Array($0.form.prefix(3).map(\.kind)) },
+            [.verse, .untranscribedVocal, .verse])
+        XCTAssertEqual(overview.map { Array($0.form.prefix(3).map(\.start)) }, [0, 2.5, 4])
+        XCTAssertEqual(overview?.form[0].lines.map(\.text), ["First line"])
+        XCTAssertEqual(
+            overview?.form.first { $0.start == 4 }?.lines.map(\.text), ["Second line"])
     }
 
     func testVerseTemplateCapturesTheSharedChordPatternAndLineCount() {
@@ -238,8 +317,9 @@ final class SongStructureOverviewBuilderTests: XCTestCase {
         let overview = SongStructureOverviewBuilder().build(input)
         let verseSections = overview?.form.filter { $0.kind == .verse }
         XCTAssertEqual(
-            verseSections?.map(\.lines.count), [6, 4, 2],
+            verseSections?.map(\.lines.count), [6, 4],
             "\(overview?.form.map { "\($0.label):\($0.kind)" } ?? [])")
+        XCTAssertEqual(overview?.form.first(where: { $0.kind == .bridge })?.lines.count, 2)
         let verseTemplate = overview?.templates.first { $0.kind == .verse }
         XCTAssertNotNil(verseTemplate)
         // The representative must be Verse 1 or Verse 2 (6 or 4 lines, chord-pattern majority),

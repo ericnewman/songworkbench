@@ -101,6 +101,96 @@ enum TranscriptionTimeScaler {
     }
 }
 
+enum TranscriptionTimeOffsetter {
+    static func offset(_ result: TranscriptionResult, by offset: TimeInterval)
+        -> TranscriptionResult
+    {
+        guard abs(offset) > 1e-6 else { return result }
+        return TranscriptionResult(
+            text: result.text,
+            languageCode: result.languageCode,
+            sourceDuration: result.sourceDuration,
+            completedAt: result.completedAt,
+            segments: result.segments.map { segment in
+                TimedTranscriptionSegment(
+                    text: segment.text,
+                    startTime: segment.startTime + offset,
+                    endTime: segment.endTime + offset,
+                    tokens: segment.tokens.map { token in
+                        TimedTranscriptionToken(
+                            text: token.text,
+                            startTime: token.startTime + offset,
+                            endTime: token.endTime + offset,
+                            confidence: token.confidence
+                        )
+                    },
+                    confidence: segment.confidence
+                )
+            },
+            engine: result.engine
+        )
+    }
+}
+
+/// Recovers an opening phrase that a full-song Whisper pass collapsed into one
+/// token at time zero after a long instrumental intro.
+enum SparseOpeningTranscriptionRescuer {
+    static func retryRange(
+        for result: TranscriptionResult,
+        vocalOnset: TimeInterval,
+        maximumOpeningTokens: Int = 2,
+        minimumIntroDuration: TimeInterval = 4,
+        preRoll: TimeInterval = 8,
+        postRoll: TimeInterval = 1
+    ) -> ClosedRange<TimeInterval>? {
+        guard
+            vocalOnset >= minimumIntroDuration,
+            result.segments.count >= 2,
+            let first = result.segments.first,
+            first.startTime <= 1,
+            first.tokens.count <= maximumOpeningTokens
+        else {
+            return nil
+        }
+        let nextStart = result.segments[1].startTime
+        guard nextStart > vocalOnset else { return nil }
+        let start = max(vocalOnset - preRoll, 0)
+        let end = min(nextStart + postRoll, result.sourceDuration)
+        return end > start ? start...end : nil
+    }
+
+    static func merged(
+        primary: TranscriptionResult,
+        retry: TranscriptionResult,
+        retryStart: TimeInterval,
+        replacementEnd: TimeInterval
+    ) -> TranscriptionResult {
+        guard let sparseOpening = primary.segments.first else { return primary }
+        let shifted = TranscriptionTimeOffsetter.offset(retry, by: retryStart)
+        let replacement = shifted.segments.filter {
+            !$0.tokens.isEmpty
+                && $0.startTime < replacementEnd
+                && $0.endTime > retryStart
+        }
+        let replacementWordCount = replacement.flatMap(\.tokens).count
+        guard replacementWordCount > sparseOpening.tokens.count else { return primary }
+
+        let segments = (replacement + primary.segments.dropFirst()).sorted {
+            $0.startTime == $1.startTime
+                ? $0.endTime < $1.endTime
+                : $0.startTime < $1.startTime
+        }
+        return TranscriptionResult(
+            text: segments.map(\.text).joined(separator: " "),
+            languageCode: primary.languageCode ?? retry.languageCode,
+            sourceDuration: primary.sourceDuration,
+            completedAt: max(primary.completedAt, retry.completedAt),
+            segments: segments,
+            engine: primary.engine
+        )
+    }
+}
+
 struct TranscriptionProgress: Codable, Equatable, Sendable {
     enum Phase: String, Codable, Sendable {
         case loadingModel
@@ -141,6 +231,12 @@ protocol TranscriptionEngine: Sendable {
     ) async throws -> TranscriptionResult
 
     func cancel(requestID: UUID) async
+
+    func releaseResources() async
+}
+
+extension TranscriptionEngine {
+    func releaseResources() async {}
 }
 
 struct TimedLyricGroupingConfiguration: Equatable, Sendable {
@@ -507,6 +603,15 @@ enum TimedLyricSegmentGrouper {
                     && !isInterjectionWord(previousLast.text)
                     && beginsWithConnective(first.text)
                     && gap <= 4.0
+                // Whisper can occasionally assign several words one identical timestamp, then
+                // open a new segment a few milliseconds later. That timing cannot represent a
+                // real standalone sung line, so it outweighs lexical protection for words such
+                // as "no" (Doc Holiday: "Ain't no" | "runner from the debt you owe.").
+                let previousDuration = previousLast.endTime - previousFirst.startTime
+                let degenerateLeadIn =
+                    previous.count >= 2
+                    && previousDuration <= 0.05
+                    && gap <= 0.25
                 // A merged line must obey the SAME size caps a base line does, so a run of
                 // conjunction-ending fragments (common on dense/rough transcriptions) can't chain
                 // into one over-long line.
@@ -516,7 +621,7 @@ enum TimedLyricSegmentGrouper {
                 let withinBounds =
                     mergedTokens <= configuration.maximumTokens
                     && mergedDuration <= configuration.maximumDuration
-                if (endsOpen || shortLeadIn) && withinBounds {
+                if (endsOpen || shortLeadIn || degenerateLeadIn) && withinBounds {
                     result[result.count - 1].append(contentsOf: group)
                     continue
                 }

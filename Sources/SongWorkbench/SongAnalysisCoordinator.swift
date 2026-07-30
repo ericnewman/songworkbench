@@ -11,37 +11,76 @@ import Foundation
 /// properties while concentrating the run/cancel orchestration in one place.
 @MainActor
 final class SongAnalysisCoordinator {
-    private let pipelineFactory: SongAnalysisPipelineFactory
+    private let makePipeline: @Sendable () async throws -> SongAnalysisPipelineFactory.Assembly
     private var task: Task<Void, Never>?
+    private var currentRunID: UUID?
 
     init(pipelineFactory: SongAnalysisPipelineFactory) {
-        self.pipelineFactory = pipelineFactory
+        makePipeline = {
+            try await pipelineFactory.makePipeline()
+        }
     }
 
-    /// Cancels any in-flight run, then assembles and runs the pipeline for
+    init(
+        makePipeline:
+            @escaping @Sendable () async throws
+            -> SongAnalysisPipelineFactory.Assembly
+    ) {
+        self.makePipeline = makePipeline
+    }
+
+    /// Cancels and drains any in-flight run, then assembles and runs the pipeline for
     /// `request`. `onStatuses`, `onProgress`, and `onFinish` are invoked on the
     /// main actor; `onFinish` is called exactly once with `.success` or
     /// `.failure` (a `CancellationError` on cancellation).
+    @discardableResult
     func run(
         request: SongAnalysisPipelineRequest,
-        onStatuses: @escaping @MainActor ([String: ModelPackageStatus]) -> Void,
-        onProgress: @escaping @MainActor (SongAnalysisPipelineProgress) -> Void,
-        onFinish: @escaping @MainActor (Result<SongAnalysisPipelineResult, Error>) -> Void
-    ) {
-        task?.cancel()
-        task = Task { [pipelineFactory] in
-            do {
-                let assembly = try await pipelineFactory.makePipeline()
-                onStatuses(assembly.statuses)
-                let result = try await assembly.pipeline.run(request) { value in
-                    Task { @MainActor in onProgress(value) }
-                }
-                onFinish(.success(result))
-            } catch {
-                onFinish(.failure(error))
+        onStatuses: @escaping @MainActor (UUID, [String: ModelPackageStatus]) -> Void,
+        onProgress: @escaping @MainActor (UUID, SongAnalysisPipelineProgress) -> Void,
+        onFinish: @escaping @MainActor (UUID, Result<SongAnalysisPipelineResult, Error>) -> Void
+    ) -> UUID {
+        let previousTask = task
+        previousTask?.cancel()
+        let runID = UUID()
+        currentRunID = runID
+        let nextTask = Task { [makePipeline] in
+            // ORT and some Core ML calls are synchronous and cannot observe Swift
+            // cancellation until the current inference chunk returns. Do not assemble
+            // replacement models until that task has fully unwound and released them.
+            if let previousTask {
+                await previousTask.value
             }
-            task = nil
+            do {
+                try Task.checkCancellation()
+                let assembly = try await makePipeline()
+                try Task.checkCancellation()
+                if self.currentRunID == runID {
+                    onStatuses(runID, assembly.statuses)
+                }
+                let result = try await assembly.pipeline.run(request) { value in
+                    Task { @MainActor in
+                        guard self.currentRunID == runID else { return }
+                        onProgress(runID, value)
+                    }
+                }
+                let outcome: Result<SongAnalysisPipelineResult, Error> =
+                    self.currentRunID == runID
+                    ? .success(result)
+                    : .failure(CancellationError())
+                onFinish(runID, outcome)
+            } catch {
+                let deliveredError: Error =
+                    self.currentRunID == runID ? error : CancellationError()
+                onFinish(runID, .failure(deliveredError))
+            }
+            if self.currentRunID == runID {
+                self.currentRunID = nil
+                self.task = nil
+            }
         }
+        task = nextTask
+        return runID
     }
 
     func cancel() {

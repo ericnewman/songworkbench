@@ -175,6 +175,7 @@ actor ModelPackageManager {
     private let downloader: any ModelArtifactDownloading
     private let extractor: any ModelArchiveExtracting
     private let fileManager: FileManager
+    private var analysisStatusCache: [String: ModelPackageStatus] = [:]
 
     init(
         directoryURL: URL,
@@ -276,34 +277,57 @@ actor ModelPackageManager {
         }
         try fileManager.moveItem(at: stagingURL, to: installedURL)
         progress(1)
-        return try installedPackage(for: descriptor, packageDirectoryURL: installedURL)
+        let installed = try installedPackage(
+            for: descriptor,
+            packageDirectoryURL: installedURL
+        )
+        analysisStatusCache[cacheKey(for: descriptor)] = .installed(installed)
+        return installed
     }
 
     func status(for descriptor: ModelPackageDescriptor) -> ModelPackageStatus {
+        let resolvedStatus: ModelPackageStatus
         do {
             try validate(descriptor)
             let packageURL = installedDirectoryURL(for: descriptor)
-            guard fileManager.fileExists(atPath: packageURL.path) else { return .available }
-            try requireEntryPoint(for: descriptor, packageDirectoryURL: packageURL)
-            let manifestURL = packageURL.appendingPathComponent(Self.manifestFileName)
-            let manifest = try JSONDecoder().decode(
-                Manifest.self,
-                from: Data(contentsOf: manifestURL)
-            )
-            for file in manifest.files {
-                let url = packageURL.appendingPathComponent(file.relativePath)
-                guard
-                    try fileSize(at: url) == file.sizeBytes,
-                    try sha256(of: url).caseInsensitiveCompare(file.sha256) == .orderedSame
-                else {
-                    throw ModelPackageError.invalidManifest
+            if fileManager.fileExists(atPath: packageURL.path) {
+                try requireEntryPoint(for: descriptor, packageDirectoryURL: packageURL)
+                let manifestURL = packageURL.appendingPathComponent(Self.manifestFileName)
+                let manifest = try JSONDecoder().decode(
+                    Manifest.self,
+                    from: Data(contentsOf: manifestURL)
+                )
+                for file in manifest.files {
+                    let url = packageURL.appendingPathComponent(file.relativePath)
+                    guard
+                        try fileSize(at: url) == file.sizeBytes,
+                        try sha256(of: url).caseInsensitiveCompare(file.sha256) == .orderedSame
+                    else {
+                        throw ModelPackageError.invalidManifest
+                    }
                 }
+                resolvedStatus = .installed(
+                    try installedPackage(for: descriptor, packageDirectoryURL: packageURL))
+            } else {
+                resolvedStatus = .available
             }
-            return .installed(
-                try installedPackage(for: descriptor, packageDirectoryURL: packageURL))
         } catch {
-            return .invalid(reason: error.localizedDescription)
+            resolvedStatus = .invalid(reason: error.localizedDescription)
         }
+        analysisStatusCache[cacheKey(for: descriptor)] = resolvedStatus
+        return resolvedStatus
+    }
+
+    /// Returns the package status most recently established by a full integrity
+    /// verification. Pipeline assembly calls this repeatedly (including once per
+    /// Lyric Blend mode), so re-hashing hundreds of megabytes here would dominate
+    /// every run. Startup/status refresh still calls `status(for:)` and therefore
+    /// performs the complete manifest verification at least once per process.
+    func statusForAnalysis(for descriptor: ModelPackageDescriptor) -> ModelPackageStatus {
+        if let cached = analysisStatusCache[cacheKey(for: descriptor)] {
+            return cached
+        }
+        return status(for: descriptor)
     }
 
     func remove(_ descriptor: ModelPackageDescriptor) throws {
@@ -312,6 +336,7 @@ actor ModelPackageManager {
         if fileManager.fileExists(atPath: packageURL.path) {
             try fileManager.removeItem(at: packageURL)
         }
+        analysisStatusCache[cacheKey(for: descriptor)] = .available
     }
 
     private func downloadAndVerify(
@@ -418,6 +443,10 @@ actor ModelPackageManager {
         directoryURL
             .appendingPathComponent(descriptor.id, isDirectory: true)
             .appendingPathComponent(descriptor.version, isDirectory: true)
+    }
+
+    private func cacheKey(for descriptor: ModelPackageDescriptor) -> String {
+        "\(descriptor.id)|\(descriptor.version)"
     }
 
     private func entryPointURL(

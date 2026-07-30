@@ -121,3 +121,71 @@ enum OfflineAudioExportError: LocalizedError {
         }
     }
 }
+
+struct AudioRegionExporter {
+    func export(
+        sourceURL: URL,
+        destinationURL: URL,
+        range: ClosedRange<TimeInterval>
+    ) throws {
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer { if accessing { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        let source = try AVAudioFile(forReading: sourceURL)
+        let sampleRate = source.processingFormat.sampleRate
+        let startFrame = min(
+            max(AVAudioFramePosition(range.lowerBound * sampleRate), 0),
+            source.length
+        )
+        let endFrame = min(
+            max(AVAudioFramePosition(range.upperBound * sampleRate), startFrame),
+            source.length
+        )
+        let frameCount = endFrame - startFrame
+        guard frameCount > 0 else {
+            throw OfflineAudioExportError.renderFailed
+        }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let temporaryURL = destinationURL.deletingLastPathComponent().appendingPathComponent(
+            ".\(UUID().uuidString)-\(destinationURL.lastPathComponent)"
+        )
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+        var output: AVAudioFile? = try AVAudioFile(
+            forWriting: temporaryURL,
+            settings: source.processingFormat.settings
+        )
+        let capacity: AVAudioFrameCount = 16_384
+        guard
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: source.processingFormat,
+                frameCapacity: capacity
+            )
+        else {
+            throw OfflineAudioExportError.couldNotCreateBuffer
+        }
+
+        source.framePosition = startFrame
+        var remaining = frameCount
+        while remaining > 0 {
+            try Task.checkCancellation()
+            let requested = min(AVAudioFramePosition(capacity), remaining)
+            try source.read(into: buffer, frameCount: AVAudioFrameCount(requested))
+            guard buffer.frameLength > 0 else {
+                throw OfflineAudioExportError.renderFailed
+            }
+            try output?.write(from: buffer)
+            remaining -= AVAudioFramePosition(buffer.frameLength)
+        }
+        output = nil
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
+    }
+}

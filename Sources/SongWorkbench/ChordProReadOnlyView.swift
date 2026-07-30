@@ -1,15 +1,8 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
-#if os(macOS)
-    import AppKit
-#endif
-
-/// A true, spec-exact ChordPro renderer for the `chordPro` tab (backlog #15): chords positioned
-/// above lyric text at their recorded column, nothing else. No waveform, no bouncing ball, no
-/// beat dots, no playback highlight — that overlay chrome lives entirely in the Review tab
-/// (`ChordProReviewTab` → `ChordProTabEditor` → `ChordProAppPreview`), which is left untouched.
-/// This view exists so `EditorTab.chordPro` shows only what a real .cho file can express.
+/// A standalone spec-exact ChordPro renderer retained for source/layout validation.
+/// The interactive ChordPro and Review tabs both use `ChordProAppPreview` so their
+/// playback typography and overlays cannot drift.
 struct ChordProReadOnlyView: View {
     let source: String
     var transpose: Int = 0
@@ -91,16 +84,67 @@ struct ChordProReadOnlyView: View {
     }
 
     private func lyricLineView(_ line: ChordProPreviewLine) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if !line.chords.isEmpty {
-                Text(ChordRowStringBuilder.build(chords: line.chords))
+        let rows = ChordProReadOnlyLineRenderer.rows(for: line)
+        return VStack(alignment: .leading, spacing: 0) {
+            if let chordRow = rows.chordRow {
+                Text(chordRow)
                     .font(Self.font)
                     .foregroundStyle(Color.swAccent)
             }
-            Text(line.lyric.isEmpty ? " " : line.lyric)
+            Text(rows.lyricRow)
                 .font(Self.font)
                 .foregroundStyle(Color.swTextPrimary)
         }
+    }
+}
+
+struct ChordProReadOnlyLineRows: Equatable, Sendable {
+    var chordRow: String?
+    var lyricRow: String
+}
+
+/// Display rows for the true ChordPro tab. Normal lyric lines stay column-exact. Generated
+/// chord-only bar-grid rows get their columns expanded because `| . . |` punctuation is much more
+/// compact than lyric text for the same musical span.
+enum ChordProReadOnlyLineRenderer {
+    static let instrumentalColumnScale = 2.0
+
+    static func rows(for line: ChordProPreviewLine) -> ChordProReadOnlyLineRows {
+        if isExpandableChordOnlyBarGrid(line) {
+            let chords = line.chords.map {
+                ChordProPreviewChord(name: $0.name, column: scaledColumn($0.column))
+            }
+            return ChordProReadOnlyLineRows(
+                chordRow: chords.isEmpty ? nil : ChordRowStringBuilder.build(chords: chords),
+                lyricRow: expandedBarGrid(line.lyric)
+            )
+        }
+        return ChordProReadOnlyLineRows(
+            chordRow: line.chords.isEmpty ? nil : ChordRowStringBuilder.build(chords: line.chords),
+            lyricRow: line.lyric.isEmpty ? " " : line.lyric
+        )
+    }
+
+    private static func isExpandableChordOnlyBarGrid(_ line: ChordProPreviewLine) -> Bool {
+        guard !line.chords.isEmpty, !line.hasSungText else { return false }
+        let trimmed = line.lyric.trimmingCharacters(in: .whitespaces)
+        return trimmed.contains("|") && trimmed.allSatisfy { "| .".contains($0) }
+    }
+
+    private static func scaledColumn(_ column: Int) -> Int {
+        Int((Double(column) * instrumentalColumnScale).rounded())
+    }
+
+    private static func expandedBarGrid(_ text: String) -> String {
+        var characters: [Character] = []
+        for (column, character) in text.enumerated() {
+            let scaled = scaledColumn(column)
+            if characters.count < scaled {
+                characters.append(contentsOf: repeatElement(" ", count: scaled - characters.count))
+            }
+            characters.append(character)
+        }
+        return String(characters)
     }
 }
 
@@ -133,6 +177,37 @@ struct TimedBassNoteLabel: Equatable, Sendable {
     let name: String
 }
 
+/// Recommends an ergonomic string for a detected pitch on a standard four-string bass
+/// (E1-A1-D2-G2). Pitch alone cannot identify the string used in the recording, so the
+/// lowest-fret playable option is presented as guidance rather than source transcription.
+enum BassStringRecommendation {
+    private static let tuning = [
+        (name: "E", openMidiNote: 28),
+        (name: "A", openMidiNote: 33),
+        (name: "D", openMidiNote: 38),
+        (name: "G", openMidiNote: 43),
+    ]
+    private static let maximumFret = 24
+
+    static func stringName(forMidiNote midiNote: Int) -> String {
+        var normalized = midiNote
+        while normalized < tuning[0].openMidiNote { normalized += 12 }
+        while normalized > tuning[tuning.count - 1].openMidiNote + maximumFret {
+            normalized -= 12
+        }
+
+        return
+            tuning
+            .compactMap { string -> (name: String, fret: Int)? in
+                let fret = normalized - string.openMidiNote
+                guard (0...maximumFret).contains(fret) else { return nil }
+                return (string.name, fret)
+            }
+            .min { lhs, rhs in lhs.fret < rhs.fret }?
+            .name ?? tuning[0].name
+    }
+}
+
 /// Formats detected bass notes for the Review tab's optional bass-note row (backlog: Bass Note
 /// display). A standalone (non-view) type so the windowing/formatting logic is unit-testable
 /// without SwiftUI, mirroring `ChordRowStringBuilder`.
@@ -158,13 +233,18 @@ enum BassNoteRowFormatter {
             }
             .sorted { $0.timestamp < $1.timestamp }
             .map {
-                TimedBassNoteLabel(
+                let midiNote = $0.midiNote + semitones
+                let noteName = BassNoteNaming.name(forMidiNote: midiNote)
+                let stringName = BassStringRecommendation.stringName(forMidiNote: midiNote)
+                return TimedBassNoteLabel(
                     time: $0.timestamp,
-                    name: BassNoteNaming.name(forMidiNote: $0.midiNote + semitones))
+                    name: "\(noteName) (\(stringName) string)"
+                )
             }
     }
 
-    /// Bass notes within `window`, pitch-named and joined in onset order — e.g. "E · A · D".
+    /// Bass notes within `window`, pitch/string-named and joined in onset order — for example,
+    /// "E (D string) · A (G string)".
     /// `nil` when nothing falls in the window, so callers can skip rendering the row entirely.
     /// Monospace-mode fallback; rhythmic mode uses `timedLabels` for positioned rendering.
     static func label(
@@ -178,65 +258,13 @@ enum BassNoteRowFormatter {
     }
 }
 
-/// The `chordPro` tab's chrome: just a title, transpose (a real ChordPro concept — transposing
-/// changes what chords the .cho file itself displays) and export, wrapping the read-only render.
-/// Deliberately has none of `ChordProTabEditor`'s Edit/Source toggle, Import, JustChords, or Mark
-/// Reviewed controls — those belong to editing/validating the chart, which now lives in Review.
+/// The ChordPro tab uses the same playback-aware App Preview as Review, fixed in
+/// preview mode with the smaller ChordPro toolbar.
 struct ChordProTrueView: View {
     @ObservedObject var model: AppModel
-    @State private var errorMessage: String?
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("ChordPro")
-                    .font(.swDisplay(15, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                Text("Spec-exact")
-                    .font(.swDisplay(11))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color.swSurface, in: Capsule())
-                Spacer()
-                Stepper(
-                    "Transpose \(model.chordProTranspose)",
-                    value: $model.chordProTranspose, in: -12...12
-                )
-                .fixedSize()
-                Button("Export...", systemImage: "square.and.arrow.up") {
-                    exportDocument()
-                }
-                .labelStyle(.iconOnly)
-                .help("Export the chart to a ChordPro file")
-                .disabled(model.chordProSource.isEmpty)
-            }
-            ChordProReadOnlyView(source: model.chordProSource, transpose: model.chordProTranspose)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Color.swCoral)
-            }
-        }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private func exportDocument() {
-        #if os(macOS)
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [UTType(filenameExtension: "cho") ?? .plainText]
-            panel.nameFieldStringValue = "Song.cho"
-            guard panel.runModal() == .OK, let url = panel.url else { return }
-            do {
-                try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
-                errorMessage = nil
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        #else
-            errorMessage = "Exporting isn\u{2019}t available on iPad yet."
-        #endif
+        ChordProTabEditor(model: model, config: .chordProPlayback)
     }
 }
 

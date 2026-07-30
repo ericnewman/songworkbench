@@ -1,5 +1,15 @@
 # Lessons
 
+- When two user-facing chart surfaces are expected to have identical typography,
+  spacing, highlighting, and playback animation, route both through the same
+  renderer with configuration-driven toolbar differences. Parallel renderers
+  will drift even when their initial constants match.
+
+- Treat advanced analysis as a native Swift/Xcode feature first. Production
+  inference should run in-process through Core ML or ONNX Runtime Swift
+  adapters; subprocess/Python integrations are optional macOS extensions, not
+  the main architecture and never the iPad path.
+
 - When the user says to skip already completed items in a batch, exclude them
   from the new output folder and manifest rather than copying prior results
   into the batch deliverable.
@@ -247,3 +257,301 @@ Apple-Archive-based in-process unzip, real work, not a quick patch). Document it
 keep testing with what DOES work on that platform (here: Parakeet-only), and don't burn the
 current task's time budget implementing the missing platform feature unless asked.
 something.
+
+## 2026-07-28 — Verify generated assets before describing advanced stems as delivered
+
+**Correction:** The refinement architecture and capability profiles existed, but
+the production model catalog and default refiner factory still had no concrete
+lead/backing vocal, drum-piece, or lead/rhythm model artifacts. The app therefore
+truthfully continued to generate only six stems.
+**Rule:** Do not describe advanced-stem infrastructure as delivered stem output.
+Verify the production capability, factory registration, model catalog, installed
+artifacts, persisted manifest, and visible mixer channels end to end.
+
+## 2026-07-28 — Diagnose lyric disappearance from raw ASR through rendering
+
+**Correction:** Most of the first lyric line was missing in the latest analysis.
+The raw accuracy transcription cache had already collapsed the opening to one
+word, while a bounded transcription of the actual opening vocal region recovered
+the phrase. A separate near-onset transform could also drop leading words from a
+straddling segment.
+**Rule:** For missing lyrics, compare raw transcription, corrected lyric timeline,
+persisted project, and ChordPro output before changing UI code. When full-song ASR
+collapses after a long intro, retry a bounded vocal-onset region and merge only a
+demonstrably richer opening.
+
+## 2026-07-28 — Vocal phrase onsets do not imply a beat-grid error
+
+**Correction:** Review flags appeared on most lines because the diagnostic treated
+any lyric onset more than 0.3 beat from the nearest detected beat as a likely
+mis-split. Valid pickups and syncopated phrases naturally span the full interval
+between beats, so the rule produced false positives by construction.
+**Rule:** Do not flag vocal timing from nearest-beat distance alone. Require an
+expected metrical phase or repeated-phrase template; otherwise use evidence such
+as duration outliers and corroborated section-shape differences.
+
+## 2026-07-28 — Do not resize native progress controls with transforms
+
+**Correction:** Xcode reported repeated AppKit progress-view geometry failures.
+The compact sidebar spinner used `scaleEffect(0.6)` inside a fixed frame, which
+made SwiftUI derive a fractional native size whose rounded minimum exceeded its
+maximum.
+**Rule:** Size bridged AppKit/UIKit controls with supported `controlSize` values
+and ordinary layout constraints. Do not use transforms to force native controls
+below their intrinsic geometry; reproduce runtime layout diagnostics under
+Xcode and verify the console after relaunch.
+
+## 2026-07-29 — `Benchmarks/*.md` reproduce recipes reference tooling that no longer exists
+
+**Surprise:** Planning a chord-accuracy harness, the obvious starting points from the
+benchmark docs were both dead ends. `Benchmarks/CHORD_ANALYSIS.md:10-11` names
+`scripts/analyze_chord_timeline.py` as the Python baseline — **that file does not exist**;
+`scripts/` contains only `verify_repo.sh`, and there is no deletion in git history.
+`memory.md:194-196` likewise advises replaying cached frame JSON "in Python" with no such
+script in the repo. Separately, `Benchmarks/Tools/native_analysis_benchmark.swift` calls
+`BeatTracker`, `AudioAnalysisConfiguration`, `ChordAnalysisPipeline`, and `ChordObservation`
+— all internal to `Sources/SongWorkbench/` and none defined in that file — so the bare
+`xcrun swiftc <tool>.swift` recipe the sibling benchmarks document **cannot compile it**.
+**Rule:** Treat a `Benchmarks/*.md` "reproducible with…" line as a historical claim, not a
+working recipe. Confirm the referenced file exists AND that its documented invocation can
+actually build before designing new work around it. When a benchmark tool calls app-internal
+types, the compile line in the doc is necessarily incomplete.
+
+## 2026-07-29 — Zero `public` in Sources forces offline tooling into the test target
+
+**Surprise:** `grep -rn public Sources/SongWorkbench/` returns **no declarations** — the word
+appears only in comments. Everything is `internal` to the app's *executableTarget*. That means
+a standalone `Benchmarks/Tools` binary or a new SPM `.executableTarget` cannot reach
+`AudioFileAnalysisService`, `ChordTimelineDecoder`, or `BassLineAnalyzer` at all without first
+restructuring `Package.swift` to extract a library target.
+**Rule:** For offline analysis/eval tooling here, default to a file in
+`Tests/SongWorkbenchTests/` gated by an env var (precedent:
+`ChordDecoderOfflineValidationTests.swift`, `SW_OFFLINE_VALIDATION=1`). It gets `@testable`
+access for free and `Project.swift:132` globs the directory, so SwiftPM and Tuist both pick it
+up with no build-system work. Reserve the library-extraction refactor for when a shipping
+reason demands it, not for a harness.
+
+## 2026-07-29 — `EditableChordEvent.chord` is a display STRING, not a structured `Chord`
+
+**Surprise:** Writing a chord-accuracy scorer, the natural assumption was that the decoded
+event stream carries `Chord { root: PitchClass, quality: ChordQuality }`. It does not.
+`Chord`/`ChordQuality` exist only upstream in classification; the pipeline stringifies via
+`Chord.displayName` and everything downstream of `ChordTimelineDecoder` — events, ChordPro,
+persistence, any scorer — handles labels like `C`, `Cm`, `Cmaj7`, `Cm7`, `C7`.
+**Consequence:** the 5-quality vocabulary ceiling is enforced *upstream at classification*, so
+by the time chords reach any consumer the information is already gone — a scorer cannot
+distinguish "the model considered Csus4 and rejected it" from "Csus4 was never representable."
+Any comparison against external ground truth must parse strings and normalize enharmonics
+(`Db` vs `C#`) and suffix conventions itself.
+**Rule:** Before writing anything that compares chords, check whether you are holding a
+structured `Chord` or a rendered label. Do not assume the structured type survives the decoder.
+
+## 2026-07-29 — There is NO verified ground truth anywhere; the persisted charts are decoder output
+
+**Finding:** Setting up chord-accuracy measurement, the obvious ground truth was "the user's
+reviewed ChordPro charts." There are none. All five persisted song documents in the app
+container (`~/Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/
+SongWorkbench/songs/*.json`) carry `chordProReviewState = draft` AND `chordReviewState =
+draft` — every chart on disk is unedited decoder output. `tasks/backlog.md:85` says the same
+of the catalog: "original songs with no ground truth."
+**Why this is a trap:** scoring detection against a `draft` chart is perfectly circular — it
+compares the decoder to itself and will report near-100% accuracy regardless of how good the
+detection actually is. The number looks like validation and means nothing. A *reviewed* chart
+would fix the labels but still not the timings (those stay decoder-derived), so even then it
+is a label oracle only.
+**Second-order trap:** in agreement-only mode the "vocabulary ceiling" is also unmeasurable
+and silently degenerate. `ChordQuality` has exactly 5 cases, so the detector CANNOT emit
+anything outside them — a ceiling computed from detections is 0.0 by construction. Reporting
+that 0.0 would read as "the vocabulary is not a limitation," the exact opposite of the truth.
+The ceiling is only measurable against external labels that contain sus/dim/aug/6/9 chords.
+**Rule:** Before any accuracy work here, establish where the labels come from and whether they
+are independent of the thing being measured. With no independent labels, measure SENSITIVITY
+(do the arms diverge?) not CORRECTNESS (which arm is right?) — and label the output as such,
+loudly. Divergence bounds the *possible* effect of a change; it never identifies the winner.
+Getting a real answer requires a human-verified chart on at least a few songs — that is a
+prerequisite for Phase 1's A/B, not an optional extra.
+
+## 2026-07-29 — `swift test` buffers all stdout to exit, and lingers holding the SwiftPM lock
+
+**Symptom:** A 25-song analysis batch printed nothing for 12 minutes, then emitted every line at
+once on exit. Mid-run there was no way to see progress, distinguish "working" from "hung", or
+salvage partial results — and a subsequent `swift build` appeared to hang because the finished
+`swift-test` process sat for several more minutes (audio-engine teardown, not test code) still
+holding the `.build` lock.
+**Rule:** For any long-running harness under `swift test`, write results incrementally to a file
+(flush per item) instead of relying on stdout — otherwise a crash at song 24 loses all 24
+results and there is no progress signal. Budget for the process lingering after its report
+prints; do not interpret a held `.build` lock as a stuck build. Don't chain a watcher that
+triggers on a symbol appearing in a file either: it fires while the writer is mid-edit, and the
+resulting build errors look like real failures (`type 'Self' has no member …`) when the file is
+simply incomplete. Wait on a clean compile, not on a grep.
+
+## 2026-07-29 — "It's ONNX" says nothing about whether a model fits; probe the tensor contract
+
+**Mistake avoided by one cheap test:** UVR-MDX-NET Karaoke 2 was planned in as a drop-in refiner
+because it is "already ONNX, so it fits the existing `StemChunkPredicting` path with no new
+runtime". It does not. Loading it and handing it a rank-3 waveform returns
+`Invalid rank for input: Got: 3 Expected: 4`; it accepts `[1,4,2048,256]` and returns
+`[1,4,2048,256]` — **spectrogram in, spectrogram out**. Every engine in this codebase is
+waveform-out, so there is no ISTFT anywhere in `Sources/`, and the model is unusable without one.
+**DrumSep is a false precedent for this.** It *looks* like a spectrogram model because
+`HybridDemucsFrequencyFeatures` exists, but it takes a waveform AND a packed spectrogram and
+returns a **waveform** — the STFT helper only ever runs forward.
+**Rule:** before planning any model integration, load the artifact and probe its actual input
+rank/dims. ORT names the expected rank and the offending indices in its error text, so a ~30-line
+XCTest with no Python dependency settles it in seconds (`KaraokeModelProbeTests.swift`). Runtime
+format (ONNX / Core ML) tells you nothing about the tensor contract. Do this at the point where
+the artifact is first acquired, not after writing the integration.
+
+**Second-order rule:** when the missing piece is a signal-processing inverse (ISTFT, overlap-add,
+window normalisation), treat it as a stop-and-ask rather than just work. Its failure mode —
+artifacts — is indistinguishable from poor model quality, so it silently invalidates the very
+listening test meant to judge the model. This repo already carries one unvalidated instance
+("STFT packing still needs PyTorch golden parity" for DrumSep); stacking a second makes both
+unfalsifiable.
+
+## 2026-07-29 — High divergence turned out to mean instability, NOT headroom
+
+**The full arc, worth keeping:** the stem-source sensitivity run showed chord output changing on
+20 % of song duration (15.1 % at ROOT level) between the guitar and accompaniment stems. That
+looked like a strong signal that stem quality drives chord quality — the premise of the whole
+per-instrument-model plan. Scoring the same arms against independent charts settled it:
+guitar 77.1 % root, accompaniment 77.1 % root. Identical. Accompaniment marginally BETTER on
+full quality. The two arms disagree constantly and are equally right.
+**Rule:** a large divergence between two inputs is equally consistent with "the better input
+wins" and "the model is unstable and its output is partly arbitrary." Those two have opposite
+implications for whether to invest. Never let sensitivity stand in for accuracy — it took one
+afternoon of ground truth to reverse a conclusion that would otherwise have justified weeks of
+model-integration work.
+
+## 2026-07-29 — Guard against provenance laundering when sourcing ground truth
+
+**Near-miss:** told that exported ChordPro charts were human-validated, three of the candidate
+files turned out not to be. `Desktop/Settle Down.cho` was a SongWorkbench export carrying
+`{comment: Generated analysis draft - review required}` and `x_chord_times` — scoring against it
+would have compared the decoder to itself and reported inflated accuracy. And of 37 charts in
+the catalog, only THREE say `{subtitle: Reviewed performance chart}`; most say
+`{subtitle: Automated best-effort transcription from the supplied recording}` — another tool's
+output, independent of this decoder (so not circular) but of unknown accuracy.
+**Rule:** before using any file as ground truth, read its own provenance metadata and check for
+markers of machine generation (generated-draft comments, timing directives only this app emits).
+"Validated" is a claim about a file's history that the file itself often records — check it, and
+tier the results by trust rather than pooling them. Report which tier each number rests on.
+
+## 2026-07-29 — A recall-only sequence metric rewards over-segmentation
+
+**Trap:** LCS(detected, truth) / truth.count has no precision term, so emitting more chords can
+only help. `Flip Flops` detected 123 chord events against a 34-chord chart (3.6×) and scored a
+meaningless 100 % root accuracy, while the one song with balanced sequence lengths AND a
+Reviewed chart scored 37.3 %. The ranking across songs was close to an artifact of how much each
+arm over-detected.
+**Rule:** for sequence-accuracy scoring, report an F-measure (or at minimum print both sequence
+lengths beside every score) so over-segmentation is visible. A same-vs-same comparison can still
+be valid when both sides have near-identical lengths — that is why guitar-vs-accompaniment
+survived here — but absolute levels from a recall-only metric are not quotable.
+
+## 2026-07-29 — Sensitivity is not accuracy; say which one you measured
+
+**Finding:** The stem-source comparison showed chord output changing on 20 % of song duration
+between the guitar and accompaniment stems (15.1 % at root level) — even though `accompaniment`
+is literally `guitar + piano + other` summed, i.e. a strict superset of the guitar arm's content.
+It is tempting to read a big divergence as "big headroom, go build the better model."
+**Why that's wrong:** divergence measures how much the output MOVES, not how much it IMPROVES.
+A pipeline that is highly sensitive to its input is exactly the pipeline most at risk of being
+made *worse* by a different input — which is the documented failure mode where Demucs
+preprocessing degraded a chord model. Without labels, a large divergence and a genuine
+opportunity are indistinguishable.
+**Rule:** State in the output which quantity was measured and label it loudly (this harness
+prints an `AGREEMENT-ONLY — NO GROUND TRUTH` banner). Use divergence to BOUND a possible effect
+and to decide whether measuring properly is worth it — never to pick a winner. And when the
+divergence is high, that raises the value of ground truth rather than substituting for it.
+
+## 2026-07-29 — Swift type-checker times out on short mixed-Float arithmetic in a closure
+
+**Surprise:** `guitar[i] * 0.5 + bass[i] * 0.4 + drums[i] * 0.3` inside a `map` closure failed
+with "unable to type-check this expression in reasonable time" — a three-term expression.
+Literal-vs-`Float` overload resolution across an inferred closure return type is enough to
+blow the budget.
+**Rule:** In audio-sample code, write mixdowns as an explicit loop with annotated bindings
+(`let x: Float = …`) rather than a chained expression in a closure. Cheaper than fighting
+inference, and it reads better at 3am anyway.
+
+## 2026-07-28 — Let degenerate timing override lexical interjection protection
+
+**Correction:** Doc Holiday retained a zero-duration `Ain't no` line immediately
+before `runner from the debt you owe.` because the lyric grouper protects lines
+ending in `no` as possible standalone interjections.
+**Rule:** Lexical safeguards are secondary to impossible timing. A multiword
+line with effectively zero duration followed within a small fraction of a
+second is a broken ASR fragment and should merge forward, while normally timed
+short interjections remain protected.
+
+## 2026-07-30 — Simulate a candidate rule against real data BEFORE editing shipping code
+
+**Rule:** when changing a decision rule in the pipeline, first re-implement it inside the
+diagnostic with the selection logic factored out, prove the re-implementation reproduces the
+CURRENT shipping output exactly (a `faithful=true` flag), then score the competing rules against
+the same frames. Only then touch `Sources/`.
+
+**Why:** this caught a wrong fix before it shipped. The obvious repair for "`m7` is never
+emitted" is to append `.minor7` to `BassInformedChordRefiner`'s candidate list. Simulation showed
+that variant makes things WORSE — the scan is first-match, so `.minor` still returns before any
+seventh is reached, and plain argmax pushed `maj7` from 11.8 % UP to 13.6-16.3 %. The rule that
+actually worked (size-normalised threshold: triad 2-of-3, seventh 3-of-4) was only identifiable
+by comparing three rules side by side on the same 2,000-3,200 cached frames per song. Cost:
+one extra diagnostic run. Without the `faithful=` check the projections would have been unfalsifiable.
+
+**How to apply:** the diagnostic is `Tests/SongWorkbenchTests/ChordQualityStageAttributionTests.swift`
+(`simulate(observations:bassNotes:select:)` + one `select` function per rule). Same shape works
+for any per-frame decision rule.
+
+## 2026-07-30 — A defect measured in the harness may live in a stage the harness does not run
+
+**Rule:** before attributing a number produced by `StemSourceChordAccuracyTests` to a stage,
+check whether the harness actually runs that stage. It deliberately skips
+`ChorusChordConsensus` (`StemSourceChordAccuracyTests.swift:574`) which production runs
+(`AnalysisStage.swift:847`).
+
+**Why:** the "maj7 emitted 6.8 %" figure came from the harness (no consensus), while the
+"`Gmaj7` x20 in the persisted document" observation came from production (with consensus). They
+are different pipelines, and reasoning that treats them as one leads to blaming the wrong stage.
+Consensus turned out to be innocent (1-2 label rewrites per song), but that had to be measured,
+not assumed.
+
+**How to apply:** `ChordQualityStageAttributionTests` covers the full production order including
+consensus (stage S9). Use it, not the accuracy harness, for attribution questions.
+
+## 2026-07-30 — A "wrong" rule may be a deliberate feature with a test behind it
+
+**Rule:** when a measurement says a rule is wrong, grep for tests covering that rule before
+changing it. If tests encode the behaviour as intended, the change is a product decision, not a
+bug fix — surface it rather than deleting the test.
+
+**Why:** the flat "shares >= 2 tones" bar in `refineObservations` is simultaneously the source of
+a 15-88x `maj7` inflation AND the deliberate upper-structure-seventh feature that
+`testBassRerootRecoversUpperStructureSeventh` exists to protect (with an explanatory comment at
+`ChordClassification.swift:263-265`). You cannot fix one without deleting the other. Combined
+with a flat F1 result at N=3, that is not a call to make autonomously.
+
+## 2026-07-30 — Commit far more often (Eric, explicit)
+
+**Rule:** check in to git frequently — after each self-contained unit of work lands and verifies,
+not at the end of a session. Do not let the working tree accumulate dozens of uncommitted files
+across sessions.
+
+**Why:** this session opened on a tree with **72 changed files** spanning several prior sessions
+(stem refinement, ChordPro tabs, theme work, the drum-piece engine, an entire untracked eval
+harness). Consequences that actually cost time here: no baseline to diff a change against, so
+"did I break this or was it already broken?" needed a manual backup copy; a `swift format`
+run reported pre-existing violations in files nobody had touched this session; and the repo had
+**zero tags**, so there was no known-good point to return to. Committing a verified unit takes
+seconds; reconstructing which of 72 files belong to which idea takes an hour.
+
+**How to apply:**
+- Commit when a unit is verified — tests green, lint clean on the touched files — even if the
+  larger feature is unfinished. "Add stage-attribution diagnostic (additive, env-gated)" is a
+  commit; it does not need the fix that follows it.
+- Diagnostics, harnesses and task/lesson docs are independently committable the moment they run.
+  They have no shipping risk, so nothing is gained by holding them.
+- Before starting new work, commit or stash what is already dirty, so the next diff is readable.
+- Tag known-good points so there is always somewhere to return to.

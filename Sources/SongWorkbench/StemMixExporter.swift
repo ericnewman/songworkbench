@@ -8,27 +8,43 @@ actor StemMixExporter {
         mixer: StemMixerModel,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) throws {
+        try export(
+            manifest: stems.stemSetManifest,
+            to: destinationURL,
+            mixer: mixer,
+            progress: progress
+        )
+    }
+
+    func export(
+        manifest: StemSetManifest,
+        to destinationURL: URL,
+        mixer: StemMixerModel,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) throws {
         try Task.checkCancellation()
         progress(0)
 
-        let availableKinds = stems.availableKinds
-        let accessedURLs = availableKinds.filter {
-            stems[$0]?.startAccessingSecurityScopedResource() == true
+        let graph = StemMixGraph(manifest: manifest)
+        let activeNodes = graph.activeNodes
+        let activeIDs = activeNodes.map(\.id)
+        let accessedURLs = activeNodes.filter {
+            $0.audioURL.startAccessingSecurityScopedResource() == true
         }
         let accessedDestination = destinationURL.startAccessingSecurityScopedResource()
         defer {
-            for kind in accessedURLs {
-                stems[kind]?.stopAccessingSecurityScopedResource()
+            for node in accessedURLs {
+                node.audioURL.stopAccessingSecurityScopedResource()
             }
             if accessedDestination { destinationURL.stopAccessingSecurityScopedResource() }
         }
 
         let files = Dictionary(
-            uniqueKeysWithValues: try availableKinds.map { kind in
-                (kind, try AVAudioFile(forReading: stems[kind]!))
+            uniqueKeysWithValues: try activeNodes.map { node in
+                (node.id, try AVAudioFile(forReading: node.audioURL))
             }
         )
-        guard let referenceFile = files[.vocals] else {
+        guard let referenceFile = files[StemKind.vocals.id] ?? files.values.first else {
             throw StemMixExportError.missingStem
         }
 
@@ -57,13 +73,13 @@ actor StemMixExporter {
         defer { try? fileManager.removeItem(at: temporaryURL) }
 
         let engine = AVAudioEngine()
-        var players: [StemKind: AVAudioPlayerNode] = [:]
-        for kind in availableKinds {
-            guard let file = files[kind] else { continue }
+        var players: [StemID: AVAudioPlayerNode] = [:]
+        for id in activeIDs {
+            guard let file = files[id] else { continue }
             let player = AVAudioPlayerNode()
             engine.attach(player)
             engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
-            players[kind] = player
+            players[id] = player
         }
 
         let maximumFrames: AVAudioFrameCount = 4_096
@@ -83,8 +99,8 @@ actor StemMixExporter {
 
         do {
             let output = try AVAudioFile(forWriting: temporaryURL, settings: outputFormat.settings)
-            for kind in availableKinds {
-                guard let player = players[kind], let file = files[kind] else { continue }
+            for id in activeIDs {
+                guard let player = players[id], let file = files[id] else { continue }
                 player.scheduleFile(file, at: nil)
             }
 
@@ -93,11 +109,11 @@ actor StemMixExporter {
             // started: `enableManualRenderingMode` rebuilds the engine's internal graph,
             // and AVAudioMixing values (volume/pan) set before that are silently dropped
             // (verified by the panned-export unit test).
-            for kind in availableKinds {
-                guard let player = players[kind] else { continue }
-                player.volume = mixer.effectiveGain(for: kind)
+            for id in activeIDs {
+                guard let player = players[id] else { continue }
+                player.volume = mixer.effectiveGain(for: id, activeIDs: activeIDs)
                 // Match live playback: the exported mix carries each stem's pan position.
-                player.pan = mixer[kind].pan
+                player.pan = mixer[id].pan
             }
             // Match live playback: the exported mix also carries the master fader (there's no
             // separate stem-mixer node here, so it lands on the shared main mixer node).

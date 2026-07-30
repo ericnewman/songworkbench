@@ -87,9 +87,23 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         request: StemSeparationRequest,
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
-        guard segmentFrames > 0, overlapFrames >= 0, overlapFrames < segmentFrames else {
-            throw CoreMLStemSeparationError.invalidConfiguration
+        do {
+            guard segmentFrames > 0, overlapFrames >= 0, overlapFrames < segmentFrames else {
+                throw CoreMLStemSeparationError.invalidConfiguration
+            }
+            let result = try await performSeparation(request: request, progress: progress)
+            await predictor.releaseResources()
+            return result
+        } catch {
+            await predictor.releaseResources()
+            throw error
         }
+    }
+
+    private func performSeparation(
+        request: StemSeparationRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemSeparationResult {
         let start = ContinuousClock.now
         progress(
             StemSeparationProgress(
@@ -101,16 +115,16 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         defer {
             if accessing { request.inputURL.stopAccessingSecurityScopedResource() }
         }
+        try Task.checkCancellation()
         var loadedAudio = try await Task.detached(priority: .userInitiated) {
             try Self.loadStereoFloatAudio(at: request.inputURL)
         }.value
-        let normalization = normalizesAudio ? Self.normalized(loadedAudio) : nil
-        var audio = normalization?.audio ?? loadedAudio
-        // When normalizing (the ONNX path), `audio` is a fresh full-length buffer, so the
-        // pre-normalization copy (~85MB for a 4-min song) is dead weight for the rest of the
-        // run. Drop it now to lower peak footprint on memory-constrained iPads.
-        if normalization != nil { loadedAudio = StereoAudio(channels: [[], []]) }
+        try Task.checkCancellation()
+        let normalization = normalizesAudio ? try Self.normalizeInPlace(&loadedAudio) : nil
+        var audio = loadedAudio
+        loadedAudio = StereoAudio(channels: [[], []])
         let frameCount = audio.frameCount
+        AnalysisResourceLog.checkpoint(stage: "separation", event: "audio-prepared")
         try Task.checkCancellation()
 
         let strideFrames = segmentFrames - overlapFrames
@@ -228,6 +242,15 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                     completedUnits: chunkIndex + 2,
                     totalUnits: totalUnits
                 ))
+            let completedChunks = chunkIndex + 1
+            let crossedQuarter =
+                completedChunks * 4 / chunkCount > chunkIndex * 4 / chunkCount
+            if completedChunks == 1 || crossedQuarter {
+                AnalysisResourceLog.checkpoint(
+                    stage: "separation",
+                    event: "chunk-\(completedChunks)-of-\(chunkCount)"
+                )
+            }
         }
 
         try Task.checkCancellation()
@@ -240,11 +263,7 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
             ))
         let stemFiles = try writer.finalize()
         writerFinalized = true
-        // Free the predictor's inference session (onnxruntime's ~2GB CPU arena) NOW that
-        // separation is done — the transcription + harmony stages run next (concurrently), and on
-        // iPad holding this arena resident alongside them exhausted memory and failed/crashed the
-        // Core ML lyric model.
-        await predictor.releaseResources()
+        AnalysisResourceLog.checkpoint(stage: "separation", event: "outputs-finalized")
         progress(
             StemSeparationProgress(
                 phase: .writingOutputs,
@@ -298,28 +317,35 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         return min(fadeIn, fadeOut)
     }
 
-    private static func normalized(
-        _ audio: StereoAudio
-    ) -> (audio: StereoAudio, mean: Float, standardDeviation: Float) {
+    private static func normalizeInPlace(
+        _ audio: inout StereoAudio
+    ) throws -> (mean: Float, standardDeviation: Float) {
         let frameCount = max(audio.frameCount, 1)
-        let mono = (0..<audio.frameCount).map {
-            (audio.channels[0][$0] + audio.channels[1][$0]) * 0.5
+        var sum = Double(0)
+        var sumOfSquares = Double(0)
+        for frame in 0..<audio.frameCount {
+            if frame.isMultiple(of: 1 << 20) {
+                try Task.checkCancellation()
+            }
+            let mono = Double((audio.channels[0][frame] + audio.channels[1][frame]) * 0.5)
+            sum += mono
+            sumOfSquares += mono * mono
         }
-        let mean = mono.reduce(0, +) / Float(frameCount)
-        let variance =
-            mono.reduce(Float(0)) { total, sample in
-                let delta = sample - mean
-                return total + delta * delta
-            } / Float(frameCount)
+        let mean = sum / Double(frameCount)
+        let variance = max(sumOfSquares / Double(frameCount) - mean * mean, 0)
         let standardDeviation = max(sqrt(variance), 1e-8)
-        return (
-            StereoAudio(
-                channels: audio.channels.map { channel in
-                    channel.map { ($0 - mean) / standardDeviation }
-                }),
-            mean,
-            standardDeviation
-        )
+        let floatMean = Float(mean)
+        let floatStandardDeviation = Float(standardDeviation)
+        for channel in audio.channels.indices {
+            for frame in audio.channels[channel].indices {
+                if frame.isMultiple(of: 1 << 20) {
+                    try Task.checkCancellation()
+                }
+                audio.channels[channel][frame] =
+                    (audio.channels[channel][frame] - floatMean) / floatStandardDeviation
+            }
+        }
+        return (floatMean, floatStandardDeviation)
     }
 
     private static func denormalized(
@@ -435,7 +461,7 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
 }
 
 private struct StereoAudio: Sendable {
-    let channels: [[Float]]
+    var channels: [[Float]]
     var frameCount: Int { channels[0].count }
 }
 

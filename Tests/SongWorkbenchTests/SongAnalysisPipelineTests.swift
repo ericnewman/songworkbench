@@ -14,7 +14,6 @@ final class SongAnalysisPipelineTests: XCTestCase {
             try? FileManager.default.removeItem(at: outputDirectory)
         }
         let vocalsURL = outputDirectory.appendingPathComponent("vocals.wav")
-        let accompanimentURL = outputDirectory.appendingPathComponent("accompaniment.wav")
         let transcription = RecordingTranscriptionEngine(result: transcriptionResult())
         let harmony = RecordingHarmonyEngine(result: harmonyResult())
         let pipeline = SongAnalysisPipeline(
@@ -36,8 +35,12 @@ final class SongAnalysisPipelineTests: XCTestCase {
         ) { _ in }
 
         let requestedURLs = await transcription.requestedURLs()
+        let requestedLocales = await transcription.requestedLocaleIdentifiers()
         let harmonyURLs = await harmony.requestedURLs()
         XCTAssertEqual(requestedURLs.map(\.lastPathComponent), [vocalsURL.lastPathComponent])
+        XCTAssertEqual(
+            requestedLocales, [nil],
+            "song language must be auto-detected instead of inherited from the Mac locale")
         XCTAssertEqual(harmonyURLs.map(\.lastPathComponent), ["guitar.wav"])
         XCTAssertEqual(result.document.lyrics.map(\.text), ["Hello world"])
         XCTAssertEqual(result.document.chords.map(\.chord), ["C"])
@@ -317,6 +320,94 @@ final class SongAnalysisPipelineTests: XCTestCase {
         XCTAssertEqual(cancelCount, 1)
     }
 
+    func testSerialHeavyStagesWaitsForTranscriptionBeforeHarmony() async throws {
+        let sourceURL = try temporarySource()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let recorder = StageOrderRecorder()
+        let transcription = BlockingRecordingTranscriptionEngine(
+            result: transcriptionResult(),
+            recorder: recorder
+        )
+        let harmony = OrderedHarmonyEngine(result: harmonyResult(), recorder: recorder)
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: nil,
+            fastTranscriptionEngine: transcription,
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: harmony,
+            executionPolicy: .serialHeavyStages
+        )
+
+        let task = Task {
+            try await pipeline.run(
+                SongAnalysisPipelineRequest(
+                    sourceURL: sourceURL,
+                    outputDirectory: FileManager.default.temporaryDirectory,
+                    title: "Serial Song",
+                    stages: [.transcription, .harmony],
+                    transcriptionMode: .fastDraft,
+                    existingDocument: SongAnalysisDocument()
+                )
+            ) { _ in }
+        }
+        await recorder.waitForEvent(.transcriptionStarted)
+        try await Task.sleep(for: .milliseconds(25))
+        let harmonyStartedBeforeRelease = await recorder.hasEvent(.harmonyStarted)
+        XCTAssertFalse(harmonyStartedBeforeRelease)
+
+        await transcription.release()
+        _ = try await task.value
+
+        let events = await recorder.events()
+        XCTAssertEqual(
+            events,
+            [.transcriptionStarted, .transcriptionFinished, .harmonyStarted]
+        )
+    }
+
+    func testConcurrentIndependentStagesStartsHarmonyWhileTranscriptionIsRunning() async throws {
+        let sourceURL = try temporarySource()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let recorder = StageOrderRecorder()
+        let transcription = BlockingRecordingTranscriptionEngine(
+            result: transcriptionResult(),
+            recorder: recorder
+        )
+        let harmony = OrderedHarmonyEngine(result: harmonyResult(), recorder: recorder)
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: nil,
+            fastTranscriptionEngine: transcription,
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: harmony,
+            executionPolicy: .concurrentIndependentStages
+        )
+
+        let task = Task {
+            try await pipeline.run(
+                SongAnalysisPipelineRequest(
+                    sourceURL: sourceURL,
+                    outputDirectory: FileManager.default.temporaryDirectory,
+                    title: "Concurrent Song",
+                    stages: [.transcription, .harmony],
+                    transcriptionMode: .fastDraft,
+                    existingDocument: SongAnalysisDocument()
+                )
+            ) { _ in }
+        }
+        await recorder.waitForEvent(.transcriptionStarted)
+        await recorder.waitForEvent(.harmonyStarted)
+        let transcriptionFinishedBeforeRelease = await recorder.hasEvent(.transcriptionFinished)
+        XCTAssertFalse(transcriptionFinishedBeforeRelease)
+
+        await transcription.release()
+        _ = try await task.value
+
+        let events = await recorder.events()
+        XCTAssertLessThan(
+            events.firstIndex(of: .harmonyStarted)!,
+            events.firstIndex(of: .transcriptionFinished)!
+        )
+    }
+
     func testAggregateProgressNeverRegressesWhenEngineProgressDoes() async throws {
         let sourceURL = try temporarySource()
         defer { try? FileManager.default.removeItem(at: sourceURL) }
@@ -348,6 +439,32 @@ final class SongAnalysisPipelineTests: XCTestCase {
         let values = recorder.values
         XCTAssertEqual(values, values.sorted())
         XCTAssertEqual(values.last, 1)
+    }
+
+    func testTranscriptionStageReleasesEngineResourcesAfterCompletion() async throws {
+        let sourceURL = try temporarySource()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let transcription = RecordingTranscriptionEngine(result: transcriptionResult())
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: nil,
+            fastTranscriptionEngine: transcription,
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: StubHarmonyEngine()
+        )
+
+        _ = try await pipeline.run(
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL,
+                outputDirectory: FileManager.default.temporaryDirectory,
+                title: "Release ASR",
+                stages: [.transcription],
+                transcriptionMode: .fastDraft,
+                existingDocument: SongAnalysisDocument()
+            )
+        ) { _ in }
+
+        let releaseCount = await transcription.releaseCount()
+        XCTAssertEqual(releaseCount, 1)
     }
 
     func testChordProStagePreservesReviewedContentWithoutReplacementConfirmation() async throws {
@@ -490,6 +607,203 @@ final class SongAnalysisPipelineTests: XCTestCase {
             result.document.stageRecords[.separation]?.provenance?.loadedFromCache,
             false
         )
+    }
+
+    func testSeparationCacheHitDoesNotConstructDeferredEngine() async throws {
+        let sourceURL = try temporarySource()
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        try FileManager.default.createDirectory(
+            at: outputDirectory,
+            withIntermediateDirectories: true
+        )
+        let stems = StemFiles(
+            vocals: outputDirectory.appendingPathComponent("vocals.wav"),
+            drums: outputDirectory.appendingPathComponent("drums.wav"),
+            bass: outputDirectory.appendingPathComponent("bass.wav"),
+            guitar: outputDirectory.appendingPathComponent("guitar.wav"),
+            piano: outputDirectory.appendingPathComponent("piano.wav"),
+            other: outputDirectory.appendingPathComponent("other.wav")
+        )
+        for kind in StemKind.allCases {
+            try Data("cached \(kind.rawValue)".utf8).write(to: stems[kind]!)
+        }
+        let metadata = StemSeparationEngineMetadata(
+            engineIdentifier: "deferred-cache-test",
+            engineVersion: "1",
+            modelIdentifier: "large-model",
+            modelVersion: "1"
+        )
+        let recorder = DeferredPipelineStemFactoryRecorder(outputDirectory: outputDirectory)
+        let engine = DeferredStemSeparationEngine(metadata: metadata) {
+            await recorder.makeEngine()
+        }
+        var existing = SongAnalysisDocument(stems: StoredStemFiles(files: stems))
+        existing.stageRecords[.separation] = AnalysisStageRecord(
+            state: .succeeded,
+            provenance: AnalysisProvenance(
+                sourceDigest: sha256Hex(try Data(contentsOf: sourceURL)),
+                sourceKind: .recording,
+                engineIdentifier: metadata.engineIdentifier,
+                engineVersion: metadata.engineVersion,
+                modelIdentifier: metadata.modelIdentifier,
+                modelVersion: metadata.modelVersion,
+                configurationIdentifier: "six-stem-44.1k-stereo",
+                resultSchemaVersion: SongAnalysisDocument.currentSchemaVersion,
+                completedAt: Date(timeIntervalSince1970: 1_750_000_000),
+                loadedFromCache: false
+            ),
+            confidence: nil,
+            errorMessage: nil
+        )
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: engine,
+            fastTranscriptionEngine: nil,
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: StubHarmonyEngine()
+        )
+
+        let result = try await pipeline.run(
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL,
+                outputDirectory: outputDirectory,
+                title: "Cached Deferred Stems",
+                stages: [.separation],
+                transcriptionMode: .fastDraft,
+                existingDocument: existing
+            )
+        ) { _ in }
+
+        let constructionCount = await recorder.constructionCount()
+        XCTAssertEqual(constructionCount, 0)
+        XCTAssertEqual(
+            result.document.stageRecords[.separation]?.provenance?.loadedFromCache,
+            true
+        )
+    }
+
+    func testSeparationStagePersistsConfiguredRefinedStemSet() async throws {
+        let sourceURL = try temporarySource()
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: StubStemEngine(outputDirectory: outputDirectory),
+            stemRefiners: [PipelineStubStemRefiner()],
+            fastTranscriptionEngine: nil,
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: StubHarmonyEngine()
+        )
+
+        let result = try await pipeline.run(
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL,
+                outputDirectory: outputDirectory,
+                title: "Refined Stems",
+                stages: [.separation],
+                transcriptionMode: .fastDraft,
+                existingDocument: SongAnalysisDocument()
+            )
+        ) { _ in }
+
+        let manifest = try XCTUnwrap(result.document.stemSet?.resolved())
+        XCTAssertNotNil(result.document.stems)
+        XCTAssertEqual(manifest.recipeIdentity?.refiners, ["pipeline-drum-refiner"])
+        XCTAssertEqual(manifest.descriptorsByID[.drumKick]?.parentID, StemKind.drums.id)
+        XCTAssertEqual(
+            result.document.stageRecords[.separation]?.provenance?.engineIdentifier,
+            "stem-separation+refiners"
+        )
+        XCTAssertTrue(
+            result.document.stageRecords[.separation]?.provenance?.configurationIdentifier
+                .hasPrefix("stem-recipe-") == true
+        )
+    }
+
+    @MainActor
+    func testCoordinatorDrainsCancelledRunBeforeStartingReplacement() async throws {
+        let sourceURL = try temporarySource()
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        let stemEngine = CoordinatorBlockingStemEngine(outputDirectory: outputDirectory)
+        let coordinator = SongAnalysisCoordinator {
+            SongAnalysisPipelineFactory.Assembly(
+                pipeline: SongAnalysisPipeline(
+                    stemEngine: stemEngine,
+                    fastTranscriptionEngine: nil,
+                    accuracyTranscriptionEngine: nil,
+                    harmonyEngine: StubHarmonyEngine()
+                ),
+                statuses: [:],
+                capabilityProfile: .profile(for: .desktop)
+            )
+        }
+        func request(_ title: String) -> SongAnalysisPipelineRequest {
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL,
+                outputDirectory: outputDirectory,
+                title: title,
+                stages: [.separation],
+                transcriptionMode: .fastDraft,
+                existingDocument: SongAnalysisDocument()
+            )
+        }
+        var firstResult: Result<SongAnalysisPipelineResult, Error>?
+        var secondResult: Result<SongAnalysisPipelineResult, Error>?
+
+        coordinator.run(
+            request: request("First"),
+            onStatuses: { _, _ in },
+            onProgress: { _, _ in },
+            onFinish: { _, result in firstResult = result }
+        )
+        for _ in 0..<500 {
+            if await stemEngine.callCount() == 1 { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        let initialCallCount = await stemEngine.callCount()
+        XCTAssertEqual(initialCallCount, 1)
+
+        coordinator.run(
+            request: request("Replacement"),
+            onStatuses: { _, _ in },
+            onProgress: { _, _ in },
+            onFinish: { _, result in secondResult = result }
+        )
+        try await Task.sleep(for: .milliseconds(25))
+        let callCountWhileCancelling = await stemEngine.callCount()
+        XCTAssertEqual(
+            callCountWhileCancelling,
+            1,
+            "replacement must wait for cancellation-resistant inference to unwind"
+        )
+
+        await stemEngine.releaseFirstRun()
+        for _ in 0..<500 {
+            if secondResult != nil { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+
+        guard case .failure(let firstError) = firstResult else {
+            return XCTFail("superseded run must finish with cancellation")
+        }
+        XCTAssertTrue(firstError is CancellationError)
+        guard case .success = secondResult else {
+            return XCTFail("replacement run did not finish successfully")
+        }
+        let maximumConcurrentRuns = await stemEngine.maximumConcurrentRuns()
+        XCTAssertEqual(maximumConcurrentRuns, 1)
     }
 
     func testConfirmedChordProReplacementProducesNewDraft() async throws {
@@ -639,6 +953,84 @@ private actor RecordingStemEngine: StemSeparationEngine {
     }
 }
 
+private actor DeferredPipelineStemFactoryRecorder {
+    private let outputDirectory: URL
+    private var constructions = 0
+
+    init(outputDirectory: URL) {
+        self.outputDirectory = outputDirectory
+    }
+
+    func makeEngine() -> any StemSeparationEngine {
+        constructions += 1
+        return StubStemEngine(outputDirectory: outputDirectory)
+    }
+
+    func constructionCount() -> Int {
+        constructions
+    }
+}
+
+private actor CoordinatorBlockingStemEngine: StemSeparationEngine {
+    nonisolated let metadata = StemSeparationEngineMetadata(
+        engineIdentifier: "coordinator-blocking-test",
+        engineVersion: "1",
+        modelIdentifier: "large-model",
+        modelVersion: "1"
+    )
+
+    private let outputDirectory: URL
+    private var calls = 0
+    private var activeRuns = 0
+    private var maximumActiveRuns = 0
+    private var firstRunContinuation: CheckedContinuation<Void, Never>?
+
+    init(outputDirectory: URL) {
+        self.outputDirectory = outputDirectory
+    }
+
+    func separate(
+        request: StemSeparationRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemSeparationResult {
+        calls += 1
+        let callNumber = calls
+        activeRuns += 1
+        maximumActiveRuns = max(maximumActiveRuns, activeRuns)
+        defer { activeRuns -= 1 }
+        if callNumber == 1 {
+            await withCheckedContinuation { continuation in
+                firstRunContinuation = continuation
+            }
+            try Task.checkCancellation()
+        }
+        return StemSeparationResult(
+            stems: StemFiles(
+                vocals: outputDirectory.appendingPathComponent("vocals.wav"),
+                drums: outputDirectory.appendingPathComponent("drums.wav"),
+                bass: outputDirectory.appendingPathComponent("bass.wav"),
+                guitar: outputDirectory.appendingPathComponent("guitar.wav"),
+                piano: outputDirectory.appendingPathComponent("piano.wav"),
+                other: outputDirectory.appendingPathComponent("other.wav")
+            ),
+            processingDuration: .zero
+        )
+    }
+
+    func releaseFirstRun() {
+        firstRunContinuation?.resume()
+        firstRunContinuation = nil
+    }
+
+    func callCount() -> Int {
+        calls
+    }
+
+    func maximumConcurrentRuns() -> Int {
+        maximumActiveRuns
+    }
+}
+
 private struct StubStemEngine: StemSeparationEngine {
     let outputDirectory: URL
 
@@ -673,6 +1065,30 @@ private struct StubStemEngine: StemSeparationEngine {
     }
 }
 
+private struct PipelineStubStemRefiner: StemRefinementEngine {
+    let identifier = "pipeline-drum-refiner"
+    let outputStemIDs: [StemID] = [.drumKick]
+
+    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+        let kickURL = request.outputDirectory.appendingPathComponent("kick.wav")
+        try Data("kick audio".utf8).write(to: kickURL)
+        return StemRefinementResult(
+            descriptors: [
+                StemDescriptor(
+                    id: .drumKick,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Kick",
+                    order: 100
+                )
+            ],
+            assets: [
+                StemAsset(id: .drumKick, audioURL: kickURL, producerID: identifier)
+            ]
+        )
+    }
+}
+
 private actor RecordingHarmonyEngine: SongHarmonyAnalyzing {
     nonisolated let metadata = AnalysisEngineVersion(identifier: "test-harmony", version: "1")
     private let result: SongAudioAnalysis
@@ -692,6 +1108,50 @@ private actor RecordingHarmonyEngine: SongHarmonyAnalyzing {
     }
 }
 
+private enum StageOrderEvent: Equatable {
+    case transcriptionStarted
+    case transcriptionFinished
+    case harmonyStarted
+}
+
+private actor StageOrderRecorder {
+    private var recordedEvents: [StageOrderEvent] = []
+
+    func append(_ event: StageOrderEvent) {
+        recordedEvents.append(event)
+    }
+
+    func hasEvent(_ event: StageOrderEvent) -> Bool {
+        recordedEvents.contains(event)
+    }
+
+    func events() -> [StageOrderEvent] {
+        recordedEvents
+    }
+
+    func waitForEvent(_ event: StageOrderEvent) async {
+        while !recordedEvents.contains(event) {
+            await Task.yield()
+        }
+    }
+}
+
+private actor OrderedHarmonyEngine: SongHarmonyAnalyzing {
+    nonisolated let metadata = AnalysisEngineVersion(identifier: "ordered-harmony", version: "1")
+    private let result: SongAudioAnalysis
+    private let recorder: StageOrderRecorder
+
+    init(result: SongAudioAnalysis, recorder: StageOrderRecorder) {
+        self.result = result
+        self.recorder = recorder
+    }
+
+    func analyze(url: URL) async throws -> SongAudioAnalysis {
+        await recorder.append(.harmonyStarted)
+        return result
+    }
+}
+
 private struct FailingStemEngine: StemSeparationEngine {
     func separate(
         request: StemSeparationRequest,
@@ -701,11 +1161,45 @@ private struct FailingStemEngine: StemSeparationEngine {
     }
 }
 
+private actor BlockingRecordingTranscriptionEngine: TranscriptionEngine {
+    nonisolated let metadata: TranscriptionEngineMetadata
+    private let result: TranscriptionResult
+    private let recorder: StageOrderRecorder
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(result: TranscriptionResult, recorder: StageOrderRecorder) {
+        self.result = result
+        self.recorder = recorder
+        metadata = result.engine
+    }
+
+    func transcribe(
+        request: TranscriptionRequest,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async throws -> TranscriptionResult {
+        await recorder.append(.transcriptionStarted)
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+        await recorder.append(.transcriptionFinished)
+        return result
+    }
+
+    func cancel(requestID: UUID) async {}
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 private actor RecordingTranscriptionEngine: TranscriptionEngine {
     nonisolated let metadata: TranscriptionEngineMetadata
     private let result: TranscriptionResult
     private let progressFractions: [Double]
     private var urls: [URL] = []
+    private var localeIdentifiers: [String?] = []
+    private var releases = 0
 
     init(result: TranscriptionResult, progressFractions: [Double] = []) {
         self.result = result
@@ -718,6 +1212,7 @@ private actor RecordingTranscriptionEngine: TranscriptionEngine {
         progress: @escaping @Sendable (TranscriptionProgress) -> Void
     ) async throws -> TranscriptionResult {
         urls.append(request.audioURL)
+        localeIdentifiers.append(request.localeIdentifier)
         for fraction in progressFractions {
             progress(
                 TranscriptionProgress(
@@ -731,12 +1226,24 @@ private actor RecordingTranscriptionEngine: TranscriptionEngine {
 
     func cancel(requestID: UUID) async {}
 
+    func releaseResources() async {
+        releases += 1
+    }
+
     func requestedURLs() -> [URL] {
         urls
     }
 
+    func requestedLocaleIdentifiers() -> [String?] {
+        localeIdentifiers
+    }
+
     func callCount() -> Int {
         urls.count
+    }
+
+    func releaseCount() -> Int {
+        releases
     }
 }
 

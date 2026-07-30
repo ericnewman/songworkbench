@@ -147,6 +147,23 @@ final class PracticeWorkspaceTests: XCTestCase {
         XCTAssertLessThanOrEqual(envelope.peaks.max() ?? 0, 0.51)
     }
 
+    func testVocalActivitySummaryMatchesSeparateVocalStemPasses() async throws {
+        let url = try makeSineWAV(duration: 0.5)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let service = AudioFileAnalysisService()
+
+        let summary = try await service.vocalActivitySummary(url: url, targetSampleCount: 64)
+        let intervals = try await service.vocalActivityIntervals(url: url)
+        let waveform = try await WaveformAnalyzer().analyze(url: url, targetSampleCount: 64)
+
+        XCTAssertEqual(summary.intervals, intervals)
+        XCTAssertEqual(summary.waveform.duration, waveform.duration, accuracy: 0.001)
+        XCTAssertEqual(summary.waveform.peaks.count, waveform.peaks.count)
+        for (combined, separate) in zip(summary.waveform.peaks, waveform.peaks) {
+            XCTAssertEqual(combined, separate, accuracy: 0.0001)
+        }
+    }
+
     func testOfflineExporterProducesReadableAudio() async throws {
         let source = try makeSineWAV(duration: 0.25)
         let destination = FileManager.default.temporaryDirectory

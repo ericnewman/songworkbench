@@ -122,6 +122,14 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
     }
 
     func predict(_ chunk: StereoAudioChunk) throws -> StemChunkPrediction {
+        try autoreleasepool {
+            try predictRetainingOnlySwiftOutput(chunk)
+        }
+    }
+
+    private func predictRetainingOnlySwiftOutput(
+        _ chunk: StereoAudioChunk
+    ) throws -> StemChunkPrediction {
         guard chunk.frameCount == frameCount else {
             throw CoreMLStemSeparationError.invalidPrediction
         }

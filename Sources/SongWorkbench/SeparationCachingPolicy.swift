@@ -43,6 +43,7 @@ struct SeparationCachingPolicy: Sendable {
             record.provenance?.engineIdentifier == currentEngine.engineIdentifier,
             record.provenance?.engineVersion == currentEngine.engineVersion,
             record.provenance?.modelIdentifier == currentEngine.modelIdentifier,
+            record.provenance?.modelVersion == currentEngine.modelVersion,
             storedStems.resolved().isSixSource,
             storedStems.resolved().availableKinds.allSatisfy({ kind in
                 guard let url = storedStems.resolved()[kind] else { return false }
@@ -50,6 +51,30 @@ struct SeparationCachingPolicy: Sendable {
             })
         else { return false }
         return true
+    }
+
+    /// True when a refined stem set can be reused for the requested recipe.
+    /// Unlike the legacy alias check, this validates the manifest recipe and
+    /// every asset path in the manifest so child stems cannot silently disappear.
+    func isStemSetCacheHit(
+        record: AnalysisStageRecord?,
+        sourceDigest: String,
+        storedStemSet: StoredStemSetManifest?,
+        expectedRecipe: StemRecipeIdentity
+    ) -> Bool {
+        guard
+            let storedStemSet,
+            let record,
+            record.state == .succeeded,
+            record.provenance?.sourceDigest == sourceDigest,
+            record.provenance?.matchesEngine(currentEngine) == true
+        else { return false }
+
+        let manifest = storedStemSet.resolved()
+        guard manifest.recipeIdentity?.cacheKey == expectedRecipe.cacheKey else { return false }
+        return manifest.assets.allSatisfy {
+            FileManager.default.fileExists(atPath: $0.audioURL.path)
+        }
     }
 
     /// Whether a record that currently carries stems should be flipped to
@@ -75,12 +100,13 @@ struct SeparationCachingPolicy: Sendable {
 
 extension AnalysisProvenance {
     /// True when this provenance's engine identity (engineIdentifier /
-    /// engineVersion / modelIdentifier) matches `metadata`. Used to decide
-    /// whether a saved separation is current. Note: modelVersion is intentionally
-    /// not part of the identity check (matching existing AppModel semantics).
+    /// engineVersion / modelIdentifier / modelVersion) matches `metadata`. Refined
+    /// stem recipes depend on exact model weights, so a model-version change must
+    /// not reuse older audio products.
     func matchesEngine(_ metadata: StemSeparationEngineMetadata) -> Bool {
         engineIdentifier == metadata.engineIdentifier
             && engineVersion == metadata.engineVersion
             && modelIdentifier == metadata.modelIdentifier
+            && modelVersion == metadata.modelVersion
     }
 }

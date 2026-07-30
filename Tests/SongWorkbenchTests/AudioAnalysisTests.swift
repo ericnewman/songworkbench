@@ -1,8 +1,47 @@
+import AVFoundation
 import XCTest
 
 @testable import SongWorkbench
 
 final class AudioAnalysisTests: XCTestCase {
+    func testAudioRegionExporterWritesOnlyRequestedFrames() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "AudioRegionExporterTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("source.wav")
+        let destinationURL = directory.appendingPathComponent("region.wav")
+        let sampleRate = 8_000.0
+        try writeSilentWAV(
+            to: sourceURL,
+            frameCount: 24_000,
+            sampleRate: sampleRate
+        )
+
+        try AudioRegionExporter().export(
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            range: 0.75...1.5
+        )
+
+        let result = try AVAudioFile(forReading: destinationURL)
+        XCTAssertEqual(result.processingFormat.sampleRate, sampleRate)
+        XCTAssertEqual(result.length, 6_000)
+    }
+
+    func testPhaseInvariantChannelEnergyPreservesOppositePolarityStereo() {
+        XCTAssertEqual(
+            PhaseInvariantChannelEnergy.sample([1, -1]), 1, accuracy: 1e-9,
+            "energy detectors must not cancel a wide or polarity-inverted stereo vocal")
+        XCTAssertEqual(PhaseInvariantChannelEnergy.sample([]), 0)
+    }
+
     func testFramerAppliesHannWindowAndTimestampsEachHop() throws {
         let framer = try MonoSampleFramer(frameLength: 4, hopLength: 2, sampleRate: 8)
 
@@ -196,6 +235,21 @@ final class AudioAnalysisTests: XCTestCase {
         }
     }
 
+    private func writeSilentWAV(
+        to url: URL,
+        frameCount: AVAudioFrameCount,
+        sampleRate: Double
+    ) throws {
+        let format = AVAudioFormat(
+            standardFormatWithSampleRate: sampleRate,
+            channels: 1
+        )!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+        buffer.frameLength = frameCount
+        try file.write(from: buffer)
+    }
+
     private func scaledSineWave(
         frequency: Double, sampleRate: Double, count: Int, amplitude: Float
     ) -> [Float] {
@@ -325,6 +379,34 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(prepared.count, 1)
         XCTAssertEqual(prepared[0].tokens.first?.startTime ?? -1, 16, accuracy: 0.001)
         XCTAssertEqual(prepared[0].tokens.map(\.text), ["Late", "shes"])
+    }
+
+    func testTranscriptionOnsetCorrectionPreservesNearOnsetLeadingWords() throws {
+        let segment = TimedTranscriptionSegment(
+            text: "the saloon door swings",
+            startTime: 9,
+            endTime: 12,
+            tokens: [
+                TimedTranscriptionToken(
+                    text: "the", startTime: 9, endTime: 9.4, confidence: 0.9),
+                TimedTranscriptionToken(
+                    text: "saloon", startTime: 9.4, endTime: 10.1, confidence: 0.9),
+                TimedTranscriptionToken(
+                    text: "door", startTime: 10.1, endTime: 10.8, confidence: 0.9),
+                TimedTranscriptionToken(
+                    text: "swings", startTime: 10.8, endTime: 12, confidence: 0.9),
+            ],
+            confidence: 0.9
+        )
+
+        let corrected = TranscriptionOnsetCorrection.preparedSegments(
+            [segment],
+            onset: 10.5
+        )
+
+        let first = try XCTUnwrap(corrected.first)
+        XCTAssertEqual(first.tokens.map(\.text), ["the", "saloon", "door", "swings"])
+        XCTAssertEqual(first.tokens.first?.startTime ?? -1, 10.5, accuracy: 1e-9)
     }
 
     func testVocalActivityEnvelopeFindsTwoSungRegionsSeparatedByASilentGap() {
@@ -1274,6 +1356,41 @@ final class AudioAnalysisTests: XCTestCase {
         let out = VocalWordOnsetAligner.snapped(
             [segment], toOnsets: [0.90], tolerance: 0.7)
         XCTAssertGreaterThan(out[0].words[1].start, out[0].words[0].start)
+    }
+
+    func testVocalWordOnsetAlignerDoesNotFabricateMicroOnsetsFromOneBurst() {
+        // Field shape: one vocal energy burst falls within the correction window for two words.
+        // The old clamp snapped both to that burst, then fabricated a second start 20 ms later.
+        let segment = TimedLyricSegment(
+            start: 1.0, end: 1.9, text: "a b",
+            words: [
+                TimedLyricWord(text: "a", start: 1.00, end: 1.40, characterRange: 0..<1),
+                TimedLyricWord(text: "b", start: 1.50, end: 1.90, characterRange: 2..<3),
+            ])
+
+        let out = VocalWordOnsetAligner.snapped(
+            [segment], toOnsets: [0.90], tolerance: 0.7)
+
+        XCTAssertEqual(out[0].words[0].start, 0.90, accuracy: 1e-9)
+        XCTAssertEqual(
+            out[0].words[1].start, 1.50, accuracy: 1e-9,
+            "without a second distinct vocal onset, preserve the second ASR start")
+    }
+
+    func testVocalWordOnsetAlignerUsesDistinctSupportedOnsets() {
+        // Both words are closest to 1.04, but the second also has a distinct supported onset at
+        // 1.18. Use both real bursts instead of manufacturing 1.06 from minimumWordGap.
+        let segment = TimedLyricSegment(
+            start: 1.0, end: 1.6, text: "go now",
+            words: [
+                TimedLyricWord(text: "go", start: 1.00, end: 1.30, characterRange: 0..<2),
+                TimedLyricWord(text: "now", start: 1.08, end: 1.60, characterRange: 3..<6),
+            ])
+
+        let out = VocalWordOnsetAligner.snapped(
+            [segment], toOnsets: [1.04, 1.18], tolerance: 0.15)
+
+        XCTAssertEqual(out[0].words.map(\.start), [1.04, 1.18])
     }
 
     // MARK: - StrandedLeadingWordRepairer

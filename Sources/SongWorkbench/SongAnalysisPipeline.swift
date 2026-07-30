@@ -7,6 +7,148 @@ enum TranscriptionMode: String, Codable, Equatable, Sendable {
     case accuracy
 }
 
+enum AnalysisRuntimePlatform: String, Codable, Equatable, Sendable {
+    case desktop
+    case iPad
+
+    static var current: AnalysisRuntimePlatform {
+        #if os(iOS)
+            .iPad
+        #else
+            .desktop
+        #endif
+    }
+}
+
+enum StemSeparationModelTier: String, Codable, Equatable, Sendable {
+    case none
+    case reducedSixStem
+    case fullSixStem
+    case advancedDesktop
+}
+
+enum PerformanceTrackCapability: String, Codable, CaseIterable, Hashable, Sendable {
+    case leadVocals
+    case backingVocals
+    case drumPieces
+    case chordTimeline
+    case noteTimeline
+    case phraseTimeline
+    case songPartTimeline
+}
+
+enum AnalysisPipelineExecutionPolicy: String, Codable, Equatable, Sendable {
+    case concurrentIndependentStages
+    case serialHeavyStages
+}
+
+struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
+    let platform: AnalysisRuntimePlatform
+    let displayName: String
+    let stemSeparationTier: StemSeparationModelTier
+    let transcriptionModes: Set<TranscriptionMode>
+    let executionPolicy: AnalysisPipelineExecutionPolicy
+    let performanceTracks: Set<PerformanceTrackCapability>
+
+    private static let advancedStemRefinementDefaultsKey =
+        "SongWorkbench.advancedStemRefinement"
+
+    static var prefersAdvancedStemRefinement: Bool {
+        get {
+            #if os(macOS)
+                UserDefaults.standard.bool(forKey: advancedStemRefinementDefaultsKey)
+            #else
+                false
+            #endif
+        }
+        set {
+            #if os(macOS)
+                UserDefaults.standard.set(newValue, forKey: advancedStemRefinementDefaultsKey)
+            #endif
+        }
+    }
+
+    static var current: AnalysisCapabilityProfile {
+        #if os(macOS)
+            if prefersAdvancedStemRefinement {
+                return .desktopAdvanced
+            }
+        #endif
+        return profile(for: .current)
+    }
+
+    static var desktopAdvanced: AnalysisCapabilityProfile {
+        AnalysisCapabilityProfile(
+            platform: .desktop,
+            displayName: "Desktop Advanced",
+            stemSeparationTier: .advancedDesktop,
+            transcriptionModes: [.fastDraft, .balancedDraft, .accuracy],
+            executionPolicy: .concurrentIndependentStages,
+            performanceTracks: Set(PerformanceTrackCapability.allCases)
+        )
+    }
+
+    static func profile(for platform: AnalysisRuntimePlatform) -> AnalysisCapabilityProfile {
+        switch platform {
+        case .desktop:
+            AnalysisCapabilityProfile(
+                platform: .desktop,
+                displayName: "Desktop Full",
+                stemSeparationTier: .fullSixStem,
+                transcriptionModes: [.fastDraft, .balancedDraft, .accuracy],
+                executionPolicy: .concurrentIndependentStages,
+                performanceTracks: Set(PerformanceTrackCapability.allCases)
+            )
+        case .iPad:
+            AnalysisCapabilityProfile(
+                platform: .iPad,
+                displayName: "iPad Reduced",
+                stemSeparationTier: .reducedSixStem,
+                transcriptionModes: [.fastDraft, .balancedDraft],
+                executionPolicy: .serialHeavyStages,
+                performanceTracks: [.chordTimeline, .phraseTimeline, .songPartTimeline]
+            )
+        }
+    }
+
+    func allowsTranscriptionMode(_ mode: TranscriptionMode) -> Bool {
+        transcriptionModes.contains(mode)
+    }
+
+    func supportsPerformanceTrack(_ capability: PerformanceTrackCapability) -> Bool {
+        performanceTracks.contains(capability)
+    }
+
+    func requiresModelPackage(_ descriptor: ModelPackageDescriptor) -> Bool {
+        if ModelCatalog.optionalRefinementIDs.contains(descriptor.id) {
+            return false
+        }
+        switch descriptor.id {
+        case ModelCatalog.htdemucs.id:
+            return stemSeparationTier == .fullSixStem
+                || stemSeparationTier == .advancedDesktop
+                || stemSeparationTier == .reducedSixStem
+        case ModelCatalog.parakeetFastDraft.id:
+            return transcriptionModes.contains(.fastDraft)
+                || transcriptionModes.contains(.balancedDraft)
+        case ModelCatalog.whisperAccuracy.id:
+            return transcriptionModes.contains(.accuracy)
+        default:
+            return true
+        }
+    }
+
+    /// Packages shown in the Models UI for this tier, including optional refiners.
+    func offersModelPackage(_ descriptor: ModelPackageDescriptor) -> Bool {
+        if descriptor.id == ModelCatalog.drumsep.id {
+            return platform == .desktop
+                && (stemSeparationTier == .advancedDesktop
+                    || stemSeparationTier == .fullSixStem)
+        }
+        return requiresModelPackage(descriptor)
+    }
+}
+
 enum ChordProReplacementPolicy: Equatable, Sendable {
     case preserveExisting
     case replaceExisting
@@ -105,44 +247,64 @@ struct TranscriptionEngineFactory: Sendable {
         if accuracy != nil { modes.insert(.accuracy) }
         return modes
     }
+
+    func filtered(to profile: AnalysisCapabilityProfile) -> TranscriptionEngineFactory {
+        TranscriptionEngineFactory(
+            fast: profile.allowsTranscriptionMode(.fastDraft) ? fast : nil,
+            balanced: profile.allowsTranscriptionMode(.balancedDraft) ? balanced : nil,
+            accuracy: profile.allowsTranscriptionMode(.accuracy) ? accuracy : nil
+        )
+    }
 }
 
 struct SongAnalysisPipeline: Sendable {
     private let stemEngine: (any StemSeparationEngine)?
+    private let stemRefiners: [any StemRefinementEngine]
     private let transcriptionEngineFactory: TranscriptionEngineFactory
     private let harmonyEngine: any SongHarmonyAnalyzing
     private let cache: AnalysisResultDiskCache?
+    private let executionPolicy: AnalysisPipelineExecutionPolicy
     private let chordProBuilder = ChordProDraftBuilder()
 
     init(
         stemEngine: (any StemSeparationEngine)?,
+        stemRefiners: [any StemRefinementEngine] = [],
         transcriptionEngineFactory: TranscriptionEngineFactory,
         harmonyEngine: any SongHarmonyAnalyzing,
-        cache: AnalysisResultDiskCache? = nil
+        cache: AnalysisResultDiskCache? = nil,
+        executionPolicy: AnalysisPipelineExecutionPolicy =
+            AnalysisCapabilityProfile.current.executionPolicy
     ) {
         self.stemEngine = stemEngine
+        self.stemRefiners = stemRefiners
         self.transcriptionEngineFactory = transcriptionEngineFactory
         self.harmonyEngine = harmonyEngine
         self.cache = cache
+        self.executionPolicy = executionPolicy
     }
 
     init(
         stemEngine: (any StemSeparationEngine)?,
+        stemRefiners: [any StemRefinementEngine] = [],
         fastTranscriptionEngine: (any TranscriptionEngine)?,
         balancedTranscriptionEngine: (any TranscriptionEngine)? = nil,
         accuracyTranscriptionEngine: (any TranscriptionEngine)?,
         harmonyEngine: any SongHarmonyAnalyzing,
-        cache: AnalysisResultDiskCache? = nil
+        cache: AnalysisResultDiskCache? = nil,
+        executionPolicy: AnalysisPipelineExecutionPolicy =
+            AnalysisCapabilityProfile.current.executionPolicy
     ) {
         self.init(
             stemEngine: stemEngine,
+            stemRefiners: stemRefiners,
             transcriptionEngineFactory: TranscriptionEngineFactory(
                 fast: fastTranscriptionEngine,
                 balanced: balancedTranscriptionEngine,
                 accuracy: accuracyTranscriptionEngine
             ),
             harmonyEngine: harmonyEngine,
-            cache: cache
+            cache: cache,
+            executionPolicy: executionPolicy
         )
     }
 
@@ -252,18 +414,33 @@ struct SongAnalysisPipeline: Sendable {
 
                 let transcription: AnalysisStageOutcome
                 let harmony: AnalysisStageOutcome
-                #if os(iOS)
-                    // On memory-constrained iPads, run these two heavy stages SERIALLY. Run
-                    // concurrently they doubled peak memory right after separation and
-                    // starved/crashed the Core ML lyric model; the small wall-clock cost buys the
-                    // headroom. macOS keeps them concurrent.
-                    transcription = await TranscriptionStage().run(transcriptionContext)
-                    harmony = await HarmonyStage().run(harmonyContext)
-                #else
-                    async let transcriptionOutcome = TranscriptionStage().run(transcriptionContext)
-                    async let harmonyOutcome = HarmonyStage().run(harmonyContext)
+                switch executionPolicy {
+                case .serialHeavyStages:
+                    // Memory-bounded profile: avoid overlapping ASR and harmony working sets
+                    // immediately after stem separation.
+                    transcription = await runStage(
+                        .transcription,
+                        runner: TranscriptionStage(),
+                        context: transcriptionContext
+                    )
+                    harmony = await runStage(
+                        .harmony,
+                        runner: HarmonyStage(),
+                        context: harmonyContext
+                    )
+                case .concurrentIndependentStages:
+                    async let transcriptionOutcome = runStage(
+                        .transcription,
+                        runner: TranscriptionStage(),
+                        context: transcriptionContext
+                    )
+                    async let harmonyOutcome = runStage(
+                        .harmony,
+                        runner: HarmonyStage(),
+                        context: harmonyContext
+                    )
                     (transcription, harmony) = await (transcriptionOutcome, harmonyOutcome)
-                #endif
+                }
 
                 // A cancelled run publishes no freshly-computed results: record
                 // cancellation only for the stage(s) actually interrupted and do
@@ -356,7 +533,7 @@ struct SongAnalysisPipeline: Sendable {
             case .chordPro:
                 runner = ChordProStage()
             }
-            let outcome = await runner.run(context)
+            let outcome = await runStage(stage, runner: runner, context: context)
             outcome.apply(&document)
             if outcome.wasCancelled {
                 wasCancelled = true
@@ -376,6 +553,34 @@ struct SongAnalysisPipeline: Sendable {
         }
 
         return SongAnalysisPipelineResult(document: document, wasCancelled: wasCancelled)
+    }
+
+    private func runStage(
+        _ stage: SongAnalysisStage,
+        runner: any AnalysisStageRunning,
+        context: AnalysisStageContext
+    ) async -> AnalysisStageOutcome {
+        let startedAt = ContinuousClock.now
+        AnalysisResourceLog.checkpoint(stage: stage.rawValue, event: "started")
+        let outcome = await runner.run(context)
+        if stage == .transcription,
+            let engine = context.transcriptionEngineFactory.engine(
+                for: context.request.transcriptionMode
+            )
+        {
+            await engine.releaseResources()
+            AnalysisResourceLog.checkpoint(
+                stage: stage.rawValue,
+                event: "model-released",
+                startedAt: startedAt
+            )
+        }
+        AnalysisResourceLog.checkpoint(
+            stage: stage.rawValue,
+            event: outcome.wasCancelled ? "cancelled" : "finished",
+            startedAt: startedAt
+        )
+        return outcome
     }
 
     private func cancelledRecord() -> AnalysisStageRecord {
@@ -420,6 +625,7 @@ struct SongAnalysisPipeline: Sendable {
             digest: digest,
             cache: cache,
             stemEngine: stemEngine,
+            stemRefiners: stemRefiners,
             transcriptionEngineFactory: transcriptionEngineFactory,
             harmonyEngine: harmonyEngine,
             chordProBuilder: chordProBuilder,

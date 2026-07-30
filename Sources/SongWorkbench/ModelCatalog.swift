@@ -84,7 +84,36 @@ enum ModelCatalog {
         entryPointRelativePath: "parakeet-tdt-0.6b-v3-coreml"
     )
 
-    static let all = [htdemucs, parakeetFastDraft, whisperAccuracy]
+    /// Drum-kit piece refiner for Advanced Desktop. Optional — never blocks onboarding.
+    static let drumsep = ModelPackageDescriptor(
+        id: "drumsep-onnx",
+        displayName: "DrumSep ONNX",
+        purpose: "Drum piece refinement: kick, snare, cymbals, and toms",
+        version: "1.0.0",
+        minimumOSVersion: "14.0",
+        license: ModelArtifactLicense(
+            name: "MIT",
+            attribution:
+                "DrumSep by inagoy (Hybrid Demucs fine-tune); ONNX export mirrored by Gridshift Studio"
+        ),
+        source: .files([
+            ModelPackageComponent(
+                relativePath: "drumsep.onnx",
+                downloadURL: URL(
+                    string:
+                        "https://huggingface.co/gridshiftstudio/drumsep-onnx/resolve/main/drumsep.onnx?download=true"
+                )!,
+                expectedSizeBytes: 335_071_223,
+                sha256: "ecb8509383ccd437d84e12c216b002a00a2d4e88601e29f2711ea581f207c92a"
+            )
+        ]),
+        entryPointRelativePath: "drumsep.onnx"
+    )
+
+    static let all = [htdemucs, parakeetFastDraft, whisperAccuracy, drumsep]
+
+    /// Packages that refine existing stems rather than power base analysis.
+    static let optionalRefinementIDs: Set<String> = [drumsep.id]
 
     private static let parakeetBaseURL =
         "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/main/"

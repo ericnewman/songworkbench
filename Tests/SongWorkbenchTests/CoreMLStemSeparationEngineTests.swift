@@ -163,6 +163,94 @@ final class CoreMLStemSeparationEngineTests: XCTestCase {
         }
     }
 
+    func testSeparationReleasesPredictorResourcesAfterPredictionFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.wav")
+        try writeStereoFixture(to: sourceURL, frameCount: 1_000)
+        let predictor = TerminatingStemPredictor(termination: .failure)
+        let engine = CoreMLStemSeparationEngine(
+            predictor: predictor,
+            segmentFrames: 1_000,
+            overlapFrames: 100
+        )
+
+        do {
+            _ = try await engine.separate(
+                request: StemSeparationRequest(
+                    inputURL: sourceURL,
+                    outputDirectory: directory.appendingPathComponent("stems")
+                )
+            ) { _ in }
+            XCTFail("Expected prediction failure")
+        } catch let error as TestStemPredictionError {
+            XCTAssertEqual(error, .failed)
+        }
+
+        let releaseCount = await predictor.releaseCount()
+        XCTAssertEqual(releaseCount, 1)
+    }
+
+    func testInvalidConfigurationStillReleasesPredictorResources() async {
+        let predictor = TerminatingStemPredictor(termination: .failure)
+        let engine = CoreMLStemSeparationEngine(
+            predictor: predictor,
+            segmentFrames: 0,
+            overlapFrames: 0
+        )
+
+        do {
+            _ = try await engine.separate(
+                request: StemSeparationRequest(
+                    inputURL: URL(fileURLWithPath: "/unused.wav"),
+                    outputDirectory: URL(fileURLWithPath: "/unused")
+                )
+            ) { _ in }
+            XCTFail("Expected invalid configuration")
+        } catch let error as CoreMLStemSeparationError {
+            guard case .invalidConfiguration = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let releaseCount = await predictor.releaseCount()
+        XCTAssertEqual(releaseCount, 1)
+    }
+
+    func testSeparationReleasesPredictorResourcesAfterCancellation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sourceURL = directory.appendingPathComponent("source.wav")
+        try writeStereoFixture(to: sourceURL, frameCount: 1_000)
+        let predictor = TerminatingStemPredictor(termination: .cancellation)
+        let engine = CoreMLStemSeparationEngine(
+            predictor: predictor,
+            segmentFrames: 1_000,
+            overlapFrames: 100
+        )
+
+        do {
+            _ = try await engine.separate(
+                request: StemSeparationRequest(
+                    inputURL: sourceURL,
+                    outputDirectory: directory.appendingPathComponent("stems")
+                )
+            ) { _ in }
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let releaseCount = await predictor.releaseCount()
+        XCTAssertEqual(releaseCount, 1)
+    }
+
     private func writeStereoFixture(
         to url: URL, frameCount: Int, sampleRate: Double = 44_100
     ) throws {
@@ -201,6 +289,42 @@ private struct QuarterMixStemPredictor: StemChunkPredicting {
                     (kind, chunk.channels.map { $0.map { $0 / 4 } })
                 })
         )
+    }
+}
+
+private enum TestStemPredictionError: Error {
+    case failed
+}
+
+private actor TerminatingStemPredictor: StemChunkPredicting {
+    enum Termination: Sendable {
+        case failure
+        case cancellation
+    }
+
+    nonisolated let supportedStems = StemKind.allCases
+    private let termination: Termination
+    private var releases = 0
+
+    init(termination: Termination) {
+        self.termination = termination
+    }
+
+    func predict(_ chunk: StereoAudioChunk) async throws -> StemChunkPrediction {
+        switch termination {
+        case .failure:
+            throw TestStemPredictionError.failed
+        case .cancellation:
+            throw CancellationError()
+        }
+    }
+
+    func releaseResources() async {
+        releases += 1
+    }
+
+    func releaseCount() -> Int {
+        releases
     }
 }
 

@@ -380,6 +380,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
     var stems: StoredStemFiles?
+    var stemSet: StoredStemSetManifest?
     var stemMixer = StemMixerModel()
     var lyricReviewState = AnalysisReviewState.draft
     var chordReviewState = AnalysisReviewState.draft
@@ -401,6 +402,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case estimatedKey
         case chordConfidenceThreshold
         case stems
+        case stemSet
         case stemMixer
         case lyricReviewState
         case chordReviewState
@@ -423,6 +425,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
         stems: StoredStemFiles? = nil,
+        stemSet: StoredStemSetManifest? = nil,
         stemMixer: StemMixerModel = StemMixerModel(),
         lyricReviewState: AnalysisReviewState = .draft,
         chordReviewState: AnalysisReviewState = .draft,
@@ -443,6 +446,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
         self.stems = stems
+        self.stemSet = stemSet ?? stems.map { StoredStemSetManifest(files: $0.resolved()) }
         self.stemMixer = stemMixer
         self.lyricReviewState = lyricReviewState
         self.chordReviewState = chordReviewState
@@ -482,6 +486,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             1
         )
         stems = try container.decodeIfPresent(StoredStemFiles.self, forKey: .stems)
+        stemSet =
+            try container.decodeIfPresent(StoredStemSetManifest.self, forKey: .stemSet)
+            ?? stems.map { StoredStemSetManifest(files: $0.resolved()) }
         stemMixer =
             try container.decodeIfPresent(StemMixerModel.self, forKey: .stemMixer)
             ?? StemMixerModel()
@@ -531,6 +538,46 @@ struct StoredStemFiles: Codable, Equatable, Sendable {
             other: other.resolvedURL(),
             accompaniment: accompaniment?.resolvedURL()
         )
+    }
+}
+
+struct StoredStemSetManifest: Codable, Equatable, Sendable {
+    let descriptors: [StemDescriptor]
+    let assets: [StoredStemAsset]
+    let recipeIdentity: StemRecipeIdentity?
+
+    init(manifest: StemSetManifest) {
+        descriptors = manifest.descriptors
+        assets = manifest.assets.map(StoredStemAsset.init(asset:))
+        recipeIdentity = manifest.recipeIdentity
+    }
+
+    init(files: StemFiles) {
+        self.init(manifest: files.stemSetManifest)
+    }
+
+    func resolved() -> StemSetManifest {
+        StemSetManifest(
+            descriptors: descriptors,
+            assets: assets.map(\.resolved),
+            recipeIdentity: recipeIdentity
+        )
+    }
+}
+
+struct StoredStemAsset: Codable, Equatable, Sendable {
+    let id: StemID
+    let audio: StoredAudioReference
+    let producerID: String
+
+    init(asset: StemAsset) {
+        id = asset.id
+        audio = StoredAudioReference(url: asset.audioURL)
+        producerID = asset.producerID
+    }
+
+    var resolved: StemAsset {
+        StemAsset(id: id, audioURL: audio.resolvedURL(), producerID: producerID)
     }
 }
 

@@ -194,7 +194,7 @@ final class WhisperCPPTranscriptionEngineTests: XCTestCase {
 
         XCTAssertTrue(result.text.contains("bridge still matters"))
         XCTAssertEqual(result.segments.flatMap(\.tokens).last?.text, "matters")
-        XCTAssertEqual(result.engine.engineVersion, "7")
+        XCTAssertEqual(result.engine.engineVersion, "8")
     }
 
     /// Regression test for the real "Good friends and a beer or two" bug: a song whose

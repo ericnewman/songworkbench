@@ -17,12 +17,12 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     @Published private(set) var pitchSemitones = 0
     @Published private(set) var tempoRate = 1.0
     @Published private(set) var stemLevels = Dictionary(
-        uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(0)) }
+        uniqueKeysWithValues: StemKind.allCases.map { ($0.id, Float(0)) }
     )
     /// Post-fader, post-pan left/right levels per stem, for the channel strips' horizontal
     /// L/R meters.
     @Published private(set) var stemStereoLevels = Dictionary(
-        uniqueKeysWithValues: StemKind.allCases.map { ($0, StemStereoLevel.zero) }
+        uniqueKeysWithValues: StemKind.allCases.map { ($0.id, StemStereoLevel.zero) }
     )
     /// The mixer state currently applied to the players — kept so metering can apply the
     /// same pan law the audio path uses.
@@ -31,22 +31,23 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     private let engine = AVAudioEngine()
     private let stemMixerNode = AVAudioMixerNode()
     private let timePitch = AVAudioUnitTimePitch()
-    private let players = Dictionary(
-        uniqueKeysWithValues: StemKind.allCases.map { ($0, AVAudioPlayerNode()) }
+    private var players = Dictionary(
+        uniqueKeysWithValues: StemKind.allCases.map { ($0.id, AVAudioPlayerNode()) }
     )
-    private var files: [StemKind: AVAudioFile] = [:]
-    private var meterFiles: [StemKind: AVAudioFile] = [:]
+    private var files: [StemID: AVAudioFile] = [:]
+    private var meterFiles: [StemID: AVAudioFile] = [:]
     private var accessedURLs: [URL] = []
     private var generation = 0
     private var isScheduled = false
-    private var referenceKind: StemKind?
+    private var referenceID: StemID?
     private var scheduledStartTime: TimeInterval = 0
     private var timer: Timer?
 
-    // Synthetic click-track channel: a metronome clicking on each detected beat. Not a separated
-    // stem — its buffer is generated from the song's beat times and mixed alongside the stems.
+    // Synthetic click-track channel: one short reusable sample scheduled on each detected beat.
+    // It is not a separated stem and its memory use does not scale with song duration.
     private let clickPlayer = AVAudioPlayerNode()
     private var clickBuffer: AVAudioPCMBuffer?
+    private var clickBeatTimes: [TimeInterval] = []
     private var isClickConnected = false
     @Published var clickGain: Float = 0 {
         didSet { clickPlayer.volume = max(min(clickGain, StemMixState.maximumGain), 0) }
@@ -70,28 +71,40 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         }
     }
 
+    private func player(for id: StemID) -> AVAudioPlayerNode {
+        if let player = players[id] { return player }
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+        players[id] = player
+        return player
+    }
+
     func load(_ stems: StemFiles, mixer: StemMixerModel) throws {
+        try load(stems.stemSetManifest, mixer: mixer)
+    }
+
+    func load(_ manifest: StemSetManifest, mixer: StemMixerModel) throws {
         unload()
-        for kind in StemKind.allCases {
-            if let player = players[kind] {
-                engine.disconnectNodeOutput(player)
-            }
+        for player in players.values {
+            engine.disconnectNodeOutput(player)
         }
+        let activeNodes = StemMixGraph(manifest: manifest).activeNodes
 
         do {
-            for kind in StemKind.allCases {
-                guard let url = stems[kind] else { continue }
+            for node in activeNodes {
+                let url = node.audioURL
                 if url.startAccessingSecurityScopedResource() {
                     accessedURLs.append(url)
                 }
-                files[kind] = try AVAudioFile(forReading: url)
-                meterFiles[kind] = try AVAudioFile(forReading: url)
+                files[node.id] = try AVAudioFile(forReading: url)
+                meterFiles[node.id] = try AVAudioFile(forReading: url)
             }
-            for kind in StemKind.allCases {
-                guard let player = players[kind], let file = files[kind] else { continue }
+            for node in activeNodes {
+                let player = player(for: node.id)
+                guard let file = files[node.id] else { continue }
                 engine.connect(player, to: stemMixerNode, format: file.processingFormat)
             }
-            referenceKind = files.max { duration(of: $0.value) < duration(of: $1.value) }?.key
+            referenceID = files.max { duration(of: $0.value) < duration(of: $1.value) }?.key
             duration = files.values.map(duration(of:)).max() ?? 0
             apply(mixer)
             scheduleAll(from: 0)
@@ -101,7 +114,7 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             files.removeAll()
             meterFiles.removeAll()
             duration = 0
-            referenceKind = nil
+            referenceID = nil
             releaseSecurityScopes()
             throw error
         }
@@ -109,11 +122,12 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
 
     func apply(_ mixer: StemMixerModel) {
         appliedMixer = mixer
-        for kind in StemKind.allCases {
-            players[kind]?.volume = mixer.effectiveGain(for: kind)
+        let activeIDs = files.keys.sorted()
+        for id in activeIDs {
+            players[id]?.volume = mixer.effectiveGain(for: id, activeIDs: activeIDs)
             // AVAudioPlayerNode adopts AVAudioMixing: pan applies on the mixer input bus
             // (balance for stereo stems, constant-power placement for mono).
-            players[kind]?.pan = mixer[kind].pan
+            players[id]?.pan = mixer[id].pan
         }
         // Master fader: every stem player AND the click both already route into
         // `stemMixerNode` (see `init`/`load`/`loadClickTrack`), so its own output volume is
@@ -134,47 +148,37 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     func loadClickTrack(beatTimes: [TimeInterval]) {
         guard let sampleRate = files.values.first?.processingFormat.sampleRate else {
             clickBuffer = nil
+            clickBeatTimes = []
             return
         }
-        clickBuffer = Self.makeClickBuffer(
-            beatTimes: beatTimes, duration: duration, sampleRate: sampleRate)
+        clickBeatTimes = Self.uniformBeatGrid(from: beatTimes, duration: duration)
+        clickBuffer =
+            clickBeatTimes.isEmpty ? nil : Self.makeClickSample(sampleRate: sampleRate)
         if let clickBuffer, !isClickConnected {
             engine.connect(clickPlayer, to: stemMixerNode, format: clickBuffer.format)
             isClickConnected = true
         }
         clickPlayer.volume = max(min(clickGain, StemMixState.maximumGain), 0)
         if isScheduled {
+            clickPlayer.stop()
             scheduleClick(from: scheduledStartTime)
-            if isPlaying { clickPlayer.play() }
+            if isPlaying, clickBuffer != nil { clickPlayer.play() }
         }
     }
 
-    private static func makeClickBuffer(
-        beatTimes: [TimeInterval], duration: TimeInterval, sampleRate: Double
-    ) -> AVAudioPCMBuffer? {
-        guard duration > 0, sampleRate > 0, !beatTimes.isEmpty,
+    static func makeClickSample(sampleRate: Double) -> AVAudioPCMBuffer? {
+        guard sampleRate > 0,
             let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
         else { return nil }
-        let totalFrames = AVAudioFrameCount(duration * sampleRate) + 1
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames),
+        let clickFrames = max(AVAudioFrameCount(0.03 * sampleRate), 1)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: clickFrames),
             let channel = buffer.floatChannelData?[0]
         else { return nil }
-        buffer.frameLength = totalFrames
-        for index in 0..<Int(totalFrames) { channel[index] = 0 }
-        // A short enveloped 1 kHz blip on each beat. The click uses a UNIFORM grid (median period,
-        // phase-locked to the detected beats) so it's perfectly steady even when the onset-derived
-        // beat times jitter.
-        let clickFrames = Int(0.03 * sampleRate)
-        for beat in uniformBeatGrid(from: beatTimes, duration: duration) {
-            let startIndex = Int(beat * sampleRate)
-            guard startIndex >= 0, startIndex < Int(totalFrames) else { continue }
-            for offset in 0..<clickFrames {
-                let index = startIndex + offset
-                guard index < Int(totalFrames) else { break }
-                let seconds = Double(offset) / sampleRate
-                let envelope = exp(-seconds * 90)
-                channel[index] = Float(sin(2 * Double.pi * 1000 * seconds) * envelope * 0.6)
-            }
+        buffer.frameLength = clickFrames
+        for offset in 0..<Int(clickFrames) {
+            let seconds = Double(offset) / sampleRate
+            let envelope = exp(-seconds * 90)
+            channel[offset] = Float(sin(2 * Double.pi * 1000 * seconds) * envelope * 0.6)
         }
         return buffer
     }
@@ -213,18 +217,16 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     private func scheduleClick(from time: TimeInterval) {
         guard let clickBuffer, isClickConnected else { return }
         let sampleRate = clickBuffer.format.sampleRate
-        let startFrame = Int(min(max(time, 0), duration) * sampleRate)
-        let total = Int(clickBuffer.frameLength)
-        guard startFrame < total else { return }
-        let count = AVAudioFrameCount(total - startFrame)
-        guard count > 0,
-            let slice = AVAudioPCMBuffer(pcmFormat: clickBuffer.format, frameCapacity: count),
-            let source = clickBuffer.floatChannelData?[0],
-            let destination = slice.floatChannelData?[0]
-        else { return }
-        slice.frameLength = count
-        for index in 0..<Int(count) { destination[index] = source[startFrame + index] }
-        clickPlayer.scheduleBuffer(slice, at: nil, options: [], completionHandler: nil)
+        let startTime = min(max(time, 0), duration)
+        for beat in clickBeatTimes where beat >= startTime && beat <= duration {
+            let relativeFrame = AVAudioFramePosition((beat - startTime) * sampleRate)
+            clickPlayer.scheduleBuffer(
+                clickBuffer,
+                at: AVAudioTime(sampleTime: relativeFrame, atRate: sampleRate),
+                options: [],
+                completionHandler: nil
+            )
+        }
     }
 
     func togglePlayback() {
@@ -245,8 +247,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             // (volume/pan) set on a node before the engine (re)starts can be dropped by
             // graph rebuilds — field-verified in the exporter's manual-rendering path.
             apply(appliedMixer)
-            for kind in StemKind.allCases where files[kind] != nil {
-                players[kind]?.play()
+            for id in files.keys {
+                players[id]?.play()
             }
             if isClickConnected { clickPlayer.play() }
             isPlaying = true
@@ -280,8 +282,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         currentTime = min(max(time, 0), duration)
         scheduleAll(from: currentTime)
         if shouldResume, isScheduled {
-            for kind in StemKind.allCases where files[kind] != nil {
-                players[kind]?.play()
+            for id in files.keys {
+                players[id]?.play()
             }
             if isClickConnected { clickPlayer.play() }
             startTimer()
@@ -309,9 +311,10 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         files.removeAll()
         meterFiles.removeAll()
         duration = 0
-        referenceKind = nil
+        referenceID = nil
         isLoaded = false
         clickBuffer = nil
+        clickBeatTimes = []
         if isClickConnected {
             engine.disconnectNodeOutput(clickPlayer)
             isClickConnected = false
@@ -342,8 +345,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         scheduledStartTime = min(max(time, 0), duration)
         var scheduledAny = false
 
-        for kind in StemKind.allCases {
-            guard let player = players[kind], let file = files[kind] else { continue }
+        for id in files.keys.sorted() {
+            guard let player = players[id], let file = files[id] else { continue }
             let sampleRate = file.processingFormat.sampleRate
             let startFrame = min(
                 AVAudioFramePosition(scheduledStartTime * sampleRate),
@@ -353,7 +356,7 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             guard remaining > 0 else { continue }
             scheduledAny = true
 
-            if kind == referenceKind {
+            if id == referenceID {
                 player.scheduleSegment(
                     file,
                     startingFrame: startFrame,
@@ -380,8 +383,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
 
     private func updateCurrentTime() {
         guard
-            let referenceKind,
-            let player = players[referenceKind],
+            let referenceID,
+            let player = players[referenceID],
             let elapsed = PlayerClock.elapsedSeconds(player)
         else { return }
 
@@ -428,17 +431,17 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             resetStemLevels()
             return
         }
-        for kind in StemKind.allCases {
-            let stereo = meterStereoLevel(for: kind, at: currentTime)
-            stemStereoLevels[kind] = stereo
-            stemLevels[kind] = max(stereo.left, stereo.right)
+        for id in meterFiles.keys {
+            let stereo = meterStereoLevel(for: id, at: currentTime)
+            stemStereoLevels[id] = stereo
+            stemLevels[id] = max(stereo.left, stereo.right)
         }
     }
 
     /// Post-fader, post-pan, post-master L/R RMS for one stem at `time` — one file read feeds
     /// both the vertical VU (max of the sides) and the horizontal L/R meter.
-    private func meterStereoLevel(for kind: StemKind, at time: TimeInterval) -> StemStereoLevel {
-        guard let file = meterFiles[kind], file.length > 0 else { return .zero }
+    private func meterStereoLevel(for id: StemID, at time: TimeInterval) -> StemStereoLevel {
+        guard let file = meterFiles[id], file.length > 0 else { return .zero }
         let sampleRate = file.processingFormat.sampleRate
         let startFrame = min(
             max(AVAudioFramePosition(time * sampleRate), 0),
@@ -455,8 +458,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             file.framePosition = startFrame
             try file.read(into: buffer, frameCount: frameCount)
             let source = Self.stereoMeterLevel(from: buffer)
-            let volume = players[kind]?.volume ?? 0
-            let gains = Self.panGains(for: appliedMixer[kind].pan)
+            let volume = players[id]?.volume ?? 0
+            let gains = Self.panGains(for: appliedMixer[id].pan)
             // Constant-power law: ×√2 restores unity at center so the meters read the same
             // as the old mono meter for an unpanned stem.
             let normalization = Float(2).squareRoot()
@@ -471,9 +474,10 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     }
 
     private func resetStemLevels() {
-        for kind in StemKind.allCases {
-            stemLevels[kind] = 0
-            stemStereoLevels[kind] = .zero
+        let ids = Set(stemLevels.keys).union(meterFiles.keys)
+        for id in ids {
+            stemLevels[id] = 0
+            stemStereoLevels[id] = .zero
         }
     }
 

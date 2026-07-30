@@ -99,7 +99,7 @@ struct MusicLibraryPickerView: View {
             }
             Spacer()
             Button("Open") { model.openMusicLibraryItem(item) }
-                .buttonStyle(.borderedProminent)
+                .swProminentButtonStyle()
                 .disabled(!openable)
                 .accessibilityHint(
                     openable ? "Loads this track for analysis" : "Track can't be opened")

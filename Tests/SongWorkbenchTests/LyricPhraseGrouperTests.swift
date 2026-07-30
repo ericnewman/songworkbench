@@ -95,6 +95,21 @@ final class LyricPhraseGrouperTests: XCTestCase {
         XCTAssertEqual(result, input)
     }
 
+    func testNoOpWhenConstantHarmonyProvidesNoPeriodEvidence() {
+        let words = eightBarChorusWords(
+            startBar: 0,
+            text: ["one", "two", "three", "four", "five", "six", "seven", "eight"])
+        let input = [line(words)]
+
+        let result = LyricPhraseGrouper.regroup(
+            input,
+            beatTimes: uniformBeatTimes(bpm: 120, bars: 8),
+            tempo: 120,
+            chords: [chordEvent("C", at: 0)])
+
+        XCTAssertEqual(result, input)
+    }
+
     // MARK: - Core re-segmentation
 
     func testResegmentsACleanFourBarPeriodIntoTwoLines() {
