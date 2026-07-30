@@ -25,7 +25,7 @@ final class BassNoteRowFormatterTests: XCTestCase {
             note(1.8, midiNote: 50),
         ]
         let label = BassNoteRowFormatter.label(for: notes, inWindow: 0...2)
-        XCTAssertEqual(label, "E (D string) · A (G string) · D (G string)")
+        XCTAssertEqual(label, "E · A · D")
     }
 
     func testNotesOutsideWindowAreExcluded() {
@@ -35,14 +35,14 @@ final class BassNoteRowFormatterTests: XCTestCase {
             note(5.0, midiNote: 50),  // after the window
         ]
         let label = BassNoteRowFormatter.label(for: notes, inWindow: 1...3)
-        XCTAssertEqual(label, "A (G string)")
+        XCTAssertEqual(label, "A")
     }
 
     func testWindowBoundsAreInclusive() {
         // E (MIDI 40 % 12 == 4) and F (MIDI 41 % 12 == 5), both exactly on the window edges.
         let notes = [note(1.0, midiNote: 40), note(3.0, midiNote: 41)]
         let label = BassNoteRowFormatter.label(for: notes, inWindow: 1...3)
-        XCTAssertEqual(label, "E (D string) · F (D string)")
+        XCTAssertEqual(label, "E · F")
     }
 
     func testTimedLabelsCarryOnsetTimesInOrder() {
@@ -55,7 +55,7 @@ final class BassNoteRowFormatterTests: XCTestCase {
         ]
         let timed = BassNoteRowFormatter.timedLabels(for: notes, inWindow: 0...2)
         XCTAssertEqual(
-            timed.map(\.name), ["E (D string)", "A (G string)", "D (G string)"])
+            timed.map(\.name), ["E", "A", "D"])
         XCTAssertEqual(timed.map(\.time), [0.2, 1.0, 1.8])
     }
 
@@ -68,10 +68,10 @@ final class BassNoteRowFormatterTests: XCTestCase {
             BassNoteObservation(timestamp: 2.0, midiNote: 50, confidence: 0.55),
         ]
         let timed = BassNoteRowFormatter.timedLabels(for: notes, inWindow: 0...3)
-        XCTAssertEqual(timed.map(\.name), ["A (G string)", "D (G string)"])
+        XCTAssertEqual(timed.map(\.name), ["A", "D"])
         XCTAssertEqual(
             BassNoteRowFormatter.label(for: notes, inWindow: 0...3),
-            "A (G string) · D (G string)")
+            "A · D")
     }
 
     func testTransposeShiftsDisplayedNamesLikeTheChords() {
@@ -81,14 +81,14 @@ final class BassNoteRowFormatterTests: XCTestCase {
         let notes = [note(1.0, midiNote: 45)]  // A
         XCTAssertEqual(
             BassNoteRowFormatter.label(for: notes, inWindow: 0...2, transposedBy: 1),
-            "A# (G string)")
+            "A#")
         XCTAssertEqual(
             BassNoteRowFormatter.label(for: notes, inWindow: 0...2, transposedBy: -2),
-            "G (G string)")
+            "G")
         XCTAssertEqual(
             BassNoteRowFormatter.timedLabels(for: notes, inWindow: 0...2, transposedBy: 1)
                 .map(\.name),
-            ["A# (G string)"])
+            ["A#"])
     }
 
     func testTimedLabelsEmptyOutsideWindow() {
@@ -98,10 +98,4 @@ final class BassNoteRowFormatterTests: XCTestCase {
             ).isEmpty)
     }
 
-    func testStringRecommendationUsesLowestPlayableFretOnStandardBass() {
-        XCTAssertEqual(BassStringRecommendation.stringName(forMidiNote: 28), "E")
-        XCTAssertEqual(BassStringRecommendation.stringName(forMidiNote: 33), "A")
-        XCTAssertEqual(BassStringRecommendation.stringName(forMidiNote: 40), "D")
-        XCTAssertEqual(BassStringRecommendation.stringName(forMidiNote: 45), "G")
-    }
 }

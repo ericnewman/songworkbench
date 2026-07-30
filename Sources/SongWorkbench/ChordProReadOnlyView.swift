@@ -177,37 +177,6 @@ struct TimedBassNoteLabel: Equatable, Sendable {
     let name: String
 }
 
-/// Recommends an ergonomic string for a detected pitch on a standard four-string bass
-/// (E1-A1-D2-G2). Pitch alone cannot identify the string used in the recording, so the
-/// lowest-fret playable option is presented as guidance rather than source transcription.
-enum BassStringRecommendation {
-    private static let tuning = [
-        (name: "E", openMidiNote: 28),
-        (name: "A", openMidiNote: 33),
-        (name: "D", openMidiNote: 38),
-        (name: "G", openMidiNote: 43),
-    ]
-    private static let maximumFret = 24
-
-    static func stringName(forMidiNote midiNote: Int) -> String {
-        var normalized = midiNote
-        while normalized < tuning[0].openMidiNote { normalized += 12 }
-        while normalized > tuning[tuning.count - 1].openMidiNote + maximumFret {
-            normalized -= 12
-        }
-
-        return
-            tuning
-            .compactMap { string -> (name: String, fret: Int)? in
-                let fret = normalized - string.openMidiNote
-                guard (0...maximumFret).contains(fret) else { return nil }
-                return (string.name, fret)
-            }
-            .min { lhs, rhs in lhs.fret < rhs.fret }?
-            .name ?? tuning[0].name
-    }
-}
-
 /// Formats detected bass notes for the Review tab's optional bass-note row (backlog: Bass Note
 /// display). A standalone (non-view) type so the windowing/formatting logic is unit-testable
 /// without SwiftUI, mirroring `ChordRowStringBuilder`.
@@ -233,18 +202,19 @@ enum BassNoteRowFormatter {
             }
             .sorted { $0.timestamp < $1.timestamp }
             .map {
-                let midiNote = $0.midiNote + semitones
-                let noteName = BassNoteNaming.name(forMidiNote: midiNote)
-                let stringName = BassStringRecommendation.stringName(forMidiNote: midiNote)
-                return TimedBassNoteLabel(
+                // Pitch only. A recommended string used to be appended here ("A (G string)"),
+                // but pitch alone cannot identify the string actually played, so it was
+                // guidance dressed as transcription — and it tripled the width of every label
+                // on a row that has to share its x-axis with the chords above it.
+                TimedBassNoteLabel(
                     time: $0.timestamp,
-                    name: "\(noteName) (\(stringName) string)"
+                    name: BassNoteNaming.name(forMidiNote: $0.midiNote + semitones)
                 )
             }
     }
 
-    /// Bass notes within `window`, pitch/string-named and joined in onset order — for example,
-    /// "E (D string) · A (G string)".
+    /// Bass notes within `window`, pitch-named and joined in onset order — for example,
+    /// "E · A · D".
     /// `nil` when nothing falls in the window, so callers can skip rendering the row entirely.
     /// Monospace-mode fallback; rhythmic mode uses `timedLabels` for positioned rendering.
     static func label(
