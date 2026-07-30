@@ -444,7 +444,8 @@ By chart tier it splits hard: **reviewed 35.2 -> 41.8 root F1 (+6.6)**, transcri
 (-4.3), automated 43.3 -> 42.5 (-0.8). The accompaniment arm fell on both (51.8 -> 50.9,
 47.4 -> 46.6).
 
-**DECISION: reverted, pending a human call.** Two reasons, neither of them "it doesn't work":
+**DECISION: SHIPPED 2026-07-30 on Eric's explicit call** (`apply`). It was initially reverted
+pending review, for two reasons — recorded here because they remain the honest caveats:
 
 1. The plan's own bar was "maj7 -> ~0 % AND m7 -> ~2.8 % AND F1 does not fall." The distribution
    half passed decisively; the F1 half is a wash, not a gain.
@@ -456,11 +457,27 @@ By chart tier it splits hard: **reviewed 35.2 -> 41.8 root F1 (+6.6)**, transcri
    deliberate upper-structure feature and the maj7 inflation — you cannot keep one without the
    other.** Deleting a tested feature on N=3 with no F1 gain is not a call to make silently.
 
-- [ ] **DECISION NEEDED:** ship `tasks/seventh-reroot-fix.patch` (and rewrite the two tests to
-      encode the new intent), or keep the current behaviour. Weighting by chart trustworthiness
-      favours shipping — the only Reviewed-tier chart gained +6.6 root F1, while the tier that
-      lost is itself "transcribed from the supplied recording." Weighting by test intent favours
-      holding.
+- [x] **DECISION MADE — SHIPPED.** `tasks/seventh-reroot-fix.patch` applied to
+      `ChordClassification.swift` (kept on disk as the record of what changed). The two affected
+      tests in `ChordTimelineDecoderTests.swift` were rewritten to encode the new intent rather
+      than deleted:
+      - `testBassRerootRecoversUpperStructureSeventh` -> **`testBassRerootRejectsTwoToneSeventhCoincidence`**
+        (C# over an F# bass now stays `C#`; the comment carries the 15-88x inflation measurement
+        that justifies rejecting a two-tone promotion).
+      - **`testBassRerootRecoversMinorSeventhMaskedAsRelativeMajor`** added — Eb-major frames over
+        a C bass now decode to `Cm7`, the case the first-match scan could never reach.
+      - `testBassRerootRecoversChordMaskedByChromaConfusion` now expects `Abmaj7` rather than a
+        bare `Ab`. The ROOT recovery this test exists to protect still holds; C-Eb-G over an Ab
+        bass genuinely spells Ab-C-Eb-G, and the seventh explains the G that the triad leaves
+        unaccounted for.
+      Full suite green (`TESTEXIT=0`), `swift format lint --strict` clean.
+- [ ] **No cache invalidation was needed** — `BassInformedChordRefiner` runs at DECODE time,
+      downstream of the `native-vdsp-beat-chroma` v7 frame cache, whose contents are unchanged.
+      But existing per-song documents still hold chord timelines decoded under the old rule:
+      **re-analyze a song to see the new labels.**
+- [ ] Re-measure once more Reviewed-tier charts exist. Shipping on a flat-F1 result at N=3 was a
+      judgement call about which evidence to trust (mechanism correctness + the one Reviewed
+      chart's +6.6 root F1), not a demonstrated accuracy win.
 - [ ] Either way, get more Reviewed-tier charts first. N=1 at the strong tier still cannot carry
       this, exactly as the Phase 0 review said.
 - [ ] Over-segmentation (lever 2) untouched — over-seg ratio is 1.1x-3.7x and dominates F1 on

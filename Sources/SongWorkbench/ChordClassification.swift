@@ -260,10 +260,6 @@ struct BassInformedChordRefiner: Sendable {
         // reference song's verse-opening tonic was erased exactly this way by a weak-confidence
         // tonic bass onset being filtered while the previous IV note sustained into the verse).
         let sortedBass = bassNotes.sorted { $0.timestamp < $1.timestamp }
-        // Candidate qualities at the bass root, plain triads first. Sevenths matter for the
-        // "upper-structure" confusion: a C# triad over an F# bass shares only ONE tone with the
-        // F# triad (C#) but TWO with F#maj7 (C# + E#/F) — the sound actually being played.
-        let candidates: [ChordQuality] = [.major, .minor, .major7, .dominant7]
         return observations.map { observation in
             let root = observation.chord.root.rawValue
             guard
@@ -275,17 +271,63 @@ struct BassInformedChordRefiner: Sendable {
             let detectedTones = triad(root: root, quality: observation.chord.quality)
             // The bass is already a chord tone: an inversion, keep the chord.
             if detectedTones.contains(bass) { return observation }
-            for quality in candidates
-            where tones(root: bass, quality: quality).intersection(detectedTones).count >= 2 {
-                guard let pitchClass = PitchClass(rawValue: bass) else { return observation }
-                return ChordObservation(
-                    timestamp: observation.timestamp,
-                    chord: Chord(root: pitchClass, quality: quality),
-                    confidence: observation.confidence
-                )
-            }
-            return observation
+            guard
+                let quality = bestQuality(bass: bass, detectedTones: detectedTones),
+                let pitchClass = PitchClass(rawValue: bass)
+            else { return observation }
+            return ChordObservation(
+                timestamp: observation.timestamp,
+                chord: Chord(root: pitchClass, quality: quality),
+                confidence: observation.confidence
+            )
         }
+    }
+
+    /// The bass-rooted quality that best explains `detectedTones`, or `nil` when none explains
+    /// them well enough to overrule the chroma classifier.
+    ///
+    /// Sevenths matter here because of the "upper-structure" confusion: a C# triad heard over an
+    /// F# bass shares only ONE tone with the F# triad (C#) but TWO with F#maj7 (C# + E#/F) — the
+    /// sound actually being played. But the previous rule — first match over
+    /// `[.major, .minor, .major7, .dominant7]` at a flat "shares >= 2 tones" bar — got two things
+    /// wrong, both measured on four songs' cached frames:
+    ///
+    /// 1. **First match, not argmax.** `.minor` returned as soon as it shared two tones, so a
+    ///    seventh sharing all three was never even considered, and `.minor7` was absent from the
+    ///    list entirely so it could never be produced at all. A Cm7 (C-Eb-G-Bb) is note-identical
+    ///    to Eb6, so the chroma classifier hears Eb major; under a C bass the old scan emitted a
+    ///    bare Cm and the seventh was gone. `m7` was emitted 0.0 % of the time against 2.8 % in
+    ///    the reference charts.
+    /// 2. **An un-normalised threshold.** A flat two-tone bar is easier for a four-note seventh
+    ///    to clear than for a three-note triad, purely because it has more tones to clear it
+    ///    with. That asymmetry manufactured sevenths out of two-tone coincidences: B major under
+    ///    a G bass shares only B and F# with Gmaj7, and the old rule promoted it regardless.
+    ///    This one stage turned 5-17 `maj7` frames per song into 248-441 — a 30-90x inflation,
+    ///    and the whole source of the 6.8 % `maj7` emission against 0 % in the charts.
+    ///
+    /// So the bar is normalised to the CANDIDATE's own size — a triad must match 2 of its 3
+    /// tones, a seventh 3 of its 4, two-thirds either way — the best match wins rather than the
+    /// first, and ties go to the plain triad, so a seventh has to earn the extra tone.
+    private func bestQuality(bass: Int, detectedTones: Set<Int>) -> ChordQuality? {
+        var best: (quality: ChordQuality, shared: Int)?
+        for quality in ChordQuality.allCases {
+            let candidateTones = tones(root: bass, quality: quality)
+            let shared = candidateTones.intersection(detectedTones).count
+            guard shared >= (candidateTones.count >= 4 ? 3 : 2) else { continue }
+            guard let current = best else {
+                best = (quality, shared)
+                continue
+            }
+            let winsOutright = shared > current.shared
+            let winsTieAsTriad =
+                shared == current.shared && isTriad(quality) && !isTriad(current.quality)
+            if winsOutright || winsTieAsTriad { best = (quality, shared) }
+        }
+        return best?.quality
+    }
+
+    private func isTriad(_ quality: ChordQuality) -> Bool {
+        quality == .major || quality == .minor
     }
 
     /// All chord tones (incl. sevenths) for a root+quality, as pitch classes.

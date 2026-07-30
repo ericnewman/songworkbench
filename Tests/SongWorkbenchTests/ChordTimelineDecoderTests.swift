@@ -133,12 +133,27 @@ final class ChordTimelineDecoderTests: XCTestCase {
         ]
         let events = ChordTimelineDecoder().events(
             from: analysis(observations, beats: beats), key: dbMajor, bassNotes: bass)
-        XCTAssertEqual(events.map(\.chord), ["C#", "Ab", "C#"])
+        // Ab*maj7*, not a bare Ab: the frames say C-Eb-G and the bass says Ab, and Ab-C-Eb-G is
+        // literally what those four notes spell. The re-rooter cannot know the source was a
+        // plain Ab triad whose root was too quiet to classify — it can only pick the chord that
+        // best explains the evidence, and the seventh explains all four notes where the triad
+        // leaves G unaccounted for. What matters for chord accuracy is that the ROOT is
+        // recovered (Cm -> Ab), which is the point this test was written to protect.
+        XCTAssertEqual(events.map(\.chord), ["C#", "Abmaj7", "C#"])
     }
 
-    func testBassRerootRecoversUpperStructureSeventh() {
-        // C# triad frames sounding over an F# bass: shares only C# with the F# triad but
-        // C#+E# with F#maj7 — the actual chord. Surrounding C# sections keep their own bass.
+    func testBassRerootRejectsTwoToneSeventhCoincidence() {
+        // C# triad frames sounding over an F# bass. F#maj7 shares TWO tones with the detected
+        // C# triad (C# + E#/F) while the F# triad shares only one, so the old "shares >= 2
+        // tones" rule promoted this to F#maj7.
+        //
+        // That rule was measured and it is wrong: a flat two-tone bar is easier for a 4-note
+        // seventh to clear than for a 3-note triad, purely because a seventh has more tones to
+        // clear it with. Across four cached songs that asymmetry turned 5-17 genuinely-classified
+        // maj7 frames into 248-441 (a 15-88x inflation) and produced 6.8 % maj7 emission against
+        // 0 % in the reference charts. The bar is now normalised to the candidate's own size --
+        // a triad must match 2 of its 3 tones, a seventh 3 of its 4 -- so a two-tone coincidence
+        // no longer overrules the chroma classifier and the frames keep their own label.
         var observations: [ChordObservation] = []
         for beatIndex in 0..<4 {
             let t = TimeInterval(beatIndex) * 0.5
@@ -157,8 +172,30 @@ final class ChordTimelineDecoderTests: XCTestCase {
         ]
         let events = ChordTimelineDecoder().events(
             from: analysis(observations, beats: beats), key: dbMajor, bassNotes: bass)
-        XCTAssertEqual(events.map(\.chord), ["C#", "F#maj7"])
-        XCTAssertEqual(events.last?.time ?? 0, 2.0, accuracy: 0.51)
+        XCTAssertEqual(events.map(\.chord), ["C#"])
+    }
+
+    func testBassRerootRecoversMinorSeventhMaskedAsRelativeMajor() {
+        // The counterpart the old rule could never satisfy. A Cm7 (C-Eb-G-Bb) is note-identical
+        // to Eb6, so the chroma classifier hears Eb major; the bass says C. Cm7 shares all THREE
+        // detected tones (Eb, G, Bb) where the C minor triad shares only two, so argmax picks
+        // the seventh.
+        //
+        // The old scan could not reach this at all: it was first-match over
+        // [.major, .minor, .major7, .dominant7], so `.minor` returned at two tones before any
+        // seventh was considered -- and `.minor7` was absent from that list entirely. Measured
+        // consequence: m7 was emitted 0.0 % of the time against 2.8 % in the reference charts.
+        var observations: [ChordObservation] = []
+        for beatIndex in 0..<8 {
+            let t = TimeInterval(beatIndex) * 0.5
+            observations.append(obs(t + 0.1, .dSharp, .major, 0.75))
+            observations.append(obs(t + 0.3, .dSharp, .major, 0.75))
+        }
+        let beats = (0...8).map { TimeInterval($0) * 0.5 }
+        let bass = [BassNoteObservation(timestamp: 0.05, midiNote: 36, confidence: 0.8)]  // C
+        let events = ChordTimelineDecoder().events(
+            from: analysis(observations, beats: beats), key: nil, bassNotes: bass)
+        XCTAssertEqual(events.map(\.chord), ["Cm7"])
     }
 
     func testLowConfidenceBassDoesNotReroot() {
