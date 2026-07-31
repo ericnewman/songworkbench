@@ -1418,6 +1418,35 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(out[0].words[1].start, 62.12, accuracy: 1e-9)
     }
 
+    func testDocHolidayLeadingWordStrandedOnPreviousLineTailIsRepaired() {
+        // The real Doc Holiday defect, and the reason the minimum gap moved 1.0 -> 0.8.
+        // ASR timed "He" at 27.570-27.760, which lands on the DECAYING TAIL of the previous
+        // line ("...swung up"), not on its own phrase. Measuring the vocals stem shows silence
+        // 27.78-28.65 and then one continuous 1.0 s sung run 28.65-29.65 that acoustically holds
+        // "He walks in". The 0.920 s gap sat just under the old 1.0 s threshold, so the repairer
+        // never fired and the chart drew a phantom pause between "He" and "walks" instead of the
+        // real one before "Whiskey".
+        let segment = TimedLyricSegment(
+            start: 27.570, end: 30.480, text: "He walks in Whiskey",
+            words: [
+                TimedLyricWord(text: "He", start: 27.570, end: 27.760, characterRange: 0..<2),
+                TimedLyricWord(text: "walks", start: 28.680, end: 29.383, characterRange: 3..<8),
+                TimedLyricWord(text: "in", start: 29.320, end: 29.650, characterRange: 9..<11),
+                TimedLyricWord(
+                    text: "Whiskey", start: 29.750, end: 30.480, characterRange: 12..<19),
+            ])
+        let voiced: [ClosedRange<TimeInterval>] = [27.00...27.78, 28.65...29.65, 29.75...30.45]
+        let out = StrandedLeadingWordRepairer.repaired([segment], voicedIntervals: voiced)
+        let he = out[0].words[0]
+        // Pulled forward to abut the body (28.680 - 0.08), duration preserved.
+        XCTAssertEqual(he.end, 28.600, accuracy: 0.01)
+        XCTAssertEqual(he.end - he.start, 0.190, accuracy: 1e-6)
+        // The rest of the line is untouched, so the real pause before "Whiskey" survives.
+        XCTAssertEqual(out[0].words[1].start, 28.680, accuracy: 1e-9)
+        XCTAssertEqual(out[0].words[3].start, 29.750, accuracy: 1e-9)
+        XCTAssertEqual(out[0].start, he.start, accuracy: 1e-9)
+    }
+
     func testHeldNoteVoicedGapIsNotRepaired() {
         // Same shape, but the gap is SUNG (a held "Ocea—ns"): fully voiced → untouched.
         let voiced: [ClosedRange<TimeInterval>] = [59.45...63.90]

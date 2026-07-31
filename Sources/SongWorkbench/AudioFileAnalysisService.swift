@@ -789,7 +789,17 @@ enum StrandedLeadingWordRepairer {
     static func repaired(
         _ segments: [TimedLyricSegment],
         voicedIntervals: [ClosedRange<TimeInterval>],
-        minimumGap: TimeInterval = 1.0,
+        // 0.8, lowered from 1.0 on measured evidence. Line-leading gaps across the whole local
+        // library (n=500) are sharply bimodal: 84 % fall under 0.2 s (normal sung spacing,
+        // including ASR overlaps), there is a clear valley at 0.2-0.4 s (9 of 500), and from
+        // 0.4 s up the histogram goes FLAT (22/17/16/13/3 per 0.2 s band) — a second population,
+        // not the tail of the first. 1.0 s sat arbitrarily out in that tail and caught only 16
+        // cases; it missed e.g. Doc Holiday's "He" stranded 0.92 s before "walks" on the previous
+        // line's decaying tail, which is exactly the shape this repairer exists for. 0.8 doubles
+        // the reach while staying far clear of the valley. The real safety guard is
+        // `maximumVoicedFraction` below — a gap the singer is actually sounding through is left
+        // alone regardless of length.
+        minimumGap: TimeInterval = 0.8,
         maximumLeadingWords: Int = 2,
         maximumVoicedFraction: Double = 0.3,
         abutGap: TimeInterval = 0.08

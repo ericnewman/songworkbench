@@ -449,7 +449,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // `lyricBlendRows` forever, since re-clicking "Analyze Song" only
                     // re-groups when the stage record's version actually changes.
                     version: result.engine.engineVersion
-                        + "|grouping-44-degenerate-leadin-merge"
+                        + "|grouping-45-stranded-leadin-0.8s"
                         + "|blend-row-overlap-merge"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
