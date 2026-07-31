@@ -193,6 +193,48 @@ final class TranscriptionTests: XCTestCase {
         }
     }
 
+    func testConjunctionMergeDoesNotCrossOverlappingSegmentBoundary() {
+        // Doc Holiday, at the source. Whisper reports the opening couplet as two segments whose
+        // spans OVERLAP: "He walks in" 27.563-30.483 then "Whiskey ..." 30.000-36.620. The first
+        // line ends on "in" (a continuation word), so the conjunction merge wanted to rejoin them
+        // — and its `gap <= 1.0` guard was satisfied by a NEGATIVE gap (-0.483), i.e. vacuously,
+        // not because the next line followed closely. The engine's own boundary must win.
+        let tokens = [
+            token("He", 27.563, 28.213),
+            token("walks", 28.213, 29.863),
+            token("in", 29.863, 30.483),
+            token("Whiskey", 30.000, 32.000),
+            token("in", 32.240, 33.238),
+            token("trouble,", 33.238, 33.900),
+            token("every", 34.800, 35.487),
+            token("father's", 35.500, 36.100),
+            token("sin.", 36.100, 36.620),
+        ]
+        let grouped = TimedLyricSegmentGrouper.group(
+            tokens: tokens, lineStartOnsets: [27.563, 30.000])
+        XCTAssertEqual(grouped.count, 2, grouped.map(\.text).joined(separator: " | "))
+        XCTAssertEqual(grouped[0].text, "He walks in")
+        XCTAssertTrue(
+            grouped[1].text.hasPrefix("Whiskey in trouble"),
+            grouped.map(\.text).joined(separator: " | "))
+    }
+
+    func testConjunctionMergeStillJoinsAcrossASmallPositiveGap() {
+        // Control for the rule above: the merge is narrowed only for OVERLAPPING segments. The
+        // same shape with a real, small, positive gap is still one sung line split mid-phrase,
+        // and must still rejoin — otherwise the guard would have gutted the merge entirely.
+        let tokens = [
+            token("He", 27.563, 28.213),
+            token("walks", 28.213, 29.863),
+            token("in", 29.863, 30.483),
+            token("Whiskey", 30.700, 31.400),
+            token("trouble", 31.500, 32.100),
+        ]
+        let grouped = TimedLyricSegmentGrouper.group(
+            tokens: tokens, lineStartOnsets: [27.563, 30.700])
+        XCTAssertEqual(grouped.count, 1, grouped.map(\.text).joined(separator: " | "))
+    }
+
     func testRegroupLeavesLyricsWithoutWordTimingsUntouched() {
         // Older analyses store segments without per-word data; re-grouping must not
         // collapse them into atomic tokens or merge lines.

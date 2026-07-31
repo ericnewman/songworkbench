@@ -1403,6 +1403,10 @@ final class AudioAnalysisTests: XCTestCase {
         let previous = TimedLyricSegment(
             start: 25.38, end: 27.56, text: "up",
             words: [TimedLyricWord(text: "up", start: 27.32, end: 27.56, characterRange: 0..<2)])
+        // NOTE: this 4-word line is the grouper's PRE-2026-07-31 output. Grouping now
+        // keeps the engine's own boundary and emits "He walks in" / "Whiskey ..."
+        // separately (see LyricGroupingDiagnosticTests). The shape is retained here
+        // because it is still a valid stress case for the re-timing pass under test.
         let line = TimedLyricSegment(
             start: 27.570, end: 30.480, text: "He walks in Whiskey",
             words: [
@@ -1478,6 +1482,10 @@ final class AudioAnalysisTests: XCTestCase {
         // "He walks in". The 0.920 s gap sat just under the old 1.0 s threshold, so the repairer
         // never fired and the chart drew a phantom pause between "He" and "walks" instead of the
         // real one before "Whiskey".
+        // NOTE: this 4-word line is the grouper's PRE-2026-07-31 output. Grouping now
+        // keeps the engine's own boundary and emits "He walks in" / "Whiskey ..."
+        // separately (see LyricGroupingDiagnosticTests). The shape is retained here
+        // because it is still a valid stress case for the re-timing pass under test.
         let segment = TimedLyricSegment(
             start: 27.570, end: 30.480, text: "He walks in Whiskey",
             words: [

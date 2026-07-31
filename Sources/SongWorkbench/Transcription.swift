@@ -594,7 +594,18 @@ enum TimedLyricSegmentGrouper {
                 let gap = first.startTime - previousLast.endTime
                 // (a) the line ENDS on a word that can't end a phrase ("…up and"), next follows
                 //     closely.
-                let endsOpen = endsWithContinuationWord(previousLast.text) && gap <= 1.0
+                // `gap >= 0` is load-bearing, not a formality. When the transcriber emits two
+                // segments whose spans OVERLAP (Whisper does this at a real line break: "He walks
+                // in" 27.563-30.483 followed by "Whiskey in trouble, ..." 30.000-36.620), the gap
+                // is NEGATIVE, so `gap <= 1.0` is satisfied vacuously rather than because the next
+                // line genuinely follows closely — and the merge then overrides a boundary the
+                // grouper took from the engine's own segmentation. An overlap is evidence of a
+                // segment boundary with timestamp slop, never of a mid-phrase continuation.
+                // Measured over every cached transcription (5 songs): this changes exactly one
+                // line and nothing else. The other two merge reasons below are deliberate and
+                // stay unguarded.
+                let endsOpen =
+                    endsWithContinuationWord(previousLast.text) && gap >= 0 && gap <= 1.0
                 // (b) a SHORT fragment whose NEXT line OPENS with a connective ("She talks" |
                 //     "about living in a mansion someday") — one phrase split across a gap. The
                 //     opening preposition/conjunction can't begin an independent line.
