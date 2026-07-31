@@ -1393,6 +1393,58 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(out[0].words.map(\.start), [1.04, 1.18])
     }
 
+    func testDistributionIgnoresPreviousPhrasesLeakedTail() {
+        // Doc Holiday, at the source. The line's window is padded 0.5 s and clipped at the
+        // previous line's ASR end (27.56), but that line's audio decays to 27.78 — so the
+        // previous phrase's voiced region 27.00-27.78 survives clipping as a 0.22 s sliver
+        // (28 % of itself). Words pack from the first region onward, so "He" was pinned to that
+        // sliver, 1.1 s before the 28.65-29.65 run that acoustically sings "He walks in".
+        // The majority-overlap rule drops the sliver, so every word lands on its own phrase.
+        let previous = TimedLyricSegment(
+            start: 25.38, end: 27.56, text: "up",
+            words: [TimedLyricWord(text: "up", start: 27.32, end: 27.56, characterRange: 0..<2)])
+        let line = TimedLyricSegment(
+            start: 27.570, end: 30.480, text: "He walks in Whiskey",
+            words: [
+                TimedLyricWord(text: "He", start: 27.570, end: 27.760, characterRange: 0..<2),
+                TimedLyricWord(text: "walks", start: 28.680, end: 29.383, characterRange: 3..<8),
+                TimedLyricWord(text: "in", start: 29.320, end: 29.650, characterRange: 9..<11),
+                TimedLyricWord(
+                    text: "Whiskey", start: 29.750, end: 30.480, characterRange: 12..<19),
+            ])
+        let voiced: [ClosedRange<TimeInterval>] = [27.00...27.78, 28.65...29.65, 29.75...30.45]
+        let out = VocalAlignmentCorrector.distributeAcrossSignal(
+            [previous, line], voicedIntervals: voiced)
+        let words = out[1].words
+        // "He" now starts on its own phrase, not on the leaked tail.
+        XCTAssertGreaterThanOrEqual(words[0].start, 28.65)
+        // Every word sits inside a voiced region.
+        for word in words {
+            XCTAssertTrue(
+                voiced.contains { $0.contains(word.start) },
+                "\(word.text) at \(word.start) is not on signal")
+        }
+        // Order and count preserved.
+        XCTAssertEqual(words.map(\.text), ["He", "walks", "in", "Whiskey"])
+        XCTAssertEqual(words, words.sorted { $0.start < $1.start })
+    }
+
+    func testDistributionKeepsRegionsMostlyInsideTheWindow() {
+        // Guard the other direction: a region the line genuinely owns must NOT be dropped just
+        // because the window clips a little off its edge.
+        let line = TimedLyricSegment(
+            start: 10.0, end: 11.0, text: "one two",
+            words: [
+                TimedLyricWord(text: "one", start: 10.0, end: 10.4, characterRange: 0..<3),
+                TimedLyricWord(text: "two", start: 10.6, end: 11.0, characterRange: 4..<7),
+            ])
+        // 9.6...11.4 is 1.8 s; the window (9.5...11.5) keeps all of it.
+        let out = VocalAlignmentCorrector.distributeAcrossSignal(
+            [line], voicedIntervals: [9.6...11.4])
+        XCTAssertGreaterThanOrEqual(out[0].words[0].start, 9.6)
+        XCTAssertLessThanOrEqual(out[0].words[1].end, 11.4)
+    }
+
     // MARK: - StrandedLeadingWordRepairer
 
     private func oceansSegment() -> TimedLyricSegment {

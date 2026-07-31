@@ -1636,7 +1636,21 @@ enum VocalAlignmentCorrector {
             let regions: [ClosedRange<TimeInterval>] = allRegions.compactMap { region in
                 let start = max(region.lowerBound, lo)
                 let end = min(region.upperBound, hi)
-                return end > start ? start...end : nil
+                guard end > start else { return nil }
+                // Majority-overlap rule: a voiced region only counts as THIS line's signal when
+                // most of it falls inside the line's window. The window is clipped at the
+                // neighbouring lines' ASR times, but sung audio decays past where ASR ends a
+                // line, so the previous phrase's tail leaks in as a short sliver — and because
+                // words are packed from the first region onward, the line's first word gets
+                // pinned to that sliver instead of to its own phrase. Measured on Doc Holiday:
+                // the previous line's tail 27.00-27.78 survives clipping as just 27.56-27.78
+                // (28 % of itself), and "He" was pinned there, 1.1 s before the run that
+                // actually sings it. Requiring the majority to be inside is threshold-free in
+                // the gap sense — it asks who the region BELONGS to, not how big a hole is.
+                let originalLength = region.upperBound - region.lowerBound
+                guard originalLength > 0 else { return nil }
+                guard (end - start) / originalLength >= 0.5 else { return nil }
+                return start...end
             }
             guard !regions.isEmpty else { continue }  // no nearby signal → keep the ASR timing
             result[index] = distribute(segment, across: regions)
