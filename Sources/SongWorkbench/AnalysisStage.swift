@@ -449,7 +449,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // `lyricBlendRows` forever, since re-clicking "Analyze Song" only
                     // re-groups when the stage record's version actually changes.
                     version: result.engine.engineVersion
-                        + "|grouping-48-low-confidence-placeholder"
+                        + "|grouping-49-confidence-on-words"
                         + "|blend-row-overlap-merge"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
@@ -575,12 +575,18 @@ struct TranscriptionStage: AnalysisStageRunning {
             // inter-word gaps and pull late ASR onsets back to the voiced re-entry edge, so
             // held notes stop rendering as phantom mid-line pauses. Runs LAST, on the final
             // word timings. No-op when strict VAD is unavailable.
-            let spanNormalizedLyrics = VocalWordSpanNormalizer.normalized(
+            let normalizedLyrics = VocalWordSpanNormalizer.normalized(
                 alignedLyrics, voicedIntervals: strictVoiced)
-            // Honesty pass, LAST: a word the transcriber itself had no confidence in is shown as
-            // `___` instead of a confident-looking wrong word. Runs after the correction passes so
-            // a shaky word gets its chance to be repaired from the song's own repeats first.
-            let normalizedLyrics = LyricConfidencePlaceholder.applied(to: spanNormalizedLyrics)
+            // NOTE: `LyricConfidencePlaceholder` is deliberately NOT applied here. The document
+            // stores the transcriber's actual words plus each word's confidence; blanking is a
+            // PRESENTATION concern applied where lyrics are shown. Baking it in here corrupted
+            // every artifact derived from `lyrics` — `chordProSource` and the exported .cho
+            // (ChordProDraftBuilder reads `segment.text`), the persisted `lyricBlendRows`, and
+            // `ChorusChordConsensus`, which groups lines by identical normalized text and would
+            // let two different lines that both blanked to `___` vote on each other's CHORDS.
+            // Worst of all, "Fill from current transcription" promotes this text into
+            // `referenceLyrics`, the authoritative alignment target for every later analysis —
+            // and reference-aligned words carry no confidence, so it could never be undone.
             // Sung spans with no words (audit RC-4): persist so structure decisions and the
             // chart can flag them instead of mislabeling them Instrumental.
             let untranscribed = UntranscribedVocalRegionDetector.regions(

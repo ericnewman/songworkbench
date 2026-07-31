@@ -12,9 +12,17 @@ import Foundation
 /// so their agreement is evidence that the audio is ambiguous, not that the reading is right.
 /// A second engine is therefore strictly worse here: more machinery, less recall.
 ///
-/// Runs LAST in the lyric stage, so `RepeatedLyricCorrector` and the phrase repair get their
-/// chance to fix a shaky word from the song's own repeats first; only what is still uncertain
-/// after correction becomes a placeholder.
+/// PRESENTATION ONLY — never persist the output. The document stores the transcriber's real
+/// words plus `TimedLyricWord.confidence`; this derives what to SHOW from them, so the threshold
+/// stays adjustable and nothing is destroyed. Applying it inside the analysis stage (as an earlier
+/// revision did) corrupts `chordProSource` and the exported .cho, the persisted `lyricBlendRows`,
+/// and `ChorusChordConsensus` — which groups lines by identical normalized text, so two different
+/// lines both blanked to `___` would vote on each other's CHORDS. It also leaks into
+/// `referenceLyrics` via "Fill from current transcription", which is unrecoverable because
+/// reference-aligned words carry no confidence at all.
+///
+/// Callers must pass RAW segments and must not feed the result to `ChordProDraftInput`, to any
+/// edit/merge/split path, or to `currentLyricsAsText`.
 enum LyricConfidencePlaceholder {
     /// Word confidence below this is shown as `placeholderText`. 0.5 sits in a wide, flat valley
     /// on the field data: every threshold in 0.3...0.5 flags the same 7 cross-engine-corroborated
