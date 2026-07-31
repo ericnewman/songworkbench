@@ -3,7 +3,12 @@ import XCTest
 @testable import SongWorkbench
 
 final class ChordProPreviewLineLayoutTests: XCTestCase {
-    func testRhythmicInstrumentalWidthUsesReadableTimeScale() {
+    func testRhythmicInstrumentalWidthMatchesLyricRowTimeScale() {
+        // 8 s at 100 px/s = 800 px — the SAME pixels-per-second a lyric row uses, so a gap of a
+        // given duration is the same width whether the row has words or only chords. (This was
+        // 1080 while chord-only rows carried a 1.35x readability scale, which meant one chart
+        // had two horizontal scales.) The 12-column chord extent is 120 px, below the time
+        // width, so it does not raise the floor here.
         let width = ChordProPreviewLineLayout.instrumentalWidth(
             rhythmicSpacing: true,
             lineDuration: 8,
@@ -12,7 +17,7 @@ final class ChordProPreviewLineLayoutTests: XCTestCase {
             pixelsPerSecond: 100
         )
 
-        XCTAssertEqual(width, 1080, accuracy: 0.001)
+        XCTAssertEqual(width, 800, accuracy: 0.001)
     }
 
     func testRhythmicInstrumentalWidthPreservesWiderChordExtent() {

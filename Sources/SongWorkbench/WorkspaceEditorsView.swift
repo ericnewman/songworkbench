@@ -3091,11 +3091,20 @@ private struct ChordProPreviewBlockView: View {
 }
 
 enum ChordProPreviewLineLayout {
-    static let instrumentalReadableScale: CGFloat = 1.35
+    /// 1.0 — chord-only rows share the SAME pixels-per-second as sung rows.
+    ///
+    /// This was 1.35, which meant a second of music occupied 135 px on an instrumental row and
+    /// 100 px on a lyric row: two different horizontal scales in one chart, so a listener could
+    /// not read a gap's width as a duration. The readability concern it was solving is already
+    /// handled by the `max(chordExtentWidth, …)` floor below — exactly the same way lyric rows
+    /// are allowed to grow past raw time width when their word text would collide. Keeping the
+    /// constant (rather than deleting it) leaves one named place to change if chord-only rows
+    /// ever need their own scale again.
+    static let instrumentalReadableScale: CGFloat = 1.0
 
-    /// Lyric rows are allowed to grow beyond raw time width when word text would collide. A
-    /// chord-only row has no words to apply that floor, so use a modest readability scale to keep
-    /// equal-duration instrumental rows visually comparable to sung rows.
+    /// Both row kinds follow one rule: width is real duration at `pixelsPerSecond`, widened only
+    /// when the row's own text would otherwise collide. For a lyric row that floor comes from the
+    /// words; for a chord-only row it comes from the chord columns.
     static func instrumentalWidth(
         rhythmicSpacing: Bool,
         lineDuration: TimeInterval,
