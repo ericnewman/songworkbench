@@ -482,12 +482,14 @@ enum TimedLyricSegmentGrouper {
             let lower = layout.tokenRanges[wordStartTokenIndex].lowerBound
             let upper = layout.tokenRanges[endIndex].upperBound
             let range = lower..<upper
+            let confidences = tokens[wordStartTokenIndex...endIndex].compactMap(\.confidence)
             words.append(
                 TimedLyricWord(
                     text: String(characters[range]),
                     start: tokens[wordStartTokenIndex].startTime,
                     end: tokens[endIndex].endTime,
-                    characterRange: range
+                    characterRange: range,
+                    confidence: confidences.min()
                 )
             )
         }
@@ -1310,6 +1312,14 @@ struct RepeatedLyricCorrector: Sendable {
         for index in newWords.indices {
             newWords[index].text = String(Array(newText)[tokens[index]])
             newWords[index].characterRange = tokens[index]
+            // A rewritten word's text no longer came from the ASR token whose confidence it
+            // carries, so that score no longer describes it — and the rewrite happened BECAUSE
+            // the song's own repeats corroborated this reading, which is better evidence than the
+            // token score was. Clearing it to `nil` (= unknown) stops `LyricConfidencePlaceholder`
+            // from blanking a word the corrector just repaired on stale low confidence.
+            if replacements[index] != nil {
+                newWords[index].confidence = nil
+            }
         }
 
         var corrected = segment

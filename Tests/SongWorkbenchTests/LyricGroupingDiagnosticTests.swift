@@ -105,9 +105,20 @@ final class LyricGroupingDiagnosticTests: XCTestCase {
                 "\n---- \(cache.key.sourceSHA256.prefix(8)) "
                     + "dur=\(String(format: "%.1f", cache.value.sourceDuration)) "
                     + "lines=\(grouped.count) ----")
-            for line in grouped {
-                print(String(format: "  %7.3f-%7.3f  %@", line.start, line.end, line.text))
+            let flagged = LyricConfidencePlaceholder.applied(to: grouped)
+            var placeholders = 0
+            for (line, marked) in zip(grouped, flagged) {
+                placeholders +=
+                    marked.words.filter {
+                        $0.text.hasPrefix(LyricConfidencePlaceholder.placeholderText)
+                    }.count
+                let changed = marked.text == line.text ? " " : "*"
+                print(
+                    String(
+                        format: "  %@ %7.3f-%7.3f  %@", changed, line.start, line.end, marked.text))
             }
+            let words = grouped.reduce(0) { $0 + $1.words.count }
+            print("  -> \(placeholders) placeholders of \(words) words")
         }
     }
 }

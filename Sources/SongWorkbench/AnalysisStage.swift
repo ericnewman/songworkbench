@@ -449,7 +449,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // `lyricBlendRows` forever, since re-clicking "Analyze Song" only
                     // re-groups when the stage record's version actually changes.
                     version: result.engine.engineVersion
-                        + "|grouping-47-overlap-segment-boundary"
+                        + "|grouping-48-low-confidence-placeholder"
                         + "|blend-row-overlap-merge"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
@@ -575,8 +575,12 @@ struct TranscriptionStage: AnalysisStageRunning {
             // inter-word gaps and pull late ASR onsets back to the voiced re-entry edge, so
             // held notes stop rendering as phantom mid-line pauses. Runs LAST, on the final
             // word timings. No-op when strict VAD is unavailable.
-            let normalizedLyrics = VocalWordSpanNormalizer.normalized(
+            let spanNormalizedLyrics = VocalWordSpanNormalizer.normalized(
                 alignedLyrics, voicedIntervals: strictVoiced)
+            // Honesty pass, LAST: a word the transcriber itself had no confidence in is shown as
+            // `___` instead of a confident-looking wrong word. Runs after the correction passes so
+            // a shaky word gets its chance to be repaired from the song's own repeats first.
+            let normalizedLyrics = LyricConfidencePlaceholder.applied(to: spanNormalizedLyrics)
             // Sung spans with no words (audit RC-4): persist so structure decisions and the
             // chart can flag them instead of mislabeling them Instrumental.
             let untranscribed = UntranscribedVocalRegionDetector.regions(

@@ -9,6 +9,12 @@ struct TimedLyricWord: Codable, Equatable, Sendable {
     var start: TimeInterval
     var end: TimeInterval
     var characterRange: Range<Int>
+    /// Lowest ASR token confidence among the tokens that render this word (a word is only as
+    /// trustworthy as its least certain part). `nil` when the engine reported no per-token
+    /// confidence, for reference-lyric-aligned words, and for documents saved before this field
+    /// existed — `nil` means UNKNOWN, never "low", so it must not drive any negative signal.
+    /// Consumed by `LyricConfidencePlaceholder`.
+    var confidence: Float? = nil
 }
 
 /// One transcription mode's candidate text for a `LyricBlendRow`'s time window (backlog #11,
