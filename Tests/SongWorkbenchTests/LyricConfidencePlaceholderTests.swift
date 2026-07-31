@@ -170,6 +170,33 @@ final class LyricConfidencePlaceholderTests: XCTestCase {
         XCTAssertEqual(final[2].text, clean, "a repaired word must not then be blanked")
     }
 
+    /// A user's own correction outranks the transcriber. A Review-chart override lives BESIDE
+    /// `text`, so the line still carries its original low-confidence words — blanking them would
+    /// visibly corrupt the correction wherever words are drawn individually.
+    func testLineWithAUserOverrideIsNeverBlanked() {
+        var segment = TimedLyricSegment(
+            start: 0, end: 2, text: "the skirts settle",
+            words: [
+                word("the", 0, 0.3, 0, confidence: 0.9),
+                word("skirts", 0.4, 0.8, 4, confidence: 0.05),
+                word("settle", 0.9, 1.4, 11, confidence: 0.9),
+            ])
+        XCTAssertNotEqual(
+            LyricConfidencePlaceholder.applied(to: [segment]), [segment],
+            "precondition: without an override this line IS blanked")
+
+        segment.overrideText = "a score to settle"
+        XCTAssertEqual(LyricConfidencePlaceholder.applied(to: [segment]), [segment])
+    }
+
+    func testBlankWhitespaceOverrideDoesNotCountAsACorrection() {
+        var segment = TimedLyricSegment(
+            start: 0, end: 1, text: "mud",
+            words: [word("mud", 0, 1, 0, confidence: 0.01)])
+        segment.overrideText = "   "
+        XCTAssertEqual(LyricConfidencePlaceholder.applied(to: [segment])[0].text, "___")
+    }
+
     /// Additive schema field: a document written before it existed must still decode.
     func testWordConfidenceDecodesAsNilWhenAbsent() throws {
         let json = Data(

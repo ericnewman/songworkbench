@@ -42,6 +42,12 @@ enum LyricConfidencePlaceholder {
     ) -> [TimedLyricSegment] {
         guard let threshold = minimumConfidence else { return segments }
         return segments.map { segment in
+            // A user-typed correction outranks the transcriber entirely. A Review-chart override
+            // lives BESIDE `text` (see `TimedLyricSegment.effectiveText`), so the line still holds
+            // the original low-confidence words — blanking them would visibly corrupt the user's
+            // own correction wherever words are drawn individually.
+            let override = segment.overrideText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard override?.isEmpty ?? true else { return segment }
             guard !segment.words.isEmpty,
                 segment.words.contains(where: { isUncertain($0, threshold: threshold) })
             else { return segment }

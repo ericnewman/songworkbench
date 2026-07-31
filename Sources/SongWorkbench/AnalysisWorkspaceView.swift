@@ -75,6 +75,37 @@ struct AnalysisWorkspaceView: View {
                         + "singing; timestamps are mapped back. 100% = off. Changing this "
                         + "re-transcribes on the next Analyze.")
 
+                HStack(spacing: 8) {
+                    Text("Blank unsure words")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(value: $model.lyricConfidenceThreshold, in: 0...0.9, step: 0.05)
+                    Text(
+                        model.lyricConfidenceThreshold <= 0
+                            ? "Off"
+                            : "\(Int((model.lyricConfidenceThreshold * 100).rounded()))%"
+                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .trailing)
+                }
+                .help(
+                    "Shows a word as ___ when the transcriber's own confidence in it falls below "
+                        + "this. Display only — the real words stay in the document, nothing is "
+                        + "exported blanked, and no re-analysis is needed. Function words and "
+                        + "lines you have corrected yourself are never blanked.")
+                if model.lyricConfidenceThreshold > 0, model.selectedSong != nil {
+                    Text(
+                        model.blankedLyricWordCount == 0
+                            ? "No words below this confidence."
+                            : "\(model.blankedLyricWordCount) word"
+                                + (model.blankedLyricWordCount == 1 ? "" : "s")
+                                + " shown as ___"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+
                 // The workspace lives in a fixed 360pt column; on iOS the bordered buttons
                 // render large and, with full text labels, wrapped to multiple lines and
                 // overflowed. Keep the primary Analyze button labeled but make the secondary

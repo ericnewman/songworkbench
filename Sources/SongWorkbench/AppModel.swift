@@ -298,6 +298,48 @@ final class AppModel: ObservableObject {
                 accuracyDecodeSpeed, forKey: AppModel.accuracyDecodeSpeedDefaultsKey)
         }
     }
+    static let lyricConfidenceThresholdDefaultsKey = "lyricConfidenceThreshold"
+    /// Words the transcriber scored below this are DISPLAYED as `___` (see
+    /// `LyricConfidencePlaceholder`). `0` disables blanking entirely. Purely a presentation
+    /// setting: it never touches `lyricSegments`, so moving it is instant, reversible, and cannot
+    /// reach `chordProSource`, an export, or `referenceLyrics`.
+    @Published var lyricConfidenceThreshold: Double = {
+        guard
+            UserDefaults.standard.object(forKey: AppModel.lyricConfidenceThresholdDefaultsKey)
+                != nil
+        else { return Double(LyricConfidencePlaceholder.defaultMinimumConfidence) }
+        return UserDefaults.standard.double(forKey: AppModel.lyricConfidenceThresholdDefaultsKey)
+    }()
+    {
+        didSet {
+            UserDefaults.standard.set(
+                lyricConfidenceThreshold, forKey: AppModel.lyricConfidenceThresholdDefaultsKey)
+        }
+    }
+
+    /// `lyricSegments` with low-confidence words blanked, for DISPLAY ONLY.
+    ///
+    /// Never assign this back to `lyricSegments`, hand it to `ChordProDraftInput`, or feed it to
+    /// `currentLyricsAsText` — `lyricSegments.didSet` persists and rebuilds the ChordPro draft, so
+    /// any of those would re-create exactly the destructive bake this replaced.
+    var displayLyricSegments: [TimedLyricSegment] {
+        LyricConfidencePlaceholder.applied(
+            to: lyricSegments,
+            minimumConfidence: lyricConfidenceThreshold > 0
+                ? Float(lyricConfidenceThreshold) : nil)
+    }
+
+    /// How many words the current threshold is blanking, so the slider can show its own effect.
+    var blankedLyricWordCount: Int {
+        guard lyricConfidenceThreshold > 0 else { return 0 }
+        return displayLyricSegments.reduce(0) { total, segment in
+            total
+                + segment.words.filter {
+                    $0.text.hasPrefix(LyricConfidencePlaceholder.placeholderText)
+                }.count
+        }
+    }
+
     @Published private(set) var songAnalysisProgress: SongAnalysisPipelineProgress?
     @Published private(set) var isSongAnalysisRunning = false
     /// While "Re-analyze All Songs" runs, the song currently being processed and its position in

@@ -563,7 +563,7 @@ private struct TimedLyricsEditor: View {
     /// The lyrics as plain read-only paragraphs: section headers and one line per segment, with a
     /// blank line inserted at instrumental gaps (≥ 4s between lines) so verses read as paragraphs.
     private var plainLyricsText: String {
-        let segments = model.lyricSegments
+        let segments = model.displayLyricSegments
             .sorted { $0.start < $1.start }
             .filter { $0.text.contains(where: { !$0.isWhitespace }) }
         let sections = timelineSections
