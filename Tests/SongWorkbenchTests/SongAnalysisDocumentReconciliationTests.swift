@@ -207,6 +207,53 @@ final class SongAnalysisDocumentReconciliationTests: XCTestCase {
         XCTAssertEqual(event.effectiveTime(preferring: .instrumentOnset), 9.0)
     }
 
+    func testAuditionOutranksARecordedPickButNotAManualDrag() {
+        var event = EditableChordEvent(time: 10, chord: "G")
+        event.placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] = 10
+        event.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 9.8
+        let picks = [ChordPlacementPick(start: 0, end: 20, variant: .instrumentOnset)]
+
+        // No audition: the recorded verdict applies.
+        XCTAssertEqual(event.placementTime(auditioning: nil, picks: picks), 9.8)
+        // Auditioning shows the variant under test even where a verdict already exists, so the
+        // ear and the eye judge the same placement.
+        XCTAssertEqual(event.placementTime(auditioning: .beatQuantized, picks: picks), 10)
+
+        var dragged = event
+        dragged.manualTime = 1.5
+        XCTAssertEqual(dragged.placementTime(auditioning: .beatQuantized, picks: picks), 1.5)
+    }
+
+    func testNewestOverlappingPickWins() {
+        var event = EditableChordEvent(time: 10, chord: "G")
+        event.placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] = 10
+        event.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 9.8
+        let picks = [
+            ChordPlacementPick(start: 0, end: 20, variant: .instrumentOnset),
+            ChordPlacementPick(start: 8, end: 12, variant: .beatQuantized),
+        ]
+
+        // Re-judging a span must not require deleting the earlier verdict.
+        XCTAssertEqual(event.placementTime(auditioning: nil, picks: picks), 10)
+    }
+
+    func testPickCoveringAnEventWithNoSuchCandidateFallsThroughToTheDetectedTime() {
+        // A song analysed before the A/B rig has no candidates; a pick must not zero its chords.
+        let event = EditableChordEvent(time: 10, chord: "G")
+        let picks = [ChordPlacementPick(start: 0, end: 20, variant: .instrumentOnset)]
+
+        XCTAssertEqual(event.placementTime(auditioning: nil, picks: picks), 10)
+        XCTAssertEqual(event.placementTime(auditioning: .instrumentOnset, picks: picks), 10)
+    }
+
+    func testPickOutsideTheEventsTimeDoesNotApply() {
+        var event = EditableChordEvent(time: 30, chord: "G")
+        event.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 29.5
+        let picks = [ChordPlacementPick(start: 0, end: 20, variant: .instrumentOnset)]
+
+        XCTAssertEqual(event.placementTime(auditioning: nil, picks: picks), 30)
+    }
+
     func testPlacementPickNormalizesReversedBoundsAndIsHalfOpen() {
         let pick = ChordPlacementPick(start: 12, end: 4, variant: .beatQuantized)
 

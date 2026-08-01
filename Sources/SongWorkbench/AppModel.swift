@@ -192,6 +192,17 @@ final class AppModel: ObservableObject {
             persistSelectedAnalysis()
         }
     }
+    /// The placement variant currently being auditioned in the chord-placement A/B, or nil to use
+    /// the document's own times. TRANSIENT BY DESIGN — not persisted, and deliberately NOT routed
+    /// through `chordEvents`, whose `didSet` writes the document and drops `chordReviewState` to
+    /// `.draft`. Auditioning is listening, not editing: it must never dirty a reviewed chart.
+    @Published var auditionedPlacement: ChordPlacementVariant?
+    /// Listener verdicts about chord placement. These ARE edits, so they persist — but they don't
+    /// touch `chordReviewState`, because picking where a chord sits is a separate judgement from
+    /// reviewing which chord it is.
+    @Published var chordPlacementPicks: [ChordPlacementPick] = [] {
+        didSet { persistSelectedAnalysis() }
+    }
     @Published var chordProSource = "" {
         didSet {
             if !isApplyingAnalysis { chordProReviewState = .draft }
@@ -1347,6 +1358,18 @@ final class AppModel: ObservableObject {
 
     /// Sets (or clears, when `nil`) a chord event's dragged Review-chart position. Deliberately a
     /// FREE timestamp with no snapping — see `EditableChordEvent.manualTime`'s doc comment.
+    /// This model's current placement resolution for `event` — see
+    /// `EditableChordEvent.placementTime(auditioning:picks:)` for the precedence rules.
+    func placementTime(for event: EditableChordEvent) -> TimeInterval {
+        event.placementTime(auditioning: auditionedPlacement, picks: chordPlacementPicks)
+    }
+
+    /// Chord onset times as currently resolved — the array to hand anything that must agree with
+    /// what the user is seeing and hearing (chart positions, the chord click track).
+    var placedChordTimes: [TimeInterval] {
+        chordEvents.map { placementTime(for: $0) }.sorted()
+    }
+
     func setChordManualTime(id: EditableChordEvent.ID, manualTime: TimeInterval?) {
         guard let index = chordEvents.firstIndex(where: { $0.id == id }) else { return }
         chordEvents[index].manualTime = manualTime
@@ -1727,6 +1750,8 @@ final class AppModel: ObservableObject {
         bassNotes = []
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
+        chordPlacementPicks = []
+        auditionedPlacement = nil
         stemFiles = nil
         stemSet = nil
         stemMixer = StemMixerModel()
@@ -2287,6 +2312,7 @@ final class AppModel: ObservableObject {
         bassNotes = analysis.bassNotes
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
+        chordPlacementPicks = analysis.chordPlacementPicks
         stemFiles = analysis.stems?.resolved()
         stemSet = analysis.stemSet?.resolved() ?? stemFiles?.stemSetManifest
         stemMixer = analysis.stemMixer
@@ -2357,6 +2383,7 @@ final class AppModel: ObservableObject {
             bassNotes: bassNotes,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
+            chordPlacementPicks: chordPlacementPicks,
             stems: stemFiles.map(StoredStemFiles.init(files:)),
             stemSet: (stemSet ?? stemFiles?.stemSetManifest).map(
                 StoredStemSetManifest.init(manifest:)),

@@ -293,6 +293,30 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.chordEvents[0].effectiveTime, 4)
     }
 
+    func testAuditioningAPlacementLeavesTheStoredChordsAndReviewStateAlone() {
+        // The whole point of the audition being a separate transient property: listening to an
+        // alternative placement must not mutate `chordEvents` (whose didSet writes the document)
+        // and must not knock a reviewed chart back to draft.
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        var chord = EditableChordEvent(time: 4, chord: "C")
+        chord.placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] = 4
+        chord.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 3.8
+        model.chordEvents = [chord]
+        model.markChordsReviewed()
+        let before = model.chordEvents
+
+        model.auditionedPlacement = .instrumentOnset
+
+        XCTAssertEqual(model.chordEvents, before)
+        XCTAssertEqual(model.chordReviewState, .reviewed)
+        // ...while everything that draws or clicks does move.
+        XCTAssertEqual(model.placementTime(for: chord), 3.8)
+        XCTAssertEqual(model.placedChordTimes, [3.8])
+
+        model.auditionedPlacement = nil
+        XCTAssertEqual(model.placedChordTimes, [4])
+    }
+
     func testPlaybackSourceSwitchTransfersPositionAndPreventsDualPlayback() async throws {
         let songURL = try makeSilentWAV(frameCount: 16_000)
         let stemDirectory = try makeStemDirectory()

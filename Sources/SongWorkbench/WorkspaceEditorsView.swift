@@ -1096,6 +1096,8 @@ struct ChordProTabEditor: View {
                         ChordProAppPreview(
                             source: previewSource,
                             transpose: config.supportsTranspose ? model.chordProTranspose : 0,
+                            auditionedPlacement: model.auditionedPlacement,
+                            placementPicks: model.chordPlacementPicks,
                             highlightContext: highlightContext(style: config.highlightStyle),
                             beatBall: beatBallInput,
                             beatDots: beatDotContext,
@@ -1779,6 +1781,10 @@ private struct ChordProAppPreview: View {
 
     let source: String
     var transpose: Int = 0
+    /// Placement variant being auditioned in the chord-placement A/B, or nil for stored times.
+    var auditionedPlacement: ChordPlacementVariant?
+    /// Recorded placement verdicts, applied when no audition is in progress.
+    var placementPicks: [ChordPlacementPick] = []
     var highlightContext: ChordProPlaybackHighlightContext?
     var beatBall: BeatBallInput?
     var beatDots: BeatDotContext?
@@ -1868,7 +1874,10 @@ private struct ChordProAppPreview: View {
             item.displayLineNumber.flatMap { timelineChordTimesByLine[$0] } ?? []
         let events = rawTimes.map { EditableChordEvent.matching(rowTime: $0, in: chordEvents) }
         let effectiveTimes = zip(rawTimes, events).map { rowTime, event in
-            event?.effectiveTime ?? rowTime
+            // Resolved through the model so a drag, an in-progress A/B audition, and a recorded
+            // placement pick all move the glyph the same way — see `AppModel.placementTime(for:)`.
+            event?.placementTime(auditioning: auditionedPlacement, picks: placementPicks)
+                ?? rowTime
         }
         return ChordRowData(events: events, effectiveTimes: effectiveTimes)
     }

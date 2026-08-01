@@ -333,6 +333,35 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         return candidate
     }
 
+    /// Where this chord should be drawn and clicked, resolving the three ways its time can be
+    /// overridden, most-specific first:
+    ///
+    /// 1. `manualTime` — the user dragged this exact chord. A decision, never overridden.
+    /// 2. `auditioning` — an A/B is in progress; show that variant everywhere, so the ear and the
+    ///    eye are judging the same placement.
+    /// 3. the newest `ChordPlacementPick` covering this event — a verdict already reached for the
+    ///    span the chord sits in. Newest wins, so re-judging a span needs no deletion.
+    ///
+    /// Falls through to the detected `time` whenever the chosen variant recorded no candidate, so
+    /// auditioning a song analysed before the candidates existed degrades to "nothing moves"
+    /// rather than collapsing every chord onto zero.
+    ///
+    /// Free of any view or model state so the chart, the click track and the tests all resolve
+    /// placement through one function instead of three copies of this precedence.
+    func placementTime(
+        auditioning variant: ChordPlacementVariant?,
+        picks: [ChordPlacementPick] = []
+    ) -> TimeInterval {
+        if let manualTime { return manualTime }
+        if let variant { return placementTime(for: variant) ?? time }
+        if let pick = picks.last(where: { $0.contains(time) }),
+            let picked = placementTime(for: pick.variant)
+        {
+            return picked
+        }
+        return time
+    }
+
     /// Carries `manualTime`/`accepted` forward from a PRIOR analysis's chord events onto a
     /// freshly re-detected set, matched by nearest DETECTED `time` (never `effectiveTime`, so a
     /// drag never poisons future reconciliation) within `tolerance` seconds. Same convention as
