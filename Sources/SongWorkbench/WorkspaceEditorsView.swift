@@ -3424,18 +3424,6 @@ private struct ChordProPreviewLineView: View {
         rowDownbeatSeconds == nil ? 0 : max(0, CGFloat(gutterSeconds) * Self.pixelsPerSecond)
     }
 
-    /// Instrumental rows carry no words, so they never resolve a `rowDownbeatSeconds` and their
-    /// `gutterPx` is 0 — they started hard against the left edge while every sung row began one
-    /// gutter in. Two rows of the same musical length therefore drew different lengths and did not
-    /// share a left edge. Inset them by the same gutter so both row kinds sit on one origin, which
-    /// is what this view's own contract already claims ("the downbeat sits at `gutterPx` on EVERY
-    /// row"). A pure leading inset: it moves the row, and leaves every width and chord-x
-    /// calculation inside it untouched.
-    private var instrumentalGutterPx: CGFloat {
-        guard isInstrumentalLine, rhythmicSpacing, beatLengthSeconds > 0 else { return 0 }
-        return max(0, CGFloat(gutterSeconds) * Self.pixelsPerSecond)
-    }
-
     /// x of a song time on the shared, constant-scale metric grid: the downbeat sits at `gutterPx`
     /// on EVERY row, and each beat is `beatLengthSeconds × pixelsPerSecond` further right — so beats
     /// align vertically across rows and the repeating cadence reads the same on every line.
@@ -3464,7 +3452,6 @@ private struct ChordProPreviewLineView: View {
                 waveformStrip
             }
         }
-        .padding(.leading, instrumentalGutterPx)
     }
 
     /// A hand-corrected line's render: the chords stay exactly where they already are (still
