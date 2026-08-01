@@ -3226,9 +3226,19 @@ enum ChordProPreviewLineLayout {
     /// pairs), so crowding is answered here, by widening the scale — never by letting a row grow
     /// past the time it covers.
     ///
-    ///     px/s   100    125    150    175    200    250
-    ///     nudged 51.2%  32.6%  23.3%  16.8%  13.7%   9.2%
-    static let pixelsPerSecond: CGFloat = 150
+    /// Raised again to 200 once row width became time-only: with the text floors gone, a scale
+    /// that is too tight no longer shows up as a wider row, it shows up as glyphs crowding each
+    /// other, so the scale is the ONLY remaining lever (Eric: "if there is a risk caused by too
+    /// low of a pixels per second we should increase it").
+    ///
+    ///     px/s          150    175    200    225    250    300
+    ///     words nudged  26.3%  20.0%  16.9%  14.4%  12.0%   9.8%
+    ///     widest row    1505   1755   2006   2257   2508   3009  px
+    ///
+    /// 200 is where the curve flattens — past it each further 50 px/s buys ~2 points of nudging
+    /// for another ~250 px of scroll. Chord labels are not the constraint at any of these values
+    /// (0 % overlap from 150 up): they are 1-3 characters and change no faster than a beat.
+    static let pixelsPerSecond: CGFloat = 200
 
     /// Both row kinds follow one rule: width is real duration at `pixelsPerSecond`, widened only
     /// when the row's own text would otherwise collide. For a lyric row that floor comes from the
