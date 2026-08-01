@@ -944,6 +944,11 @@ struct ChordProTabConfig: Sendable {
     let showsSecondaryMode: Bool
     /// Footer caption shown beneath the body, if any.
     let footerNote: String?
+    /// Whether this surface shows the playback/review chrome layered OVER the chart: the bouncing
+    /// ball, beat dots, barlines, waveform, bass-note row, chord time labels, confidence shading,
+    /// and the per-line accept/edit affordances. `false` renders the chart the way a ChordPro file
+    /// actually reads — chords positioned above lyric text, plus directives — and nothing else.
+    var showsPlaybackChrome = true
 
     static let chordPro = ChordProTabConfig(
         kind: .chordPro,
@@ -972,7 +977,8 @@ struct ChordProTabConfig: Sendable {
         supportsImport: false,
         supportsMarkReviewed: false,
         showsSecondaryMode: false,
-        footerNote: nil
+        footerNote: nil,
+        showsPlaybackChrome: false
     )
 
     static let bassNote = ChordProTabConfig(
@@ -1078,6 +1084,14 @@ struct ChordProTabEditor: View {
                     switch mode {
                     case .secondary:
                         secondaryBody
+                    case .preview where !config.showsPlaybackChrome:
+                        // Plain ChordPro: the chart as a .cho file reads it. Deliberately NOT
+                        // `ChordProAppPreview` with everything switched off — that view's overlays
+                        // and accept/edit affordances are the Review tab's job, and threading
+                        // "hide it all" flags through it would leave the two surfaces free to
+                        // drift back together.
+                        ChordProReadOnlyView(
+                            source: previewSource, transpose: model.chordProTranspose)
                     case .preview:
                         ChordProAppPreview(
                             source: previewSource,
@@ -1171,33 +1185,38 @@ struct ChordProTabEditor: View {
                 .pickerStyle(.segmented)
                 .frame(width: 190)
             }
-            timingOffsetControl
-            // The four display toggles live in one compact "View" menu so their labels can't
-            // wrap and crowd the toolbar.
-            Menu {
-                Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
-                Toggle("Beat dots", isOn: $beatDotsEnabled)
-                Toggle("Barlines", isOn: $barlinesEnabled)
-                Toggle("Waveform", isOn: $showWaveform)
-                Toggle("Show Bass Notes", isOn: $showBassNotes)
-                    .disabled(model.bassNotes.isEmpty)
-                Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
-            } label: {
-                Label("View", systemImage: "eye")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help(
-                "Show/hide the bouncing ball, beat dots, measure barlines, "
-                    + "the per-line waveform, the detected bass note row, "
-                    + "and each chord's raw detected timestamp")
-            Button("Chord Shading Legend", systemImage: "questionmark.circle") {
-                showConfidenceLegend = true
-            }
-            .labelStyle(.iconOnly)
-            .help("What the shaded backgrounds behind chord names mean")
-            .popover(isPresented: $showConfidenceLegend, arrowEdge: .bottom) {
-                confidenceLegendContent
+            // Timing offset, the display toggles and the shading legend all act on chrome the
+            // plain ChordPro tab does not draw, so they are hidden there rather than left as
+            // controls that appear to do nothing.
+            if config.showsPlaybackChrome {
+                timingOffsetControl
+                // The display toggles live in one compact "View" menu so their labels can't
+                // wrap and crowd the toolbar.
+                Menu {
+                    Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
+                    Toggle("Beat dots", isOn: $beatDotsEnabled)
+                    Toggle("Barlines", isOn: $barlinesEnabled)
+                    Toggle("Waveform", isOn: $showWaveform)
+                    Toggle("Show Bass Notes", isOn: $showBassNotes)
+                        .disabled(model.bassNotes.isEmpty)
+                    Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
+                } label: {
+                    Label("View", systemImage: "eye")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help(
+                    "Show/hide the bouncing ball, beat dots, measure barlines, "
+                        + "the per-line waveform, the detected bass note row, "
+                        + "and each chord's raw detected timestamp")
+                Button("Chord Shading Legend", systemImage: "questionmark.circle") {
+                    showConfidenceLegend = true
+                }
+                .labelStyle(.iconOnly)
+                .help("What the shaded backgrounds behind chord names mean")
+                .popover(isPresented: $showConfidenceLegend, arrowEdge: .bottom) {
+                    confidenceLegendContent
+                }
             }
             if config.supportsMarkReviewed {
                 Button("Mark Reviewed", systemImage: "checkmark.seal") {
@@ -1703,8 +1722,9 @@ struct ChordProTabEditor: View {
 /// The Review/Annotate tab (backlog #15): the SAME interactive App Preview/Edit editor that used
 /// to be the whole `chordPro` tab (bouncing ball, beat dots, waveform, playback highlight —
 /// unchanged, moved here as-is), plus a new panel below it for accepting or correcting
-/// low-confidence lyric lines and chord events one at a time. The `chordPro` tab itself now shows
-/// only `ChordProTrueView`, a spec-exact read-only render with none of this chrome.
+/// low-confidence lyric lines and chord events one at a time. The `chordPro` tab shows the same
+/// toolbar but renders through `ChordProReadOnlyView` — a spec-exact chords-above-lyrics render
+/// with none of this chrome (`ChordProTabConfig.showsPlaybackChrome == false`).
 struct ChordProReviewTab: View {
     @ObservedObject var model: AppModel
 

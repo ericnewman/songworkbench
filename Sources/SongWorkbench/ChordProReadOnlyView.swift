@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// A standalone spec-exact ChordPro renderer retained for source/layout validation.
-/// The interactive ChordPro and Review tabs both use `ChordProAppPreview` so their
-/// playback typography and overlays cannot drift.
+/// The spec-exact ChordPro renderer: chords positioned above lyric text, plus directives, and
+/// nothing else — the chart as a `.cho` file actually reads. This is what the ChordPro TAB shows.
+/// The Review tab uses `ChordProAppPreview` instead, which layers the playback and review chrome
+/// (ball, beat dots, waveform, bass row, confidence shading, accept/edit) over the same chart.
 struct ChordProReadOnlyView: View {
     let source: String
     var transpose: Int = 0
@@ -228,8 +229,10 @@ enum BassNoteRowFormatter {
     }
 }
 
-/// The ChordPro tab uses the same playback-aware App Preview as Review, fixed in
-/// preview mode with the smaller ChordPro toolbar.
+/// The ChordPro tab: the shared toolbar (transpose, export, JustChords) over a plain
+/// `ChordProReadOnlyView` body. `ChordProTabConfig.chordProPlayback` sets
+/// `showsPlaybackChrome = false`, which both selects that body and hides the toolbar controls
+/// that only act on chrome this tab does not draw.
 struct ChordProTrueView: View {
     @ObservedObject var model: AppModel
 
