@@ -43,21 +43,27 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     private var scheduledStartTime: TimeInterval = 0
     private var timer: Timer?
 
-    // Synthetic click-track channel: one short reusable sample scheduled on each detected beat.
-    // It is not a separated stem and its memory use does not scale with song duration.
-    private let clickPlayer = AVAudioPlayerNode()
-    private var clickBuffer: AVAudioPCMBuffer?
-    private var clickBeatTimes: [TimeInterval] = []
-    private var isClickConnected = false
+    // Synthetic click channels: one short reusable sample scheduled at each of a list of times.
+    // Neither is a separated stem and their memory use does not scale with song duration.
+    // `beatClick` marks the tempo grid; `chordClick`, at a higher pitch so the two never blur
+    // together, marks where the chords are currently PLACED — the audible half of the
+    // chord-placement A/B, since a click that lands with or against the recording's own chord
+    // change is far easier to judge than a highlight moving on screen.
+    private let beatClick = ClickChannel(frequency: 1000)
+    private let chordClick = ClickChannel(frequency: 1600)
     @Published var clickGain: Float = 0 {
-        didSet { clickPlayer.volume = max(min(clickGain, StemMixState.maximumGain), 0) }
+        didSet { beatClick.gain = clickGain }
+    }
+    @Published var chordClickGain: Float = 0 {
+        didSet { chordClick.gain = chordClickGain }
     }
 
     init() {
         for player in players.values {
             engine.attach(player)
         }
-        engine.attach(clickPlayer)
+        engine.attach(beatClick.player)
+        engine.attach(chordClick.player)
         engine.attach(stemMixerNode)
         engine.attach(timePitch)
         engine.connect(stemMixerNode, to: timePitch, format: nil)
@@ -143,30 +149,105 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         return (Float(cos(angle)), Float(sin(angle)))
     }
 
-    /// Builds the click track from the song's beat times and connects it. Call after `load`. A
+    /// Builds the beat click from the song's beat times and connects it. Call after `load`. A
     /// nil/empty `beatTimes` leaves the channel silent. Safe to call while playing.
     func loadClickTrack(beatTimes: [TimeInterval]) {
+        load(beatClick, times: Self.uniformBeatGrid(from: beatTimes, duration: duration))
+    }
+
+    /// Builds the chord click from wherever the chords are CURRENTLY placed. Unlike the beat
+    /// click these times are used verbatim — no `uniformBeatGrid` — because their irregularity is
+    /// the entire thing under test: regularising them would erase the difference between the
+    /// placement variants being compared. Safe to call while playing, which is what makes an A/B
+    /// possible without stopping the music.
+    func loadChordClickTrack(times: [TimeInterval]) {
+        load(chordClick, times: times.sorted())
+    }
+
+    private func load(_ channel: ClickChannel, times: [TimeInterval]) {
         guard let sampleRate = files.values.first?.processingFormat.sampleRate else {
-            clickBuffer = nil
-            clickBeatTimes = []
+            channel.clear()
             return
         }
-        clickBeatTimes = Self.uniformBeatGrid(from: beatTimes, duration: duration)
-        clickBuffer =
-            clickBeatTimes.isEmpty ? nil : Self.makeClickSample(sampleRate: sampleRate)
-        if let clickBuffer, !isClickConnected {
-            engine.connect(clickPlayer, to: stemMixerNode, format: clickBuffer.format)
-            isClickConnected = true
-        }
-        clickPlayer.volume = max(min(clickGain, StemMixState.maximumGain), 0)
+        channel.load(times: times, sampleRate: sampleRate, engine: engine, mixer: stemMixerNode)
         if isScheduled {
-            clickPlayer.stop()
-            scheduleClick(from: scheduledStartTime)
-            if isPlaying, clickBuffer != nil { clickPlayer.play() }
+            channel.stop()
+            channel.schedule(from: scheduledStartTime, duration: duration)
+            if isPlaying { channel.play() }
         }
     }
 
-    static func makeClickSample(sampleRate: Double) -> AVAudioPCMBuffer? {
+    /// One synthesised click channel: a node, a reusable one-shot sample, and the list of times to
+    /// fire it at. Extracted rather than duplicated when the chord click was added — the two
+    /// channels differ only in pitch and in which times they mark, and a second hand-maintained
+    /// copy of the connect/schedule/transport dance is exactly how one of them ends up silently
+    /// missing a `stop()` on seek.
+    ///
+    /// `@MainActor` to match the service: every method touches the shared `AVAudioEngine`.
+    @MainActor
+    final class ClickChannel {
+        let player = AVAudioPlayerNode()
+        private let frequency: Double
+        private var buffer: AVAudioPCMBuffer?
+        private var times: [TimeInterval] = []
+        private var isConnected = false
+        var gain: Float = 0 {
+            didSet { player.volume = max(min(gain, StemMixState.maximumGain), 0) }
+        }
+
+        init(frequency: Double) { self.frequency = frequency }
+
+        func load(
+            times: [TimeInterval], sampleRate: Double, engine: AVAudioEngine,
+            mixer: AVAudioMixerNode
+        ) {
+            self.times = times
+            buffer =
+                times.isEmpty
+                ? nil
+                : StemPlaybackService.makeClickSample(sampleRate: sampleRate, frequency: frequency)
+            if let buffer, !isConnected {
+                engine.connect(player, to: mixer, format: buffer.format)
+                isConnected = true
+            }
+            player.volume = max(min(gain, StemMixState.maximumGain), 0)
+        }
+
+        func clear() {
+            buffer = nil
+            times = []
+        }
+
+        func schedule(from time: TimeInterval, duration: TimeInterval) {
+            guard let buffer, isConnected else { return }
+            let sampleRate = buffer.format.sampleRate
+            let startTime = min(max(time, 0), duration)
+            for mark in times where mark >= startTime && mark <= duration {
+                player.scheduleBuffer(
+                    buffer,
+                    at: AVAudioTime(
+                        sampleTime: AVAudioFramePosition((mark - startTime) * sampleRate),
+                        atRate: sampleRate),
+                    options: [],
+                    completionHandler: nil
+                )
+            }
+        }
+
+        func play() { if isConnected, buffer != nil { player.play() } }
+        func pause() { player.pause() }
+        func stop() { player.stop() }
+
+        func disconnect(from engine: AVAudioEngine) {
+            clear()
+            if isConnected {
+                engine.disconnectNodeOutput(player)
+                isConnected = false
+            }
+        }
+    }
+
+    static func makeClickSample(sampleRate: Double, frequency: Double = 1000) -> AVAudioPCMBuffer? {
         guard sampleRate > 0,
             let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
         else { return nil }
@@ -178,7 +259,7 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         for offset in 0..<Int(clickFrames) {
             let seconds = Double(offset) / sampleRate
             let envelope = exp(-seconds * 90)
-            channel[offset] = Float(sin(2 * Double.pi * 1000 * seconds) * envelope * 0.6)
+            channel[offset] = Float(sin(2 * Double.pi * frequency * seconds) * envelope * 0.6)
         }
         return buffer
     }
@@ -215,18 +296,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     }
 
     private func scheduleClick(from time: TimeInterval) {
-        guard let clickBuffer, isClickConnected else { return }
-        let sampleRate = clickBuffer.format.sampleRate
-        let startTime = min(max(time, 0), duration)
-        for beat in clickBeatTimes where beat >= startTime && beat <= duration {
-            let relativeFrame = AVAudioFramePosition((beat - startTime) * sampleRate)
-            clickPlayer.scheduleBuffer(
-                clickBuffer,
-                at: AVAudioTime(sampleTime: relativeFrame, atRate: sampleRate),
-                options: [],
-                completionHandler: nil
-            )
-        }
+        beatClick.schedule(from: time, duration: duration)
+        chordClick.schedule(from: time, duration: duration)
     }
 
     func togglePlayback() {
@@ -250,7 +321,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             for id in files.keys {
                 players[id]?.play()
             }
-            if isClickConnected { clickPlayer.play() }
+            beatClick.play()
+            chordClick.play()
             isPlaying = true
             startTimer()
         } catch {
@@ -264,7 +336,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         for player in players.values {
             player.pause()
         }
-        clickPlayer.pause()
+        beatClick.pause()
+        chordClick.pause()
         isPlaying = false
         stopTimer()
         resetStemLevels()
@@ -276,7 +349,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         for player in players.values {
             player.stop()
         }
-        clickPlayer.stop()
+        beatClick.stop()
+        chordClick.stop()
         stopTimer()
         isScheduled = false
         currentTime = min(max(time, 0), duration)
@@ -285,7 +359,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             for id in files.keys {
                 players[id]?.play()
             }
-            if isClickConnected { clickPlayer.play() }
+            beatClick.play()
+            chordClick.play()
             startTimer()
         } else if !isScheduled {
             isPlaying = false
@@ -313,12 +388,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         duration = 0
         referenceID = nil
         isLoaded = false
-        clickBuffer = nil
-        clickBeatTimes = []
-        if isClickConnected {
-            engine.disconnectNodeOutput(clickPlayer)
-            isClickConnected = false
-        }
+        beatClick.disconnect(from: engine)
+        chordClick.disconnect(from: engine)
         releaseSecurityScopes()
     }
 
@@ -327,7 +398,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         for player in players.values {
             player.stop()
         }
-        clickPlayer.stop()
+        beatClick.stop()
+        chordClick.stop()
         engine.stop()
         isPlaying = false
         isScheduled = false

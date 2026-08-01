@@ -196,7 +196,9 @@ final class AppModel: ObservableObject {
     /// the document's own times. TRANSIENT BY DESIGN — not persisted, and deliberately NOT routed
     /// through `chordEvents`, whose `didSet` writes the document and drops `chordReviewState` to
     /// `.draft`. Auditioning is listening, not editing: it must never dirty a reviewed chart.
-    @Published var auditionedPlacement: ChordPlacementVariant?
+    @Published var auditionedPlacement: ChordPlacementVariant? {
+        didSet { refreshChordClickTrack() }
+    }
     /// Listener verdicts about chord placement. These ARE edits, so they persist — but they don't
     /// touch `chordReviewState`, because picking where a chord sits is a separate judgement from
     /// reviewing which chord it is.
@@ -1358,6 +1360,13 @@ final class AppModel: ObservableObject {
 
     /// Sets (or clears, when `nil`) a chord event's dragged Review-chart position. Deliberately a
     /// FREE timestamp with no snapping — see `EditableChordEvent.manualTime`'s doc comment.
+    /// Re-points the chord click at wherever the chords currently sit. Called whenever the
+    /// audition changes so switching variants re-schedules the clicks against the SAME audio
+    /// without stopping playback — that continuity is what makes the comparison judgeable.
+    func refreshChordClickTrack() {
+        stemPlayback.loadChordClickTrack(times: placedChordTimes)
+    }
+
     /// This model's current placement resolution for `event` — see
     /// `EditableChordEvent.placementTime(auditioning:picks:)` for the precedence rules.
     func placementTime(for event: EditableChordEvent) -> TimeInterval {
@@ -1979,6 +1988,7 @@ final class AppModel: ObservableObject {
         if let stemFiles {
             try stemPlayback.load(stemFiles, mixer: stemMixer)
             stemPlayback.loadClickTrack(beatTimes: beatTimes)
+            refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         }
@@ -2334,6 +2344,7 @@ final class AppModel: ObservableObject {
                 try? stemPlayback.load(stemFiles, mixer: stemMixer)
             }
             stemPlayback.loadClickTrack(beatTimes: beatTimes)
+            refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         } else {
