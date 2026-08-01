@@ -2764,6 +2764,40 @@ enum ChordProPreviewIndexing {
         return (max(1, rowOffsets.count), rowOffsets.firstIndex(of: index) ?? 0)
     }
 
+    /// Every row index in this row's run of consecutive chord-only rows, in order. Same walk as
+    /// `chordOnlyRunPosition`, which is expressed in terms of it.
+    static func chordOnlyRunRows(
+        in items: [ChordProPreviewIndexedBlock], at index: Int
+    ) -> [Int] {
+        func isRunBoundary(_ i: Int) -> Bool {
+            guard items.indices.contains(i) else { return true }
+            if items[i].lyricOrdinal != nil { return true }
+            if case .lyric(let line) = items[i].block, line.hasSungText { return true }
+            return false
+        }
+        func adjacentChordOnlyRow(from i: Int, step: Int) -> Int? {
+            var probe = i + step
+            while items.indices.contains(probe) {
+                if isChordOnlyRow(items, probe) { return probe }
+                if isRunBoundary(probe) { return nil }
+                probe += step
+            }
+            return nil
+        }
+        var rowOffsets = [index]
+        var probeStart = index
+        while let prev = adjacentChordOnlyRow(from: probeStart, step: -1) {
+            rowOffsets.insert(prev, at: 0)
+            probeStart = prev
+        }
+        var probeEnd = index
+        while let next = adjacentChordOnlyRow(from: probeEnd, step: 1) {
+            rowOffsets.append(next)
+            probeEnd = next
+        }
+        return rowOffsets
+    }
+
     /// Review-pane display line number for each SUNG-lyric ordinal in `source` — the mapping
     /// the Lyric Blend window uses to label its rows with the chart's own numbers.
     static func displayNumbersByLyricOrdinal(source: String) -> [Int: Int] {
@@ -2840,10 +2874,69 @@ enum ChordProPreviewLineWindowResolver {
 
         let (rowCount, position) = ChordProPreviewIndexing.chordOnlyRunPosition(
             in: items, at: index)
+
+        // Prefer each row's REAL time window, taken from the chord onsets it actually holds.
+        // Equal `1/rowCount` slices make every row of a run the same width no matter how much
+        // song time it covers — an intro of 5.12 / 5.25 / 5.05 / 4.04 s rendered as four
+        // identical 4.9 s rows — which breaks the constant pixels-per-second axis the rest of the
+        // chart is drawn on (Eric: "instrumental lines still much shorter than lyric lines").
+        if let boundaries = runRowBoundaries(
+            items: items,
+            index: index,
+            rowCount: rowCount,
+            resolvedStart: resolvedStart,
+            resolvedEnd: resolvedEnd,
+            chordOnsetTimes: chordOnsetTimes
+        ) {
+            return (boundaries[position], boundaries[position + 1])
+        }
+
         let span = resolvedEnd - resolvedStart
         let sliceStart = resolvedStart + span * Double(position) / Double(rowCount)
         let sliceEnd = resolvedStart + span * Double(position + 1) / Double(rowCount)
         return (sliceStart, sliceEnd)
+    }
+
+    /// `rowCount + 1` time boundaries for a run of chord-only rows: each row starts at its own
+    /// first chord onset. `nil` when the onsets can't account for every row's chords, so the
+    /// caller falls back to equal slices rather than inventing a boundary.
+    private static func runRowBoundaries(
+        items: [ChordProPreviewIndexedBlock],
+        index: Int,
+        rowCount: Int,
+        resolvedStart: TimeInterval,
+        resolvedEnd: TimeInterval,
+        chordOnsetTimes: [TimeInterval]
+    ) -> [TimeInterval]? {
+        guard rowCount > 1 else { return nil }
+        let rows = ChordProPreviewIndexing.chordOnlyRunRows(in: items, at: index)
+        guard rows.count == rowCount else { return nil }
+        let chordCounts: [Int] = rows.map { row in
+            guard case .lyric(let line) = items[row].block else { return 0 }
+            return line.chords.count
+        }
+        guard chordCounts.allSatisfy({ $0 > 0 }) else { return nil }
+
+        let epsilon = 1e-6
+        let onsets =
+            chordOnsetTimes
+            .filter { $0 >= resolvedStart - epsilon && $0 < resolvedEnd + epsilon }
+            .sorted()
+        guard onsets.count >= chordCounts.reduce(0, +) else { return nil }
+
+        var boundaries: [TimeInterval] = [resolvedStart]
+        var consumed = 0
+        for count in chordCounts.dropLast() {
+            consumed += count
+            // The next row opens at its own first chord.
+            let boundary = onsets[consumed]
+            guard boundary > (boundaries.last ?? resolvedStart) + epsilon,
+                boundary < resolvedEnd - epsilon
+            else { return nil }
+            boundaries.append(boundary)
+        }
+        boundaries.append(resolvedEnd)
+        return boundaries
     }
 
     private static func trailingEndBound(
