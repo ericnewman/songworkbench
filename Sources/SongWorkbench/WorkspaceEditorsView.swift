@@ -3250,7 +3250,20 @@ private struct ChordProPreviewLineView: View {
     /// Pixels per second of song time used to space words in rhythmic mode. Sized so one beat at
     /// typical tempos exceeds a monospace glyph, so words rarely have to be nudged off their true
     /// time position to avoid overlapping — keeping the layout on a consistent beat grid.
-    private static let pixelsPerSecond: CGFloat = 100
+    ///
+    /// 100 was too tight to hold that promise: measured over every persisted song, **51 %** of
+    /// adjacent word pairs overlapped at their true time positions and had to be pushed apart, and
+    /// each nudge widens the row past its real duration (`stripWidth`'s `wordsWidth` floor). That
+    /// is what made sung rows visibly longer than instrumental rows covering the same number of
+    /// bars. 150 halves it to 23 %. The tail cannot be bought out — melismatic and fast-sung pairs
+    /// need p98 ≈ 1000 px/s — so this trades width for fidelity rather than trying to reach zero:
+    ///
+    ///     px/s   100    125    150    175    200    250
+    ///     nudged 51.2%  32.6%  23.3%  16.8%  13.7%   9.2%
+    ///
+    /// At 150 the widest row in the catalogue is ~1500 px, which the horizontal ScrollView
+    /// already handles.
+    private static let pixelsPerSecond: CGFloat = 150
 
     /// Thin top row reserved above rhythmic-mode content for the beat dots, so they sit
     /// above the words instead of overlapping them.
@@ -3411,6 +3424,18 @@ private struct ChordProPreviewLineView: View {
         rowDownbeatSeconds == nil ? 0 : max(0, CGFloat(gutterSeconds) * Self.pixelsPerSecond)
     }
 
+    /// Instrumental rows carry no words, so they never resolve a `rowDownbeatSeconds` and their
+    /// `gutterPx` is 0 — they started hard against the left edge while every sung row began one
+    /// gutter in. Two rows of the same musical length therefore drew different lengths and did not
+    /// share a left edge. Inset them by the same gutter so both row kinds sit on one origin, which
+    /// is what this view's own contract already claims ("the downbeat sits at `gutterPx` on EVERY
+    /// row"). A pure leading inset: it moves the row, and leaves every width and chord-x
+    /// calculation inside it untouched.
+    private var instrumentalGutterPx: CGFloat {
+        guard isInstrumentalLine, rhythmicSpacing, beatLengthSeconds > 0 else { return 0 }
+        return max(0, CGFloat(gutterSeconds) * Self.pixelsPerSecond)
+    }
+
     /// x of a song time on the shared, constant-scale metric grid: the downbeat sits at `gutterPx`
     /// on EVERY row, and each beat is `beatLengthSeconds × pixelsPerSecond` further right — so beats
     /// align vertically across rows and the repeating cadence reads the same on every line.
@@ -3439,6 +3464,7 @@ private struct ChordProPreviewLineView: View {
                 waveformStrip
             }
         }
+        .padding(.leading, instrumentalGutterPx)
     }
 
     /// A hand-corrected line's render: the chords stay exactly where they already are (still
