@@ -1134,6 +1134,7 @@ struct ChordProTabEditor: View {
                             showBassNotes: showBassNotes,
                             showChordTimeLabels: showChordTimeLabels,
                             showChordBall: ballTracksChords,
+                            songChordTimes: model.placedChordTimes,
                             lyricSegments: sortedLyricSegments,
                             chordEvents: model.chordEvents,
                             onToggleLyricAccepted: { id in model.toggleLyricAccepted(id: id) },
@@ -1868,6 +1869,8 @@ private struct ChordProAppPreview: View {
     var showChordTimeLabels = false
     /// Draw the amber chord ball alongside the white word ball on sung lines.
     var showChordBall = false
+    /// Every chord onset in the song (placement-resolved), for cross-row ball continuity.
+    var songChordTimes: [TimeInterval] = []
     /// Lyric segments in the SAME sorted order `lyricOrdinal` indexes into (backlog #15 Phase 2
     /// remainder — chart interactivity), so a rendered line's confidence/accepted/overrideText
     /// can be read (and edited) directly, without a separate lookup mechanism.
@@ -2377,6 +2380,7 @@ private struct ChordProAppPreview: View {
             rowBassNotes: itemRowBassNotes,
             showChordTimeLabels: showChordTimeLabels,
             showChordBall: showChordBall,
+            songChordTimes: songChordTimes,
             lyricSegment: itemLyricSegment,
             onToggleLyricAccepted: onToggleLyricAccepted,
             onCommitLyricOverride: onCommitLyricOverride,
@@ -3076,6 +3080,8 @@ private struct ChordProPreviewBlockView: View {
     var showChordTimeLabels = false
     /// Draw the amber chord ball alongside the white word ball on sung lines.
     var showChordBall = false
+    /// Every chord onset in the song (placement-resolved), for cross-row ball continuity.
+    var songChordTimes: [TimeInterval] = []
     /// The live segment behind this rendered lyric line (backlog #15 Phase 2 remainder — chart
     /// interactivity); `nil` for chord-only/non-lyric blocks. Drives the accept toggle, the
     /// confidence tint, and the edited-line text when set.
@@ -3171,6 +3177,7 @@ private struct ChordProPreviewBlockView: View {
                 } else {
                     ChordProPreviewLineView(
                         line: line, showChordBall: showChordBall,
+                        songChordTimes: songChordTimes,
                         highlight: highlight, beatBall: beatBall, beatDots: beatDots,
                         rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
                         vocalPeaks: vocalPeaks, lineDuration: lineDuration,
@@ -3344,6 +3351,11 @@ private struct ChordProPreviewLineView: View {
     let line: ChordProPreviewLine
     /// Draw the amber chord ball beside the white word ball on this line.
     var showChordBall = false
+    /// EVERY chord onset in the song, placement-resolved. A row only knows its own chords, but
+    /// the chord ball has to keep moving across row boundaries — without the neighbouring onsets
+    /// it is undefined before a row's first chord and after its last, so it blinks out at the end
+    /// of one line and reappears part-way through the next.
+    var songChordTimes: [TimeInterval] = []
     var highlight: ChordProLinePlaybackHighlight?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
@@ -4199,6 +4211,29 @@ private struct ChordProPreviewLineView: View {
     /// Taps come from `beatBall.chordTimes`, which the tab editor fills from
     /// `model.placedChordTimes` — so during an A/B this ball moves with the audition and agrees
     /// with the chord click.
+    /// Brackets a row's own chord taps with the nearest chord onset on either side of the row,
+    /// pinned to the row's left and right edges. Those neighbours are NOT extra bounces — they sit
+    /// outside the visible span, so the ball is mid-arc as it crosses a row boundary instead of
+    /// vanishing. Without them the ball is only defined between a row's first and last chord,
+    /// which is why it blinked out before the end of a line and returned part-way through the
+    /// next one.
+    private func bracketed(
+        taps: [TimeInterval], xs: [CGFloat], width: CGFloat
+    ) -> (taps: [TimeInterval], xs: [CGFloat]) {
+        guard let first = taps.first, let last = taps.last else { return (taps, xs) }
+        var t = taps
+        var x = xs
+        if let previous = songChordTimes.last(where: { $0 < first - 0.001 }) {
+            t.insert(previous, at: 0)
+            x.insert(0, at: 0)
+        }
+        if let next = songChordTimes.first(where: { $0 > last + 0.001 }) {
+            t.append(next)
+            x.append(width)
+        }
+        return (t, x)
+    }
+
     private var chordBallPosition: (x: CGFloat, y: CGFloat)? {
         guard showChordBall, let beatBall, !line.chords.isEmpty, !rowChordTimes.isEmpty
         else { return nil }
@@ -4218,11 +4253,11 @@ private struct ChordProPreviewLineView: View {
         } else {
             tapXs = taps.map { chordCenterX(at: $0, beatBall: beatBall) }
         }
-        // A closing tap past the last chord so it gets a full arc rather than stopping dead.
-        taps.append(max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3))
-        tapXs.append(tapXs.last ?? 0)
+        let bracket = bracketed(
+            taps: taps, xs: tapXs,
+            width: isInstrumentalLine && lineDuration > 0 ? instrumentalTimeWidth : monospaceWidth)
         guard
-            let position = BouncingBall(beatTimes: taps, beatX: tapXs)
+            let position = BouncingBall(beatTimes: bracket.taps, beatX: bracket.xs)
                 .position(at: beatBall.currentTime)
         else { return nil }
         return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
@@ -4242,11 +4277,10 @@ private struct ChordProPreviewLineView: View {
             tapXs.append(xs[index])
         }
         guard !taps.isEmpty else { return nil }
-        taps.append(max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3))
-        tapXs.append(tapXs.last ?? 0)
+        let bracket = bracketed(taps: taps, xs: tapXs, width: (xs.last ?? 0) + Self.characterWidth)
         guard
-            let position = BouncingBall(beatTimes: taps, beatX: tapXs)
-                .position(at: beatBall.currentTime)
+            let position = BouncingBall(beatTimes: bracket.taps, beatX: bracket.xs)
+                .position(at: bracket.taps.isEmpty ? 0 : beatBall.currentTime)
         else { return nil }
         return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
     }
