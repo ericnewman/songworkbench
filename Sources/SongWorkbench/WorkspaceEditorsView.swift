@@ -3355,12 +3355,12 @@ private struct ChordProPreviewLineView: View {
     @ViewBuilder private var overriddenContent: some View {
         ZStack(alignment: .topLeading) {
             Text(effectiveOverrideText ?? "")
-                .font(.system(size: 15, design: .monospaced))
+                .font(ChordProChartTypography.lyric)
                 .foregroundStyle(Color.swTextPrimary)
                 .offset(y: line.chords.isEmpty ? 0 : 20)
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
-                    .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
+                    .font(ChordProChartTypography.chord(weight: chordWeight(for: chord)))
                     .foregroundStyle(.tint)
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(x: monospaceChordX(chord, at: index))
@@ -3611,7 +3611,7 @@ private struct ChordProPreviewLineView: View {
             }
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
-                    .font(.system(size: 13, weight: chordWeight(for: chord), design: .monospaced))
+                    .font(ChordProChartTypography.chord(weight: chordWeight(for: chord)))
                     .foregroundStyle(.tint)
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(x: chordXs[index], y: topReserve + bassReserve)
@@ -4099,7 +4099,7 @@ private struct ChordProPreviewLineView: View {
 
     private var lyricText: Text {
         guard !line.lyric.isEmpty else {
-            return Text(" ").font(.system(size: 15, design: .monospaced))
+            return Text(" ").font(ChordProChartTypography.lyric)
         }
         let characters = Array(line.lyric)
         var output = Text("")
@@ -4108,13 +4108,7 @@ private struct ChordProPreviewLineView: View {
             output =
                 output
                 + Text(String(characters[index]))
-                .font(
-                    .system(
-                        size: 15,
-                        weight: isHighlighted ? .bold : .regular,
-                        design: .monospaced
-                    )
-                )
+                .font(ChordProChartTypography.lyric(weight: isHighlighted ? .bold : .regular))
                 .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
         }
         return output

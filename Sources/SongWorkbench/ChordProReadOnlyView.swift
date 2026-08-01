@@ -4,11 +4,44 @@ import SwiftUI
 /// nothing else — the chart as a `.cho` file actually reads. This is what the ChordPro TAB shows.
 /// The Review tab uses `ChordProAppPreview` instead, which layers the playback and review chrome
 /// (ball, beat dots, waveform, bass row, confidence shading, accept/edit) over the same chart.
+/// One source of truth for the chart's text sizes, shared by the two ChordPro surfaces.
+///
+/// The Review chart (`ChordProAppPreview`) and the plain ChordPro tab (`ChordProReadOnlyView`)
+/// deliberately have SEPARATE bodies — one is defined by the overlays it draws, the other by the
+/// ones it doesn't — so the "single renderer" guarantee that used to keep their typography
+/// identical no longer applies. These constants are what replaces it. Change a size here, not at a
+/// call site.
+enum ChordProChartTypography {
+    /// Lyric text on both surfaces.
+    static let lyricSize: CGFloat = 15
+    /// Chord labels on the Review chart, which positions each label ABSOLUTELY and so is free to
+    /// use a smaller size than the lyric line under it.
+    static let chordSize: CGFloat = 13
+
+    static let lyric = Font.system(size: lyricSize, design: .monospaced)
+
+    static func lyric(weight: Font.Weight) -> Font {
+        .system(size: lyricSize, weight: weight, design: .monospaced)
+    }
+
+    static func chord(weight: Font.Weight = .semibold) -> Font {
+        .system(size: chordSize, weight: weight, design: .monospaced)
+    }
+
+    /// Chord row for COLUMN-ALIGNED rendering (`ChordProReadOnlyView`), where the chord row is a
+    /// space-padded string sitting above the lyric row. It must use `lyricSize`, not `chordSize`:
+    /// the alignment is character advances, so a smaller chord row would slide out of register
+    /// with the words it names. Weight is safe to vary — a monospaced face keeps one advance
+    /// width across weights.
+    static let columnAlignedChord = Font.system(
+        size: lyricSize, weight: .semibold, design: .monospaced)
+}
+
 struct ChordProReadOnlyView: View {
     let source: String
     var transpose: Int = 0
 
-    private static let font = Font.system(.body, design: .monospaced)
+    private static let font = ChordProChartTypography.lyric
 
     var body: some View {
         ScrollView([.horizontal, .vertical]) {
@@ -89,7 +122,7 @@ struct ChordProReadOnlyView: View {
         return VStack(alignment: .leading, spacing: 0) {
             if let chordRow = rows.chordRow {
                 Text(chordRow)
-                    .font(Self.font)
+                    .font(ChordProChartTypography.columnAlignedChord)
                     .foregroundStyle(Color.swAccent)
             }
             Text(rows.lyricRow)
