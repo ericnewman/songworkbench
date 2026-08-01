@@ -159,4 +159,63 @@ final class SongAnalysisDocumentReconciliationTests: XCTestCase {
     func testMatchingReturnsNilForEmptyEvents() {
         XCTAssertNil(EditableChordEvent.matching(rowTime: 1, in: []))
     }
+
+    // MARK: - Chord placement candidates (A/B rig)
+
+    func testPlacementCandidatesDefaultEmptyAndDecodeFromDocumentWithoutTheKey() throws {
+        // A document written before the A/B rig has no `placementCandidates` key at all; it must
+        // decode to empty rather than throwing, and report every variant as unavailable.
+        let json = Data(
+            #"{"id":"7B7A3B9E-0000-4000-8000-000000000000","time":3.5,"chord":"G"}"#.utf8)
+        let decoded = try JSONDecoder().decode(EditableChordEvent.self, from: json)
+
+        XCTAssertTrue(decoded.placementCandidates.isEmpty)
+        XCTAssertNil(decoded.placementTime(for: .beatQuantized))
+        XCTAssertNil(decoded.placementTime(for: .instrumentOnset))
+        // With nothing recorded, auditioning a variant must not move or drop the event.
+        XCTAssertEqual(decoded.effectiveTime(preferring: .instrumentOnset), 3.5)
+    }
+
+    func testPlacementCandidatesRoundTrip() throws {
+        var event = EditableChordEvent(time: 3.5, chord: "G")
+        event.placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] = 3.5
+        event.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 3.42
+
+        let restored = try JSONDecoder().decode(
+            EditableChordEvent.self, from: JSONEncoder().encode(event))
+
+        XCTAssertEqual(restored.placementTime(for: .beatQuantized), 3.5)
+        XCTAssertEqual(restored.placementTime(for: .instrumentOnset), 3.42)
+    }
+
+    func testAuditioningAVariantUsesItsCandidateTime() {
+        var event = EditableChordEvent(time: 3.5, chord: "G")
+        event.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 3.42
+
+        XCTAssertEqual(event.effectiveTime(preferring: nil), 3.5)
+        XCTAssertEqual(event.effectiveTime(preferring: .instrumentOnset), 3.42)
+        // A variant the stage never recorded falls back rather than dropping the event.
+        XCTAssertEqual(event.effectiveTime(preferring: .beatQuantized), 3.5)
+    }
+
+    func testManualTimeOutranksAnAuditionedVariant() {
+        // A hand-dragged chord is a decision, not a candidate: auditioning must never override it,
+        // or an A/B pass would silently discard the user's own corrections.
+        var event = EditableChordEvent(time: 3.5, chord: "G", manualTime: 9.0)
+        event.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 3.42
+
+        XCTAssertEqual(event.effectiveTime(preferring: .instrumentOnset), 9.0)
+    }
+
+    func testPlacementPickNormalizesReversedBoundsAndIsHalfOpen() {
+        let pick = ChordPlacementPick(start: 12, end: 4, variant: .beatQuantized)
+
+        XCTAssertEqual(pick.start, 4)
+        XCTAssertEqual(pick.end, 12)
+        XCTAssertTrue(pick.contains(4))
+        XCTAssertTrue(pick.contains(11.9))
+        // Half-open, so abutting picks can't both claim the boundary instant.
+        XCTAssertFalse(pick.contains(12))
+        XCTAssertFalse(pick.contains(3.9))
+    }
 }

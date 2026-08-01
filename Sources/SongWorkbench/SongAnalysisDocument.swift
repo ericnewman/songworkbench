@@ -204,6 +204,53 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// Which measured signal a chord event's time is anchored to. A chord change is an inference;
+/// where in time it is placed is a separate question with more than one defensible answer, and
+/// the answers disagree on real songs (measured 2026-08-01: the onset snap moves 33-99% of events
+/// depending on the song, because `InstrumentOnsetDetector` fires on ATTACKS and a chord change
+/// under sustained instrumentation produces none). Rather than pick one blind, the decoder records
+/// every candidate placement so they can be A/B'd against the audio by ear.
+///
+/// The raw values are the persisted keys of `EditableChordEvent.placementCandidates` — renaming
+/// one silently orphans existing picks, so don't.
+enum ChordPlacementVariant: String, Codable, CaseIterable, Sendable {
+    /// The decoder's own window boundary — `beatTimes[i]` for the window that won the Viterbi.
+    /// Exactly on a beat by construction (`ChordTimelineDecoder.windowEvidence`), which is why
+    /// comparing chord times to the beat grid can never validate the grid.
+    case beatQuantized
+    /// Snapped to the nearest instrumental attack by `ChordOnsetAligner` — today's shipped time.
+    case instrumentOnset
+
+    var displayName: String {
+        switch self {
+        case .beatQuantized: return "Beat"
+        case .instrumentOnset: return "Onset"
+        }
+    }
+}
+
+/// A listener's verdict that, over one span of the song, one placement variant sits better
+/// against the audio than the others. Stored as an absolute TIME RANGE rather than as section or
+/// row indices so it survives re-analysis: sections are re-derived from lyrics and can renumber,
+/// but the seconds a chorus occupies barely move. Same reasoning as
+/// `LyricBlendRowBuilder.reconciled`'s time-window overlap matching.
+struct ChordPlacementPick: Identifiable, Codable, Equatable, Sendable {
+    var id = UUID()
+    var start: TimeInterval
+    var end: TimeInterval
+    var variant: ChordPlacementVariant
+
+    init(id: UUID = UUID(), start: TimeInterval, end: TimeInterval, variant: ChordPlacementVariant)
+    {
+        self.id = id
+        self.start = min(start, end)
+        self.end = max(start, end)
+        self.variant = variant
+    }
+
+    func contains(_ time: TimeInterval) -> Bool { time >= start && time < end }
+}
+
 struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     var time: TimeInterval
@@ -218,6 +265,12 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
     /// `time` (rather than overwriting it) so reconciliation across a fresh re-analysis always has
     /// the original DETECTED time to match against — see `reconciled(newEvents:against:)`.
     var manualTime: TimeInterval? = nil
+    /// Candidate times for this same chord change under each placement rule, keyed by
+    /// `ChordPlacementVariant.rawValue`. Recorded by the harmony stage so the alternatives can be
+    /// compared against the audio without re-analysing. Empty for documents written before the
+    /// A/B rig existed, and for events whose stage produced no alternatives — callers must treat
+    /// a missing key as "this variant is unavailable", never as an error.
+    var placementCandidates: [String: TimeInterval] = [:]
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -226,6 +279,7 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         case confidence
         case accepted
         case manualTime
+        case placementCandidates
     }
 
     init(
@@ -234,7 +288,8 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         chord: String,
         confidence: Float? = nil,
         accepted: Bool = false,
-        manualTime: TimeInterval? = nil
+        manualTime: TimeInterval? = nil,
+        placementCandidates: [String: TimeInterval] = [:]
     ) {
         self.id = id
         self.time = time
@@ -242,6 +297,7 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         self.confidence = confidence
         self.accepted = accepted
         self.manualTime = manualTime
+        self.placementCandidates = placementCandidates
     }
 
     init(from decoder: Decoder) throws {
@@ -252,12 +308,30 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         confidence = try container.decodeIfPresent(Float.self, forKey: .confidence)
         accepted = try container.decodeIfPresent(Bool.self, forKey: .accepted) ?? false
         manualTime = try container.decodeIfPresent(TimeInterval.self, forKey: .manualTime)
+        placementCandidates =
+            try container.decodeIfPresent([String: TimeInterval].self, forKey: .placementCandidates)
+            ?? [:]
     }
 
     /// The position actually used for display/drag interaction: the user's manually-dragged
     /// `manualTime` if set, else the detected `time`. Reconciliation and anything comparing
     /// against fresh detection output should keep using raw `time`, never this.
     var effectiveTime: TimeInterval { manualTime ?? time }
+
+    /// This event's recorded time under `variant`, or nil when the stage produced no such
+    /// candidate (older documents, or a run where the variant's cue was unavailable).
+    func placementTime(for variant: ChordPlacementVariant) -> TimeInterval? {
+        placementCandidates[variant.rawValue]
+    }
+
+    /// Display position when a placement variant is being auditioned. `manualTime` still wins —
+    /// a hand-dragged chord is a decision, not a candidate — and a variant with no recorded
+    /// candidate falls back to `effectiveTime` so an A/B never silently drops an event.
+    func effectiveTime(preferring variant: ChordPlacementVariant?) -> TimeInterval {
+        if let manualTime { return manualTime }
+        guard let variant, let candidate = placementTime(for: variant) else { return effectiveTime }
+        return candidate
+    }
 
     /// Carries `manualTime`/`accepted` forward from a PRIOR analysis's chord events onto a
     /// freshly re-detected set, matched by nearest DETECTED `time` (never `effectiveTime`, so a
@@ -385,6 +459,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var bassNotes: [BassNoteObservation] = []
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
+    /// Listener verdicts from the chord-placement A/B, newest last. A later pick overlapping an
+    /// earlier one wins, so re-judging a span does not require deleting the old verdict.
+    var chordPlacementPicks: [ChordPlacementPick] = []
     var stems: StoredStemFiles?
     var stemSet: StoredStemSetManifest?
     var stemMixer = StemMixerModel()
@@ -407,6 +484,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case bassNotes
         case estimatedKey
         case chordConfidenceThreshold
+        case chordPlacementPicks
         case stems
         case stemSet
         case stemMixer
@@ -430,6 +508,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         bassNotes: [BassNoteObservation] = [],
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
+        chordPlacementPicks: [ChordPlacementPick] = [],
         stems: StoredStemFiles? = nil,
         stemSet: StoredStemSetManifest? = nil,
         stemMixer: StemMixerModel = StemMixerModel(),
@@ -451,6 +530,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.bassNotes = bassNotes
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
+        self.chordPlacementPicks = chordPlacementPicks
         self.stems = stems
         self.stemSet = stemSet ?? stems.map { StoredStemSetManifest(files: $0.resolved()) }
         self.stemMixer = stemMixer
@@ -491,6 +571,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             ),
             1
         )
+        chordPlacementPicks =
+            try container.decodeIfPresent([ChordPlacementPick].self, forKey: .chordPlacementPicks)
+            ?? []
         stems = try container.decodeIfPresent(StoredStemFiles.self, forKey: .stems)
         stemSet =
             try container.decodeIfPresent(StoredStemSetManifest.self, forKey: .stemSet)
