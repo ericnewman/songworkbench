@@ -13,9 +13,20 @@ final class ModelPackageManagerTests: XCTestCase {
                 "parakeet-tdt-0.6b-v3-coreml-int8",
                 "whisper-large-v3-turbo-q5-0",
                 "drumsep-onnx",
+                "karaoke-bsroformer-onnx",
             ])
         )
         XCTAssertTrue(ModelCatalog.optionalRefinementIDs.contains(ModelCatalog.drumsep.id))
+        // Both refiners must stay optional: a mandatory new package blocks first-run onboarding.
+        XCTAssertTrue(ModelCatalog.optionalRefinementIDs.contains(ModelCatalog.karaokeVocals.id))
+        XCTAssertFalse(
+            AnalysisCapabilityProfile.profile(for: .desktop)
+                .requiresModelPackage(ModelCatalog.karaokeVocals)
+        )
+        XCTAssertTrue(
+            AnalysisCapabilityProfile.desktopAdvanced.offersModelPackage(
+                ModelCatalog.karaokeVocals)
+        )
         XCTAssertFalse(
             AnalysisCapabilityProfile.profile(for: .desktop)
                 .requiresModelPackage(ModelCatalog.drumsep)

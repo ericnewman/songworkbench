@@ -140,7 +140,9 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
 
     /// Packages shown in the Models UI for this tier, including optional refiners.
     func offersModelPackage(_ descriptor: ModelPackageDescriptor) -> Bool {
-        if descriptor.id == ModelCatalog.drumsep.id {
+        if descriptor.id == ModelCatalog.drumsep.id
+            || descriptor.id == ModelCatalog.karaokeVocals.id
+        {
             return platform == .desktop
                 && (stemSeparationTier == .advancedDesktop
                     || stemSeparationTier == .fullSixStem)

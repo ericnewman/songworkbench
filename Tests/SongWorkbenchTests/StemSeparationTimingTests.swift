@@ -93,6 +93,64 @@ final class StemSeparationTimingTests: XCTestCase {
         }
     }
 
+    /// B8: runs the karaoke refiner over a real vocals stem and writes lead/backing.
+    ///
+    /// Segmentation and overlap-add are NOT reimplemented here — the engine reuses
+    /// `CoreMLStemSeparationEngine`, the same windowing the base six-stem engine uses, so the
+    /// fixed 262144-sample graph works on full-length songs.
+    func testKaraokeRefineVocalsStem() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["SW_KARAOKE"] == "1" else {
+            throw XCTSkip(
+                "manual harness; set SW_KARAOKE=1 plus SW_KARAOKE_MODEL, SW_KARAOKE_VOCALS, "
+                    + "SW_KARAOKE_OUTDIR"
+            )
+        }
+        guard let modelPath = environment["SW_KARAOKE_MODEL"],
+            let vocalsPath = environment["SW_KARAOKE_VOCALS"],
+            let outPath = environment["SW_KARAOKE_OUTDIR"]
+        else {
+            throw XCTSkip("SW_KARAOKE_MODEL, SW_KARAOKE_VOCALS, SW_KARAOKE_OUTDIR are required")
+        }
+        let outputURL = URL(fileURLWithPath: outPath)
+        try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+        let vocalsURL = URL(fileURLWithPath: vocalsPath)
+        let audioDuration = Self.duration(of: vocalsURL) ?? 0
+        print("kara_vocals=\(vocalsURL.lastPathComponent)")
+        print("kara_audio_duration_s=\(String(format: "%.1f", audioDuration))")
+        print("kara_segment_frames=\(ONNXKaraokeVocalSeparationEngine.segmentFrames)")
+        print("kara_overlap_frames=\(ONNXKaraokeVocalSeparationEngine.overlapFrames)")
+
+        let loadStart = ContinuousClock.now
+        let engine = try ONNXKaraokeVocalSeparationEngine(
+            modelURL: URL(fileURLWithPath: modelPath))
+        print(
+            "kara_model_load_s=\(String(format: "%.2f", Self.seconds(loadStart.duration(to: .now))))"
+        )
+
+        let phases = PhaseTracker()
+        let start = ContinuousClock.now
+        let result = try await engine.separate(
+            request: StemSeparationRequest(inputURL: vocalsURL, outputDirectory: outputURL)
+        ) { progress in
+            phases.noteIfChanged(progress.phase.rawValue)
+        }
+        let seconds = Self.seconds(start.duration(to: .now))
+        print("kara_wall_s=\(String(format: "%.1f", seconds))")
+        if audioDuration > 0 {
+            print("kara_realtime_factor=\(String(format: "%.2f", audioDuration / seconds))x")
+        }
+        // Transport slots: vocals carries lead, other carries backing.
+        let lead = result.stems.vocals
+        let backing = result.stems.other
+        for (label, url) in [("lead", lead), ("backing", backing)] {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            print(
+                "kara_\(label)=\(url.lastPathComponent) bytes=\((attributes?[.size] as? Int) ?? 0)")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
     private static func duration(of url: URL) -> TimeInterval? {
         guard let file = try? AVAudioFile(forReading: url) else { return nil }
         let rate = file.processingFormat.sampleRate

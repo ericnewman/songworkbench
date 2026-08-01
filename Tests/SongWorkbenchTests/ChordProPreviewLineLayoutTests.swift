@@ -20,7 +20,13 @@ final class ChordProPreviewLineLayoutTests: XCTestCase {
         XCTAssertEqual(width, 800, accuracy: 0.001)
     }
 
-    func testRhythmicInstrumentalWidthPreservesWiderChordExtent() {
+    /// SUPERSEDES `testRhythmicInstrumentalWidthPreservesWiderChordExtent`, which asserted the
+    /// opposite: that a wide chord extent (40 columns x 10pt = 400) beat the row's real 2s x 100
+    /// = 200. That rule is what let TEXT stretch a row past the time it covers, so rows stopped
+    /// being comparable to each other (Eric: "these lines represent time - and everything else
+    /// needs to align to this time-based reference"). On the rhythmic axis, time is now the only
+    /// input; crowding is answered by `pixelsPerSecond`, not by a wider row.
+    func testRhythmicInstrumentalWidthIsTimeOnly() {
         let width = ChordProPreviewLineLayout.instrumentalWidth(
             rhythmicSpacing: true,
             lineDuration: 2,
@@ -29,7 +35,7 @@ final class ChordProPreviewLineLayoutTests: XCTestCase {
             pixelsPerSecond: 100
         )
 
-        XCTAssertEqual(width, 400, accuracy: 0.001)
+        XCTAssertEqual(width, 200, accuracy: 0.001)
     }
 
     func testInstrumentalWidthFallsBackToChordExtentWithoutRhythmicTiming() {

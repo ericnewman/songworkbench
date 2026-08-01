@@ -3215,6 +3215,21 @@ enum ChordProPreviewLineLayout {
     /// ever need their own scale again.
     static let instrumentalReadableScale: CGFloat = 1.0
 
+    /// THE time scale for the chart: one second of song is this many points, on every row and
+    /// every row kind. Everything positional derives from it — word x, chord x, row width, the
+    /// beat/bar grid, the waveform strip, and the drag-to-retime gesture — so the chart is one
+    /// time-based reference rather than a set of independently-sized rows.
+    ///
+    /// 150, not 100: at 100, measured over every persisted song, 51 % of adjacent word pairs
+    /// overlapped at their true time positions and had to be nudged apart; 150 halves that to
+    /// 23 %. The tail can't be bought out (p98 needs ~1000 px/s for melismatic and fast-sung
+    /// pairs), so crowding is answered here, by widening the scale — never by letting a row grow
+    /// past the time it covers.
+    ///
+    ///     px/s   100    125    150    175    200    250
+    ///     nudged 51.2%  32.6%  23.3%  16.8%  13.7%   9.2%
+    static let pixelsPerSecond: CGFloat = 150
+
     /// Both row kinds follow one rule: width is real duration at `pixelsPerSecond`, widened only
     /// when the row's own text would otherwise collide. For a lyric row that floor comes from the
     /// words; for a chord-only row it comes from the chord columns.
@@ -3226,10 +3241,13 @@ enum ChordProPreviewLineLayout {
         pixelsPerSecond: CGFloat
     ) -> CGFloat {
         let chordExtentWidth = chordColumnExtent * characterWidth
+        // Off the rhythmic axis (or with no duration) there is no time to size by, so the chord
+        // columns are all that's left.
         guard rhythmicSpacing, lineDuration > 0 else { return chordExtentWidth }
-        let readableTimeWidth =
-            CGFloat(lineDuration) * pixelsPerSecond * instrumentalReadableScale
-        return max(chordExtentWidth, readableTimeWidth)
+        // On it, time is the only input — symmetrical with the sung row above. Taking
+        // `max(chordExtentWidth, …)` let a row holding many chord columns draw wider than its
+        // duration, so instrumental rows drifted off the same axis for the same reason.
+        return CGFloat(lineDuration) * pixelsPerSecond * instrumentalReadableScale
     }
 }
 
@@ -3247,23 +3265,8 @@ private struct ChordProPreviewLineView: View {
     private static let ballApexHeight: CGFloat = 18
     private static let ballDiameter: CGFloat = 11
 
-    /// Pixels per second of song time used to space words in rhythmic mode. Sized so one beat at
-    /// typical tempos exceeds a monospace glyph, so words rarely have to be nudged off their true
-    /// time position to avoid overlapping — keeping the layout on a consistent beat grid.
-    ///
-    /// 100 was too tight to hold that promise: measured over every persisted song, **51 %** of
-    /// adjacent word pairs overlapped at their true time positions and had to be pushed apart, and
-    /// each nudge widens the row past its real duration (`stripWidth`'s `wordsWidth` floor). That
-    /// is what made sung rows visibly longer than instrumental rows covering the same number of
-    /// bars. 150 halves it to 23 %. The tail cannot be bought out — melismatic and fast-sung pairs
-    /// need p98 ≈ 1000 px/s — so this trades width for fidelity rather than trying to reach zero:
-    ///
-    ///     px/s   100    125    150    175    200    250
-    ///     nudged 51.2%  32.6%  23.3%  16.8%  13.7%   9.2%
-    ///
-    /// At 150 the widest row in the catalogue is ~1500 px, which the horizontal ScrollView
-    /// already handles.
-    private static let pixelsPerSecond: CGFloat = 150
+    /// The chart's one time scale — see `ChordProPreviewLineLayout.pixelsPerSecond`.
+    private static let pixelsPerSecond: CGFloat = ChordProPreviewLineLayout.pixelsPerSecond
 
     /// Thin top row reserved above rhythmic-mode content for the beat dots, so they sit
     /// above the words instead of overlapping them.
@@ -3575,16 +3578,21 @@ private struct ChordProPreviewLineView: View {
     private var stripWidth: CGFloat {
         if isInstrumentalLine, lineDuration > 0 { return instrumentalTimeWidth }
         guard !rhythmicWords.isEmpty, lineDuration > 0 else { return monospaceWidth }
+        // A row's extent is the TIME it covers, and nothing else. `wordsWidth` — the extent of the
+        // words after collision nudging — used to be part of this `max`, which let a line's TEXT
+        // stretch it past its real duration. That is what let a short, word-dense line render
+        // wider than a long one and knocked every row off the shared axis (Eric: "a short lyric
+        // line shouldn't fool the spacing algorithm — these lines represent time — and everything
+        // else needs to align to this time-based reference").
+        //
+        // `trailingEndX` stays in: the trailing melody is real song time beyond the last word, not
+        // text. If words now crowd, the answer is `pixelsPerSecond`, not a wider row.
         let endX = rhythmicX(forTime: lineStartTime + lineDuration)
-        let wordsWidth =
-            (rhythmicWordXs.last ?? 0)
-            + CGFloat(max(rhythmicWords.last?.text.count ?? 1, 1)) * Self.characterWidth
-            + Self.characterWidth
         let trailingEndX =
             trailingMelodySeconds > 0
             ? rhythmicX(forTime: (rhythmicWords.last?.end ?? lineStartTime) + trailingMelodySeconds)
             : 0
-        return max(1, max(max(endX, wordsWidth), trailingEndX))
+        return max(1, max(endX, trailingEndX))
     }
 
     /// A thin vocal-stem audio strip for this line, drawn through the words' actual x-axis so energy

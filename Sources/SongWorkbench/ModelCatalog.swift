@@ -110,10 +110,45 @@ enum ModelCatalog {
         entryPointRelativePath: "drumsep.onnx"
     )
 
-    static let all = [htdemucs, parakeetFastDraft, whisperAccuracy, drumsep]
+    /// Lead/backing vocal refiner for Advanced Desktop. Optional — never blocks onboarding.
+    ///
+    /// Unlike every other entry, this artifact is OUR OWN export (see `tools/karaoke_export/`):
+    /// the upstream weights ship as a PyTorch `.ckpt`, and the community ONNX exports are
+    /// spectrogram/mask-only, which this codebase cannot consume (it has no inverse STFT). The
+    /// export bundles STFT+ISTFT into the graph so it satisfies the waveform contract.
+    ///
+    /// NOT YET HOSTED: `downloadURL` is a placeholder until the artifact is published. Until
+    /// then the package must be installed manually into the model directory. The sha256/size
+    /// below are the real values for the verified export.
+    static let karaokeVocals = ModelPackageDescriptor(
+        id: "karaoke-bsroformer-onnx",
+        displayName: "Karaoke BS-RoFormer ONNX",
+        purpose: "Vocal refinement: lead and backing vocals",
+        version: "anvuew-1",
+        minimumOSVersion: "14.0",
+        license: ModelArtifactLicense(
+            name: "Unspecified (personal use)",
+            attribution:
+                "karaoke_bs_roformer by anvuew; BS-RoFormer architecture by lucidrains/ZFTurbo; "
+                + "waveform ONNX export by this project (tools/karaoke_export)"
+        ),
+        source: .files([
+            ModelPackageComponent(
+                relativePath: "karaoke_waveform.onnx",
+                downloadURL: URL(
+                    string: "https://example.invalid/karaoke_waveform.onnx"
+                )!,
+                expectedSizeBytes: 243_754_698,
+                sha256: "08e67b02a3324191b8564006e5c823c16bc4e712f99e78f92785c172e0c6db63"
+            )
+        ]),
+        entryPointRelativePath: "karaoke_waveform.onnx"
+    )
+
+    static let all = [htdemucs, parakeetFastDraft, whisperAccuracy, drumsep, karaokeVocals]
 
     /// Packages that refine existing stems rather than power base analysis.
-    static let optionalRefinementIDs: Set<String> = [drumsep.id]
+    static let optionalRefinementIDs: Set<String> = [drumsep.id, karaokeVocals.id]
 
     private static let parakeetBaseURL =
         "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/main/"

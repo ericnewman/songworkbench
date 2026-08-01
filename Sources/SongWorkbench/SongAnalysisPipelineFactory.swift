@@ -85,8 +85,9 @@ struct SongAnalysisPipelineFactory: Sendable {
         }
         if capabilityProfile.stemSeparationTier == .advancedDesktop {
             // Populate optional refiner package status for factory assembly without
-            // making DrumSep required for onboarding.
+            // making these required for onboarding.
             _ = await installedPackage(ModelCatalog.drumsep)
+            _ = await installedPackage(ModelCatalog.karaokeVocals)
         }
         let stemRefiners: [any StemRefinementEngine]
         if capabilityProfile.stemSeparationTier == .advancedDesktop, stemEngine != nil {
@@ -179,6 +180,21 @@ struct StemRefinementEngineFactory: Sendable {
                         identifier: "drumsep-onnx-v1",
                         parentStemID: StemKind.drums.id,
                         outputs: ONNXDrumPieceSeparationEngine.refinementOutputs,
+                        engine: deferred
+                    )
+                )
+            }
+            if case .installed(let package) = context.modelStatuses[ModelCatalog.karaokeVocals.id] {
+                let deferred = DeferredStemSeparationEngine(
+                    metadata: ONNXKaraokeVocalSeparationEngine.metadata
+                ) {
+                    try ONNXKaraokeVocalSeparationEngine(modelURL: package.entryPointURL)
+                }
+                engines.append(
+                    NativeStemRefinementEngine(
+                        identifier: "karaoke-bsroformer-v1",
+                        parentStemID: StemKind.vocals.id,
+                        outputs: ONNXKaraokeVocalSeparationEngine.refinementOutputs,
                         engine: deferred
                     )
                 )
