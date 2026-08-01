@@ -4200,11 +4200,24 @@ private struct ChordProPreviewLineView: View {
     /// `model.placedChordTimes` — so during an A/B this ball moves with the audition and agrees
     /// with the chord click.
     private var chordBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard showChordBall, let beatBall, !beatBall.words.isEmpty, !line.chords.isEmpty,
-            !rowChordTimes.isEmpty
+        guard showChordBall, let beatBall, !line.chords.isEmpty, !rowChordTimes.isEmpty
         else { return nil }
         var taps = rowChordTimes.sorted()
-        var tapXs = taps.map { chordCenterX(at: $0, beatBall: beatBall) }
+        // Instrumental rows are drawn TIME-scaled (strip + chords), so the ball must travel the
+        // same axis: each tap lands at its time-proportional x, not at the chord token's
+        // character column, which no longer matches the rendered layout. (Carried over from the
+        // white ball's old chord-tracking branch — the axis rule belongs with whoever draws the
+        // chords, and that is now this ball.)
+        var tapXs: [CGFloat]
+        if isInstrumentalLine, lineDuration > 0 {
+            let span = max(beatBall.segmentEnd - beatBall.segmentStart, 0.0001)
+            let width = instrumentalTimeWidth
+            tapXs = taps.map {
+                width * CGFloat(min(max(($0 - beatBall.segmentStart) / span, 0), 1))
+            }
+        } else {
+            tapXs = taps.map { chordCenterX(at: $0, beatBall: beatBall) }
+        }
         // A closing tap past the last chord so it gets a full arc rather than stopping dead.
         taps.append(max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3))
         tapXs.append(tapXs.last ?? 0)
@@ -4218,7 +4231,7 @@ private struct ChordProPreviewLineView: View {
     /// The amber chord ball in rhythmic mode — same idea as `chordBallPosition`, positioned over
     /// the rhythmic chord x-layout so it sits on the glyphs as actually rendered.
     private var rhythmicChordBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard showChordBall, let beatBall, !beatBall.words.isEmpty else { return nil }
+        guard showChordBall, let beatBall else { return nil }
         let xs = rhythmicChordXs
         guard !xs.isEmpty else { return nil }
         let sorted = rowChordTimes.enumerated().sorted { $0.element < $1.element }
@@ -4245,12 +4258,12 @@ private struct ChordProPreviewLineView: View {
         // then — from real word timings when present, else an interpolated
         // position — and arcs to the next beat's word. While waiting through an
         // instrumental gap it pulses in place at the left of the upcoming line.
-        // Chord-tracking for the WHITE ball is now the instrumental-row case only: on a sung row
-        // the chords get their own amber ball (`chordBallPosition`) and the white one stays on
-        // the words, so the two cues can be compared instead of one replacing the other.
-        let tracksChords =
-            !beatBall.chordTimes.isEmpty && !line.chords.isEmpty && beatBall.words.isEmpty
-        guard tracksChords || beatBall.isWaiting || !beatBall.words.isEmpty || !wordCenters.isEmpty
+        // The white ball tracks WORDS, full stop (Eric, 2026-08-01: "the amber ball shouldn't
+        // care about sung lines"). It used to take over chord duty on rows with no words; that is
+        // the amber ball's job now, and keeping both would put two balls on identical taps.
+        // A chord-only row therefore shows the waiting pulse (or nothing) in white, and the amber
+        // ball carries the chords.
+        guard beatBall.isWaiting || !beatBall.words.isEmpty || !wordCenters.isEmpty
         else { return nil }
 
         let beats = BouncingBall.beats(
@@ -4263,20 +4276,7 @@ private struct ChordProPreviewLineView: View {
 
         var times = beats
         let xs: [CGFloat]
-        if tracksChords {
-            if isInstrumentalLine, lineDuration > 0 {
-                // Instrumental rows are drawn TIME-scaled (strip + chords), so the ball must
-                // travel the same axis: each beat lands at its time-proportional x, not at the
-                // chord token's character column (which no longer matches the rendered layout).
-                let span = max(beatBall.segmentEnd - beatBall.segmentStart, 0.0001)
-                let width = instrumentalTimeWidth
-                xs = beats.map {
-                    width * CGFloat(min(max(($0 - beatBall.segmentStart) / span, 0), 1))
-                }
-            } else {
-                xs = beats.map { chordCenterX(at: $0, beatBall: beatBall) }
-            }
-        } else if beatBall.isWaiting {
+        if beatBall.isWaiting {
             xs = beats.map { _ in Self.characterWidth / 2 }
         } else if !beatBall.words.isEmpty {
             // TAP THE WORDS (user-chosen model 2026-07-02): bounce bottoms land on word
