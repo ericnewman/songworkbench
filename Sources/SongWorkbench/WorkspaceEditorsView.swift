@@ -1025,10 +1025,10 @@ struct ChordProTabEditor: View {
     /// people reading the chart want to see. Off by default (Eric: make these labels optional,
     /// default off).
     @AppStorage("reviewShowChordTimeLabels") private var showChordTimeLabels = false
-    /// Ball taps CHORD onsets instead of word onsets on sung lines. Eric's default ball model taps
-    /// words (2026-07-02) because that is what a singer follows — but when the question is where
-    /// the chords sit, a ball tracking words is measuring the wrong thing. Off by default.
-    @AppStorage("reviewBallTracksChords") private var ballTracksChords = false
+    /// Show a second, amber ball bouncing chord-onset to chord-onset alongside the white word
+    /// ball. The white ball keeps tapping words (Eric's model, 2026-07-02) — this adds the chord
+    /// cue next to it rather than replacing it, because what matters is how the two RELATE.
+    @AppStorage("reviewShowChordBall") private var ballTracksChords = true
     /// Drives the small chord-confidence-shading legend popover in the toolbar (backlog #15).
     @State private var showConfidenceLegend = false
 
@@ -1206,7 +1206,7 @@ struct ChordProTabEditor: View {
                     Toggle("Show Bass Notes", isOn: $showBassNotes)
                         .disabled(model.bassNotes.isEmpty)
                     Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
-                    Toggle("Ball Taps Chord Onsets", isOn: $ballTracksChords)
+                    Toggle("Chord Ball (amber)", isOn: $ballTracksChords)
                 } label: {
                     Label("View", systemImage: "eye")
                 }
@@ -3764,10 +3764,11 @@ private struct ChordProPreviewLineView: View {
         let chordXs = rhythmicChordXs
         let bassXs = rhythmicBassXs
         let ball = rhythmicBallPosition
+        let chordBall = rhythmicChordBallPosition
         // Reserve space above the content: the full ball reserve when the ball is shown, else a
         // thin row for the beat dots, else nothing (so lines without either keep their height).
         let topReserve: CGFloat =
-            ball != nil
+            (ball != nil || chordBall != nil)
             ? Self.ballTopReserve : (dots.isEmpty ? 0 : Self.rhythmicDotTopReserve)
         // Positioned bass-note row (when present) sits between the reserve and the chords;
         // chords/words shift down by this amount so nothing overlaps.
@@ -3840,6 +3841,14 @@ private struct ChordProPreviewLineView: View {
                     )
                     .help(
                         "\(restBeats)-beat rest: the voice stops here before the next line")
+            }
+            if let chordBall {
+                Circle()
+                    .fill(Color.swAmber)
+                    .frame(width: Self.ballDiameter, height: Self.ballDiameter)
+                    .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
+                    .opacity(0.95)
+                    .position(x: chordBall.x, y: chordBall.y)
             }
             if let ball {
                 Circle()
@@ -4114,6 +4123,14 @@ private struct ChordProPreviewLineView: View {
             }
             .offset(y: Self.ballTopReserve)
 
+            if let ball = chordBallPosition {
+                Circle()
+                    .fill(Color.swAmber)
+                    .frame(width: Self.ballDiameter, height: Self.ballDiameter)
+                    .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
+                    .opacity(0.95)
+                    .position(x: ball.x, y: ball.y)
+            }
             if let ball = ballPosition {
                 Circle()
                     .fill(Color.white)
@@ -4164,6 +4181,56 @@ private struct ChordProPreviewLineView: View {
 
     /// The ball's center in this line's coordinate space, or `nil` when no ball should
     /// be drawn (no beat-ball value, no resolvable beats, or playhead outside the arc).
+    /// The amber chord ball: bounces chord-onset to chord-onset on a SUNG line, alongside the
+    /// white word ball. Two balls rather than a mode switch because the question is how the
+    /// chords sit RELATIVE to the words — a single ball showing one or the other turns that into
+    /// a memory test. Instrumental rows are unaffected: they have no words, so their existing
+    /// single white ball keeps tracking chords.
+    ///
+    /// Taps come from `beatBall.chordTimes`, which the tab editor fills from
+    /// `model.placedChordTimes` — so during an A/B this ball moves with the audition and agrees
+    /// with the chord click.
+    private var chordBallPosition: (x: CGFloat, y: CGFloat)? {
+        guard let beatBall, !beatBall.words.isEmpty, !beatBall.chordTimes.isEmpty,
+            !line.chords.isEmpty
+        else { return nil }
+        var taps = beatBall.chordTimes.sorted()
+        var tapXs = taps.map { chordCenterX(at: $0, beatBall: beatBall) }
+        // A closing tap past the last chord so it gets a full arc rather than stopping dead.
+        taps.append(max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3))
+        tapXs.append(tapXs.last ?? 0)
+        guard
+            let position = BouncingBall(beatTimes: taps, beatX: tapXs)
+                .position(at: beatBall.currentTime)
+        else { return nil }
+        return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
+    }
+
+    /// The amber chord ball in rhythmic mode — same idea as `chordBallPosition`, positioned over
+    /// the rhythmic chord x-layout so it sits on the glyphs as actually rendered.
+    private var rhythmicChordBallPosition: (x: CGFloat, y: CGFloat)? {
+        guard let beatBall, !beatBall.words.isEmpty, !beatBall.chordTimes.isEmpty else {
+            return nil
+        }
+        let xs = rhythmicChordXs
+        guard !xs.isEmpty else { return nil }
+        let sorted = rowChordTimes.enumerated().sorted { $0.element < $1.element }
+        var taps: [TimeInterval] = []
+        var tapXs: [CGFloat] = []
+        for (index, time) in sorted where xs.indices.contains(index) {
+            taps.append(time)
+            tapXs.append(xs[index])
+        }
+        guard !taps.isEmpty else { return nil }
+        taps.append(max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3))
+        tapXs.append(tapXs.last ?? 0)
+        guard
+            let position = BouncingBall(beatTimes: taps, beatX: tapXs)
+                .position(at: beatBall.currentTime)
+        else { return nil }
+        return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
+    }
+
     private var ballPosition: (x: CGFloat, y: CGFloat)? {
         guard let beatBall else { return nil }
         // The ball pulses on the detected beats (BPM-synthesized when no beat
@@ -4171,7 +4238,11 @@ private struct ChordProPreviewLineView: View {
         // then — from real word timings when present, else an interpolated
         // position — and arcs to the next beat's word. While waiting through an
         // instrumental gap it pulses in place at the left of the upcoming line.
-        let tracksChords = !beatBall.chordTimes.isEmpty && !line.chords.isEmpty
+        // Chord-tracking for the WHITE ball is now the instrumental-row case only: on a sung row
+        // the chords get their own amber ball (`chordBallPosition`) and the white one stays on
+        // the words, so the two cues can be compared instead of one replacing the other.
+        let tracksChords =
+            !beatBall.chordTimes.isEmpty && !line.chords.isEmpty && beatBall.words.isEmpty
         guard tracksChords || beatBall.isWaiting || !beatBall.words.isEmpty || !wordCenters.isEmpty
         else { return nil }
 
