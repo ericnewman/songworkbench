@@ -134,7 +134,58 @@ the very gate meant to judge backing-stem quality. The repo already carries an u
 instance of this risk: the DrumSep note says "STFT packing still needs PyTorch golden parity".
 Adding a second, larger unvalidated DSP path on top is how this becomes unfalsifiable.
 
-### Options (need a decision before B3)
+### B2 REDONE via PATH (a) — 2026-07-31 — WAVEFORM EXPORT SUCCEEDED
+
+Decision was path (a): export a waveform-in/waveform-out ONNX ourselves, no Python at runtime.
+
+**Model chosen:** `karaoke_bs_roformer_anvuew.ckpt` + `karaoke_bs_roformer_anvuew.yaml` from
+HuggingFace `anvuew/karaoke_bs_roformer`. 204,486,925 bytes. BS-RoFormer, `num_stems: 1` (emits
+lead vocals; backing = input − lead). n_fft 2048 / hop 512 / dim 256 / depth 12. Chosen over the
+mel-band karaoke checkpoints because they are 1.7 GB vs 195 MB. No declared licence on either
+repo — acceptable under the personal-use gate, NOT under any future commercial ship.
+
+**Architecture source:** ZFTurbo `Music-Source-Separation-Training` `models/bs_roformer/`, NOT the
+`bs-roformer` pip package. The pip package (1.2.4) has moved to hyper-connections and mismatches
+this checkpoint by **668 missing / 240 unexpected** keys. ZFTurbo's code loads it at
+**missing=0 unexpected=0**.
+
+**Export:** `scratchpad/export_karaoke.py` — mirrors `BSRoformer.forward`'s inference path in
+pure real arithmetic (no complex tensors anywhere), with STFT and ISTFT rebuilt from conv1d /
+matmul-IDFT / fold overlap-add, exactly the `tools/demucs_export/realstft.py` trick. Result:
+**`karaoke_waveform.onnx`, 232.5 MB, opset 18.**
+
+**CONTRACT GATE — PASSED (this is what killed KARA_2):**
+
+```
+input  name=input  shape=[1, 2, 262144] rank=3   <- WAVEFORM
+output name=output shape=[1, 2, 262144] rank=3   <- WAVEFORM
+```
+
+**GOLDEN PARITY — PASSED:** ONNX vs PyTorch reference on real audio
+**SDR 103.1 dB**, max_abs 1.99e-05, mean_abs 4.77e-07. (Synthetic-noise input: 91.8 dB.)
+This beats the demucs export precedent (79 dB), so a later listening test judges the MODEL, not
+the export.
+
+Three export blockers hit and fixed, all worth knowing for the next export:
+
+1. **OOM at the training chunk.** 640000 samples = 1251 frames; time-axis attention is O(T²) and
+   the tracer holds every intermediate → SIGKILL. Exported at **262144 (5.9 s)** instead. The
+   chunk is baked into the graph, so this also becomes the app's segment length.
+2. **`aten::col2im` needs opset 18** (`F.fold`), and its symbolic requires a **static**
+   `output_size` — deriving it from traced tensor shapes fails with
+   `'NoneType' object is not subscriptable`. Frame/bin counts are now Python int constants.
+3. **Kernel precision, the subtle one.** Building the DFT kernels in float32 gave only 86 dB on
+   the forward STFT, which the 12-layer transformer amplified to **48 dB** end-to-end. The angle
+   `2πkn/N` reaches k·n ≈ 2.1e6, past float32's resolution. Building kernels in float64 and
+   casting to float32 → forward STFT 121.6 dB, end-to-end **103.1 dB**, at zero runtime cost
+   (they are graph constants).
+
+- [ ] B3-B8 — unblocked, awaiting Stage 2 approval.
+- [ ] Confirm the app's bundled ONNX Runtime loads an **opset 18** graph (verification started).
+- [ ] Note for Stage 2: at 262144-sample segments the refiner runs on the vocals stem only; the
+      base pass already peaks 3.91 GB, so measure the cascade's added peak before any iPad claim.
+
+### Options considered before path (a) was chosen (kept for the record)
 
 - **(a) Find a waveform-in/waveform-out karaoke export.** Zero new DSP; drops straight into the
   existing refiner path. Cost: Mel-Band RoFormer karaoke weights ship as PyTorch `.ckpt`, so this
@@ -150,7 +201,68 @@ Adding a second, larger unvalidated DSP path on top is how this becomes unfalsif
 
 Recommendation: **(c) to get playable stems now, (a) as the shipping path.** (b) only if native
 iPad lead/backing becomes a firm requirement.
-- [ ] B3 — Add `ModelPackageDescriptor` + `optionalRefinementIDs` entry.
+### B3-B8 EXECUTED 2026-07-31 — infrastructure works, MODEL IS WRONG
+
+- [x] B3 — `ModelCatalog.karaokeVocals` added, in `optionalRefinementIDs`. Test asserts both that
+      it is optional and that it is offered on Advanced Desktop, so it can never block onboarding.
+- [x] B4 — `Sources/SongWorkbench/ONNXKaraokeVocalSeparationEngine.swift`. Mirrors DrumSep's
+      shape but NOT its frequency packing: this graph carries its own STFT+ISTFT, so the
+      predictor passes raw samples both ways. Lead = model output, backing = parent − lead.
+- [x] B5 — Registered in `StemRefinementEngineFactory.production`, parent `vocals` →
+      `.vocalLead`/`.vocalBacking`, macOS + Advanced Desktop only.
+- [x] **Stitching — no new code.** The engine wraps `CoreMLStemSeparationEngine` with
+      `segmentFrames 262144 / overlapFrames 65536` (quarter overlap, same ratio as the base
+      engine), so the fixed 5.9 s graph is windowed and overlap-added by the SAME code path the
+      six-stem separator uses. Verified on a full 225.6 s stem.
+- [x] B6a — **Transcription cannot regress, structurally.**
+      `StemRefinementPipelineEngine.separate` returns `stems: baseResult.stems`
+      (`StemSeparation.swift:795-799`) — the flat `StemFiles` is passed through untouched, and
+      refinement only adds entries to the hierarchical `stemSet`. ASR reads
+      `stems?.resolved().vocals` (`AnalysisStage.swift:250`, `SongAnalysisPipeline.swift:371`),
+      i.e. the parent. Same for the vocal-activity envelope and stem export.
+- [x] B6b — Playback picks up children: `StemMixGraph.activeNodes` hides any parent that has
+      children (`StemSeparation.swift:347-351`), and both `StemMixerChannelProjector` and
+      `StemWaveformLaneProjector` project off that frontier.
+- [x] Cache invalidation — `StemRecipeIdentity` hashes `refiners.map(\.cacheIdentity)`
+      (`StemSeparation.swift:807`), so adding this refiner changes the recipe key and old stems
+      are re-derived. No manual invalidation.
+- [x] B7 — Reconstruction is EXACT by construction: lead + backing vs parent = **150.3 dB SDR**
+      (residual rms 3.5e-09), because backing is the residual.
+- [x] **Measured memory — 8.74 GB peak RSS** for the refiner alone on a 225.6 s stem, versus
+      3.91 GB for the base six-stem pass. Runtime 256.2 s = **0.88x realtime** (slower than
+      playback). **iPad verdict: impossible.** 8.74 GB is ~3x the ~3 GB per-process ceiling, and
+      that is the cascade stage on its own. macOS-only, and expensive even there.
+- [ ] B8 — **QUALITY GATE FAILED. The checkpoint is the wrong kind of model.**
+
+`anvuew/karaoke_bs_roformer` is a **vocals-vs-instrumental isolator, not a lead-vs-backing
+model**, despite the repo name. Evidence:
+
+| test | result | reading |
+| --- | --- | --- |
+| its own config | `instruments: ['Vocals','Instrumental']`, `target_instrument: Vocals` | trained to split vocals from music |
+| output vs the base demucs vocals stem | energy ratio **0.847**, correlation **+0.931** | it reproduces the stem we already have |
+| fed the FULL MIX | lead/residual corr **+0.021** | clean, in-distribution separation |
+| fed the VOCALS STEM (our cascade) | lead/residual corr **+0.514** | heavy leakage — same voice split across both outputs |
+| energy split on vocals stem | lead 28% / backing 72% | implausible for a lead isolate |
+| band split | lead 24-31% uniformly across low/mid/high | no vocal-band concentration |
+
+So the cascade feeds it out-of-distribution input, and what comes out is not lead vs backing.
+**The lead-only fallback does not apply** — that assumed a good lead and a weak backing; here
+neither output is a lead vocal.
+
+- [ ] **NEXT — pick a genuine lead/backing checkpoint.** Look for one whose config declares
+      lead/backing (or `instruments: ['lead','back']`-style) rather than Vocals/Instrumental, and
+      verify it BEFORE exporting by checking (a) the config's instrument list and (b) that its
+      output on a full mix is a strict *subset* of the vocals stem (energy ratio well below 1,
+      not ~0.85). The mel-band `becruily` karaoke checkpoint (1.7 GB) is the next candidate.
+      The export toolchain and the entire Swift integration are reusable as-is — only the
+      artifact changes.
+- [ ] Re-run B8 once a correct checkpoint is exported.
+- [ ] Host the artifact: `ModelCatalog.karaokeVocals` currently carries a placeholder
+      `example.invalid` download URL and the model was installed manually for this test. Real
+      sha256/size ARE recorded. Not installable by a normal user yet.
+
+#### Superseded checklist entries
 - [ ] B4 — Add an ONNX predictor + engine modelled on `ONNXDrumPieceSeparationEngine.swift`
       (transport-slot mapping, `refinementOutputs` → `.vocalLead` / `.vocalBacking`).
 - [ ] B5 — Register in `StemRefinementEngineFactory.production` behind Advanced Desktop.

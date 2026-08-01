@@ -386,6 +386,64 @@ triggers on a symbol appearing in a file either: it fires while the writer is mi
 resulting build errors look like real failures (`type 'Self' has no member …`) when the file is
 simply incomplete. Wait on a clean compile, not on a grep.
 
+## 2026-07-31 — A model named "karaoke" may just be a vocals isolator; check its instrument list
+
+**Mistake:** picked `anvuew/karaoke_bs_roformer` for a lead-vs-backing vocal split on the strength
+of its name and its appearance in karaoke-model lists, exported it, integrated it, and only found
+at the quality gate that it is a **vocals-vs-instrumental isolator**. Its own config said so all
+along — `instruments: ['Vocals','Instrumental']`, `target_instrument: Vocals` — which I read while
+building the export and did not interrogate. Fed the full mix, its output matched the demucs
+vocals stem at **correlation +0.931, energy ratio 0.847**: it reproduces a stem the app already
+has. In the cascade (fed an already-isolated vocals stem) it went out of distribution and split
+the same voice across both outputs — lead/residual correlation rose from **+0.021** on a full mix
+to **+0.514**.
+**Rule:** before exporting or integrating a separation model, read the config's instrument list
+and target, and treat the repo NAME as marketing. Then run the cheap discriminator FIRST, on one
+chunk, in Python: feed a full mix and compare the output against the stem you already have — a
+true lead-only model yields a strict subset (energy ratio well below 1), an isolator yields
+~1.0 with high correlation. That is minutes of work and would have preceded a multi-hour export
+and a full Swift integration.
+**Second rule:** cascading a model onto an already-separated stem puts it out of distribution
+unless it was trained that way. Inter-output correlation is a good cheap detector — near zero
+means the two outputs are genuinely different sources; strongly positive means one source is
+being smeared across both.
+
+## 2026-07-31 — Build DFT kernels in float64 even when the graph is float32
+
+**Symptom:** A hand-built real-arithmetic STFT (conv1d against precomputed cos/sin kernels, the
+`tools/demucs_export/realstft.py` trick) matched `torch.stft` to only **86 dB** on real audio.
+Fed through a 12-layer transformer, that input error amplified to **48 dB** end-to-end — well
+below the 79 dB the demucs export achieved, and low enough that a listening test could not
+distinguish export error from model quality.
+**Wrong first guess:** float32 accumulation in the dense IDFT matmul. Casting that matmul to
+float64 changed the result by **nothing at all** — same 48.2 dB to four significant figures,
+which is the tell that a problem is structural rather than numerical.
+**Actual cause:** the kernels themselves were *constructed* in float32. The angle `2*pi*k*n/N`
+has `k*n` up to ~2.1e6 for n_fft 2048, which exceeds float32's ability to represent the phase
+accurately, so every kernel entry was slightly wrong. Building `arange`/`cos`/`sin`/`hann` in
+float64 and casting the finished kernels to float32 took the forward STFT to **121.6 dB** and
+end-to-end to **103.1 dB**.
+**Rule:** precompute transform constants in float64 and cast at the end, even for a float32
+graph — they are compile-time constants, so the precision is free, and an error there
+contaminates every sample forever. When a precision fix changes the metric by *exactly* zero,
+stop tuning precision and go isolate the transforms individually (forward vs inverse) against
+the reference instead.
+
+## 2026-07-31 — Exporting a transformer to ONNX: chunk size, opset, and static shapes
+
+Three blockers hit exporting a BS-RoFormer to ONNX, all likely to recur:
+- **The training chunk may not be exportable.** 640000 samples = 1251 frames; time-axis
+  attention is O(T²) and the tracer retains every intermediate, so the process was SIGKILLed
+  (exit 137). Exporting at 262144 worked. Note stdout is buffered and **lost** on SIGKILL — run
+  with `python -u` or the prints that would explain the crash vanish.
+- **`F.fold` → `aten::col2im` requires opset 18**, and its symbolic calls
+  `_get_tensor_sizes(output_size)[0]`, which is `None` when the size comes from traced tensor
+  shapes → `TypeError: 'NoneType' object is not subscriptable`. Pass Python int constants.
+- **A pip package is not the architecture.** `bs-roformer` 1.2.4 mismatched its own community
+  checkpoint by 668 missing / 240 unexpected keys (it moved to hyper-connections); the ZFTurbo
+  training-repo source loaded it at 0/0. Check `load_state_dict` counts before trusting anything
+  downstream — and prefer the code the weights were actually trained with.
+
 ## 2026-07-29 — "It's ONNX" says nothing about whether a model fits; probe the tensor contract
 
 **Mistake avoided by one cheap test:** UVR-MDX-NET Karaoke 2 was planned in as a drop-in refiner
@@ -555,3 +613,170 @@ seconds; reconstructing which of 72 files belong to which idea takes an hour.
   They have no shipping risk, so nothing is gained by holding them.
 - Before starting new work, commit or stash what is already dirty, so the next diff is readable.
 - Tag known-good points so there is always somewhere to return to.
+
+## 2026-07-31 — A "timing" symptom can be a GROUPING defect; check the raw ASR segments first
+
+**Mistake:** spent a session treating "He walks in Whiskey" as a word-onset/re-timing problem
+(a776147, 5a33555) and even shipped a fix whose test fixture hard-codes that line as ground
+truth. The raw Whisper cache had the correct break all along — `"He walks in"` and `"Whiskey in
+trouble, ..."` are two separate ASR segments. Grouping destroyed it; every downstream pass then
+faithfully re-timed a line that should never have existed. Eric had said "the line break is
+wrong" from the start; I read it as a timing complaint because the ball was visibly early.
+**Rule:** before touching any re-timing pass, dump the RAW cached `TranscriptionResult`
+(`~/Library/Containers/com.local.SongWorkbench/.../Caches/.../Analysis/*.json`, filter
+`engine.identifier` for `transcription`) and check whether the engine already reported the
+boundary you want. If it did, the bug is upstream in `TimedLyricSegmentGrouper`, not in
+`VocalAlignmentCorrector`/`StrandedLeadingWordRepairer`. Multiple engines (Whisper accuracy,
+Parakeet fast/balanced) are cached for the same stem and agree — cheap corroboration.
+**Second-order:** `LyricRetimingDiagnosticTests` decodes `analysis.lyrics` from the persisted
+document, i.e. post-grouping. A diagnostic that starts downstream of the defect can never see it,
+and its clean output reads as "nothing wrong here." Match the harness's entry point to the stage
+you suspect — `LyricGroupingDiagnosticTests` now starts from the raw cache.
+
+## 2026-07-31 — A comparison guard satisfied by a NEGATIVE value is satisfied vacuously
+
+**Finding:** `mergedConjunctionContinuations` gated a merge on `gap <= 1.0`, meaning "the next
+line follows closely." Whisper emits overlapping segments at real line breaks, so `gap` was
+-0.483 — the guard passed not because the evidence was strong but because it was inverted. One
+`gap >= 0` fixed it.
+**Rule:** when a threshold encodes "these two things are close together," bound it on BOTH sides.
+A one-sided `x <= limit` on a signed difference silently accepts the entire negative half-line,
+which is usually a different phenomenon (here: overlap = a segment boundary) rather than a more
+extreme case of the one being tested.
+
+## 2026-07-31 — `swift test` racing another SwiftPM writer on `.build`; use `--scratch-path`
+
+**Symptom:** three consecutive `swift test` runs died with `error: input file '<path>' was
+modified during the build`, naming a DIFFERENT file each time (an ONNX `.o`, my new test file,
+then SwiftPM's own generated `runner.swift`). The rotating target is the tell: not a real source
+edit, but a second SwiftPM/Xcode instance touching `.build` concurrently (Xcode was open on the
+project). The first failure cost a 12-minute cold build.
+**Rule:** when "modified during the build" names files you did not touch — especially derived
+ones — stop re-running and rebuild into an isolated directory:
+`swift test --scratch-path /tmp/swb-diag`. Non-destructive, leaves the contested `.build` and
+Xcode's state alone, and costs one cold build instead of an unbounded number of failed ones.
+
+## 2026-07-31 — Two ASR engines fail CORRELATED; their agreement is not evidence
+
+**Mistake:** recommended cross-engine lyric consensus to Eric on the strength of one hand-read
+example ("Parakeet says 'life' 7 times, Whisper says 'lot'"), and called it "the only option that
+would have caught it." He picked it. Simulating it first showed the opposite:
+- the four cached transcriptions are **two** votes — Whisper's `opening-rescue` pass is
+  byte-identical to `decode2` from 30 s on. Always diff cached passes before counting them.
+- one vote per engine IDENTIFIER gives the weaker engine two correlated votes; it overruled
+  correct text 24x, including `"from the debt you owe"` → `"from the tetra"`.
+- one vote per model FAMILY can never reach a majority with two voters — it rewrote nothing.
+- **the ablation that mattered:** requiring a second engine to also disagree flagged **zero**
+  words that the primary engine's own confidence had not already flagged, and **vetoed 13** it
+  should have caught, including a fully garbled line every token of which scored 0.00 — because
+  the second engine mis-heard it the same way.
+**Rule:** where the signal is genuinely ambiguous, independent models make the SAME mistake, so
+agreement between them measures ambiguity, not correctness. Before building any ensemble, run the
+ablation "what does arm B add over arm A alone?" — not "do A and B agree?". If the answer is zero,
+the ensemble is strictly worse: more machinery, less recall.
+**Second rule:** when a recommendation to the user rests on one hand-read example, say so in the
+recommendation. I stated it as established and Eric committed to it on my word.
+
+## 2026-07-31 — A confidence threshold needs a content-word filter, or half its output is noise
+
+**Finding:** at confidence < 0.5, roughly **half** of all flagged words across five songs were
+function words ("and" @0.34, "a" @0.08, "The" @0.35, "I" @0.06). ASR is structurally less certain
+about short unstressed words and about the first token after a pause, so a low score there says
+almost nothing about correctness — while a low score on a content word is exactly the signal.
+**Rule:** before shipping any per-word confidence threshold, break the flagged set down by word
+class. A raw threshold looks calibrated in aggregate and is half noise in practice.
+
+## 2026-07-31 — An in-place text rewrite leaves stale per-token metadata behind
+
+**Near-miss, caught by writing the ordering test:** `RepeatedLyricCorrector.rewrite` mutates
+`newWords[index].text` in place. Once words carried a `confidence`, a word the corrector had just
+repaired from the song's own repeats still carried the ORIGINAL low score — so the downstream
+placeholder pass would have blanked the very word that had just been corroborated, silently
+defeating the "corrector runs first" ordering the design depends on.
+**Rule:** when adding a field derived from a value's provenance (confidence, source, checksum),
+grep every in-place mutation of that value and decide what the field means after the mutation.
+`var x = old; x.text = new` keeps every other field, and that is usually wrong for provenance.
+
+## 2026-07-31 — "Persist the input so it stays tunable" is worthless if the output overwrites the input
+
+**Mistake:** Eric chose "persist per-word confidence" over "bake placeholders at analysis time"
+explicitly so the threshold could be tuned later without re-analysing. I persisted the confidence
+— and then implemented the pass as an analysis-time bake anyway, overwriting `TimedLyricSegment
+.text` with `___`. Both halves shipped in one commit, and together they delivered exactly the
+option he had rejected: the confidence was saved, but the word it described was gone. The
+contradiction only surfaced when he asked for the slider I had told him this design enabled.
+**Worse, the bake escaped the lyrics.** `ChordProDraftBuilder.render` reads `segment.text`, so
+blanked words reached `chordProSource` and every exported `.cho`; `lyricBlendRows` persisted them
+for all three modes; `ChorusChordConsensus` groups lines by identical normalized text and rewrites
+persisted CHORD labels, so two unrelated lines that both blanked to `___` could vote on each
+other's chords; and "Fill from current transcription" would promote `___` into `referenceLyrics`,
+the authoritative alignment target for every future analysis — unrecoverable, because
+reference-aligned words carry no confidence at all.
+**Rule:** when a design decision is justified by "this keeps X recoverable", write down what X is
+and grep for every write that could destroy it BEFORE implementing. Here one question would have
+caught it: "after this pass runs, where does the original word still exist?" Answer: only in the
+transcription cache, i.e. nowhere the feature could reach.
+**Second rule:** in this codebase, ask what a `[TimedLyricSegment]` array will be ASSIGNED to, not
+just what reads it. `AppModel.lyricSegments.didSet` persists and rebuilds the ChordPro draft, so a
+display-only transform assigned there is indistinguishable from a destructive one.
+
+## 2026-07-31 — Two strings, one index space: `characterRange` is not portable across text sources
+
+**Finding that scoped the slider:** the Review/ChordPro chart positions the bouncing ball and
+attaches chords by testing `words[].characterRange` against text parsed out of the persisted
+`chordProSource` (`WorkspaceEditorsView.swift` `wordCenterX`, and the
+`characterRange.contains(chord.column)` lookups). The ranges are built from `segment.text`. The
+two strings agree today only because nothing has ever changed one without the other.
+**Consequence:** any render-time substitution that changes a word's LENGTH silently moves the ball
+and mis-attaches chords, and it fails quietly — no crash, no assertion, just drift.
+**Rule:** before applying a presentation transform to text that carries index metadata, find every
+consumer that indexes those ranges and check WHICH string it indexes into. If more than one string
+is involved, either transform both or make the substitution length-preserving. Shipping the safe
+surface and naming the unsafe one beats a change that cannot be verified on screen.
+
+## 2026-07-31 — A stale doc comment can be the bug report; dead code can be the fix
+
+**Finding:** "the ChordPro tab shows Review's chrome" looked like a feature request. It was a
+regression, and the codebase said so: `ChordProReviewTab`'s doc comment still read *"the `chordPro`
+tab itself now shows only `ChordProTrueView`, a spec-exact read-only render with none of this
+chrome"* — while `ChordProTrueView` had been changed to delegate to the same `ChordProTabEditor`.
+That single edit orphaned `ChordProReadOnlyView` into dead code (instantiated nowhere in Sources or
+Tests, though its line renderer stayed covered by tests, which is why nothing failed).
+**Rule:** when a surface behaves unlike its documentation, check whether the documented
+implementation still EXISTS before designing a new one. `grep` the type the comment names and see
+who instantiates it — zero callers plus live tests is the signature of a regressed design, and the
+old implementation is usually a better starting point than a fresh one.
+
+## 2026-07-31 — Shared-renderer discipline cuts both ways: separate the BODY, not the flags
+
+**Decision worth keeping:** the obvious fix was to pass "hide the ball / dots / waveform / bass row
+/ shading / accept buttons" flags into `ChordProAppPreview`. That would have satisfied the request
+and been wrong. This repo's first lesson says route both chart surfaces through one renderer so
+typography cannot drift — but that argument only applies to what the two surfaces SHARE. Once one
+of them is defined by everything it does NOT draw, keeping it inside the shared renderer means a
+dozen suppression flags, and it stays one forgotten flag away from growing chrome back.
+**Rule:** share a renderer for the parts that must look identical; give a surface its own body when
+its definition is subtractive. One config flag choosing between two bodies beats N flags
+configuring one.
+
+## 2026-07-31 — `swift build` green does NOT mean the app compiles: the .xcodeproj is checked in
+
+**Mistake:** added `Sources/SongWorkbench/LyricConfidencePlaceholder.swift` and referenced it from
+`AppModel` and `AnalysisWorkspaceView`, verified with `swift build` + 725 passing tests + strict
+lint, and shipped it. **Eric's app stopped compiling.** `Project.swift` globs
+`Sources/SongWorkbench/**`, so SwiftPM sees a new file instantly — but `SongWorkbench.xcodeproj/
+project.pbxproj` is a *generated artifact that is tracked in git*, and it does not. Xcode built
+without the file and could not resolve the symbol. `grep -c LyricConfidencePlaceholder
+SongWorkbench.xcodeproj/project.pbxproj` returned 0.
+**Rule:** after adding or deleting ANY file under `Sources/` or `Tests/`, run `tuist generate
+--no-open` and commit the `project.pbxproj` change in the SAME commit. Confirm with
+`grep -c <NewType> SongWorkbench.xcodeproj/project.pbxproj`. This is cheap (~5s) and there is no
+other signal — nothing in the SPM toolchain warns you.
+**Second rule (this repo already had a version of this, now sharper):** "verified" for a change
+that adds a file means the APP target built, not the package. `xcodebuild build -workspace
+SongWorkbench.xcworkspace -scheme SongWorkbench -destination 'platform=macOS' -derivedDataPath
+<the running app's DD>`. `swift test` and `xcodebuild` compile different file sets here, so they
+can and did disagree.
+**Watch for:** regenerating also picks up any UNTRACKED source file sitting in the tree (here,
+in-flight `ONNXKaraokeVocalSeparationEngine.swift`), so the committed project can end up
+referencing a file git does not have. Say so rather than hand-editing generated output.
