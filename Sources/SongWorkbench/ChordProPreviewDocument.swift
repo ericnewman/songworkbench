@@ -58,6 +58,11 @@ enum ChordProPlaybackHighlightStyle: Sendable {
 struct ChordProLinePlaybackHighlight: Equatable, Sendable {
     let wordRange: Range<Int>?
     let chordLabels: Set<String>
+    /// The playhead position this highlight was derived at. Carried on the highlight (rather than
+    /// threaded separately down the preview's view chain) because every renderer that needs the
+    /// time already receives the highlight — and because a time that travelled by a different
+    /// route than the highlight could disagree with it by a frame.
+    var currentTime: TimeInterval = 0
 }
 
 /// Concentrates the per-frame playback-highlight derivation. Construct it once from the
@@ -427,7 +432,8 @@ struct ChordProPlaybackHighlightContext: Equatable, Sendable {
                 at: currentTime,
                 forLyricOrdinal: lyricIndex,
                 style: style
-            )
+            ),
+            currentTime: currentTime
         )
     }
 

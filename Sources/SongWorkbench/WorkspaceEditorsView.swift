@@ -1025,6 +1025,10 @@ struct ChordProTabEditor: View {
     /// people reading the chart want to see. Off by default (Eric: make these labels optional,
     /// default off).
     @AppStorage("reviewShowChordTimeLabels") private var showChordTimeLabels = false
+    /// Ball taps CHORD onsets instead of word onsets on sung lines. Eric's default ball model taps
+    /// words (2026-07-02) because that is what a singer follows — but when the question is where
+    /// the chords sit, a ball tracking words is measuring the wrong thing. Off by default.
+    @AppStorage("reviewBallTracksChords") private var ballTracksChords = false
     /// Drives the small chord-confidence-shading legend popover in the toolbar (backlog #15).
     @State private var showConfidenceLegend = false
 
@@ -1202,6 +1206,7 @@ struct ChordProTabEditor: View {
                     Toggle("Show Bass Notes", isOn: $showBassNotes)
                         .disabled(model.bassNotes.isEmpty)
                     Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
+                    Toggle("Ball Taps Chord Onsets", isOn: $ballTracksChords)
                 } label: {
                     Label("View", systemImage: "eye")
                 }
@@ -1556,6 +1561,12 @@ struct ChordProTabEditor: View {
                     confidenceThreshold: model.chordConfidenceThreshold
                 )
                 let segment = deriver.segment(atOrdinal: ordinal)
+                // Chord-tracking mode reads the PLACED times, not `row.chordTimes` — the timeline
+                // row carries the stored placement, and during an A/B the ball has to agree with
+                // what the chord click is playing or the two cues contradict each other.
+                let placed =
+                    ballTracksChords
+                    ? model.placedChordTimes.filter { $0 >= row.start && $0 < row.end } : []
                 return BeatBallInput(
                     currentTime: now,
                     ordinal: ordinal,
@@ -1565,6 +1576,7 @@ struct ChordProTabEditor: View {
                     bpm: bpm,
                     beatTimes: beatTimes,
                     isWaiting: false,
+                    chordTimes: placed,
                     rowNumber: row.number
                 )
             case .instrumental:
@@ -2519,6 +2531,19 @@ private struct ChordProAppPreview: View {
                     isWaiting: true
                 )
             }
+            // Chord-tracking mode: a sung row's ball taps the chords rather than the words. The
+            // instrumental path already bounces on `chordTimes`; this reuses it rather than
+            // adding a second way to express the same thing.
+            if !beatBall.chordTimes.isEmpty {
+                return LineBeatBall(
+                    currentTime: beatBall.currentTime,
+                    segmentStart: beatBall.windowStart,
+                    segmentEnd: beatBall.windowEnd,
+                    bpm: beatBall.bpm,
+                    beatTimes: beatBall.beatTimes,
+                    chordTimes: beatBall.chordTimes
+                )
+            }
             return LineBeatBall(
                 currentTime: beatBall.currentTime,
                 segmentStart: beatBall.windowStart,
@@ -3418,6 +3443,30 @@ private struct ChordProPreviewLineView: View {
     /// Confidence marker drawn as a thin outline box around the chord glyph. A solid tinted
     /// background made the light chord text hard to read (amber behind light blue especially),
     /// so the tier color is now an outline only — same `chordTint(at:)` mapping, no fill.
+    /// A brief glow on a chord glyph at the moment its onset passes under the playhead, decaying
+    /// over the beat it triggers on. The audible chord click answers "is this placement right?"
+    /// better than any static picture can, but the click alone leaves you guessing WHICH chord
+    /// just fired — this ties the sound to the glyph, so ear and eye agree.
+    ///
+    /// Decays rather than switching off so the eye reads it as an attack (matching how the click
+    /// itself is an exponentially-decaying sample), and so two chords a beat apart never both sit
+    /// at full brightness.
+    @ViewBuilder
+    private func chordOnsetGlow(at index: Int) -> some View {
+        let beat = beatLengthSeconds ?? 0.5
+        if let now = highlight?.currentTime, rowChordTimes.indices.contains(index), beat > 0 {
+            let elapsed = now - rowChordTimes[index]
+            if elapsed >= 0, elapsed < beat {
+                let intensity = 1 - (elapsed / beat)
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(Color.swAmber.opacity(0.35 * intensity))
+                    .padding(-2)
+                    .shadow(color: .swAmber.opacity(0.9 * intensity), radius: 5 * intensity)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
     @ViewBuilder
     private func chordConfidenceOutline(at index: Int) -> some View {
         let tint = chordTint(at: index)
@@ -3508,6 +3557,7 @@ private struct ChordProPreviewLineView: View {
                 Text(chord.name)
                     .font(ChordProChartTypography.chord(weight: chordWeight(for: chord)))
                     .foregroundStyle(.tint)
+                    .overlay(chordOnsetGlow(at: index))
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(x: monospaceChordX(chord, at: index))
                     .onTapGesture {
@@ -3764,6 +3814,7 @@ private struct ChordProPreviewLineView: View {
                 Text(chord.name)
                     .font(ChordProChartTypography.chord(weight: chordWeight(for: chord)))
                     .foregroundStyle(.tint)
+                    .overlay(chordOnsetGlow(at: index))
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(x: chordXs[index], y: topReserve + bassReserve)
                     // Free-timestamp drag (no snapping) + tap-to-accept — rhythmic mode has a
@@ -4048,6 +4099,7 @@ private struct ChordProPreviewLineView: View {
                             )
                         )
                         .foregroundStyle(.tint)
+                        .overlay(chordOnsetGlow(at: index))
                         .overlay(chordConfidenceOutline(at: index))
                         .offset(x: monospaceChordX(chord, at: index))
                         // Monospace mode has no uniform time axis for lyric lines (columns are

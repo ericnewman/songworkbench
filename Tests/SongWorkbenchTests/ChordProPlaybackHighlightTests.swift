@@ -20,7 +20,7 @@ final class ChordProPlaybackHighlightTests: XCTestCase {
 
         XCTAssertEqual(
             context.highlight(forLyricOrdinal: 0),
-            ChordProLinePlaybackHighlight(wordRange: 5..<8, chordLabels: ["G/B"])
+            ChordProLinePlaybackHighlight(wordRange: 5..<8, chordLabels: ["G/B"], currentTime: 2.2)
         )
         XCTAssertNil(context.highlight(forLyricOrdinal: 1))
     }
@@ -42,7 +42,7 @@ final class ChordProPlaybackHighlightTests: XCTestCase {
 
         XCTAssertEqual(
             context.highlight(forLyricOrdinal: 0),
-            ChordProLinePlaybackHighlight(wordRange: 5..<8, chordLabels: ["A"])
+            ChordProLinePlaybackHighlight(wordRange: 5..<8, chordLabels: ["A"], currentTime: 2.2)
         )
     }
 
@@ -62,7 +62,7 @@ final class ChordProPlaybackHighlightTests: XCTestCase {
         // Past the segment end the last line stays active through the instrumental outro.
         XCTAssertEqual(
             context.highlight(forLyricOrdinal: 0),
-            ChordProLinePlaybackHighlight(wordRange: 13..<17, chordLabels: ["C"])
+            ChordProLinePlaybackHighlight(wordRange: 13..<17, chordLabels: ["C"], currentTime: 8)
         )
         XCTAssertNil(context.highlight(forLyricOrdinal: 1))
     }
