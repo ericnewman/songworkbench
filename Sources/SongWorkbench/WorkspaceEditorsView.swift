@@ -1133,6 +1133,7 @@ struct ChordProTabEditor: View {
                             bassNotes: model.bassNotes,
                             showBassNotes: showBassNotes,
                             showChordTimeLabels: showChordTimeLabels,
+                            showChordBall: ballTracksChords,
                             lyricSegments: sortedLyricSegments,
                             chordEvents: model.chordEvents,
                             onToggleLyricAccepted: { id in model.toggleLyricAccepted(id: id) },
@@ -1865,6 +1866,8 @@ private struct ChordProAppPreview: View {
     /// Shows the raw `{x_chord_times: ...}` directive text (View menu's "Chord Time Labels"
     /// toggle) instead of hiding it — off by default.
     var showChordTimeLabels = false
+    /// Draw the amber chord ball alongside the white word ball on sung lines.
+    var showChordBall = false
     /// Lyric segments in the SAME sorted order `lyricOrdinal` indexes into (backlog #15 Phase 2
     /// remainder — chart interactivity), so a rendered line's confidence/accepted/overrideText
     /// can be read (and edited) directly, without a separate lookup mechanism.
@@ -2373,6 +2376,7 @@ private struct ChordProAppPreview: View {
             bassLabel: itemBassLabel,
             rowBassNotes: itemRowBassNotes,
             showChordTimeLabels: showChordTimeLabels,
+            showChordBall: showChordBall,
             lyricSegment: itemLyricSegment,
             onToggleLyricAccepted: onToggleLyricAccepted,
             onCommitLyricOverride: onCommitLyricOverride,
@@ -3070,6 +3074,8 @@ private struct ChordProPreviewBlockView: View {
     /// Shows raw `{...}` directive lines (e.g. the `x_chord_times` round-trip carrier) instead
     /// of hiding them — View menu's "Chord Time Labels" toggle, off by default.
     var showChordTimeLabels = false
+    /// Draw the amber chord ball alongside the white word ball on sung lines.
+    var showChordBall = false
     /// The live segment behind this rendered lyric line (backlog #15 Phase 2 remainder — chart
     /// interactivity); `nil` for chord-only/non-lyric blocks. Drives the accept toggle, the
     /// confidence tint, and the edited-line text when set.
@@ -3164,7 +3170,8 @@ private struct ChordProPreviewBlockView: View {
                     editingLyricField
                 } else {
                     ChordProPreviewLineView(
-                        line: line, highlight: highlight, beatBall: beatBall, beatDots: beatDots,
+                        line: line, showChordBall: showChordBall,
+                        highlight: highlight, beatBall: beatBall, beatDots: beatDots,
                         rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
                         vocalPeaks: vocalPeaks, lineDuration: lineDuration,
                         rowStartTime: rowStartTime, stripColor: stripColor,
@@ -3335,6 +3342,8 @@ private struct ChordProPreviewLineView: View {
     private static let rhythmicDotTopReserve: CGFloat = 8
 
     let line: ChordProPreviewLine
+    /// Draw the amber chord ball beside the white word ball on this line.
+    var showChordBall = false
     var highlight: ChordProLinePlaybackHighlight?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
@@ -4191,10 +4200,10 @@ private struct ChordProPreviewLineView: View {
     /// `model.placedChordTimes` — so during an A/B this ball moves with the audition and agrees
     /// with the chord click.
     private var chordBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall, !beatBall.words.isEmpty, !beatBall.chordTimes.isEmpty,
-            !line.chords.isEmpty
+        guard showChordBall, let beatBall, !beatBall.words.isEmpty, !line.chords.isEmpty,
+            !rowChordTimes.isEmpty
         else { return nil }
-        var taps = beatBall.chordTimes.sorted()
+        var taps = rowChordTimes.sorted()
         var tapXs = taps.map { chordCenterX(at: $0, beatBall: beatBall) }
         // A closing tap past the last chord so it gets a full arc rather than stopping dead.
         taps.append(max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3))
@@ -4209,9 +4218,7 @@ private struct ChordProPreviewLineView: View {
     /// The amber chord ball in rhythmic mode — same idea as `chordBallPosition`, positioned over
     /// the rhythmic chord x-layout so it sits on the glyphs as actually rendered.
     private var rhythmicChordBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall, !beatBall.words.isEmpty, !beatBall.chordTimes.isEmpty else {
-            return nil
-        }
+        guard showChordBall, let beatBall, !beatBall.words.isEmpty else { return nil }
         let xs = rhythmicChordXs
         guard !xs.isEmpty else { return nil }
         let sorted = rowChordTimes.enumerated().sorted { $0.element < $1.element }
