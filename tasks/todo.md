@@ -232,6 +232,23 @@ iPad lead/backing becomes a firm requirement.
       3.91 GB for the base six-stem pass. Runtime 256.2 s = **0.88x realtime** (slower than
       playback). **iPad verdict: impossible.** 8.74 GB is ~3x the ~3 GB per-process ceiling, and
       that is the cascade stage on its own. macOS-only, and expensive even there.
+#### Independent re-verification 2026-07-31 (corrections to the figures above)
+
+- **Real-audio parity is 94.1 dB, NOT 103.1 dB.** The earlier figure came from a fixed 60 s
+  offset; `tools/karaoke_export/verify_export.py` deliberately scores the LOUDEST window, which
+  is the harder test, and yields 94.1 dB. Synthetic-noise parity reproduces exactly at 91.8 dB.
+  Both still clear the 79 dB demucs precedent — the conclusion stands, the number was
+  window-dependent and should not be quoted as a single canonical value.
+- **Suite is 742 tests, not 711** (0 failures either way).
+- **"Only the .onnx changes" was overstated.** A replacement checkpoint also requires:
+  `ONNXKaraokeVocalSeparationEngine.segmentFrames` (a compile-time constant that must equal the
+  export chunk), the catalog `version`/`sha256`/`expectedSizeBytes`, and — if the model emits
+  more than one stem — the transport-slot mapping. Everything else (refiner wiring, stitching,
+  cache identity, downstream isolation) is genuinely artifact-agnostic.
+- **Memory CONFIRMED and isolated:** Python ORT alone peaks at **7.04 GB** on this graph
+  (plateaus after chunk 2), so the 8.74 GB measured under Swift is the model, not harness
+  overhead.
+
 - [ ] B8 — **QUALITY GATE FAILED. The checkpoint is the wrong kind of model.**
 
 `anvuew/karaoke_bs_roformer` is a **vocals-vs-instrumental isolator, not a lead-vs-backing
