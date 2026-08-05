@@ -553,12 +553,19 @@ struct ChordProDraftBuilder: Sendable {
                     chords: sorted)
             ]
         }
-        let slice = (end - start) / Double(count)
+        // Row boundaries land on BAR DOWNBEATS, never at equal time slices. Equal slicing put
+        // every boundary mid-bar (9 bars / 4 rows = 2.25 bars each), so each row began on a
+        // different beat of its bar and the per-row downbeat anchoring rendered the section as
+        // staircase indents — Eric's "uneven indents, cumulative errors". With whole-bar rows
+        // every row starts ON a downbeat and left edges line up at the shared gutter column.
+        // The first row keeps the section's real start (it may genuinely begin mid-bar); only
+        // the SPLIT POINTS are quantized.
+        let boundaries = barAlignedBoundaries(start: start, end: end, count: count, grid: grid)
         var rows: [InstrumentalRowLine] = []
         var carried: RenderableChordEvent?
-        for index in 0..<count {
-            let sliceStart = start + Double(index) * slice
-            let sliceEnd = index == count - 1 ? end : start + Double(index + 1) * slice
+        for index in 0..<(boundaries.count - 1) {
+            let sliceStart = boundaries[index]
+            let sliceEnd = boundaries[index + 1]
             var sliceChords = chords.filter { $0.time >= sliceStart && $0.time < sliceEnd }
             if sliceChords.isEmpty, let carry = carried {
                 sliceChords = [
@@ -576,6 +583,28 @@ struct ChordProDraftBuilder: Sendable {
                     chords: sortedSliceChords))
         }
         return rows
+    }
+
+    /// Split points for an instrumental span: interior boundaries sit at the bar downbeat
+    /// nearest each equal-slice position, so every row after the first starts ON a downbeat.
+    /// A snap that would create an empty or out-of-range row is dropped (two rows merge) rather
+    /// than kept degenerate. Falls back to plain equal slices without a grid.
+    /// Internal (not private) for direct unit testing of the downbeat-boundary invariant.
+    func barAlignedBoundaries(
+        start: TimeInterval, end: TimeInterval, count: Int, grid: MeasureGrid?
+    ) -> [TimeInterval] {
+        let slice = (end - start) / Double(count)
+        var result: [TimeInterval] = [start]
+        for index in 1..<count {
+            let target = start + Double(index) * slice
+            let boundary = grid.map { $0.nearestDownbeatTime(toTime: target) } ?? target
+            guard boundary > (result.last ?? start) + 0.001, boundary < end - 0.001 else {
+                continue
+            }
+            result.append(boundary)
+        }
+        result.append(end)
+        return result
     }
 
     /// The whole-song measure grid used to bar-align chord-only rows (B2), built from the SAME

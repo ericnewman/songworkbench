@@ -181,6 +181,37 @@ final class ChordProDraftBuilderTests: XCTestCase {
         )
     }
 
+    func testInstrumentalRowBoundariesLandOnBarDownbeats() {
+        // 120 BPM, 4/4 → bars every 2 s. A 9-bar span that starts MID-bar (0.3 s): equal slicing
+        // would put boundaries at 4.8/9.3/13.8 — every row starting on a different beat of its
+        // bar, which rendered as staircase indents. Interior boundaries must snap to downbeats;
+        // only the first row keeps the section's real (mid-bar) start.
+        let grid = MeasureGrid(
+            beatTimes: stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }, bpm: 120)
+        let boundaries = ChordProDraftBuilder().barAlignedBoundaries(
+            start: 0.3, end: 18.3, count: 4, grid: grid)
+        XCTAssertEqual(boundaries.first, 0.3)
+        XCTAssertEqual(boundaries.last, 18.3)
+        for boundary in boundaries.dropFirst().dropLast() {
+            XCTAssertEqual(
+                boundary.truncatingRemainder(dividingBy: 2.0), 0, accuracy: 0.0001,
+                "interior boundary \(boundary) is not on a bar downbeat")
+        }
+        XCTAssertEqual(boundaries, boundaries.sorted(), "boundaries must be increasing")
+        XCTAssertGreaterThan(boundaries.count, 3, "a 9-bar span should still split into rows")
+    }
+
+    func testDegenerateSnapsMergeRowsInsteadOfCreatingEmptyOnes() {
+        // A span shorter than one bar with an absurd row count: every snap collapses onto the
+        // span edges, so the result must degrade to a single [start, end] row, never emit
+        // duplicate or out-of-order boundaries.
+        let grid = MeasureGrid(
+            beatTimes: stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }, bpm: 120)
+        let boundaries = ChordProDraftBuilder().barAlignedBoundaries(
+            start: 2.1, end: 3.4, count: 8, grid: grid)
+        XCTAssertEqual(boundaries, [2.1, 3.4])
+    }
+
     func testSustainedChordIsRestatedAtSectionStartAfterInstrumental() {
         // 120 BPM → 1 bar = 2s. C changes during the 8-bar intro and SUSTAINS through the sung
         // lines (no further events). Without restatement the whole verse shows no chord at all;
