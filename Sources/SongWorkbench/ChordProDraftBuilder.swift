@@ -68,8 +68,9 @@ struct ChordProDraftBuilder: Sendable {
     /// of the algorithm").
     ///
     /// History: 1 = equal-time instrumental slicing (implicit — charts stamped before
-    /// versioning carry no tag at all); 2 = uniform whole-bar instrumental rows.
-    static let algorithmVersion = 2
+    /// versioning carry no tag at all); 2 = uniform whole-bar instrumental rows; 3 = sliver
+    /// remainders merge into the final row and a degenerate outro gets a nominal bar.
+    static let algorithmVersion = 3
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -342,7 +343,15 @@ struct ChordProDraftBuilder: Sendable {
                 lines.append("")
                 lines.append("{comment: Outro}")
                 let fallbackEnd = (outroChords.map(\.time).max() ?? lastLyricEnd) + 1
-                let songEnd = resolvedSongDuration(input: input, fallback: fallbackEnd)
+                var songEnd = resolvedSongDuration(input: input, fallback: fallbackEnd)
+                // Real-library audit: sourceDuration can land essentially ON the last lyric's
+                // end while a final chord sits inside that hair's width, which emitted a 0.01 s
+                // outro row — a chord label floating on a sliver. A degenerate outro gets one
+                // nominal bar so its chord is legible; the strip shows whatever audio remains.
+                let beatSeconds = 60.0 / max(input.tempo ?? 120, 1)
+                if songEnd - lastLyricEnd < beatSeconds {
+                    songEnd = lastLyricEnd + beatSeconds * 4
+                }
                 for row in instrumentalRows(
                     outroChords, start: lastLyricEnd, end: songEnd,
                     gapBars: bars(from: lastLyricEnd, to: songEnd, input: input),
@@ -646,6 +655,14 @@ struct ChordProDraftBuilder: Sendable {
             if time >= end - 0.001 { break }
             if time > start + 0.001 { result.append(time) }
             step += 1
+        }
+        // A remainder shorter than half a bar merges into the final row instead of becoming its
+        // own near-empty sliver (real-library audit found 0.07 s and 0.01 s rows — a chord label
+        // floating on a blank row).
+        if result.count > 1, let last = result.last,
+            grid.beatIndex(atTime: end) - grid.beatIndex(atTime: last) < beatsPerBar / 2
+        {
+            result.removeLast()
         }
         result.append(end)
         return result
