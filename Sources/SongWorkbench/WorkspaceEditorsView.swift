@@ -2367,9 +2367,16 @@ private struct ChordProAppPreview: View {
         let firstWordOnset = lineWords.first?.start
         // Resolving bar downbeat for the shared metric grid (nil
         // when there's no beat grid → first-word-flush fallback).
+        // Rows WITHOUT word timings (instrumental rows, untranscribed
+        // lines) anchor on their strip's start instead — every row
+        // gets the same gutter and downbeat column, or none of the
+        // left edges line up across the page.
+        let rowAnchorTime =
+            firstWordOnset
+            ?? (strip.duration > 0 ? strip.start : nil)
         let rowDownbeat =
             rhythmicSpacing
-            ? rowDownbeatTime(forFirstWordAt: firstWordOnset) : nil
+            ? rowDownbeatTime(forFirstWordAt: rowAnchorTime) : nil
         // Melody peaks for the pre-vocal gap (bounded so it can't
         // overrun the previous sung line).
         let prevLineEnd: TimeInterval? =
@@ -3833,8 +3840,9 @@ private struct ChordProPreviewLineView: View {
         return instrumentalTimeWidth * CGFloat(chord.column) / chordColumnExtent
     }
 
-    /// The line's window start (its first word's onset), the origin for the strip's time mapping.
-    private var lineStartTime: TimeInterval { rhythmicWords.first?.start ?? 0 }
+    /// The line's window start: its first word's onset, or the row's own start when the line has
+    /// no per-word timings — the origin for the strip's time mapping either way.
+    private var lineStartTime: TimeInterval { rhythmicWords.first?.start ?? rowStartTime }
 
     /// x of a song time for row content — an alias for `metricX`, kept because many call sites
     /// read better as "the rhythmic axis".
@@ -3854,6 +3862,12 @@ private struct ChordProPreviewLineView: View {
     /// the words' own x-axis (so it's never shorter than the words); monospace uses the text width.
     private var stripWidth: CGFloat {
         if isInstrumentalLine, lineDuration > 0 { return instrumentalTimeWidth }
+        // A lyric row with a known window but no per-word timings still spans its real time on
+        // the ruler — its strip was previously squeezed to the text width, putting the whole row
+        // on the character axis.
+        if rhythmicSpacing, lineDuration > 0, rhythmicWords.isEmpty {
+            return max(1, rowRuler.x(atTime: rowStartTime + lineDuration))
+        }
         guard !rhythmicWords.isEmpty, lineDuration > 0 else { return monospaceWidth }
         // A row's extent is the TIME it covers, and nothing else. `wordsWidth` — the extent of the
         // words after collision nudging — used to be part of this `max`, which let a line's TEXT
@@ -3881,7 +3895,9 @@ private struct ChordProPreviewLineView: View {
             // Normalize to the line's own peak so quiet lines still show their energy shape (it's
             // the WHERE of the energy, not its absolute level, that reveals word alignment).
             let maxPeak = max(vocalPeaks.max() ?? 1, 0.0001)
-            if !rhythmicWords.isEmpty, lineDuration > 0 {
+            // Any rhythmic row with a real window draws its energy at ruler positions —
+            // `rhythmicX` needs no words now, so untimed lines are on the shared axis too.
+            if rhythmicSpacing, lineDuration > 0 {
                 let start = lineStartTime
                 // Melody (guitar) fill in the pre-vocal gap: the time [firstWord − seconds, firstWord]
                 // maps through rhythmicX to the left of the first word, showing the instrument
@@ -4231,23 +4247,35 @@ private struct ChordProPreviewLineView: View {
         return rowRuler.beatXs(from: beatDots.segmentStart, to: beatDots.segmentEnd)
     }
 
+    /// Right edge of this row's time content on the ruler — the words or the strip's real
+    /// duration, whichever runs further. This is the extent grid furniture (barlines, frames)
+    /// should cover, on EVERY row kind.
+    private var rowContentEndX: CGFloat {
+        var end: CGFloat = 0
+        if !rhythmicWords.isEmpty { end = rhythmicContentWidth }
+        if lineDuration > 0 {
+            end = max(end, rowRuler.x(atTime: rowStartTime + lineDuration))
+        }
+        return end
+    }
+
     /// x of each bar downbeat across this line's rendered width, on the shared metric grid — for
     /// faint barlines that make the repeating measure structure visible. Computed purely from the
     /// grid (its own `showBarlines` toggle), so it does NOT depend on the beat-dots toggle. Empty
-    /// without a usable grid.
+    /// without a usable grid. Drawn on every row KIND — a bar is every `beatsPerBar` beats in the
+    /// instrumental passages too, or the page's bar columns break wherever the singing stops
+    /// (Eric: "I'd expect to see a bar consistently, every 4 beats even in instrumental
+    /// passages").
     private var barlineXs: [CGFloat] {
-        guard showBarlines, rowDownbeatSeconds != nil, beatLengthSeconds > 0, beatsPerBar > 0,
-            !rhythmicWords.isEmpty
-        else { return [] }
-        let barPx = CGFloat(beatLengthSeconds * Double(beatsPerBar)) * pixelsPerSecond
+        guard showBarlines, rowDownbeatSeconds != nil, beatsPerBar > 0 else { return [] }
+        let barPx = CGFloat(beatsPerBar) * pixelsPerBeat
         guard barPx > 1 else { return [] }
-        // The downbeat sits at gutterPx; barlines step one bar apart across the row's content width.
-        let maxX =
-            (rhythmicWordXs.last ?? 0) + rhythmicWordWidth(at: max(rhythmicWords.count - 1, 0))
+        // The downbeat sits at gutterPx; barlines step one bar apart across the row's content.
+        let maxX = rowContentEndX
         var x = gutterPx.truncatingRemainder(dividingBy: barPx)
         if x < 0 { x += barPx }
         var result: [CGFloat] = []
-        while x <= maxX + 1 {
+        while x <= maxX + 1, result.count < 64 {
             result.append(x)
             x += barPx
         }
@@ -4367,7 +4395,17 @@ private struct ChordProPreviewLineView: View {
 
     private var monospaceContent: some View {
         let dotSize = scale.scaled(3.5)
+        let contentHeight = contentBandHeight + ballTopReserve
         return ZStack(alignment: .topLeading) {
+            // A bar is every `beatsPerBar` beats in the instrumental passages and untimed
+            // lines too — same ruler, same faint barlines as the sung rows, so the page's bar
+            // columns continue wherever the singing stops.
+            ForEach(Array(barlineXs.enumerated()), id: \.offset) { _, x in
+                Rectangle()
+                    .fill(Color.swTextSecondary.opacity(0.16))
+                    .frame(width: 1, height: contentHeight)
+                    .position(x: x, y: contentHeight / 2)
+            }
             ForEach(Array(beatDotPositions.enumerated()), id: \.offset) { _, x in
                 Circle()
                     .fill(Color.swTextSecondary.opacity(0.55))
@@ -4431,10 +4469,19 @@ private struct ChordProPreviewLineView: View {
             }
         }
         .frame(
-            width: isInstrumentalLine && lineDuration > 0 ? instrumentalTimeWidth : monospaceWidth,
+            width: monospaceFrameWidth,
             height: contentBandHeight + ballTopReserve,
             alignment: .topLeading
         )
+    }
+
+    /// Frame width of a monospace-rendered row: the ruler extent when the row has a real time
+    /// window in rhythmic mode (so barlines/dots aren't clipped at the text width), else the
+    /// text width.
+    private var monospaceFrameWidth: CGFloat {
+        if isInstrumentalLine, lineDuration > 0 { return instrumentalTimeWidth }
+        if rhythmicSpacing, lineDuration > 0 { return max(monospaceWidth, rowContentEndX) }
+        return monospaceWidth
     }
 
     /// The x of each beat within this line's time span, for the static beat-dot overlay —
@@ -4450,6 +4497,15 @@ private struct ChordProPreviewLineView: View {
             bpm: beatDots.bpm
         )
         guard !beats.isEmpty else { return [] }
+        // Any rhythmic row with a real time window takes its dots from the row ruler —
+        // index-space, equidistant, same axis as every other row. This must come FIRST: it
+        // includes lyric rows WITHOUT per-word timings (untranscribed lines), whose dots
+        // previously fell into the word-center path below (their character-interpolated
+        // `wordCenters` is never empty) and rendered at a visibly different scale
+        // (~52 px vs ~78 px between beats on the same page).
+        if rhythmicSpacing, lineDuration > 0 {
+            return rowRuler.beatXs(from: beatDots.segmentStart, to: beatDots.segmentEnd)
+        }
         // Instrumental (chord-only) rows must NOT take the word-center path: their rendered
         // "lyric" is bar-grid text ("| . . |") whose pipes/dots masquerade as words, and those
         // character columns live in a much narrower space than the time-scaled row width —
@@ -4459,11 +4515,6 @@ private struct ChordProPreviewLineView: View {
             return beats.map { wordCenterX(at: $0, beatBall: beatDots) }
         }
         guard !line.chords.isEmpty else { return [] }
-        // Rhythmic instrumental rows: dots from the row ruler, index-space, equidistant —
-        // the same axis their chords and strip are on.
-        if isInstrumentalLine, rhythmicSpacing, lineDuration > 0 {
-            return rowRuler.beatXs(from: beatDots.segmentStart, to: beatDots.segmentEnd)
-        }
         let span = max(beatDots.segmentEnd - beatDots.segmentStart, 0.0001)
         let width =
             isInstrumentalLine && lineDuration > 0
