@@ -3742,72 +3742,24 @@ private struct ChordProPreviewLineView: View {
     }
 
     var body: some View {
-        phraseWrapped(
-            VStack(alignment: .leading, spacing: 2) {
-                if line.hasSungText, effectiveOverrideText != nil {
-                    overriddenContent
-                } else if rhythmicWords.isEmpty {
-                    monospaceContent
-                } else {
-                    rhythmicContent
-                }
-                if !vocalPeaks.isEmpty {
-                    waveformStrip
-                }
+        // One numbered line is ONE screen row (Eric, 2026-08-05, review window: "These should
+        // be one-screen line per line"). Phrase wrapping into stacked systems was tried and
+        // reverted the same day — the numbered rows lost their identity when a line rendered as
+        // three screen rows. Row lengths therefore vary with the music; consistency comes from
+        // the shared ruler (aligned beat/bar columns) and the phrase frame diagnostic, and a
+        // line much longer than one phrase is a segmentation defect to fix upstream, not a
+        // layout to re-flow.
+        VStack(alignment: .leading, spacing: 2) {
+            if line.hasSungText, effectiveOverrideText != nil {
+                overriddenContent
+            } else if rhythmicWords.isEmpty {
+                monospaceContent
+            } else {
+                rhythmicContent
             }
-        )
-    }
-
-    /// Whether this row participates in phrase wrapping: rhythmic mode, a recoverable phrase
-    /// period, a real downbeat anchor, and content that actually overruns one phrase. Overridden
-    /// (hand-typed) lines have no time layout to wrap.
-    private var wrapsAtPhraseBoundaries: Bool {
-        guard rhythmicSpacing, phraseWidth != nil, rowDownbeatSeconds != nil,
-            !(line.hasSungText && effectiveOverrideText != nil)
-        else { return false }
-        return true
-    }
-
-    /// Sheet-music systems (Eric, 2026-08-05: wrap at phrase boundaries — every row reads as
-    /// one phrase). The row's full content is laid out ONCE on the global ruler, then displayed
-    /// as stacked slices exactly one phrase wide: system 0 shows the pickup gutter plus the
-    /// first phrase, each continuation shows the next phrase with a blank gutter column so the
-    /// downbeat columns align vertically. Slicing (rather than re-laying-out per system) means
-    /// geometry stays identical to the unwrapped row — same ruler, same gestures, and the balls
-    /// appear in whichever system their global x falls into.
-    ///
-    /// ponytail: a word straddling a phrase boundary is clipped across the two systems; nudging
-    /// straddlers fully into one system is the upgrade path if it bothers in practice.
-    @ViewBuilder
-    private func phraseWrapped(_ content: some View) -> some View {
-        let contentEnd = max(rowContentEndX, stripWidth)
-        if wrapsAtPhraseBoundaries, let phraseWidth,
-            contentEnd > gutterPx + phraseWidth + 1
-        {
-            // Cap matches phraseBoundaryXs's spin guard; beyond it something upstream is wrong.
-            let systems = min(
-                Int(((contentEnd - gutterPx) / phraseWidth).rounded(.up)), 16)
-            VStack(alignment: .leading, spacing: scale.scaled(6)) {
-                ForEach(0..<max(systems, 1), id: \.self) { system in
-                    if system == 0 {
-                        ZStack(alignment: .topLeading) { content }
-                            .frame(width: gutterPx + phraseWidth, alignment: .topLeading)
-                            .clipped()
-                    } else {
-                        HStack(spacing: 0) {
-                            Color.clear.frame(width: gutterPx)
-                            ZStack(alignment: .topLeading) {
-                                content.offset(
-                                    x: -(gutterPx + CGFloat(system) * phraseWidth))
-                            }
-                            .frame(width: phraseWidth, alignment: .topLeading)
-                            .clipped()
-                        }
-                    }
-                }
+            if !vocalPeaks.isEmpty {
+                waveformStrip
             }
-        } else {
-            content
         }
     }
 
