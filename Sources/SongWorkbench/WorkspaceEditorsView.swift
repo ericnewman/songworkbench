@@ -1856,7 +1856,20 @@ struct BeatBallInput: Equatable {
     var rowNumber: Int? = nil
 }
 
-private struct ChordProAppPreview: View {
+// Internal (not private) so the headless pixel-render audit can instantiate the REAL preview.
+struct ChordProAppPreview: View {
+    /// Render-audit mode: materialize every row eagerly (plain VStack) because LazyVStack
+    /// produces nothing under ImageRenderer. Never set on screen — laziness matters there.
+    var eagerLayoutForRendering = false
+
+    @ViewBuilder
+    fileprivate func chartRows(in document: ChordProPreviewDocument) -> some View {
+        ForEach(indexedBlocks(for: document), id: \.offset) { item in
+            blockRow(for: item, in: document)
+                .id(item.offset)
+        }
+    }
+
     /// Playback auto-scroll animation: a slow symmetric ease so each line advance glides the
     /// chart toward center instead of the default quick spring's "jump scroll". Duration is a
     /// large fraction of a typical inter-line gap so the chart reads as continuously moving.
@@ -2297,14 +2310,30 @@ private struct ChordProAppPreview: View {
                 )
             } else {
                 switch previewResult {
+                // Render-audit path: no ScrollView, no GeometryReader — neither snapshots
+                // under ImageRenderer (blank PNGs); the rows themselves are identical.
+                case .success(let document) where eagerLayoutForRendering:
+                    VStack(alignment: .leading, spacing: 10) {
+                        chartRows(in: document)
+                    }
+                    .padding(12)
+                    .background(Color.swTextBackground)
                 case .success(let document):
                     GeometryReader { viewport in
                         ScrollViewReader { scrollProxy in
                             ScrollView([.horizontal, .vertical]) {
-                                LazyVStack(alignment: .leading, spacing: 10) {
-                                    ForEach(indexedBlocks(for: document), id: \.offset) { item in
-                                        blockRow(for: item, in: document)
-                                            .id(item.offset)
+                                // Lazy on screen; EAGER under the headless pixel-render audit —
+                                // LazyVStack never materializes its rows inside ImageRenderer,
+                                // which rendered blank PNGs. Same ForEach either way.
+                                Group {
+                                    if eagerLayoutForRendering {
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            chartRows(in: document)
+                                        }
+                                    } else {
+                                        LazyVStack(alignment: .leading, spacing: 10) {
+                                            chartRows(in: document)
+                                        }
                                     }
                                 }
                                 .padding(12)
