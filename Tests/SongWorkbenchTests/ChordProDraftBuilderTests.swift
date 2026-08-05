@@ -218,6 +218,44 @@ final class ChordProDraftBuilderTests: XCTestCase {
             "row span must be a whole number of bars")
     }
 
+    func testGapChordsEarlierThanTheGutterStayInThePreviousLinesTail() {
+        // 120 BPM (0.5 s beats, 2 s bars). Two lines with a 6 s gap (12 beats, 3 bars — short
+        // of the 4-bar instrumental threshold). Gap chords at 4 beats and 1 beat before the
+        // next line: only the 1-beat one is a renderable anticipation (the pickup gutter is
+        // 2 beats); the 4-beat-early one must stay in the previous line's tail, or it renders
+        // clamp-piled at the next row's left edge with any neighbours ("3 chords basically on
+        // a single beat").
+        let input = ChordProDraftInput(
+            title: "Attachment",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 2, end: 4, text: "First line here"),
+                TimedLyricSegment(start: 10, end: 12, text: "Second line here"),
+            ],
+            chords: [
+                EditableChordEvent(time: 2.2, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 8.0, chord: "F", confidence: 0.9),
+                EditableChordEvent(time: 9.5, chord: "G", confidence: 0.9),
+            ],
+            beatTimes: stride(from: 0.0, through: 16.0, by: 0.5).map { $0 }
+        )
+        let result = ChordProDraftBuilder().buildResult(input)
+        let lyricRows = result.timeline.rows.filter(\.isLyric)
+        XCTAssertEqual(lyricRows.count, 2)
+        // F (2.0 s = 4 beats early) belongs to line 1's tail; G (0.5 s = 1 beat early) leads
+        // line 2.
+        XCTAssertTrue(
+            lyricRows[0].chordTimes.contains(where: { abs($0 - 8.0) < 0.001 }),
+            "4-beat-early chord must stay in the previous line's tail, "
+                + "got \(lyricRows[0].chordTimes)")
+        XCTAssertFalse(
+            lyricRows[1].chordTimes.contains(where: { abs($0 - 8.0) < 0.001 }),
+            "4-beat-early chord must not lead the next line")
+        XCTAssertTrue(
+            lyricRows[1].chordTimes.contains(where: { abs($0 - 9.5) < 0.001 }),
+            "1-beat-early chord is a true anticipation and leads the next line")
+    }
+
     func testStaleChartDetectionByAlgorithmTag() {
         // No identifier (pre-versioning chart) and old-format identifiers are stale; a chart
         // stamped by the CURRENT algorithm version is not.

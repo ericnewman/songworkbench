@@ -69,8 +69,9 @@ struct ChordProDraftBuilder: Sendable {
     ///
     /// History: 1 = equal-time instrumental slicing (implicit — charts stamped before
     /// versioning carry no tag at all); 2 = uniform whole-bar instrumental rows; 3 = sliver
-    /// remainders merge into the final row and a degenerate outro gets a nominal bar.
-    static let algorithmVersion = 3
+    /// remainders merge into the final row and a degenerate outro gets a nominal bar;
+    /// 4 = anticipated-chord attachment capped at the 2-beat gutter.
+    static let algorithmVersion = 4
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -268,8 +269,16 @@ struct ChordProDraftBuilder: Sendable {
                 // (field case: Bb at 26.78s, 0.30s before "Laughter…" but 0.48s after the
                 // previous line) — attach it to the START of this line, where a musician
                 // expects it, instead of the previous line's tail.
+                //
+                // Capped at the chart's 2-beat pickup gutter: that is ALL the space a row has
+                // left of its origin, so a chord attached forward from further out than that
+                // cannot render at its true time — the ruler clamps it to x = 0 and several
+                // such chords pile into a fake cluster (field case: three chords 2 beats apart
+                // rendered "basically on a single beat"). Earlier chords stay in the previous
+                // line's tail, where their true positions have room.
                 leadingChords = gapChords.filter { chord in
                     segment.start - chord.time < chord.time - gapStart
+                        && segment.start - chord.time <= anticipationWindow(input)
                 }
                 if segment.start - lyrics[index - 1].end > 1.5 {
                     lines.append("")
@@ -300,10 +309,13 @@ struct ChordProDraftBuilder: Sendable {
                 let nextStart = lyrics[index + 1].start
                 if bars(from: segment.end, to: nextStart, input: input) < 4 {
                     // Chords closer to the NEXT line's start are its anticipated changes —
-                    // they render as that line's leading chords, not this line's tail.
+                    // they render as that line's leading chords, not this line's tail. The
+                    // EXACT complement of the leading filter above (including its 2-beat
+                    // anticipation cap), or a gap chord could drop out of both rows.
                     trailingChords = chords.filter {
                         $0.time >= segment.end && $0.time < nextStart
-                            && nextStart - $0.time >= $0.time - segment.end
+                            && (nextStart - $0.time >= $0.time - segment.end
+                                || nextStart - $0.time > anticipationWindow(input))
                     }
                 }
             }
@@ -516,6 +528,13 @@ struct ChordProDraftBuilder: Sendable {
 
     private func barCount(_ bars: Double) -> Int {
         LyricSectionDeriver.barCountLabel(bars)
+    }
+
+    /// How far ahead of a line's start an "anticipated" chord may attach to that line: the same
+    /// 2 beats as the chart's pickup gutter, because that is the only space a row can render
+    /// left of its origin.
+    private func anticipationWindow(_ input: ChordProDraftInput) -> TimeInterval {
+        2 * (60.0 / max(input.tempo ?? 120, 1))
     }
 
     /// The typical length of a sung line, in 4/4 bars — the median over the lyric lines, clamped to

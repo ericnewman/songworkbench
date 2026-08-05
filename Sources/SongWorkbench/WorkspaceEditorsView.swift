@@ -2468,6 +2468,7 @@ struct ChordProAppPreview: View {
             block: item.block,
             scale: scale,
             highlight: itemHighlight,
+            playheadTime: highlightContext?.currentTime,
             beatBall: itemBeatBall,
             beatDots: itemBeatDots,
             rhythmicSpacing: rhythmicSpacing,
@@ -3150,6 +3151,8 @@ private struct ChordProPreviewBlockView: View {
     /// Proportional chart zoom (see `ChordProChartScale`).
     var scale: ChordProChartScale = .base
     var highlight: ChordProLinePlaybackHighlight?
+    /// The playhead on EVERY row (highlight is only the active lyric line's).
+    var playheadTime: TimeInterval?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
     var rhythmicSpacing = false
@@ -3309,7 +3312,8 @@ private struct ChordProPreviewBlockView: View {
                     ChordProPreviewLineView(
                         line: line, scale: scale,
                         songChordTimes: songChordTimes,
-                        highlight: highlight, beatBall: beatBall, beatDots: beatDots,
+                        highlight: highlight, playheadTime: playheadTime,
+                        beatBall: beatBall, beatDots: beatDots,
                         rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
                         vocalPeaks: vocalPeaks, lineDuration: lineDuration,
                         rowStartTime: rowStartTime, stripColor: stripColor,
@@ -3497,6 +3501,11 @@ private struct ChordProPreviewLineView: View {
     /// of one line and reappears part-way through the next.
     var songChordTimes: [TimeInterval] = []
     var highlight: ChordProLinePlaybackHighlight?
+    /// The playhead on EVERY row — drives the sounding-chord amber name, onset pop/glow, and
+    /// the parked amber ball. `highlight` is only non-nil on the active lyric line, which left
+    /// all of those dark on instrumental rows (Eric: "the orange ball to highlight the current
+    /// chord, and chord name highlighting on onset are missing").
+    var playheadTime: TimeInterval?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
     /// When true (and real word timings are available), words are spaced by their onset time
@@ -3653,35 +3662,40 @@ private struct ChordProPreviewLineView: View {
     /// at full brightness.
     @ViewBuilder
     private func chordOnsetGlow(at index: Int) -> some View {
-        let beat = beatLengthSeconds
-        if let now = highlight?.currentTime, rowChordTimes.indices.contains(index), beat > 0 {
-            let elapsed = now - rowChordTimes[index]
-            if elapsed >= 0, elapsed < beat {
-                let intensity = 1 - (elapsed / beat)
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(Color.swAmber.opacity(0.35 * intensity))
-                    .padding(-scale.scaled(2))
-                    .shadow(color: .swAmber.opacity(0.9 * intensity), radius: 5 * intensity)
-                    .allowsHitTesting(false)
-            }
+        let intensity = chordOnsetIntensity(at: index)
+        if intensity > 0 {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(Color.swAmber.opacity(0.35 * intensity))
+                .padding(-scale.scaled(2))
+                .shadow(color: .swAmber.opacity(0.9 * intensity), radius: 5 * intensity)
+                .allowsHitTesting(false)
         }
     }
 
-    /// Whether this chord is the one SOUNDING at the playhead: from its own onset until the
-    /// next chord onset anywhere in the song (rows don't end a chord — the next chord does).
-    /// The sounding chord renders its NAME in amber, replacing the amber chord ball, whose
-    /// arc previewed the next tap and therefore always read as ahead of the music (Eric:
-    /// "light up the chord name in Amber at each onset, and then back to normal at the next
-    /// chord onset").
-    private func isChordSounding(at index: Int) -> Bool {
-        guard let now = highlight?.currentTime, rowChordTimes.indices.contains(index)
-        else { return false }
-        let onset = rowChordTimes[index]
-        guard now >= onset else { return false }
-        if let next = songChordTimes.first(where: { $0 > onset + 0.001 }) {
-            return now < next
+    /// Index of the chord SOUNDING at the playhead on THIS row, or nil: the latest onset at or
+    /// before the playhead, still sounding until the next chord onset anywhere in the song
+    /// (rows don't end a chord — the next chord does). Drives the amber name, the onset
+    /// pop/glow, and the parked amber ball, all off `playheadTime` so they fire on every row
+    /// kind (Eric: "light up the chord name in Amber at each onset, and then back to normal at
+    /// the next chord onset").
+    private var soundingChordIndex: Int? {
+        guard let now = playheadTime, !rowChordTimes.isEmpty else { return nil }
+        var best: Int?
+        for (index, onset) in rowChordTimes.enumerated()
+        where onset <= now && (best.map { rowChordTimes[$0] <= onset } ?? true) {
+            best = index
         }
-        return true
+        guard let best else { return nil }
+        if let next = songChordTimes.first(where: { $0 > rowChordTimes[best] + 0.001 }),
+            now >= next
+        {
+            return nil
+        }
+        return best
+    }
+
+    private func isChordSounding(at index: Int) -> Bool {
+        soundingChordIndex == index
     }
 
     /// Foreground for a chord label: amber while sounding, the confidence tint otherwise.
@@ -3695,12 +3709,39 @@ private struct ChordProPreviewLineView: View {
     /// to the chord onset. Helpful to a guitar player to understand the rhythmic emphasis"),
     /// but it fires ON the hit instead of travelling ahead of it.
     private func chordOnsetScale(at index: Int) -> CGFloat {
+        1 + 0.3 * chordOnsetIntensity(at: index)
+    }
+
+    /// 1 exactly at a chord's onset, decaying to 0 over one beat — the attack transient the
+    /// pop, glow, and ball hop all share.
+    private func chordOnsetIntensity(at index: Int) -> CGFloat {
         let beat = beatLengthSeconds
-        guard let now = highlight?.currentTime, rowChordTimes.indices.contains(index), beat > 0
-        else { return 1 }
+        guard let now = playheadTime, rowChordTimes.indices.contains(index), beat > 0
+        else { return 0 }
         let elapsed = now - rowChordTimes[index]
-        guard elapsed >= 0, elapsed < beat else { return 1 }
-        return 1 + 0.3 * CGFloat(1 - elapsed / beat)
+        guard elapsed >= 0, elapsed < beat else { return 0 }
+        return CGFloat(1 - elapsed / beat)
+    }
+
+    /// The parked amber ball: sits ON the sounding chord's label and hops at each onset —
+    /// current-chord indication that can never run ahead of the music, because it never
+    /// travels (Eric: "The orange ball to highlight the current chord"). `xs` is the rendered
+    /// chord x array for whichever layout mode is asking.
+    @ViewBuilder
+    private func soundingChordBall(chordXs xs: [CGFloat]) -> some View {
+        if let index = soundingChordIndex, xs.indices.contains(index) {
+            let labelHalfWidth =
+                CGFloat(max(line.chords[index].name.count, 1)) * characterWidth / 2
+            let lift = chordOnsetIntensity(at: index)
+            Circle()
+                .fill(Color.swAmber)
+                .frame(width: ballDiameter, height: ballDiameter)
+                .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
+                .opacity(0.95)
+                .position(
+                    x: xs[index] + labelHalfWidth,
+                    y: ballTopReserve - 2 - lift * ballApexHeight)
+        }
     }
 
     @ViewBuilder
@@ -4064,10 +4105,10 @@ private struct ChordProPreviewLineView: View {
         let chordXs = rhythmicChordXs
         let bassXs = rhythmicBassXs
         let ball = rhythmicBallPosition
-        // Reserve space above the content: the full ball reserve when the ball is shown, else a
-        // thin row for the beat dots, else nothing (so lines without either keep their height).
+        // Reserve space above the content: the full ball reserve when either ball is shown,
+        // else a thin row for the beat dots, else nothing.
         let topReserve: CGFloat =
-            ball != nil
+            (ball != nil || soundingChordIndex != nil)
             ? ballTopReserve : (dots.isEmpty ? 0 : rhythmicDotTopReserve)
         // Positioned bass-note row (when present) sits between the reserve and the chords;
         // chords/words shift down by this amount so nothing overlaps.
@@ -4167,6 +4208,7 @@ private struct ChordProPreviewLineView: View {
                     .help(
                         "\(restBeats)-beat rest: the voice stops here before the next line")
             }
+            soundingChordBall(chordXs: chordXs)
             if let ball {
                 Circle()
                     .fill(Color.white)
@@ -4537,6 +4579,8 @@ private struct ChordProPreviewLineView: View {
             }
             .offset(y: ballTopReserve)
 
+            soundingChordBall(
+                chordXs: line.chords.enumerated().map { monospaceChordX($1, at: $0) })
             if let ball = ballPosition {
                 Circle()
                     .fill(Color.white)

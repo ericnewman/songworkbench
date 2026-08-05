@@ -426,6 +426,11 @@ struct BouncingBall: Sendable {
 struct ChordProPlaybackHighlightContext: Equatable, Sendable {
     private let activeLyricOrdinal: Int?
     private let lineHighlight: ChordProLinePlaybackHighlight?
+    /// The playhead, exposed to EVERY row (unlike `highlight(forLyricOrdinal:)`, which is only
+    /// the active lyric line's word highlight). The sounding-chord amber name/pop/ball must
+    /// track playback on instrumental rows and inactive lines too — keying them off the
+    /// per-line highlight left them dark everywhere but the line being sung.
+    let currentTime: TimeInterval
 
     init(
         currentTime: TimeInterval,
@@ -439,6 +444,7 @@ struct ChordProPlaybackHighlightContext: Equatable, Sendable {
             chordEvents: chordEvents,
             confidenceThreshold: confidenceThreshold
         )
+        self.currentTime = currentTime
         guard let lyricIndex = deriver.lyricOrdinal(at: currentTime) else {
             activeLyricOrdinal = nil
             lineHighlight = nil
