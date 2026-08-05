@@ -4381,10 +4381,9 @@ private struct ChordProPreviewLineView: View {
         let bracket = bracketed(
             taps: taps, xs: tapXs,
             width: isInstrumentalLine && lineDuration > 0 ? instrumentalTimeWidth : monospaceWidth)
-        guard
-            let position = BouncingBall(beatTimes: bracket.taps, beatX: bracket.xs)
-                .position(at: beatBall.currentTime)
-        else { return nil }
+        let ballPath = BouncingBall(
+            beatTimes: bracket.taps, beatX: bracket.xs, horizontalEasing: .linear)
+        guard let position = ballPath.position(at: beatBall.currentTime) else { return nil }
         return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
     }
 
@@ -4403,10 +4402,10 @@ private struct ChordProPreviewLineView: View {
         }
         guard !taps.isEmpty else { return nil }
         let bracket = bracketed(taps: taps, xs: tapXs, width: (xs.last ?? 0) + Self.characterWidth)
-        guard
-            let position = BouncingBall(beatTimes: bracket.taps, beatX: bracket.xs)
-                .position(at: bracket.taps.isEmpty ? 0 : beatBall.currentTime)
-        else { return nil }
+        let ballPath = BouncingBall(
+            beatTimes: bracket.taps, beatX: bracket.xs, horizontalEasing: .linear)
+        let sampleTime = bracket.taps.isEmpty ? 0 : beatBall.currentTime
+        guard let position = ballPath.position(at: sampleTime) else { return nil }
         return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
     }
 

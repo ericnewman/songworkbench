@@ -322,6 +322,55 @@ final class MetricalLevelReconcilerTests: XCTestCase {
         XCTAssertGreaterThan(spread, 1e-3, "retuned grid must inherit the measured unevenness")
     }
 
+    // MARK: BouncingBall horizontal easing (amber chord ball)
+
+    func testLinearEasingTravelsAtConstantVelocityBetweenTaps() {
+        // Chord taps 4s apart: the ball must be exactly on pace at every instant.
+        let ball = BouncingBall(
+            beatTimes: [0, 4], beatX: [0, 400], horizontalEasing: .linear)
+        for fraction in [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95] {
+            let position = try! XCTUnwrap(ball.position(at: 4 * fraction))
+            XCTAssertEqual(position.x, CGFloat(400 * fraction), accuracy: 0.001)
+        }
+    }
+
+    func testSmoothstepCreepsAtTheEndsWhichIsWhyChordsUseLinear() {
+        let eased = BouncingBall(beatTimes: [0, 4], beatX: [0, 400])
+        let linear = BouncingBall(beatTimes: [0, 4], beatX: [0, 400], horizontalEasing: .linear)
+        // Over the first 5% of a 4-second gap, smoothstep covers 2.9 px against linear's 20 —
+        // under a sixth of the pace. That near-stillness is what reads as "stopped, waiting".
+        let easedStart = try! XCTUnwrap(eased.position(at: 0.2))
+        let linearStart = try! XCTUnwrap(linear.position(at: 0.2))
+        XCTAssertEqual(easedStart.x, 2.9, accuracy: 0.1)
+        XCTAssertEqual(linearStart.x, 20, accuracy: 0.001)
+        XCTAssertLessThan(easedStart.x, linearStart.x / 6)
+        // Symmetrically at the far end: 5% of the gap still to run, but only 2.9 px of travel
+        // left — the ball looks like it arrived early and sat there.
+        let easedEnd = try! XCTUnwrap(eased.position(at: 3.8))
+        XCTAssertEqual(easedEnd.x, 397.1, accuracy: 0.1)
+        XCTAssertGreaterThan(easedEnd.x, 400 - (400 - linearStart.x) / 6)
+    }
+
+    func testBothEasingsLandExactlyOnTheOnset() {
+        // The fix is about the JOURNEY, not the arrival: both must be exact at the tap.
+        for easing in [BouncingBall.HorizontalEasing.smoothstep, .linear] {
+            let ball = BouncingBall(
+                beatTimes: [0, 4], beatX: [0, 400], horizontalEasing: easing)
+            let arrival = try! XCTUnwrap(ball.position(at: 4))
+            XCTAssertEqual(arrival.x, 400, accuracy: 0.001)
+            XCTAssertEqual(arrival.lift, 0, accuracy: 0.001, "the ball taps down on the onset")
+        }
+    }
+
+    func testWordBallKeepsSmoothstepByDefault() {
+        let ball = BouncingBall(beatTimes: [0, 4], beatX: [0, 400])
+        let position = try! XCTUnwrap(ball.position(at: 2))
+        // smoothstep(0.5) == 0.5, so midpoint agrees; the difference is only off-centre.
+        XCTAssertEqual(position.x, 200, accuracy: 0.001)
+        let quarter = try! XCTUnwrap(ball.position(at: 1))
+        XCTAssertNotEqual(quarter.x, 100, accuracy: 1.0)
+    }
+
     func testMedianBeatLengthFallsBackToNominalForShortGrids() {
         let length = try! XCTUnwrap(
             MetricalLevelReconciler.medianBeatLength(beatTimes: [0, 0.5], bpm: 120))

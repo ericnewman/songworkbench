@@ -307,10 +307,25 @@ struct ChordProHighlightDeriver: Sendable {
 /// fall within (or just around) the active lyric segment plus the target x-position of
 /// the word each beat lands on; query `position(at:)` for the playhead's current time.
 struct BouncingBall: Sendable {
+    /// How the ball's HORIZONTAL travel is distributed across the gap between two taps. The
+    /// vertical bounce arc is unaffected either way.
+    enum HorizontalEasing: Sendable {
+        /// Ease in and out (`p²(3−2p)`). Reads as a natural bounce when taps are close together.
+        case smoothstep
+        /// Constant velocity. Correct when taps are SECONDS apart: smoothstep's derivative is zero
+        /// at both ends, so over a long gap the ball creeps almost imperceptibly for the first and
+        /// last fifth of the interval — it appears to arrive early and then sit waiting, even
+        /// though it lands on the onset exactly. Linear travel arrives at the same instant while
+        /// moving steadily the whole way, so the arrival reads as being ON the onset.
+        case linear
+    }
+
     /// The ordered beat times the ball travels along (ascending).
     let beatTimes: [TimeInterval]
     /// The horizontal target (word center x) for the beat at the same index.
     let beatX: [CGFloat]
+    /// Defaults to `smoothstep` so the word ball is unchanged.
+    var horizontalEasing: HorizontalEasing = .smoothstep
 
     /// Chooses the beats relevant to a lyric segment.
     ///
@@ -383,7 +398,12 @@ struct BouncingBall: Sendable {
         let xNext = beatX[nextIndex]
 
         let p = min(max((currentTime - prevBeat) / max(nextBeat - prevBeat, 0.0001), 0), 1)
-        let x = Self.lerp(xPrev, xNext, CGFloat(Self.smoothstep(p)))
+        let travel: Double
+        switch horizontalEasing {
+        case .smoothstep: travel = Self.smoothstep(p)
+        case .linear: travel = p
+        }
+        let x = Self.lerp(xPrev, xNext, CGFloat(travel))
         let lift = Self.lift(forFraction: p)
         return (x: x, lift: CGFloat(lift))
     }
