@@ -251,6 +251,45 @@ enum MetricalLevelReconciler {
         return best
     }
 
+    /// Re-expresses a measured beat grid at a reconciled metrical level.
+    ///
+    /// Interpolates BETWEEN the existing beats rather than synthesizing a fresh uniform grid, so
+    /// the result still follows the drum-locked beats that were actually detected. Preserves the
+    /// standing rule that times stay anchored to measured onsets: no beat here is invented that the
+    /// original grid did not already imply.
+    ///
+    /// For a ratio p/q there are p new beats for every q old ones, so exactly every q-th measured
+    /// beat lands on a new beat and the rest fall between — at ×3/2, every second original beat is
+    /// retained and the others are interpolated over. That is inherent to changing metrical level,
+    /// not a loss of fidelity.
+    ///
+    /// Note this does NOT move any chord: chord event times are absolute, so a retune changes which
+    /// bar a chord lands in without changing when it sounds.
+    static func reconciledBeatTimes(
+        beatTimes: [TimeInterval],
+        ratio: MetricalRatio
+    ) -> [TimeInterval] {
+        let sorted = beatTimes.sorted()
+        guard !ratio.isIdentity, sorted.count >= 2 else { return sorted }
+        // Average spacing of THIS grid, so a short grid falls back to its own tempo rather than an
+        // unrelated constant.
+        let averageSpacing = (sorted[sorted.count - 1] - sorted[0]) / Double(sorted.count - 1)
+        let beatLength =
+            medianBeatLength(beatTimes: sorted, bpm: 60.0 / max(averageSpacing, 0.001))
+            ?? averageSpacing
+        let grid = MeasureGrid(beatTimes: sorted, bpm: 60.0 / max(beatLength, 0.001))
+        // The reconciled grid has `ratio` times as many beats over the same span.
+        let lastIndex = Double(sorted.count - 1)
+        let count = Int((lastIndex * ratio.value).rounded(.down))
+        guard count >= 1, count < 1_000_000 else { return sorted }
+        var result: [TimeInterval] = []
+        result.reserveCapacity(count + 1)
+        for step in 0...count {
+            result.append(grid.time(atBeatIndex: Double(step) / ratio.value))
+        }
+        return result
+    }
+
     // MARK: - Helpers
 
     /// Median spacing of the resolved beats, ignoring implausible jumps. Falls back to the nominal

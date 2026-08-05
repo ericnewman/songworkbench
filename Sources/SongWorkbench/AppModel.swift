@@ -217,6 +217,10 @@ final class AppModel: ObservableObject {
     @Published var beatTimes: [TimeInterval] = [] {
         didSet { persistSelectedAnalysis() }
     }
+    /// The metrical-level verdict for the selected song, recomputed on load alongside the other
+    /// unconditional post-passes. Diagnostic: it explains why `estimatedBPM` may differ from the
+    /// beat tracker's own answer, and surfaces a near-tie the caller should arbitrate.
+    @Published var metricalVerdict: MetricalLevelReconciler.Verdict?
     /// Full audio duration from transcription (seconds), for intro/outro timeline bounds.
     @Published var sourceDuration: TimeInterval? {
         didSet { persistSelectedAnalysis() }
@@ -2286,6 +2290,29 @@ final class AppModel: ObservableObject {
         // Migrate older analyses to the current line-grouping rules from each segment's
         // stored word timings (no re-transcription). Idempotent for already-current lyrics.
         let regroupedLyrics = TimedLyricSegmentGrouper.regroup(analysis.lyrics)
+        // Reconcile the metrical LEVEL before anything reads the beat grid. `BeatTracker` keeps a
+        // single ACF winner weighted by a 105 BPM prior and never compares it against its own ×3/2
+        // or ×5/4 relatives, so a song can sit a simple ratio away from the pulse a player counts —
+        // and bars, the measure grid and the whole chart inherit that. The evidence is lyric line
+        // periodicity, which is why this runs HERE and not in the beat tracker: transcription and
+        // harmony run concurrently, so no tempo is chosen at a point where lyrics exist. Same
+        // unconditional post-pass pattern as the regroup above and the phrase grouper below.
+        //
+        // Chords are deliberately left alone: their event times are ABSOLUTE, so a retune changes
+        // which bar a chord falls in without changing when it sounds. A re-analysis will decode on
+        // the corrected grid and can only improve on this; nothing here needs it to.
+        let verdict = MetricalLevelReconciler.reconcile(
+            bpm: analysis.estimatedBPM ?? 0,
+            beatTimes: analysis.beatTimes,
+            lineOnsets: regroupedLyrics.map(\.start))
+        metricalVerdict = verdict
+        let reconciledBPM: Double? =
+            verdict?.isRetune == true ? verdict?.bpm : analysis.estimatedBPM
+        let reconciledBeatTimes: [TimeInterval] =
+            verdict?.isRetune == true
+            ? MetricalLevelReconciler.reconciledBeatTimes(
+                beatTimes: analysis.beatTimes, ratio: verdict!.ratio)
+            : analysis.beatTimes
         // Bar-period-aware re-segmentation (backlog #9 Phase 1) — a further post-pass over
         // already-grouped lines, run here (not inside TranscriptionStage) because it needs
         // BOTH finished lyrics and finished harmony, and those two stages run concurrently
@@ -2298,8 +2325,8 @@ final class AppModel: ObservableObject {
         // staleness tracking).
         let phraseGroupedLyrics = LyricPhraseGrouper.regroup(
             regroupedLyrics,
-            beatTimes: analysis.beatTimes,
-            tempo: analysis.estimatedBPM,
+            beatTimes: reconciledBeatTimes,
+            tempo: reconciledBPM,
             chords: analysis.chords)
         let lyricsRegrouped = phraseGroupedLyrics != analysis.lyrics
         // Both regroup passes above rebuild plain `TimedLyricSegment`s straight from words, with
@@ -2315,8 +2342,8 @@ final class AppModel: ObservableObject {
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
-        estimatedBPM = analysis.estimatedBPM
-        beatTimes = analysis.beatTimes
+        estimatedBPM = reconciledBPM
+        beatTimes = reconciledBeatTimes
         sourceDuration = analysis.sourceDuration
         untranscribedVocalRegions = analysis.untranscribedVocalRegions
         bassNotes = analysis.bassNotes
@@ -2359,8 +2386,13 @@ final class AppModel: ObservableObject {
             }
         }
         isApplyingAnalysis = false
-        // Persist once when the load migrated the lyrics or refreshed the generated chart.
-        if lyricsRegrouped || chordProRebuilt { persistSelectedAnalysis() }
+        // Persist once when the load migrated the lyrics, refreshed the generated chart, or
+        // reconciled the metrical level (the per-property `didSet` hooks are suppressed while
+        // `isApplyingAnalysis` is set, so the retuned tempo/grid would otherwise be recomputed on
+        // every load instead of being written back once).
+        if lyricsRegrouped || chordProRebuilt || verdict?.isRetune == true {
+            persistSelectedAnalysis()
+        }
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {

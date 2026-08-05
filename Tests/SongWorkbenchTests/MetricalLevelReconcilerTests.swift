@@ -106,6 +106,49 @@ final class MetricalLevelReconcilerTests: XCTestCase {
         XCTAssertEqual(verdict.bpm, trueBPM, accuracy: 0.01)
     }
 
+    // MARK: Idempotency — this runs unconditionally on EVERY load and now persists
+
+    func testReconcilingTwiceDoesNotRetuneAgain() {
+        // A second pass over an already-corrected song must be a no-op. If it were not, opening
+        // the same song repeatedly would walk its tempo away a ratio at a time.
+        let trueBPM = 152.0
+        let reportedBPM = trueBPM * 2 / 3
+        let onsets = lineOnsets(bpm: trueBPM, beatsPerLine: 4, lineCount: 30, jitter: 0.05)
+        let beats = uniformBeats(bpm: reportedBPM, duration: 120)
+
+        let first = try! XCTUnwrap(
+            MetricalLevelReconciler.reconcile(
+                bpm: reportedBPM, beatTimes: beats, lineOnsets: onsets))
+        XCTAssertTrue(first.isRetune)
+
+        // Apply the verdict exactly as `applyAnalysis` does, then re-run.
+        let correctedBeats = MetricalLevelReconciler.reconciledBeatTimes(
+            beatTimes: beats, ratio: first.ratio)
+        let second = try! XCTUnwrap(
+            MetricalLevelReconciler.reconcile(
+                bpm: first.bpm, beatTimes: correctedBeats, lineOnsets: onsets))
+        XCTAssertFalse(second.isRetune, "a corrected song must not be retuned a second time")
+        XCTAssertEqual(second.ratio, .identity)
+        XCTAssertEqual(second.bpm, first.bpm, accuracy: 1e-6)
+    }
+
+    func testReconcilingAnAlreadyCorrectSongRepeatedlyIsStable() {
+        let bpm = 96.0
+        let onsets = lineOnsets(bpm: bpm, beatsPerLine: 8, lineCount: 26, jitter: 0.05)
+        var currentBPM = bpm
+        var currentBeats = uniformBeats(bpm: bpm, duration: 160)
+        for pass in 1...4 {
+            let verdict = try! XCTUnwrap(
+                MetricalLevelReconciler.reconcile(
+                    bpm: currentBPM, beatTimes: currentBeats, lineOnsets: onsets))
+            XCTAssertFalse(verdict.isRetune, "pass \(pass) retuned a song that was already correct")
+            currentBeats = MetricalLevelReconciler.reconciledBeatTimes(
+                beatTimes: currentBeats, ratio: verdict.ratio)
+            currentBPM = verdict.bpm
+        }
+        XCTAssertEqual(currentBPM, bpm, accuracy: 1e-9)
+    }
+
     // MARK: The gates
 
     func testBrokenSegmentationDeclinesToRetune() {
@@ -224,6 +267,59 @@ final class MetricalLevelReconcilerTests: XCTestCase {
     func testBestDyadicFitReturnsNilWhenTooFewIntervalsScore() {
         // All intervals are section-break sized relative to every dyadic period, so nothing scores.
         XCTAssertNil(MetricalLevelReconciler.bestDyadicFit(intervals: [90, 95, 88]))
+    }
+
+    // MARK: reconciledBeatTimes
+
+    func testReconciledGridIsIdentityForTheIdentityRatio() {
+        let beats = uniformBeats(bpm: 120, duration: 10)
+        XCTAssertEqual(
+            MetricalLevelReconciler.reconciledBeatTimes(beatTimes: beats, ratio: .identity), beats)
+    }
+
+    func testReconciledGridAtThreeHalvesRetainsEverySecondMeasuredBeat() {
+        // 120 bpm → 0.5s beats. At ×3/2 there are 3 new beats per 2 old, so the beat becomes 1/3 s
+        // and exactly every SECOND original beat lands on a new one. The odd beats necessarily
+        // fall between — that is what changing metrical level means.
+        let beats = uniformBeats(bpm: 120, duration: 6)
+        let out = MetricalLevelReconciler.reconciledBeatTimes(
+            beatTimes: beats, ratio: MetricalRatio(3, 2))
+        for (index, original) in beats.enumerated() where index % 2 == 0 {
+            XCTAssertTrue(
+                out.contains { abs($0 - original) < 1e-6 },
+                "measured beat \(original) at even index \(index) must survive")
+        }
+        let spacing = zip(out, out.dropFirst()).map { $1 - $0 }
+        for gap in spacing { XCTAssertEqual(gap, 1.0 / 3.0, accuracy: 1e-6) }
+    }
+
+    func testReconciledGridAtFourFifthsIsSlowerAndStaysSorted() {
+        let beats = uniformBeats(bpm: 100, duration: 12)
+        let out = MetricalLevelReconciler.reconciledBeatTimes(
+            beatTimes: beats, ratio: MetricalRatio(4, 5))
+        XCTAssertLessThan(out.count, beats.count)
+        XCTAssertEqual(out, out.sorted())
+        let spacing = zip(out, out.dropFirst()).map { $1 - $0 }
+        // 100 bpm → 0.6s; at ×4/5 the tempo is 80 bpm → 0.75s.
+        for gap in spacing { XCTAssertEqual(gap, 0.75, accuracy: 1e-6) }
+    }
+
+    func testReconciledGridFollowsNonUniformMeasuredBeats() {
+        // A drum-locked grid is NOT uniform. The retune must interpolate between the real beats
+        // rather than overwrite them with a metronome, so the retained (every-2nd) beats keep
+        // their MEASURED times — uneven spacing and all.
+        let beats: [TimeInterval] = [0, 0.52, 0.99, 1.55, 2.01]
+        let out = MetricalLevelReconciler.reconciledBeatTimes(
+            beatTimes: beats, ratio: MetricalRatio(3, 2))
+        for (index, original) in beats.enumerated() where index % 2 == 0 {
+            XCTAssertTrue(
+                out.contains { abs($0 - original) < 1e-6 },
+                "measured beat \(original) at even index \(index) must survive")
+        }
+        // A metronome would have produced perfectly even spacing; the measured grid does not.
+        let spacing = zip(out, out.dropFirst()).map { $1 - $0 }
+        let spread = (spacing.max() ?? 0) - (spacing.min() ?? 0)
+        XCTAssertGreaterThan(spread, 1e-3, "retuned grid must inherit the measured unevenness")
     }
 
     func testMedianBeatLengthFallsBackToNominalForShortGrids() {
