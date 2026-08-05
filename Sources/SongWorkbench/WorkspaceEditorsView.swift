@@ -2383,6 +2383,7 @@ private struct ChordProAppPreview: View {
             beatLengthSeconds: beatLengthSeconds,
             beatsPerBar: beatsPerBar,
             beatsPerLine: phraseBeats ?? 0,
+            gridBeatTimes: beatTimes,
             showBarlines: itemShowBarlines,
             chordOnsetTimes: chordOnsetTimes,
             leadingMelodyPeaks: leadingMelody.peaks,
@@ -3064,6 +3065,9 @@ private struct ChordProPreviewBlockView: View {
     /// The song's phrase period in beats — the reference extent every row is drawn against.
     /// 0 when the song has no recoverable phrase period, which disables the frame.
     var beatsPerLine: Int = 0
+    /// The song's measured beat grid, threaded in independently of the beat-dot toggle so the
+    /// LAYOUT never depends on a display option. Empty disables the beat axis.
+    var gridBeatTimes: [TimeInterval] = []
     /// Draw faint measure barlines on the shared grid (own toggle, independent of beat dots).
     var showBarlines = false
     /// Detected chord onset times (sorted) so each chord sits at its true impulse onset.
@@ -3206,6 +3210,7 @@ private struct ChordProPreviewBlockView: View {
                         rowDownbeatSeconds: rowDownbeatSeconds, gutterSeconds: gutterSeconds,
                         beatLengthSeconds: beatLengthSeconds, beatsPerBar: beatsPerBar,
                         beatsPerLine: beatsPerLine,
+                        gridBeatTimes: gridBeatTimes,
                         showBarlines: showBarlines,
                         chordOnsetTimes: chordOnsetTimes,
                         leadingMelodyPeaks: leadingMelodyPeaks, melodyColor: melodyColor,
@@ -3413,6 +3418,9 @@ private struct ChordProPreviewLineView: View {
     /// The song's phrase period in beats — the reference extent every row is drawn against.
     /// 0 when the song has no recoverable phrase period, which disables the frame.
     var beatsPerLine: Int = 0
+    /// The song's measured beat grid, threaded in independently of the beat-dot toggle so the
+    /// LAYOUT never depends on a display option. Empty disables the beat axis.
+    var gridBeatTimes: [TimeInterval] = []
     /// Draw faint measure barlines on the shared grid — own toggle, independent of the beat dots.
     var showBarlines = false
     /// All detected chord-change onset times (sorted), used to place each chord's leading edge at
@@ -3559,11 +3567,40 @@ private struct ChordProPreviewLineView: View {
         rowDownbeatSeconds == nil ? 0 : max(0, CGFloat(gutterSeconds) * Self.pixelsPerSecond)
     }
 
-    /// x of a song time on the shared, constant-scale metric grid: the downbeat sits at `gutterPx`
-    /// on EVERY row, and each beat is `beatLengthSeconds × pixelsPerSecond` further right — so beats
-    /// align vertically across rows and the repeating cadence reads the same on every line.
+    /// Width of one beat. This is THE unit of the chart: beats are equidistant by construction, so
+    /// the page reads like graph paper and any two rows are directly comparable.
+    private var pixelsPerBeat: CGFloat {
+        CGFloat(beatLengthSeconds) * Self.pixelsPerSecond
+    }
+
+    /// The row's beat-index converter, built from the song's MEASURED beats.
+    private var beatGrid: MeasureGrid? {
+        guard beatLengthSeconds > 0, gridBeatTimes.count >= 2 else { return nil }
+        return MeasureGrid(beatTimes: gridBeatTimes, bpm: 60.0 / beatLengthSeconds)
+    }
+
+    /// x of a song time, on a BEAT axis rather than a time axis.
+    ///
+    /// The downbeat sits at `gutterPx` on every row and each beat is exactly `pixelsPerBeat`
+    /// further right — *regardless of how long that beat actually lasted*. Mapping through
+    /// `beatIndex(atTime:)` is what makes this true: a drummer who pushes or drags stretches the
+    /// audio between beats, and a pure time axis faithfully reproduces that wobble, which is why
+    /// rows previously looked like they were at different scales (measured on one song: ~52 px
+    /// between beats on one row against ~79 px on the next). On the beat axis both are one beat.
+    ///
+    /// This does NOT quantize anything. The index is FRACTIONAL, so a word sung a third of the way
+    /// through a beat still renders a third of the way through that beat's column — its measured
+    /// time is preserved, only the ruler changes. Word timings themselves are untouched; this is a
+    /// presentation transform, not a re-timing, so times stay anchored to measured onsets.
+    ///
+    /// Falls back to the time axis when there is no usable grid, which keeps rows without beat
+    /// information rendering exactly as before.
     private func metricX(forTime time: TimeInterval) -> CGFloat {
-        max(0, gutterPx + CGFloat(time - gridOriginTime) * Self.pixelsPerSecond)
+        guard let beatGrid else {
+            return max(0, gutterPx + CGFloat(time - gridOriginTime) * Self.pixelsPerSecond)
+        }
+        let delta = beatGrid.beatIndex(atTime: time) - beatGrid.beatIndex(atTime: gridOriginTime)
+        return max(0, gutterPx + CGFloat(delta) * pixelsPerBeat)
     }
 
     /// Trimmed, non-empty `overrideText`, or `nil` — mirrors `TimedLyricSegment.effectiveText`'s
@@ -3686,15 +3723,20 @@ private struct ChordProPreviewLineView: View {
     private var lineStartTime: TimeInterval { rhythmicWords.first?.start ?? 0 }
 
     /// Maps a song time to the x where the WORDS actually place it — interpolating between the
-    /// (clamp-adjusted) word anchor positions, extrapolating beyond the ends at pixelsPerSecond.
-    /// This is the key to alignment: the strip must follow the words' real layout, not an
+    /// (clamp-adjusted) word anchor positions, and extrapolating beyond the ends on the shared beat
+    /// axis. This is the key to alignment: the strip must follow the words' real layout, not an
     /// independent time scale, because words are nudged apart to avoid overlapping.
+    ///
+    /// The extrapolation goes through `metricX` rather than a raw seconds×pixelsPerSecond term so
+    /// it uses the same beat-uniform ruler as everything else; a fixed px-per-second here would
+    /// reintroduce exactly the per-row scale drift the beat axis removes, in the leading and
+    /// trailing melody fills.
     private func rhythmicX(forTime time: TimeInterval) -> CGFloat {
         let words = rhythmicWords
         let xs = rhythmicWordXs
         guard !words.isEmpty, xs.count == words.count else { return 0 }
         if time <= words[0].start {
-            return max(0, xs[0] - CGFloat(words[0].start - time) * Self.pixelsPerSecond)
+            return max(0, xs[0] - (metricX(forTime: words[0].start) - metricX(forTime: time)))
         }
         for i in 1..<words.count where time <= words[i].start {
             let t0 = words[i - 1].start
@@ -3703,7 +3745,7 @@ private struct ChordProPreviewLineView: View {
             return xs[i - 1] + frac * (xs[i] - xs[i - 1])
         }
         let last = words.count - 1
-        return xs[last] + CGFloat(time - words[last].start) * Self.pixelsPerSecond
+        return xs[last] + (metricX(forTime: time) - metricX(forTime: words[last].start))
     }
 
     /// Width the audio strip should span: in rhythmic mode it covers the line's full time window on
