@@ -2160,37 +2160,34 @@ private struct ChordProAppPreview: View {
 
     /// Guitar/melody-stem peaks (and lane color) covering a lyric line's pre-vocal gap
     /// [firstWord − ~2 beats, firstWord], so the "waiting for the vocal" lead-in shows the melody
-    /// actually sounding. Bounded so it never reaches back past the previous sung line.
+    /// actually sounding.
+    ///
+    /// Always the FULL gutter, clamped only at the song start. This used to be bounded by the
+    /// previous line's end and skipped entirely after section-sized gaps, which made identical
+    /// musical breaks render differently row to row — some rows with a purple lead-in, some
+    /// without (Eric: "musically these are likely to be consistent… these breaks are a part of
+    /// the line"). The consistency is worth the small duplication: the last two beats of an
+    /// intro row's audio reappear in the following verse row's gutter, on the same ruler.
     private func leadingMelodyFill(
-        firstWordOnset: TimeInterval?, previousLineEnd: TimeInterval?
+        firstWordOnset: TimeInterval?
     ) -> (peaks: [Float], color: Color, seconds: TimeInterval) {
         guard let onset = firstWordOnset, let lane = instrumentalLane else {
             return ([], .swViolet, 0)
         }
-        // When the pre-vocal gap is a real instrumental section (≥ 4 bars — the same threshold
-        // that renders Intro/Instrumental chord-only rows), that audio is ALREADY drawn on those
-        // rows; a lead-in strip here would duplicate intro material onto the verse's first line.
-        let gapStart = previousLineEnd ?? 0
-        let barSeconds = beatLengthSeconds * Double(beatsPerBar)
-        if barSeconds > 0, (onset - gapStart) / barSeconds >= 4 {
-            return ([], lane.color, 0)
-        }
-        let cap = onset - gutterSeconds
-        let start = max(cap, previousLineEnd ?? -.greatestFiniteMagnitude)
-        let seconds = max(0, onset - start)
+        let start = max(onset - gutterSeconds, 0)
+        let seconds = onset - start
         guard seconds > 0.05 else { return ([], lane.color, 0) }
         return (peaks(in: (start, onset), from: lane.envelope), lane.color, seconds)
     }
 
-    /// Guitar/melody-stem peaks for the instrumental tail AFTER a line's last word, up to ~2 beats
-    /// but never into the next line's first word — the symmetric end-of-line counterpart to
-    /// `leadingMelodyFill`. Empty when there's no tail or no melody stem.
+    /// Guitar/melody-stem peaks for the instrumental tail AFTER a line's last word — the
+    /// symmetric end-of-line counterpart to `leadingMelodyFill`, and like it always the full
+    /// ~2 beats so every row's tail reads the same. Empty only without a melody stem.
     private func trailingMelodyFill(
-        lastWordEnd: TimeInterval?, nextLineStart: TimeInterval?
+        lastWordEnd: TimeInterval?
     ) -> (peaks: [Float], seconds: TimeInterval) {
         guard let end = lastWordEnd, let lane = instrumentalLane else { return ([], 0) }
-        var stop = end + gutterSeconds
-        if let next = nextLineStart { stop = min(stop, next) }
+        let stop = end + gutterSeconds
         let seconds = max(0, stop - end)
         guard seconds > 0.05 else { return ([], 0) }
         return (peaks(in: (end, stop), from: lane.envelope), seconds)
@@ -2402,26 +2399,16 @@ private struct ChordProAppPreview: View {
         let rowDownbeat =
             rhythmicSpacing
             ? rowDownbeatTime(forFirstWordAt: rowAnchorTime) : nil
-        // Melody peaks for the pre-vocal gap (bounded so it can't
-        // overrun the previous sung line).
-        let prevLineEnd: TimeInterval? =
-            (item.lyricOrdinal).flatMap { ord in
-                ord > 0
-                    && lyricLineWindows.indices.contains(ord - 1)
-                    ? lyricLineWindows[ord - 1].upperBound : nil
-            }
-        // Next sung line's start, so the trailing tail can't overrun it.
+        // Next sung line's start, for the trailing-rest marker.
         let nextLineStart: TimeInterval? =
             (item.lyricOrdinal).flatMap { ord in
                 lyricLineWindows.indices.contains(ord + 1)
                     ? lyricLineWindows[ord + 1].lowerBound : nil
             }
         let leadingMelody = leadingMelodyFill(
-            firstWordOnset: firstWordOnset,
-            previousLineEnd: prevLineEnd)
+            firstWordOnset: firstWordOnset)
         let trailingMelody = trailingMelodyFill(
-            lastWordEnd: lineWords.last?.end,
-            nextLineStart: nextLineStart)
+            lastWordEnd: lineWords.last?.end)
         let chordRow = chordRowData(for: item)
         // Every argument below is pre-computed into its own `let`
         // (rather than inlined as an expression in the call) —
@@ -3631,7 +3618,7 @@ private struct ChordProPreviewLineView: View {
     /// at full brightness.
     @ViewBuilder
     private func chordOnsetGlow(at index: Int) -> some View {
-        let beat = beatLengthSeconds ?? 0.5
+        let beat = beatLengthSeconds
         if let now = highlight?.currentTime, rowChordTimes.indices.contains(index), beat > 0 {
             let elapsed = now - rowChordTimes[index]
             if elapsed >= 0, elapsed < beat {
