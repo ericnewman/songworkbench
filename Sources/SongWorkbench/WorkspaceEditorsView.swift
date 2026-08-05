@@ -2151,23 +2151,21 @@ private struct ChordProAppPreview: View {
         return grid.nearestDownbeatTime(toTime: onset)
     }
 
-    /// Guitar/melody-stem peaks (and lane color) covering a lyric line's pre-vocal gap
-    /// [firstWord − ~2 beats, firstWord], so the "waiting for the vocal" lead-in shows the melody
-    /// actually sounding.
-    ///
-    /// Always the FULL gutter, clamped only at the song start. This used to be bounded by the
-    /// previous line's end and skipped entirely after section-sized gaps, which made identical
-    /// musical breaks render differently row to row — some rows with a purple lead-in, some
-    /// without (Eric: "musically these are likely to be consistent… these breaks are a part of
-    /// the line"). The consistency is worth the small duplication: the last two beats of an
-    /// intro row's audio reappear in the following verse row's gutter, on the same ruler.
+    /// Guitar/melody-stem peaks (and lane color) filling a row's leading region — from the row's
+    /// own x = 0 (its downbeat minus the pickup gutter) all the way to where the row's own audio
+    /// begins — so EVERY row opens flush with audio at its left edge. The music is continuous;
+    /// an empty gutter or pickup indent read as gaps in it (Eric: "this is a continuous piece of
+    /// music. There should be no gaps at the start of lines"). Clamped only at the song start.
+    /// Applies to every row kind: on an instrumental continuation row this shows the previous
+    /// row's last two beats, which is exactly what the ear hears there.
     private func leadingMelodyFill(
-        firstWordOnset: TimeInterval?
+        upTo onset: TimeInterval?, rowDownbeat: TimeInterval?
     ) -> (peaks: [Float], color: Color, seconds: TimeInterval) {
-        guard let onset = firstWordOnset, let lane = instrumentalLane else {
+        guard let onset, let lane = instrumentalLane else {
             return ([], .swViolet, 0)
         }
-        let start = max(onset - gutterSeconds, 0)
+        let rowZeroTime = (rowDownbeat ?? onset) - gutterSeconds
+        let start = max(rowZeroTime, 0)
         let seconds = onset - start
         guard seconds > 0.05 else { return ([], lane.color, 0) }
         return (peaks(in: (start, onset), from: lane.envelope), lane.color, seconds)
@@ -2398,10 +2396,13 @@ private struct ChordProAppPreview: View {
                 lyricLineWindows.indices.contains(ord + 1)
                     ? lyricLineWindows[ord + 1].lowerBound : nil
             }
+        // Row-kind agnostic: sung rows fill up to the first word, instrumental rows up to
+        // their window start — every row opens flush with audio (no left-edge gaps).
         let leadingMelody = leadingMelodyFill(
-            firstWordOnset: firstWordOnset)
+            upTo: rowAnchorTime, rowDownbeat: rowDownbeat)
         let trailingMelody = trailingMelodyFill(
-            lastWordEnd: lineWords.last?.end)
+            lastWordEnd: lineWords.last?.end
+                ?? (strip.duration > 0 ? strip.start + strip.duration : nil))
         let chordRow = chordRowData(for: item)
         // Every argument below is pre-computed into its own `let`
         // (rather than inlined as an expression in the call) —
@@ -3894,7 +3895,9 @@ private struct ChordProPreviewLineView: View {
         let endX = rhythmicX(forTime: lineStartTime + lineDuration)
         let trailingEndX =
             trailingMelodySeconds > 0
-            ? rhythmicX(forTime: (rhythmicWords.last?.end ?? lineStartTime) + trailingMelodySeconds)
+            ? rhythmicX(
+                forTime: (rhythmicWords.last?.end ?? (lineStartTime + lineDuration))
+                    + trailingMelodySeconds)
             : 0
         return max(1, max(endX, trailingEndX))
     }
@@ -3942,9 +3945,9 @@ private struct ChordProPreviewLineView: View {
                 }
                 // Melody (guitar) fill in the post-vocal tail: [lastWord.end, +trailingSeconds]
                 // maps to x right of the last word, showing the instrument still sounding.
-                if trailingMelodySeconds > 0.02, !trailingMelodyPeaks.isEmpty,
-                    let lastEnd = rhythmicWords.last?.end
-                {
+                // Wordless (instrumental) rows tail from their window's end instead.
+                if trailingMelodySeconds > 0.02, !trailingMelodyPeaks.isEmpty {
+                    let lastEnd = rhythmicWords.last?.end ?? (start + lineDuration)
                     let tCount = trailingMelodyPeaks.count
                     let tMax = max(trailingMelodyPeaks.max() ?? 1, 0.0001)
                     for (index, peak) in trailingMelodyPeaks.enumerated() {
