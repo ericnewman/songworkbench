@@ -780,3 +780,31 @@ can and did disagree.
 **Watch for:** regenerating also picks up any UNTRACKED source file sitting in the tree (here,
 in-flight `ONNXKaraokeVocalSeparationEngine.swift`), so the committed project can end up
 referencing a file git does not have. Say so rather than hand-editing generated output.
+
+## 2026-08-05 — A derived value that overwrites its own input is not idempotent, however well you test it
+
+**Mistake:** the metrical-level retune wrote its result back over `estimatedBPM`/`beatTimes`. Those
+are precisely the reconciler's INPUT, so the next load reconciled an already-reconciled value.
+One live song walked 101.3 -> 152.0 -> 81.1 across reloads and came to rest on a ratio the shipped
+algorithm does not produce — and because the original was overwritten, correcting the algorithm
+could not correct the song. Only a fresh analysis can.
+
+**Why the tests missed it:** I *did* anticipate idempotency and wrote two unit tests plus a
+six-song Python simulation of reconcile -> resample -> reconcile. All passed. They used SYNTHETIC
+uniform grids, where the bpm and the grid's median spacing agree exactly. On a real resampled
+drum-locked grid they drift apart by a fraction of a percent, `medianBeatLength` reads the grid
+while the verdict scales the passed-in bpm, and the two compound. **The simulation was faithful to
+the algorithm and unfaithful to the data.**
+
+**Rule:** when a load-time pass writes back to a field it also reads, that is a feedback loop, not
+a migration — and no amount of idempotency testing makes it safe, because the test can only prove
+the fixed point you fed it. Either keep the derived value OUT of the persisted document (publish
+it separately and persist the original — what this fix does), or store the original alongside the
+derivation so the input is recoverable. `LyricPhraseGrouper` was already the right pattern:
+recompute on every load, persist nothing.
+
+**Corollary on simulations:** a Python sim over real files is strong evidence for the ALGORITHM and
+weak evidence for the PIPELINE. It only tests the round-trip you modelled. Here the sim re-fed the
+original grid each pass while the app re-fed the persisted one — the single line of difference that
+was the entire bug. When simulating a persistence loop, read the state back from the same place the
+app will.
