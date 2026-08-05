@@ -221,6 +221,13 @@ final class AppModel: ObservableObject {
     /// unconditional post-passes. Diagnostic: it explains why `estimatedBPM` may differ from the
     /// beat tracker's own answer, and surfaces a near-tie the caller should arbitrate.
     @Published var metricalVerdict: MetricalLevelReconciler.Verdict?
+    /// The song's phrase period — the reference extent the chart draws each row to. Period only:
+    /// consumers must anchor to a line's own measured onset, never to an absolute slot boundary
+    /// (downbeat phase was measured unrecoverable; see `SongBeatsPerLine`).
+    @Published var beatsPerLineFit: BeatsPerLineFit?
+    /// Per-line fit against `beatsPerLineFit`. A `.short` or `.long` verdict marks a line whose
+    /// boundaries are probably wrong, which is the segmentation defect made visible.
+    @Published var lineLengthMeasurements: [LineLengthMeasurement] = []
     /// Full audio duration from transcription (seconds), for intro/outro timeline bounds.
     @Published var sourceDuration: TimeInterval? {
         didSet { persistSelectedAnalysis() }
@@ -2338,6 +2345,23 @@ final class AppModel: ObservableObject {
         // `lyricSegments`, which may belong to whatever song was previously selected).
         lyricSegments = TimedLyricSegment.reconciled(
             newSegments: phraseGroupedLyrics, against: analysis.lyrics)
+        // Phrase period + per-line fit, from the FINAL lines on the reconciled grid. Derived, not
+        // persisted: it is cheap, and recomputing keeps it honest when lines are edited.
+        beatsPerLineFit = SongBeatsPerLine.estimate(
+            beatTimes: reconciledBeatTimes,
+            bpm: reconciledBPM ?? 0,
+            lineOnsets: lyricSegments.map(\.start))
+        lineLengthMeasurements =
+            beatsPerLineFit.flatMap { fit -> [LineLengthMeasurement]? in
+                guard
+                    let beatLength = MetricalLevelReconciler.medianBeatLength(
+                        beatTimes: reconciledBeatTimes, bpm: reconciledBPM ?? 0)
+                else { return nil }
+                return SongBeatsPerLine.measure(
+                    lineOnsets: lyricSegments.map(\.start),
+                    beatsPerLine: fit.beatsPerLine,
+                    beatLength: beatLength)
+            } ?? []
         lyricBlendRows = analysis.lyricBlendRows
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
