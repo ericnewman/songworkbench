@@ -1954,6 +1954,23 @@ private struct ChordProAppPreview: View {
             onsets: lyricLineWords.compactMap { $0.first?.start })
     }
 
+    /// The song's phrase period in beats — how far apart sung lines actually sit, pooled across
+    /// the song. Computed here from the same measured line onsets `beatsPerBar` uses, rather than
+    /// threaded in, so the chart stays self-contained.
+    ///
+    /// This is what makes rows comparable: every row is drawn against a frame of this many beats,
+    /// so a line that runs long visibly overruns its frame instead of just being a wider row that
+    /// looks no different from a correct one. PERIOD only — the frame is anchored to each row's
+    /// OWN measured downbeat, never to an absolute slot boundary, because downbeat phase was
+    /// measured unrecoverable (see `SongBeatsPerLine`).
+    private var phraseBeats: Int? {
+        SongBeatsPerLine.estimate(
+            beatTimes: beatTimes,
+            bpm: bpm ?? 0,
+            lineOnsets: lyricLineWords.compactMap { $0.first?.start }
+        )?.beatsPerLine
+    }
+
     /// Seconds per beat (60/bpm), or 0 without a tempo.
     private var beatLengthSeconds: TimeInterval { (bpm.map { $0 > 0 ? 60 / $0 : 0 }) ?? 0 }
 
@@ -2365,6 +2382,7 @@ private struct ChordProAppPreview: View {
             gutterSeconds: gutterSeconds,
             beatLengthSeconds: beatLengthSeconds,
             beatsPerBar: beatsPerBar,
+            beatsPerLine: phraseBeats ?? 0,
             showBarlines: itemShowBarlines,
             chordOnsetTimes: chordOnsetTimes,
             leadingMelodyPeaks: leadingMelody.peaks,
@@ -3043,6 +3061,9 @@ private struct ChordProPreviewBlockView: View {
     var beatLengthSeconds: TimeInterval = 0
     /// Beats per bar (4/4).
     var beatsPerBar: Int = 4
+    /// The song's phrase period in beats — the reference extent every row is drawn against.
+    /// 0 when the song has no recoverable phrase period, which disables the frame.
+    var beatsPerLine: Int = 0
     /// Draw faint measure barlines on the shared grid (own toggle, independent of beat dots).
     var showBarlines = false
     /// Detected chord onset times (sorted) so each chord sits at its true impulse onset.
@@ -3184,6 +3205,7 @@ private struct ChordProPreviewBlockView: View {
                         rowStartTime: rowStartTime, stripColor: stripColor,
                         rowDownbeatSeconds: rowDownbeatSeconds, gutterSeconds: gutterSeconds,
                         beatLengthSeconds: beatLengthSeconds, beatsPerBar: beatsPerBar,
+                        beatsPerLine: beatsPerLine,
                         showBarlines: showBarlines,
                         chordOnsetTimes: chordOnsetTimes,
                         leadingMelodyPeaks: leadingMelodyPeaks, melodyColor: melodyColor,
@@ -3388,6 +3410,9 @@ private struct ChordProPreviewLineView: View {
     var beatLengthSeconds: TimeInterval = 0
     /// Beats per bar (4/4).
     var beatsPerBar: Int = 4
+    /// The song's phrase period in beats — the reference extent every row is drawn against.
+    /// 0 when the song has no recoverable phrase period, which disables the frame.
+    var beatsPerLine: Int = 0
     /// Draw faint measure barlines on the shared grid — own toggle, independent of the beat dots.
     var showBarlines = false
     /// All detected chord-change onset times (sorted), used to place each chord's leading edge at
@@ -3799,6 +3824,22 @@ private struct ChordProPreviewLineView: View {
             * Self.characterWidth + Self.characterWidth
         let contentHeight = (line.chords.isEmpty ? 20 : 42) + topReserve + bassReserve
         return ZStack(alignment: .topLeading) {
+            // The phrase frame: one phrase period wide, anchored at this row's own downbeat.
+            // Drawn UNDER everything and never affecting word x — the words stay on measured time,
+            // so a line that does not fit its phrase overruns the band visibly instead of being
+            // silently rescaled to fit.
+            if let phraseWidth {
+                Rectangle()
+                    .fill(Color.swTextSecondary.opacity(0.05))
+                    .frame(width: phraseWidth, height: contentHeight)
+                    .position(x: gutterPx + phraseWidth / 2, y: contentHeight / 2)
+            }
+            ForEach(Array(phraseBoundaryXs.enumerated()), id: \.offset) { _, x in
+                Rectangle()
+                    .fill(Color.swTextSecondary.opacity(0.38))
+                    .frame(width: 1, height: contentHeight)
+                    .position(x: x, y: contentHeight / 2)
+            }
             ForEach(Array(barlineXs.enumerated()), id: \.offset) { _, x in
                 Rectangle()
                     .fill(Color.swTextSecondary.opacity(0.16))
@@ -4063,6 +4104,48 @@ private struct ChordProPreviewLineView: View {
             x += barPx
         }
         return result
+    }
+
+    /// Width of one phrase — the reference extent this row is drawn against — or nil when the song
+    /// has no recoverable phrase period.
+    private var phraseWidth: CGFloat? {
+        guard beatsPerLine > 0, beatLengthSeconds > 0, rowDownbeatSeconds != nil else { return nil }
+        let width = CGFloat(beatLengthSeconds * Double(beatsPerLine)) * Self.pixelsPerSecond
+        return width > 1 ? width : nil
+    }
+
+    /// x of each phrase boundary across this row, starting at the row's own downbeat column.
+    ///
+    /// Deliberately anchored to `gutterPx` — this row's MEASURED downbeat — and not to an absolute
+    /// song-wide slot grid. Downbeat phase was measured unrecoverable (slot boundaries landed near
+    /// a real inter-word gap only 53% of the time against a 70% gate), so an absolute frame would
+    /// be drawing a line the evidence does not support. Per-row anchoring needs only the period,
+    /// which IS recoverable.
+    private var phraseBoundaryXs: [CGFloat] {
+        guard let phraseWidth, !rhythmicWords.isEmpty else { return [] }
+        let maxX = rhythmicContentWidth
+        var result: [CGFloat] = []
+        var x = gutterPx + phraseWidth
+        // Cap the count so a degenerate period can never spin here.
+        while x <= maxX + phraseWidth, result.count < 16 {
+            result.append(x)
+            x += phraseWidth
+        }
+        return result
+    }
+
+    /// Right edge of this row's rendered content, used to tell whether it overruns its phrase frame.
+    private var rhythmicContentWidth: CGFloat {
+        (rhythmicWordXs.last ?? 0)
+            + CGFloat(max(rhythmicWords.last?.text.count ?? 1, 1)) * Self.characterWidth
+    }
+
+    /// How many phrases this row's content actually spans. A row materially past a whole number is
+    /// the visible form of a mis-segmented line — too long usually means two lines run together,
+    /// too short usually means one line split where it should not have been.
+    private var phrasesSpanned: Double? {
+        guard let phraseWidth, !rhythmicWords.isEmpty else { return nil }
+        return (rhythmicContentWidth - gutterPx) / phraseWidth
     }
 
     /// Left x of each word on the shared metric grid (constant pixels-per-second, downbeat pinned to
