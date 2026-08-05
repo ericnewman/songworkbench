@@ -201,6 +201,36 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertGreaterThan(boundaries.count, 3, "a 9-bar span should still split into rows")
     }
 
+    func testInstrumentalRowsAreUniformWholeBars() {
+        // Musically equal rows must be pixel-equal rows: every interior gap is exactly the same
+        // whole number of bars (the first/last rows absorb the mid-bar entry and remainder).
+        let grid = MeasureGrid(
+            beatTimes: stride(from: 0.0, through: 40.0, by: 0.5).map { $0 }, bpm: 120)
+        let boundaries = ChordProDraftBuilder().barAlignedBoundaries(
+            start: 0.3, end: 18.3, count: 4, grid: grid)
+        let inner = boundaries.dropFirst().dropLast()
+        let interior = zip(inner.dropFirst(), inner).map(-)
+        for gap in interior {
+            XCTAssertEqual(gap, interior[0], accuracy: 0.0001, "rows must span equal bars")
+        }
+        XCTAssertEqual(
+            interior[0].truncatingRemainder(dividingBy: 2.0), 0, accuracy: 0.0001,
+            "row span must be a whole number of bars")
+    }
+
+    func testStaleChartDetectionByAlgorithmTag() {
+        // No identifier (pre-versioning chart) and old-format identifiers are stale; a chart
+        // stamped by the CURRENT algorithm version is not.
+        XCTAssertTrue(ChordProDraftBuilder.isOutputStale(configurationIdentifier: nil))
+        XCTAssertTrue(
+            ChordProDraftBuilder.isOutputStale(configurationIdentifier: "confidence-60"))
+        XCTAssertTrue(
+            ChordProDraftBuilder.isOutputStale(configurationIdentifier: "alg0-confidence-60"))
+        XCTAssertFalse(
+            ChordProDraftBuilder.isOutputStale(
+                configurationIdentifier: "\(ChordProDraftBuilder.algorithmTag)-confidence-60"))
+    }
+
     func testDegenerateSnapsMergeRowsInsteadOfCreatingEmptyOnes() {
         // A span shorter than one bar with an absurd row count: every snap collapses onto the
         // span edges, so the result must degrade to a single [start, end] row, never emit

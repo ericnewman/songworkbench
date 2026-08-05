@@ -60,6 +60,25 @@ struct ChordProDraftBuilder: Sendable {
     /// Comment header used for the bass-note draft variant.
     static let bassNoteDraftComment = "Generated bass-note analysis draft - review required"
 
+    /// Monotonic version of this builder's OUTPUT SEMANTICS. Bump whenever a change alters what
+    /// a correct chart looks like (row splitting, bar alignment, directive layout), so persisted
+    /// charts built by an older algorithm are detected as stale and regenerated on load — even
+    /// reviewed ones, since the artifact the review approved no longer exists (Eric: "version
+    /// the analysis so the app can detect and discard an old analysis from a previous version
+    /// of the algorithm").
+    ///
+    /// History: 1 = equal-time instrumental slicing (implicit — charts stamped before
+    /// versioning carry no tag at all); 2 = uniform whole-bar instrumental rows.
+    static let algorithmVersion = 2
+    static var algorithmTag: String { "alg\(algorithmVersion)" }
+
+    /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
+    /// version than this build of the app (or predates versioning entirely).
+    static func isOutputStale(configurationIdentifier: String?) -> Bool {
+        guard let configurationIdentifier else { return true }
+        return !configurationIdentifier.hasPrefix("\(algorithmTag)-")
+    }
+
     func build(_ input: ChordProDraftInput) -> String {
         build(
             input,
@@ -560,7 +579,16 @@ struct ChordProDraftBuilder: Sendable {
         // every row starts ON a downbeat and left edges line up at the shared gutter column.
         // The first row keeps the section's real start (it may genuinely begin mid-bar); only
         // the SPLIT POINTS are quantized.
-        let boundaries = barAlignedBoundaries(start: start, end: end, count: count, grid: grid)
+        var boundaries = barAlignedBoundaries(start: start, end: end, count: count, grid: grid)
+        // The FIRST slice must contain the span's first chord: a chord-less leading row has
+        // nothing to render and would be dropped downstream, breaking window contiguity
+        // (rows must tile the gap for the ball/playhead walk). Merge leading boundaries into
+        // the first row until it reaches the first chord; later rows stay downbeat-aligned.
+        if let firstChordTime = chords.map(\.time).min() {
+            while boundaries.count > 2, boundaries[1] <= firstChordTime {
+                boundaries.remove(at: 1)
+            }
+        }
         var rows: [InstrumentalRowLine] = []
         var carried: RenderableChordEvent?
         for index in 0..<(boundaries.count - 1) {
@@ -585,23 +613,39 @@ struct ChordProDraftBuilder: Sendable {
         return rows
     }
 
-    /// Split points for an instrumental span: interior boundaries sit at the bar downbeat
-    /// nearest each equal-slice position, so every row after the first starts ON a downbeat.
-    /// A snap that would create an empty or out-of-range row is dropped (two rows merge) rather
-    /// than kept degenerate. Falls back to plain equal slices without a grid.
-    /// Internal (not private) for direct unit testing of the downbeat-boundary invariant.
+    /// Split points for an instrumental span: every interior boundary is a bar downbeat, and
+    /// consecutive boundaries are EXACTLY the same whole number of bars apart — so musically
+    /// equal rows are pixel-equal rows on the beat axis. (The first cut of this snapped
+    /// equal-TIME targets to the nearest downbeat, which made a 9-bar span split 2/3/2/2 —
+    /// bar-aligned but unequal, and Eric read it immediately: "Musically, I think all these
+    /// lines are the same length - but vastly different on screen".) The first row absorbs a
+    /// mid-bar section start; the last row takes the remainder bars. Falls back to plain equal
+    /// slices without a grid. Internal (not private) for direct unit testing.
     func barAlignedBoundaries(
         start: TimeInterval, end: TimeInterval, count: Int, grid: MeasureGrid?
     ) -> [TimeInterval] {
-        let slice = (end - start) / Double(count)
+        guard let grid else {
+            let slice = (end - start) / Double(count)
+            return (0..<count).map { start + Double($0) * slice } + [end]
+        }
+        let beatsPerBar = Double(grid.beatsPerBar)
+        let totalBars =
+            (grid.beatIndex(atTime: end) - grid.beatIndex(atTime: start)) / beatsPerBar
+        let barsPerRow = max(1, Int((totalBars / Double(count)).rounded()))
+        // Downbeat index of the bar CONTAINING the span start (floor, not nearest — the first
+        // boundary must never land before the span).
+        let startIndex = grid.beatIndex(atTime: start)
+        let anchor =
+            Int(((startIndex - Double(grid.barPhase)) / beatsPerBar).rounded(.down))
+            * grid.beatsPerBar + grid.barPhase
         var result: [TimeInterval] = [start]
-        for index in 1..<count {
-            let target = start + Double(index) * slice
-            let boundary = grid.map { $0.nearestDownbeatTime(toTime: target) } ?? target
-            guard boundary > (result.last ?? start) + 0.001, boundary < end - 0.001 else {
-                continue
-            }
-            result.append(boundary)
+        var step = 1
+        while result.count < 64 {
+            let index = anchor + step * barsPerRow * grid.beatsPerBar
+            let time = grid.time(atBeatIndex: Double(index))
+            if time >= end - 0.001 { break }
+            if time > start + 0.001 { result.append(time) }
+            step += 1
         }
         result.append(end)
         return result

@@ -502,7 +502,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.chordProSource.contains("[G]"))
         XCTAssertEqual(
             model.analysisStageRecords[.chordPro]?.provenance?.configurationIdentifier,
-            "confidence-80"
+            "\(ChordProDraftBuilder.algorithmTag)-confidence-80"
         )
 
         model.markChordProReviewed()

@@ -2619,9 +2619,18 @@ final class AppModel: ObservableObject {
             let song = selectedSong,
             analysisStageRecords[.chordPro]?.state == .succeeded,
             analysisStageRecords[.chordPro]?.provenance?.engineIdentifier
-                == "chordpro-draft-builder",
-            chordProReviewState != .reviewed
+                == "chordpro-draft-builder"
         else { return }
+        // A reviewed chart is protected from routine rebuilds — but NOT from an algorithm
+        // change: the artifact that review approved was produced by a builder that no longer
+        // exists, so keeping it silently preserves stale layout forever (the jagged-intro
+        // charts). Discard and regenerate, and drop the review state honestly — the regenerated
+        // chart has not been reviewed.
+        let stale = ChordProDraftBuilder.isOutputStale(
+            configurationIdentifier:
+                analysisStageRecords[.chordPro]?.provenance?.configurationIdentifier)
+        guard chordProReviewState != .reviewed || stale else { return }
+        if chordProReviewState == .reviewed { chordProReviewState = .draft }
 
         chordProSource = chordProBuilder.build(
             ChordProDraftInput(
@@ -2645,8 +2654,13 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Provenance stamp for generated charts: the builder's algorithm version FIRST (the prefix
+    /// `ChordProDraftBuilder.isOutputStale` checks), then the tuning knobs. A stored identifier
+    /// with a different `algN-` prefix marks the chart as built by an algorithm that no longer
+    /// exists in this app version.
     private var chordProConfigurationIdentifier: String {
-        "confidence-\(Int((chordConfidenceThreshold * 100).rounded()))"
+        "\(ChordProDraftBuilder.algorithmTag)-"
+            + "confidence-\(Int((chordConfidenceThreshold * 100).rounded()))"
     }
 
     private func makeDocument() -> ProjectLibraryDocument {
