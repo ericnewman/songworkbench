@@ -1011,6 +1011,8 @@ struct ChordProTabEditor: View {
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     @AppStorage("chordProBarlinesEnabled") private var barlinesEnabled = false
+    /// Beats per chart row; 0 = automatic from the measured phrase period.
+    @AppStorage("chordProBeatsPerRow") private var beatsPerRow = 0
     /// Always on (Eric: rhythmic spacing should never be turned off) — no longer a user toggle.
     /// Kept as a `let` rather than deleting every `rhythmicSpacing` reference throughout this file.
     private let rhythmicSpacing = true
@@ -1130,6 +1132,7 @@ struct ChordProTabEditor: View {
                             lyricLineWindows: sortedLyricLineWindows,
                             songDuration: model.timelineDuration,
                             bpm: model.estimatedBPM,
+                            beatsPerRowOverride: beatsPerRow,
                             beatTimes: model.beatTimes,
                             chordOnsetTimes: model.chordEvents.map(\.time).sorted(),
                             untranscribedLineNumbers: Set(
@@ -1225,6 +1228,12 @@ struct ChordProTabEditor: View {
                         .disabled(model.bassNotes.isEmpty)
                     Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
                     Toggle("Chord Ball (amber)", isOn: $ballTracksChords)
+                    Picker("Beats per Row", selection: $beatsPerRow) {
+                        Text("Auto").tag(0)
+                        Text("4").tag(4)
+                        Text("8").tag(8)
+                        Text("16").tag(16)
+                    }
                 } label: {
                     Label("View", systemImage: "eye")
                 }
@@ -1896,6 +1905,11 @@ private struct ChordProAppPreview: View {
     /// Song tempo, used to size a 4/4 measure so a line that starts mid-measure is indented to its
     /// beat rather than pinned flush-left.
     var bpm: Double?
+    /// User-chosen beats per row (View menu). 0 = automatic from the measured phrase period.
+    /// Exists because the estimator reads inter-line onsets, and on a song with choppy
+    /// segmentation those intervals cluster at the half- or quarter-phrase — the musician knows
+    /// the real phrase length instantly.
+    var beatsPerRowOverride = 0
     /// Detected beat times; the first is the measure-grid phase for the measure indent.
     var beatTimes: [TimeInterval] = []
     /// All detected chord-change onsets (sorted), so each chord's leading edge sits at its true
@@ -2011,11 +2025,22 @@ private struct ChordProAppPreview: View {
     /// OWN measured downbeat, never to an absolute slot boundary, because downbeat phase was
     /// measured unrecoverable (see `SongBeatsPerLine`).
     private var phraseBeats: Int? {
-        SongBeatsPerLine.estimate(
-            beatTimes: beatTimes,
-            bpm: bpm ?? 0,
-            lineOnsets: lyricLineWords.compactMap { $0.first?.start }
-        )?.beatsPerLine
+        if beatsPerRowOverride > 0 { return beatsPerRowOverride }
+        guard
+            let fit = SongBeatsPerLine.estimate(
+                beatTimes: beatTimes,
+                bpm: bpm ?? 0,
+                lineOnsets: lyricLineWords.compactMap { $0.first?.start })
+        else { return nil }
+        // Low occupancy = most scored intervals span TWO fitted periods, which the fit itself
+        // documents as "the period is likely half the real phrase length". The RANKING must stay
+        // error-only (occupancy in the ranking was tried and measurably wrong — see
+        // `bestDyadicFit`), but the LINE extent a row is drawn to can honor the signal: draw the
+        // full phrase, not the half-phrase the choppy segmentation exposed.
+        if fit.occupancy < 0.5, fit.beatsPerLine < 16 {
+            return fit.beatsPerLine * 2
+        }
+        return fit.beatsPerLine
     }
 
     /// Seconds per beat (60/bpm), or 0 without a tempo.
