@@ -2747,14 +2747,6 @@ private struct ChordProAppPreview: View {
         for item: ChordProPreviewIndexedBlock,
         in document: ChordProPreviewDocument
     ) -> (start: TimeInterval, end: TimeInterval)? {
-        // The timeline's own row window wins outright: the builder made it a uniform whole-bar
-        // span, and re-deriving a window from chord onsets below (the fallback for edited
-        // charts with no timeline) yields arbitrary widths.
-        if let number = item.displayLineNumber,
-            let window = timelineRowWindowsByLine[number]
-        {
-            return (window.lowerBound, window.upperBound)
-        }
         let items = indexedBlocks(for: document)
         guard let index = items.firstIndex(where: { $0.offset == item.offset }) else { return nil }
         func window(at i: Int) -> ClosedRange<TimeInterval>? {
@@ -2788,6 +2780,7 @@ private struct ChordProAppPreview: View {
             items: items,
             index: index,
             lyricLineWindows: lyricLineWindows,
+            timelineWindow: item.displayLineNumber.flatMap { timelineRowWindowsByLine[$0] },
             explicitStart: start,
             explicitEnd: end,
             songDuration: songDuration,
@@ -2972,6 +2965,7 @@ enum ChordProPreviewLineWindowResolver {
         items: [ChordProPreviewIndexedBlock],
         index: Int,
         lyricLineWindows: [ClosedRange<TimeInterval>],
+        timelineWindow: ClosedRange<TimeInterval>? = nil,
         explicitStart: TimeInterval? = nil,
         explicitEnd: TimeInterval? = nil,
         songDuration: TimeInterval,
@@ -2982,6 +2976,13 @@ enum ChordProPreviewLineWindowResolver {
     ) -> (start: TimeInterval, end: TimeInterval)? {
         guard items.indices.contains(index), ChordProPreviewIndexing.isChordOnlyRow(items, index)
         else { return nil }
+        // The timeline's own row window wins outright: the builder made it a uniform
+        // whole-bar span. Everything below is the fallback for edited charts with no
+        // timeline — it re-derives a window from chord onsets, which is arbitrary-width
+        // by nature (chords land anywhere in a bar).
+        if let timelineWindow, timelineWindow.upperBound > timelineWindow.lowerBound {
+            return (timelineWindow.lowerBound, timelineWindow.upperBound)
+        }
 
         func window(at i: Int) -> ClosedRange<TimeInterval>? {
             guard let ordinal = items[i].lyricOrdinal,
