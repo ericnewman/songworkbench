@@ -202,6 +202,34 @@ final class MetricalLevelReconcilerTests: XCTestCase {
             MetricalLevelReconciler.reconcile(bpm: 0, beatTimes: [], lineOnsets: []))
     }
 
+    // MARK: Tie-breaking prefers the slower tempo
+
+    func testAnExactMultipleTieResolvesToTheSlowerTempo() {
+        // Eric's rule (2026-08-05). Two tempos an exact multiple apart explain line spacing
+        // equally well BY CONSTRUCTION — an 8-beat phrase at 2x is a 4-beat phrase at 1x — so the
+        // fit cannot separate them and the slower reading is the one a player counts.
+        let trueBPM = 168.0
+        let reportedBPM = trueBPM * 2 / 3  // 112.0
+        let onsets = lineOnsets(bpm: trueBPM, beatsPerLine: 8, lineCount: 22, jitter: 0.03)
+        let verdict = try! XCTUnwrap(
+            MetricalLevelReconciler.reconcile(
+                bpm: reportedBPM,
+                beatTimes: uniformBeats(bpm: reportedBPM, duration: 140),
+                lineOnsets: onsets))
+        guard verdict.isRetune, !verdict.ambiguousWith.isEmpty else { return }
+        // Whenever a candidate tied with the winner, no tied candidate may be SLOWER than it.
+        for tied in verdict.ambiguousWith {
+            XCTAssertGreaterThanOrEqual(
+                tied.value, verdict.ratio.value,
+                "a tied candidate at \(tied) is slower than the chosen \(verdict.ratio)")
+        }
+    }
+
+    func testSlowerWinsAThreeHalvesVersusThreeQuartersTie() {
+        // The concrete shape of the real-song tie: x3/4 (slower) against x3/2 (faster).
+        XCTAssertLessThan(MetricalRatio(3, 4).value, MetricalRatio(3, 2).value)
+    }
+
     // MARK: Ambiguity is reported, not hidden
 
     func testTiedCandidatesAreSurfacedOnTheVerdict() {

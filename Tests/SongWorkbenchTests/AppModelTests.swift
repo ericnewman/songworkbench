@@ -753,6 +753,91 @@ final class AppModelTests: XCTestCase {
 
         XCTAssertTrue(flags.isEmpty)
     }
+
+    // MARK: - Background activity status line
+
+    /// The batch position used to be its own early-returning branch, which hid the stage and
+    /// percent for every queue-driven run (import auto-analyze AND "Re-analyze All"). One line
+    /// now carries all three.
+    func testAnalysisStatusLineCombinesBatchPositionStageAndTitle() {
+        let line = AppModel.analysisStatusLine(
+            batch: AppModel.ReanalyzeAllStatus(index: 3, total: 25, title: "Doc Holiday"),
+            progress: SongAnalysisPipelineProgress(
+                stage: .separation,
+                completedStages: 0,
+                totalStages: 4,
+                stageFraction: 0.47,
+                message: "separating"
+            )
+        )
+        XCTAssertEqual(line, "Re-analyzing 3 of 25 · Stems 47% · Doc Holiday")
+    }
+
+    /// Separation is stage 1 of 4, so the whole-pipeline fraction would read 12% here and never
+    /// pass ~25% for the longest stage in the app. The stage's own fraction is what's shown.
+    func testAnalysisStatusLineUsesStageFractionNotWholePipelineFraction() {
+        let progress = SongAnalysisPipelineProgress(
+            stage: .separation,
+            completedStages: 0,
+            totalStages: 4,
+            stageFraction: 0.5,
+            message: "separating"
+        )
+        XCTAssertEqual(Int((progress.fractionCompleted * 100).rounded()), 13)
+        XCTAssertEqual(
+            AppModel.analysisStatusLine(batch: nil, progress: progress),
+            "Analyzing · Stems 50%"
+        )
+    }
+
+    /// Engine phase rawValues ("separating", "loadingModel", "writingOutputs") are never shown.
+    func testAnalysisStatusLineNamesStagesNotEnginePhases() {
+        func line(_ stage: SongAnalysisStage) -> String {
+            AppModel.analysisStatusLine(
+                batch: nil,
+                progress: SongAnalysisPipelineProgress(
+                    stage: stage,
+                    completedStages: 0,
+                    totalStages: 4,
+                    stageFraction: 1,
+                    message: stage.rawValue
+                )
+            )
+        }
+        XCTAssertEqual(line(.separation), "Analyzing · Stems 100%")
+        XCTAssertEqual(line(.transcription), "Analyzing · Lyrics 100%")
+        XCTAssertEqual(line(.harmony), "Analyzing · Tempo & Chords 100%")
+        XCTAssertEqual(line(.chordPro), "Analyzing · ChordPro 100%")
+    }
+
+    /// The queue also backs first-time imports, so a lone song is not "re-analyzed"; and a
+    /// stage-less progress (preflight) falls back to its own message.
+    func testAnalysisStatusLineHandlesSingleSongAndStagelessProgress() {
+        XCTAssertEqual(
+            AppModel.analysisStatusLine(
+                batch: AppModel.ReanalyzeAllStatus(index: 1, total: 1, title: "Doc Holiday"),
+                progress: SongAnalysisPipelineProgress(
+                    stage: nil,
+                    completedStages: 0,
+                    totalStages: 4,
+                    stageFraction: 0,
+                    message: "Checking source file"
+                )
+            ),
+            "Analyzing · Checking source file · Doc Holiday"
+        )
+        XCTAssertEqual(
+            AppModel.analysisStatusLine(batch: nil, progress: nil),
+            "Analyzing"
+        )
+    }
+
+    /// An idle model shows nothing at all — the status row falls back to "Ready".
+    func testBackgroundActivityStatusIsNilWhenIdle() async throws {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        await model.restoreProjects()
+        XCTAssertNil(model.backgroundActivityStatus)
+    }
 }
 
 private actor DelayedProjectStore: ProjectStore {

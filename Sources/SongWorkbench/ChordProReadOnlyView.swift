@@ -12,10 +12,10 @@ import SwiftUI
 /// identical no longer applies. These constants are what replaces it. Change a size here, not at a
 /// call site.
 enum ChordProChartTypography {
-    /// Lyric text on both surfaces.
+    /// Lyric text on both surfaces, at the chart's MINIMUM (1×) size.
     static let lyricSize: CGFloat = 15
     /// Chord labels on the Review chart, which positions each label ABSOLUTELY and so is free to
-    /// use a smaller size than the lyric line under it.
+    /// use a smaller size than the lyric line under it. Also the 1× size.
     static let chordSize: CGFloat = 13
 
     static let lyric = Font.system(size: lyricSize, design: .monospaced)
@@ -24,8 +24,16 @@ enum ChordProChartTypography {
         .system(size: lyricSize, weight: weight, design: .monospaced)
     }
 
+    static func lyric(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
+
     static func chord(weight: Font.Weight = .semibold) -> Font {
         .system(size: chordSize, weight: weight, design: .monospaced)
+    }
+
+    static func chord(size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
     }
 
     /// Chord row for COLUMN-ALIGNED rendering (`ChordProReadOnlyView`), where the chord row is a
@@ -35,13 +43,60 @@ enum ChordProChartTypography {
     /// width across weights.
     static let columnAlignedChord = Font.system(
         size: lyricSize, weight: .semibold, design: .monospaced)
+
+    static func columnAlignedChord(size: CGFloat) -> Font {
+        .system(size: size, weight: .semibold, design: .monospaced)
+    }
+}
+
+/// The chart's ONE zoom factor, shared by both ChordPro surfaces (the plain ChordPro tab and the
+/// Review chart). The user picks a body font size; everything else in the chart — chord and bass
+/// glyph sizes, the horizontal time axis, the ball/beat-dot/bass reserves, row heights — is that
+/// size divided by the 1× body size.
+///
+/// Scaling the font WITHOUT the horizontal axis would be a bug, not a smaller feature: the Review
+/// chart lays words out at their measured time and then nudges a colliding word right by whole
+/// character widths. Bigger glyphs on an unchanged axis collide more, so the nudge would push
+/// words off the beat columns they are supposed to prove alignment with. `factor` therefore
+/// multiplies `pixelsPerSecond` and `characterWidth` together, which leaves every ratio in the
+/// layout — and so every beat column — exactly where it was.
+struct ChordProChartScale: Equatable, Sendable {
+    /// The chart's current size IS the minimum; the slider only ever grows it.
+    static let minimumFontSize: CGFloat = ChordProChartTypography.lyricSize
+    /// Double, per Eric — far enough to read from a music stand.
+    static let maximumFontSize: CGFloat = minimumFontSize * 2
+    /// Whole points: the slider's step, and what the readout shows.
+    static let step: CGFloat = 1
+
+    /// Body (lyric) font size in points, clamped into `minimumFontSize...maximumFontSize`.
+    let fontSize: CGFloat
+
+    init(fontSize: CGFloat) {
+        self.fontSize = min(max(fontSize, Self.minimumFontSize), Self.maximumFontSize)
+    }
+
+    /// The unscaled chart — what every call site renders when no size has been chosen.
+    static let base = ChordProChartScale(fontSize: minimumFontSize)
+
+    /// Multiplier for EVERY length in the chart. 1.0 at the minimum size, 2.0 at the maximum.
+    var factor: CGFloat { fontSize / Self.minimumFontSize }
+
+    /// A 1×-authored length at the current size.
+    func scaled(_ length: CGFloat) -> CGFloat { length * factor }
+
+    /// Lyric/word glyph size — identical to `fontSize`, named for symmetry with `chordSize`.
+    var lyricSize: CGFloat { scaled(ChordProChartTypography.lyricSize) }
+    /// Chord (and bass-note) glyph size, holding the 13:15 ratio against the lyrics.
+    var chordSize: CGFloat { scaled(ChordProChartTypography.chordSize) }
 }
 
 struct ChordProReadOnlyView: View {
     let source: String
     var transpose: Int = 0
-
-    private static let font = ChordProChartTypography.lyric
+    /// Proportional chart zoom (see `ChordProChartScale`). Column-aligned rendering needs nothing
+    /// but the font size: the chord row is a space-padded string, so its register with the lyric
+    /// row is character advances, which scale with the point size on their own.
+    var scale: ChordProChartScale = .base
 
     var body: some View {
         ScrollView([.horizontal, .vertical]) {
@@ -122,11 +177,11 @@ struct ChordProReadOnlyView: View {
         return VStack(alignment: .leading, spacing: 0) {
             if let chordRow = rows.chordRow {
                 Text(chordRow)
-                    .font(ChordProChartTypography.columnAlignedChord)
+                    .font(ChordProChartTypography.columnAlignedChord(size: scale.lyricSize))
                     .foregroundStyle(Color.swAccent)
             }
             Text(rows.lyricRow)
-                .font(Self.font)
+                .font(ChordProChartTypography.lyric(size: scale.lyricSize))
                 .foregroundStyle(Color.swTextPrimary)
         }
     }

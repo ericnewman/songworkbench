@@ -228,6 +228,11 @@ final class AppModel: ObservableObject {
     /// Per-line fit against `beatsPerLineFit`. A `.short` or `.long` verdict marks a line whose
     /// boundaries are probably wrong, which is the segmentation defect made visible.
     @Published var lineLengthMeasurements: [LineLengthMeasurement] = []
+    /// The beat tracker's ORIGINAL tempo and grid for the selected song, captured before metrical
+    /// reconciliation and written back by `persistSelectedAnalysis`. The reconciler's input must
+    /// survive every save, or repeated loads compound their own output.
+    private var unreconciledEstimatedBPM: Double?
+    private var unreconciledBeatTimes: [TimeInterval]?
     /// Full audio duration from transcription (seconds), for intro/outro timeline bounds.
     @Published var sourceDuration: TimeInterval? {
         didSet { persistSelectedAnalysis() }
@@ -283,18 +288,22 @@ final class AppModel: ObservableObject {
     @Published private(set) var importStatus: String?
 
     /// One-line description of whatever the app is doing in the background right now, for
-    /// the persistent status line at the bottom of the main window. `nil` = idle.
+    /// the persistent status row across the top of the main window. `nil` = idle ("Ready").
     var backgroundActivityStatus: String? {
         if let importStatus { return importStatus }
-        if let bulk = reanalyzeAllStatus {
-            return "Re-analyzing \(bulk.index) of \(bulk.total): \(bulk.title)…"
-        }
-        if isSongAnalysisRunning {
-            if let progress = songAnalysisProgress {
-                let percent = Int((progress.fractionCompleted * 100).rounded())
-                return "Analyzing… \(progress.message) (\(percent)%)"
-            }
-            return "Analyzing song…"
+        // ONE analysis branch, not two. `reanalyzeAllStatus` used to be checked ahead of
+        // `isSongAnalysisRunning` and returned early, so it SHADOWED the stage/percent line —
+        // and since BOTH "Re-analyze All" and auto-analyze-on-import drain `analysisQueue`
+        // (which always sets `reanalyzeAllStatus`), the shadowed branch was the common case:
+        // stem-separation progress was never visible during exactly the long runs that need
+        // it. Batch position, stage and stage percent now share one line instead.
+        if isSongAnalysisRunning || reanalyzeAllStatus != nil {
+            return Self.analysisStatusLine(
+                batch: reanalyzeAllStatus,
+                // Between queue items the last run's progress lingers; showing it would
+                // report a finished stage against the NEXT song's title.
+                progress: isSongAnalysisRunning ? songAnalysisProgress : nil
+            )
         }
         if let lyricBlendStatus { return lyricBlendStatus }
         if isExporting {
@@ -306,6 +315,50 @@ final class AppModel: ObservableObject {
         }
         if isLoadingWaveform { return "Loading waveform…" }
         return nil
+    }
+
+    /// Builds the analysis line for `backgroundActivityStatus`, e.g.
+    /// `Re-analyzing 3 of 25 · Stems 47% · Song Title`. Kept as a pure static function of its
+    /// two inputs so the exact wording is unit-testable without driving a whole pipeline.
+    ///
+    /// - The percentage is the stage's OWN `stageFraction`, not `fractionCompleted`: separation
+    ///   is stage 1 of 4, so the whole-pipeline fraction tops out near 25% while stems run and
+    ///   reads as "stuck". Note `.harmony` only reports 0 then 1, and `.chordPro` reports no
+    ///   progress at all, so those two jump rather than climb.
+    /// - `batch.total == 1` says "Analyzing": the queue also backs first-time imports, and a
+    ///   lone imported song is not being *re*-analyzed.
+    static func analysisStatusLine(
+        batch: ReanalyzeAllStatus?,
+        progress: SongAnalysisPipelineProgress?
+    ) -> String {
+        var parts: [String] = []
+        if let batch, batch.total > 1 {
+            parts.append("Re-analyzing \(batch.index) of \(batch.total)")
+        } else {
+            parts.append("Analyzing")
+        }
+        if let progress {
+            if let stage = progress.stage {
+                let fraction = min(max(progress.stageFraction, 0), 1)
+                parts.append("\(Self.stageTitle(stage)) \(Int((fraction * 100).rounded()))%")
+            } else if !progress.message.isEmpty {
+                parts.append(progress.message)
+            }
+        }
+        if let title = batch?.title, !title.isEmpty { parts.append(title) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Short human name for a pipeline stage. The raw progress `message` carries engine phase
+    /// rawValues ("separating", "loadingModel", "writingOutputs") which are implementation
+    /// detail, not status text. Shared with `AnalysisWorkspaceView`'s stage cards.
+    static func stageTitle(_ stage: SongAnalysisStage) -> String {
+        switch stage {
+        case .separation: "Stems"
+        case .transcription: "Lyrics"
+        case .harmony: "Tempo & Chords"
+        case .chordPro: "ChordPro"
+        }
     }
     static let accuracyDecodeSpeedDefaultsKey = "accuracyDecodeSpeed"
     /// Pitch-preserved playback-speed factor applied to the vocals stem before Whisper (Accuracy)
@@ -2313,6 +2366,8 @@ final class AppModel: ObservableObject {
             beatTimes: analysis.beatTimes,
             lineOnsets: regroupedLyrics.map(\.start))
         metricalVerdict = verdict
+        unreconciledEstimatedBPM = analysis.estimatedBPM
+        unreconciledBeatTimes = analysis.beatTimes
         let reconciledBPM: Double? =
             verdict?.isRetune == true ? verdict?.bpm : analysis.estimatedBPM
         let reconciledBeatTimes: [TimeInterval] =
@@ -2410,13 +2465,17 @@ final class AppModel: ObservableObject {
             }
         }
         isApplyingAnalysis = false
-        // Persist once when the load migrated the lyrics, refreshed the generated chart, or
-        // reconciled the metrical level (the per-property `didSet` hooks are suppressed while
-        // `isApplyingAnalysis` is set, so the retuned tempo/grid would otherwise be recomputed on
-        // every load instead of being written back once).
-        if lyricsRegrouped || chordProRebuilt || verdict?.isRetune == true {
-            persistSelectedAnalysis()
-        }
+        // Persist once when the load migrated the lyrics or refreshed the generated chart.
+        //
+        // The metrical retune is deliberately NOT a reason to persist, and must never become one.
+        // Writing the reconciled tempo back over `estimatedBPM`/`beatTimes` destroys the beat
+        // tracker's ORIGINAL answer, and the reconciler's input is exactly that answer — so the
+        // next load reconciles from an already-reconciled value and the two compound. Observed
+        // 2026-08-05: one song walked 101.3 -> 152.0 -> 81.1 across reloads. It also makes the
+        // decision unrecoverable, so correcting the ALGORITHM cannot correct songs already
+        // written. Keeping the document pristine and re-deriving on every load is idempotent by
+        // construction, and matches how the phrase grouper above already works.
+        if lyricsRegrouped || chordProRebuilt { persistSelectedAnalysis() }
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {
@@ -2445,8 +2504,12 @@ final class AppModel: ObservableObject {
             sourceDuration: sourceDuration,
             chords: chordEvents,
             chordProSource: chordProSource,
-            estimatedBPM: estimatedBPM,
-            beatTimes: beatTimes,
+            // ALWAYS the beat tracker's original answer, never the reconciled one. The published
+            // `estimatedBPM`/`beatTimes` carry the reconciled grid so the chart and playback use
+            // it, but persisting that would overwrite the reconciler's own input and make each
+            // load compound on the last (see the note in `applyAnalysis`).
+            estimatedBPM: unreconciledEstimatedBPM ?? estimatedBPM,
+            beatTimes: unreconciledBeatTimes ?? beatTimes,
             bassNotes: bassNotes,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,

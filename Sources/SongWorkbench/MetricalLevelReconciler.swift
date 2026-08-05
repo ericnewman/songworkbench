@@ -159,13 +159,16 @@ enum MetricalLevelReconciler {
         }
         guard let currentFit = scored.first(where: { $0.ratio.isIdentity })?.fit else { return nil }
 
-        // Deterministic ordering: lowest error, then the least disruptive tempo move, then a
-        // stable key. Ties are surfaced on the verdict rather than resolved by luck.
+        // Deterministic ordering: lowest error first, then the SLOWER tempo.
+        //
+        // Preferring the slower candidate is Eric's call (2026-08-05) and it is the right default
+        // for a genuine tie: two tempos an exact multiple apart explain the line spacing equally
+        // well by construction — an 8-beat phrase at 2x is a 4-beat phrase at 1x — so the fit
+        // CANNOT separate them, and the slower reading is the one a player counts. It also fails
+        // safe: too slow shows more bars per line, too fast subdivides every beat.
         let ranked = scored.sorted {
             if $0.fit.fitError != $1.fit.fitError { return $0.fit.fitError < $1.fit.fitError }
-            if $0.ratio.disruption != $1.ratio.disruption {
-                return $0.ratio.disruption < $1.ratio.disruption
-            }
+            if $0.ratio.value != $1.ratio.value { return $0.ratio.value < $1.ratio.value }
             return $0.ratio.numerator < $1.ratio.numerator
         }
         guard let winner = ranked.first else { return nil }

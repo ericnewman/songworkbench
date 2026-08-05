@@ -1029,8 +1029,18 @@ struct ChordProTabEditor: View {
     /// ball. The white ball keeps tapping words (Eric's model, 2026-07-02) — this adds the chord
     /// cue next to it rather than replacing it, because what matters is how the two RELATE.
     @AppStorage("reviewShowChordBall") private var ballTracksChords = true
+    /// Body (lyric) font size for the chart, in points — the one input to the chart's proportional
+    /// zoom (see `ChordProChartScale`). Shared by BOTH ChordPro surfaces, so the size you pick on
+    /// the ChordPro tab is the size the Review tab shows: they are two views of one chart.
+    /// Defaults to the minimum, which is the size the chart has always rendered at.
+    @AppStorage("chordProFontSize") private var chordProFontSize: Double = 15
     /// Drives the small chord-confidence-shading legend popover in the toolbar (backlog #15).
     @State private var showConfidenceLegend = false
+
+    /// The chart's proportional zoom, resolved from the stored point size.
+    private var chartScale: ChordProChartScale {
+        ChordProChartScale(fontSize: CGFloat(chordProFontSize))
+    }
 
     /// Lyric segments sorted into the order the highlight/ball ordinals use (so ordinal N indexes
     /// the same line across words, windows, and highlight).
@@ -1095,10 +1105,12 @@ struct ChordProTabEditor: View {
                         // "hide it all" flags through it would leave the two surfaces free to
                         // drift back together.
                         ChordProReadOnlyView(
-                            source: previewSource, transpose: model.chordProTranspose)
+                            source: previewSource, transpose: model.chordProTranspose,
+                            scale: chartScale)
                     case .preview:
                         ChordProAppPreview(
                             source: previewSource,
+                            scale: chartScale,
                             transpose: config.supportsTranspose ? model.chordProTranspose : 0,
                             auditionedPlacement: model.auditionedPlacement,
                             placementPicks: model.chordPlacementPicks,
@@ -1193,6 +1205,10 @@ struct ChordProTabEditor: View {
                 .pickerStyle(.segmented)
                 .frame(width: 190)
             }
+            // Deliberately OUTSIDE the `showsPlaybackChrome` gate below: text size is the one
+            // display control that acts on the chart itself rather than on the Review tab's
+            // overlays, so it belongs on both surfaces (Eric: the slider goes in both tabs).
+            fontSizeControl
             // Timing offset, the display toggles and the shading legend all act on chrome the
             // plain ChordPro tab does not draw, so they are hidden there rather than left as
             // controls that appear to do nothing.
@@ -1278,6 +1294,33 @@ struct ChordProTabEditor: View {
             }
         }
         .fixedSize()
+    }
+
+    /// Chart text size, in whole points from the current size (15) up to double it (30). The
+    /// chart scales PROPORTIONALLY — glyphs, the horizontal time axis, and every reserve move
+    /// together (see `ChordProChartScale`), so bigger text never shifts a word off its beat
+    /// column. Compact and fixed-width because the toolbar it lives in is width-constrained.
+    private var fontSizeControl: some View {
+        let smallest = Double(ChordProChartScale.minimumFontSize)
+        let largest = Double(ChordProChartScale.maximumFontSize)
+        return HStack(spacing: 6) {
+            Image(systemName: "textformat.size")
+                .foregroundStyle(Color.swTextSecondary)
+            Slider(
+                value: $chordProFontSize,
+                in: smallest...largest,
+                step: Double(ChordProChartScale.step)
+            )
+            .frame(width: 110)
+            .accessibilityIdentifier("chordpro-font-size-slider")
+            Text("\(Int(chordProFontSize)) pt")
+                .font(.swMono(11))
+                .foregroundStyle(Color.swTextSecondary)
+                .frame(width: 38, alignment: .leading)
+        }
+        .help(
+            "Chart text size. Scales the whole chart proportionally — "
+                + "text, spacing and the beat grid together.")
     }
 
     /// Small popover explaining the shaded backgrounds behind chord names: reuses
@@ -1812,6 +1855,10 @@ private struct ChordProAppPreview: View {
     static let autoScrollGlide: Animation = .easeInOut(duration: 1.1)
 
     let source: String
+    /// Proportional chart zoom (see `ChordProChartScale`) — threaded down to every rendered row
+    /// rather than applied as a `scaleEffect`, so glyphs stay crisp and, more importantly, the
+    /// horizontal time axis grows with the text instead of letting bigger words collide.
+    var scale: ChordProChartScale = .base
     var transpose: Int = 0
     /// Placement variant being auditioned in the chord-placement A/B, or nil for stored times.
     var auditionedPlacement: ChordPlacementVariant?
@@ -2369,6 +2416,7 @@ private struct ChordProAppPreview: View {
             forLyricOrdinal: item.lyricOrdinal)
         ChordProPreviewBlockView(
             block: item.block,
+            scale: scale,
             highlight: itemHighlight,
             beatBall: itemBeatBall,
             beatDots: itemBeatDots,
@@ -3041,6 +3089,8 @@ enum ChordProPreviewLineWindowResolver {
 
 private struct ChordProPreviewBlockView: View {
     let block: ChordProPreviewBlock
+    /// Proportional chart zoom (see `ChordProChartScale`).
+    var scale: ChordProChartScale = .base
     var highlight: ChordProLinePlaybackHighlight?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
@@ -3142,9 +3192,9 @@ private struct ChordProPreviewBlockView: View {
         // the beat-dot / ball reserve at the top of the block.
         HStack(alignment: .bottom, spacing: 8) {
             Text(lineNumber.map(String.init) ?? "")
-                .font(.swMono(10))
+                .font(.swMono(scale.scaled(10)))
                 .foregroundStyle(Color.swTextSecondary)
-                .frame(width: 22, alignment: .trailing)
+                .frame(width: scale.scaled(22), alignment: .trailing)
                 .padding(.bottom, 3)
             VStack(alignment: .leading, spacing: 2) {
                 if let bassLabel, !rendersPositionedBassNotes {
@@ -3154,7 +3204,7 @@ private struct ChordProPreviewBlockView: View {
                     // the smaller 10pt `StemKind.bass.laneColor` (blue) used elsewhere, which
                     // read as secondary metadata next to the chart's chords.
                     Text(bassLabel)
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .font(ChordProChartTypography.chord(size: scale.chordSize))
                         .foregroundStyle(Color.swMint)
                 }
                 blockContent
@@ -3201,7 +3251,7 @@ private struct ChordProPreviewBlockView: View {
                     editingLyricField
                 } else {
                     ChordProPreviewLineView(
-                        line: line, showChordBall: showChordBall,
+                        line: line, scale: scale, showChordBall: showChordBall,
                         songChordTimes: songChordTimes,
                         highlight: highlight, beatBall: beatBall, beatDots: beatDots,
                         rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
@@ -3355,27 +3405,36 @@ enum ChordProPreviewLineLayout {
 }
 
 private struct ChordProPreviewLineView: View {
-    private static let lyricFont = PlatformFont.monospacedSystemFont(ofSize: 15, weight: .regular)
-    private static let characterWidth = NSString(string: "M").size(
-        withAttributes: [.font: lyricFont]
+    /// Every constant below is authored at 1× (a 15 pt body) and read through the instance
+    /// properties further down, which multiply by `scale.factor`. Nothing in this view may use a
+    /// `base…` constant directly for layout: the horizontal axis and the glyph size have to move
+    /// together or the collision nudge in `rhythmicWordXs` pushes words off their beat columns.
+    private static let baseLyricFont = PlatformFont.monospacedSystemFont(
+        ofSize: ChordProChartTypography.lyricSize, weight: .regular)
+    private static let baseCharacterWidth = NSString(string: "M").size(
+        withAttributes: [.font: baseLyricFont]
     ).width
 
     /// Extra top space reserved above the content so the bouncing ball (and its arc
     /// apex) is never clipped. Content is shifted down by this amount, leaving the
     /// existing lyric/chord layout visually unchanged.
-    private static let ballTopReserve: CGFloat = 22
+    private static let baseBallTopReserve: CGFloat = 22
     /// Apex travel above the tap baseline.
-    private static let ballApexHeight: CGFloat = 18
-    private static let ballDiameter: CGFloat = 11
-
-    /// The chart's one time scale — see `ChordProPreviewLineLayout.pixelsPerSecond`.
-    private static let pixelsPerSecond: CGFloat = ChordProPreviewLineLayout.pixelsPerSecond
+    private static let baseBallApexHeight: CGFloat = 18
+    private static let baseBallDiameter: CGFloat = 11
 
     /// Thin top row reserved above rhythmic-mode content for the beat dots, so they sit
     /// above the words instead of overlapping them.
-    private static let rhythmicDotTopReserve: CGFloat = 8
+    private static let baseRhythmicDotTopReserve: CGFloat = 8
+
+    /// Height of a row's lyric band, and of a lyric band with a chord row above it.
+    private static let baseLyricBandHeight: CGFloat = 20
+    private static let baseChordAndLyricBandHeight: CGFloat = 42
 
     let line: ChordProPreviewLine
+    /// Proportional chart zoom (see `ChordProChartScale`) — the single multiplier behind every
+    /// length in this view.
+    var scale: ChordProChartScale = .base
     /// Draw the amber chord ball beside the white word ball on this line.
     var showChordBall = false
     /// EVERY chord onset in the song, placement-resolved. A row only knows its own chords, but
@@ -3465,7 +3524,40 @@ private struct ChordProPreviewLineView: View {
     var rowBassNotes: [TimedBassNoteLabel] = []
 
     /// Extra row height reserved above the chords for the positioned bass notes.
-    private static let bassRowReserve: CGFloat = 18
+    private static let baseBassRowReserve: CGFloat = 18
+
+    // MARK: - Scaled geometry
+    //
+    // The chart's zoom, applied. `characterWidth` and `pixelsPerSecond` in particular MUST scale
+    // by the same factor: word x is `time × pixelsPerSecond` and the anti-collision nudge is
+    // `characterCount × characterWidth`, so scaling only one of them would change which words
+    // collide and slide them off the beat grid.
+
+    /// Advance width of one monospaced character at the current size.
+    private var characterWidth: CGFloat { scale.scaled(Self.baseCharacterWidth) }
+    /// The chart's time scale at the current size — see `ChordProPreviewLineLayout`.
+    private var pixelsPerSecond: CGFloat {
+        scale.scaled(ChordProPreviewLineLayout.pixelsPerSecond)
+    }
+    private var ballTopReserve: CGFloat { scale.scaled(Self.baseBallTopReserve) }
+    private var ballApexHeight: CGFloat { scale.scaled(Self.baseBallApexHeight) }
+    private var ballDiameter: CGFloat { scale.scaled(Self.baseBallDiameter) }
+    private var rhythmicDotTopReserve: CGFloat {
+        scale.scaled(Self.baseRhythmicDotTopReserve)
+    }
+    private var bassRowReserve: CGFloat { scale.scaled(Self.baseBassRowReserve) }
+
+    /// Vertical drop from the top of a row's content to its lyric band — zero when the row has no
+    /// chords above the words.
+    private var lyricBandOffset: CGFloat {
+        line.chords.isEmpty ? 0 : scale.scaled(Self.baseLyricBandHeight)
+    }
+    /// Height of a row's content, before the ball/beat-dot and bass reserves are added.
+    private var contentBandHeight: CGFloat {
+        scale.scaled(
+            line.chords.isEmpty
+                ? Self.baseLyricBandHeight : Self.baseChordAndLyricBandHeight)
+    }
 
     /// Bass-note x positions in rhythmic mode: each note at its onset's x on the words' time
     /// axis (same mapping as authoritative chord times), collisions nudged right like chords.
@@ -3476,7 +3568,7 @@ private struct ChordProPreviewLineView: View {
         for note in rowBassNotes {
             let x = max(rhythmicX(forTime: note.time), cursor)
             result.append(x)
-            cursor = x + CGFloat(note.name.count + 1) * Self.characterWidth
+            cursor = x + CGFloat(note.name.count + 1) * characterWidth
         }
         return result
     }
@@ -3514,7 +3606,7 @@ private struct ChordProPreviewLineView: View {
                 let intensity = 1 - (elapsed / beat)
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .fill(Color.swAmber.opacity(0.35 * intensity))
-                    .padding(-2)
+                    .padding(-scale.scaled(2))
                     .shadow(color: .swAmber.opacity(0.9 * intensity), radius: 5 * intensity)
                     .allowsHitTesting(false)
             }
@@ -3527,7 +3619,7 @@ private struct ChordProPreviewLineView: View {
         if tint != .clear {
             RoundedRectangle(cornerRadius: 3, style: .continuous)
                 .strokeBorder(tint.opacity(0.9), lineWidth: 1)
-                .padding(-2)
+                .padding(-scale.scaled(2))
         }
     }
 
@@ -3547,7 +3639,7 @@ private struct ChordProPreviewLineView: View {
                     onToggleChordAccepted(event.id)
                     return
                 }
-                let deltaSeconds = Double(value.translation.width / Self.pixelsPerSecond)
+                let deltaSeconds = Double(value.translation.width / pixelsPerSecond)
                 onSetChordManualTime(event.id, event.effectiveTime + deltaSeconds)
             }
     }
@@ -3564,13 +3656,13 @@ private struct ChordProPreviewLineView: View {
 
     /// Left px of the shared downbeat column (the pickup gutter width). Zero without a grid.
     private var gutterPx: CGFloat {
-        rowDownbeatSeconds == nil ? 0 : max(0, CGFloat(gutterSeconds) * Self.pixelsPerSecond)
+        rowDownbeatSeconds == nil ? 0 : max(0, CGFloat(gutterSeconds) * pixelsPerSecond)
     }
 
     /// Width of one beat. This is THE unit of the chart: beats are equidistant by construction, so
     /// the page reads like graph paper and any two rows are directly comparable.
     private var pixelsPerBeat: CGFloat {
-        CGFloat(beatLengthSeconds) * Self.pixelsPerSecond
+        CGFloat(beatLengthSeconds) * pixelsPerSecond
     }
 
     /// The row's beat-index converter, built from the song's MEASURED beats.
@@ -3597,7 +3689,7 @@ private struct ChordProPreviewLineView: View {
     /// information rendering exactly as before.
     private func metricX(forTime time: TimeInterval) -> CGFloat {
         guard let beatGrid else {
-            return max(0, gutterPx + CGFloat(time - gridOriginTime) * Self.pixelsPerSecond)
+            return max(0, gutterPx + CGFloat(time - gridOriginTime) * pixelsPerSecond)
         }
         let delta = beatGrid.beatIndex(atTime: time) - beatGrid.beatIndex(atTime: gridOriginTime)
         return max(0, gutterPx + CGFloat(delta) * pixelsPerBeat)
@@ -3633,12 +3725,17 @@ private struct ChordProPreviewLineView: View {
     @ViewBuilder private var overriddenContent: some View {
         ZStack(alignment: .topLeading) {
             Text(effectiveOverrideText ?? "")
-                .font(ChordProChartTypography.lyric)
+                .font(ChordProChartTypography.lyric(size: scale.lyricSize))
                 .foregroundStyle(Color.swTextPrimary)
-                .offset(y: line.chords.isEmpty ? 0 : 20)
+                .offset(y: lyricBandOffset)
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
-                    .font(ChordProChartTypography.chord(weight: chordWeight(for: chord)))
+                    .font(
+                        ChordProChartTypography.chord(
+                            size: scale.chordSize,
+                            weight: chordWeight(for: chord)
+                        )
+                    )
                     .foregroundStyle(.tint)
                     .overlay(chordOnsetGlow(at: index))
                     .overlay(chordConfidenceOutline(at: index))
@@ -3661,11 +3758,16 @@ private struct ChordProPreviewLineView: View {
     /// always end at exactly the same x.
     private var monospaceWidth: CGFloat {
         let lyricSample = line.hasSungText ? line.lyric : " "
-        let lyricWidth = ceil(
-            NSString(string: lyricSample).size(withAttributes: [.font: Self.lyricFont]).width)
+        // Measured once at 1× and scaled, rather than re-measured against a freshly built font at
+        // the current size: a monospaced face's advances are linear in point size, so this is the
+        // same number without allocating a font on every layout pass.
+        let baseWidth = NSString(string: lyricSample).size(
+            withAttributes: [.font: Self.baseLyricFont]
+        ).width
+        let lyricWidth = ceil(scale.scaled(baseWidth))
         let chordExtent =
-            CGFloat(line.chords.map { $0.column + $0.name.count }.max() ?? 0) * Self.characterWidth
-        return max(Self.characterWidth, lyricWidth, chordExtent)
+            CGFloat(line.chords.map { $0.column + $0.name.count }.max() ?? 0) * characterWidth
+        return max(characterWidth, lyricWidth, chordExtent)
     }
 
     /// An instrumental (chord-only) line: chords present, no sung lyric text.
@@ -3695,8 +3797,8 @@ private struct ChordProPreviewLineView: View {
             rhythmicSpacing: rhythmicSpacing,
             lineDuration: lineDuration,
             chordColumnExtent: chordColumnExtent,
-            characterWidth: Self.characterWidth,
-            pixelsPerSecond: Self.pixelsPerSecond
+            characterWidth: characterWidth,
+            pixelsPerSecond: pixelsPerSecond
         )
     }
 
@@ -3714,7 +3816,7 @@ private struct ChordProPreviewLineView: View {
             return instrumentalTimeWidth * CGFloat(min(max(fraction, 0), 1))
         }
         guard isInstrumentalLine, lineDuration > 0, chordColumnExtent > 0 else {
-            return CGFloat(chord.column) * Self.characterWidth
+            return CGFloat(chord.column) * characterWidth
         }
         return instrumentalTimeWidth * CGFloat(chord.column) / chordColumnExtent
     }
@@ -3839,7 +3941,7 @@ private struct ChordProPreviewLineView: View {
                 }
             }
         }
-        .frame(width: max(1, stripWidth), height: 18)
+        .frame(width: max(1, stripWidth), height: scale.scaled(18))
     }
 
     /// Words positioned by their onset time (clamped so they never overlap), with each chord
@@ -3857,14 +3959,15 @@ private struct ChordProPreviewLineView: View {
         // thin row for the beat dots, else nothing (so lines without either keep their height).
         let topReserve: CGFloat =
             (ball != nil || chordBall != nil)
-            ? Self.ballTopReserve : (dots.isEmpty ? 0 : Self.rhythmicDotTopReserve)
+            ? ballTopReserve : (dots.isEmpty ? 0 : rhythmicDotTopReserve)
         // Positioned bass-note row (when present) sits between the reserve and the chords;
         // chords/words shift down by this amount so nothing overlaps.
-        let bassReserve: CGFloat = bassXs.isEmpty ? 0 : Self.bassRowReserve
+        let bassReserve: CGFloat = bassXs.isEmpty ? 0 : bassRowReserve
         let totalWidth =
             (xs.last ?? 0) + CGFloat(max(words.last?.text.count ?? 1, 1))
-            * Self.characterWidth + Self.characterWidth
-        let contentHeight = (line.chords.isEmpty ? 20 : 42) + topReserve + bassReserve
+            * characterWidth + characterWidth
+        let contentHeight = contentBandHeight + topReserve + bassReserve
+        let dotSize = scale.scaled(3.5)
         return ZStack(alignment: .topLeading) {
             // The phrase frame: one phrase period wide, anchored at this row's own downbeat.
             // Drawn UNDER everything and never affecting word x — the words stay on measured time,
@@ -3891,14 +3994,14 @@ private struct ChordProPreviewLineView: View {
             ForEach(Array(dots.enumerated()), id: \.offset) { _, x in
                 Circle()
                     .fill(Color.swTextSecondary.opacity(0.55))
-                    .frame(width: 3.5, height: 3.5)
-                    .position(x: x, y: 4)
+                    .frame(width: dotSize, height: dotSize)
+                    .position(x: x, y: scale.scaled(4))
             }
             ForEach(Array(bassXs.enumerated()), id: \.offset) { index, x in
                 // Same size as the chord glyphs and bright green (Eric: "Bass note names
                 // should be the same size as chords, and be in bright green").
                 Text(rowBassNotes[index].name)
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .font(ChordProChartTypography.chord(size: scale.chordSize))
                     .foregroundStyle(Color.swMint)
                     .offset(x: x, y: topReserve)
             }
@@ -3907,17 +4010,23 @@ private struct ChordProPreviewLineView: View {
                     highlight?.wordRange.map { $0.overlaps(word.characterRange) } ?? false
                 Text(word.text)
                     .font(
-                        .system(
-                            size: 15, weight: isHighlighted ? .bold : .regular, design: .monospaced)
+                        ChordProChartTypography.lyric(
+                            size: scale.lyricSize,
+                            weight: isHighlighted ? .bold : .regular)
                     )
                     .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
                     .offset(
                         x: xs[index],
-                        y: (line.chords.isEmpty ? 0 : 20) + topReserve + bassReserve)
+                        y: lyricBandOffset + topReserve + bassReserve)
             }
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
-                    .font(ChordProChartTypography.chord(weight: chordWeight(for: chord)))
+                    .font(
+                        ChordProChartTypography.chord(
+                            size: scale.chordSize,
+                            weight: chordWeight(for: chord)
+                        )
+                    )
                     .foregroundStyle(.tint)
                     .overlay(chordOnsetGlow(at: index))
                     .overlay(chordConfidenceOutline(at: index))
@@ -3937,11 +4046,12 @@ private struct ChordProPreviewLineView: View {
                 // to LastResort), so it rendered as a "?" box (Eric: "what do these ?4
                 // symbols mean?").
                 Text("rest \(restBeats)")
-                    .font(.system(size: 10))
+                    .font(.system(size: scale.scaled(10)))
                     .foregroundStyle(Color.swTextSecondary.opacity(0.75))
                     .offset(
-                        x: lastX + CGFloat(max(lastWord.text.count, 1)) * Self.characterWidth + 10,
-                        y: (line.chords.isEmpty ? 0 : 20) + topReserve + bassReserve
+                        x: lastX + CGFloat(max(lastWord.text.count, 1)) * characterWidth
+                            + scale.scaled(10),
+                        y: lyricBandOffset + topReserve + bassReserve
                     )
                     .help(
                         "\(restBeats)-beat rest: the voice stops here before the next line")
@@ -3949,7 +4059,7 @@ private struct ChordProPreviewLineView: View {
             if let chordBall {
                 Circle()
                     .fill(Color.swAmber)
-                    .frame(width: Self.ballDiameter, height: Self.ballDiameter)
+                    .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
                     .position(x: chordBall.x, y: chordBall.y)
@@ -3957,7 +4067,7 @@ private struct ChordProPreviewLineView: View {
             if let ball {
                 Circle()
                     .fill(Color.white)
-                    .frame(width: Self.ballDiameter, height: Self.ballDiameter)
+                    .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
                     .position(x: ball.x, y: ball.y)
@@ -4012,7 +4122,7 @@ private struct ChordProPreviewLineView: View {
             // Never let two labels overlap: nudge right to clear the previous chord.
             let x = max(base, cursor)
             result.append(x)
-            cursor = x + CGFloat(chord.name.count + 1) * Self.characterWidth
+            cursor = x + CGFloat(chord.name.count + 1) * characterWidth
         }
         return result
     }
@@ -4076,7 +4186,7 @@ private struct ChordProPreviewLineView: View {
                 beatTimes: beatBall.beatTimes, bpm: beatBall.bpm)
             guard !beats.isEmpty else { return nil }
             ballModel = BouncingBall(
-                beatTimes: beats, beatX: beats.map { _ in Self.characterWidth / 2 })
+                beatTimes: beats, beatX: beats.map { _ in characterWidth / 2 })
         } else if !words.isEmpty {
             // TAP THE WORDS (user-chosen model 2026-07-02): each bounce bottoms on a word's
             // ONSET, centered over the word exactly as rendered (the nudged rhythmic layout),
@@ -4086,7 +4196,7 @@ private struct ChordProPreviewLineView: View {
             var taps = words.map(\.start)
             var tapXs = words.enumerated().map { index, word in
                 (xs.indices.contains(index) ? xs[index] : 0)
-                    + CGFloat(max(word.text.count, 1)) / 2 * Self.characterWidth
+                    + CGFloat(max(word.text.count, 1)) / 2 * characterWidth
             }
             let lineEnd = max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3)
             taps.append(lineEnd)
@@ -4102,8 +4212,8 @@ private struct ChordProPreviewLineView: View {
                 beatTimes: beats, beatX: beats.map { metricX(forTime: $0) })
         }
         guard let position = ballModel.position(at: beatBall.currentTime) else { return nil }
-        let baseline = Self.ballTopReserve - 2
-        let y = baseline - position.lift * Self.ballApexHeight
+        let baseline = ballTopReserve - 2
+        let y = baseline - position.lift * ballApexHeight
         return (x: position.x, y: y)
     }
 
@@ -4132,12 +4242,12 @@ private struct ChordProPreviewLineView: View {
         guard showBarlines, rowDownbeatSeconds != nil, beatLengthSeconds > 0, beatsPerBar > 0,
             !rhythmicWords.isEmpty
         else { return [] }
-        let barPx = CGFloat(beatLengthSeconds * Double(beatsPerBar)) * Self.pixelsPerSecond
+        let barPx = CGFloat(beatLengthSeconds * Double(beatsPerBar)) * pixelsPerSecond
         guard barPx > 1 else { return [] }
         // The downbeat sits at gutterPx; barlines step one bar apart across the row's content width.
         let maxX =
             (rhythmicWordXs.last ?? 0)
-            + CGFloat(max(rhythmicWords.last?.text.count ?? 1, 1)) * Self.characterWidth
+            + CGFloat(max(rhythmicWords.last?.text.count ?? 1, 1)) * characterWidth
         var x = gutterPx.truncatingRemainder(dividingBy: barPx)
         if x < 0 { x += barPx }
         var result: [CGFloat] = []
@@ -4152,7 +4262,7 @@ private struct ChordProPreviewLineView: View {
     /// has no recoverable phrase period.
     private var phraseWidth: CGFloat? {
         guard beatsPerLine > 0, beatLengthSeconds > 0, rowDownbeatSeconds != nil else { return nil }
-        let width = CGFloat(beatLengthSeconds * Double(beatsPerLine)) * Self.pixelsPerSecond
+        let width = CGFloat(beatLengthSeconds * Double(beatsPerLine)) * pixelsPerSecond
         return width > 1 ? width : nil
     }
 
@@ -4179,7 +4289,7 @@ private struct ChordProPreviewLineView: View {
     /// Right edge of this row's rendered content, used to tell whether it overruns its phrase frame.
     private var rhythmicContentWidth: CGFloat {
         (rhythmicWordXs.last ?? 0)
-            + CGFloat(max(rhythmicWords.last?.text.count ?? 1, 1)) * Self.characterWidth
+            + CGFloat(max(rhythmicWords.last?.text.count ?? 1, 1)) * characterWidth
     }
 
     /// How many phrases this row's content actually spans. A row materially past a whole number is
@@ -4203,7 +4313,7 @@ private struct ChordProPreviewLineView: View {
             let x = index == 0 ? desired : max(desired, cursor)
             xs.append(x)
             cursor =
-                x + CGFloat(max(word.text.count, 1)) * Self.characterWidth + Self.characterWidth
+                x + CGFloat(max(word.text.count, 1)) * characterWidth + characterWidth
         }
         return xs
     }
@@ -4216,18 +4326,19 @@ private struct ChordProPreviewLineView: View {
         }
         if let index = words.lastIndex(where: { $0.characterRange.lowerBound <= chord.column }) {
             return xs[index]
-                + CGFloat(words[index].text.count + 1) * Self.characterWidth
+                + CGFloat(words[index].text.count + 1) * characterWidth
         }
         return 0
     }
 
     private var monospaceContent: some View {
-        ZStack(alignment: .topLeading) {
+        let dotSize = scale.scaled(3.5)
+        return ZStack(alignment: .topLeading) {
             ForEach(Array(beatDotPositions.enumerated()), id: \.offset) { _, x in
                 Circle()
                     .fill(Color.swTextSecondary.opacity(0.55))
-                    .frame(width: 3.5, height: 3.5)
-                    .position(x: x, y: 4)
+                    .frame(width: dotSize, height: dotSize)
+                    .position(x: x, y: scale.scaled(4))
             }
 
             ZStack(alignment: .topLeading) {
@@ -4241,16 +4352,15 @@ private struct ChordProPreviewLineView: View {
                 // text here rather than show a misleading, un-stretched copy of it.
                 if !isTimeScaledInstrumentalLine {
                     lyricText
-                        .offset(y: line.chords.isEmpty ? 0 : 20)
+                        .offset(y: lyricBandOffset)
                 }
 
                 ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                     Text(chord.name)
                         .font(
-                            .system(
-                                size: 13,
-                                weight: chordWeight(for: chord),
-                                design: .monospaced
+                            ChordProChartTypography.chord(
+                                size: scale.chordSize,
+                                weight: chordWeight(for: chord)
                             )
                         )
                         .foregroundStyle(.tint)
@@ -4267,12 +4377,12 @@ private struct ChordProPreviewLineView: View {
                         }
                 }
             }
-            .offset(y: Self.ballTopReserve)
+            .offset(y: ballTopReserve)
 
             if let ball = chordBallPosition {
                 Circle()
                     .fill(Color.swAmber)
-                    .frame(width: Self.ballDiameter, height: Self.ballDiameter)
+                    .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
                     .position(x: ball.x, y: ball.y)
@@ -4280,7 +4390,7 @@ private struct ChordProPreviewLineView: View {
             if let ball = ballPosition {
                 Circle()
                     .fill(Color.white)
-                    .frame(width: Self.ballDiameter, height: Self.ballDiameter)
+                    .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
                     .position(x: ball.x, y: ball.y)
@@ -4288,7 +4398,7 @@ private struct ChordProPreviewLineView: View {
         }
         .frame(
             width: isInstrumentalLine && lineDuration > 0 ? instrumentalTimeWidth : monospaceWidth,
-            height: (line.chords.isEmpty ? 20 : 42) + Self.ballTopReserve,
+            height: contentBandHeight + ballTopReserve,
             alignment: .topLeading
         )
     }
@@ -4318,7 +4428,7 @@ private struct ChordProPreviewLineView: View {
         let span = max(beatDots.segmentEnd - beatDots.segmentStart, 0.0001)
         let width =
             isInstrumentalLine && lineDuration > 0
-            ? instrumentalTimeWidth : CGFloat(max(1, lineWidth)) * Self.characterWidth
+            ? instrumentalTimeWidth : CGFloat(max(1, lineWidth)) * characterWidth
         return beats.map { beat in
             let relative = min(max((beat - beatDots.segmentStart) / span, 0), 1)
             return CGFloat(relative) * width
@@ -4384,7 +4494,7 @@ private struct ChordProPreviewLineView: View {
         let ballPath = BouncingBall(
             beatTimes: bracket.taps, beatX: bracket.xs, horizontalEasing: .linear)
         guard let position = ballPath.position(at: beatBall.currentTime) else { return nil }
-        return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
+        return (x: position.x, y: ballTopReserve - 2 - position.lift * ballApexHeight)
     }
 
     /// The amber chord ball in rhythmic mode — same idea as `chordBallPosition`, positioned over
@@ -4401,12 +4511,12 @@ private struct ChordProPreviewLineView: View {
             tapXs.append(xs[index])
         }
         guard !taps.isEmpty else { return nil }
-        let bracket = bracketed(taps: taps, xs: tapXs, width: (xs.last ?? 0) + Self.characterWidth)
+        let bracket = bracketed(taps: taps, xs: tapXs, width: (xs.last ?? 0) + characterWidth)
         let ballPath = BouncingBall(
             beatTimes: bracket.taps, beatX: bracket.xs, horizontalEasing: .linear)
         let sampleTime = bracket.taps.isEmpty ? 0 : beatBall.currentTime
         guard let position = ballPath.position(at: sampleTime) else { return nil }
-        return (x: position.x, y: Self.ballTopReserve - 2 - position.lift * Self.ballApexHeight)
+        return (x: position.x, y: ballTopReserve - 2 - position.lift * ballApexHeight)
     }
 
     private var ballPosition: (x: CGFloat, y: CGFloat)? {
@@ -4435,7 +4545,7 @@ private struct ChordProPreviewLineView: View {
         var times = beats
         let xs: [CGFloat]
         if beatBall.isWaiting {
-            xs = beats.map { _ in Self.characterWidth / 2 }
+            xs = beats.map { _ in characterWidth / 2 }
         } else if !beatBall.words.isEmpty {
             // TAP THE WORDS (user-chosen model 2026-07-02): bounce bottoms land on word
             // ONSETS over the sung word; the beat grid is only the no-word-timing fallback.
@@ -4453,8 +4563,8 @@ private struct ChordProPreviewLineView: View {
 
         // Tap baseline sits just above the content's top (which is shifted down by the
         // reserve); apex rises `ballApexHeight` above that baseline.
-        let baseline = Self.ballTopReserve - 2
-        let y = baseline - position.lift * Self.ballApexHeight
+        let baseline = ballTopReserve - 2
+        let y = baseline - position.lift * ballApexHeight
         return (x: position.x, y: y)
     }
 
@@ -4472,7 +4582,7 @@ private struct ChordProPreviewLineView: View {
             if let word = active {
                 let lower = min(max(word.characterRange.lowerBound, 0), characterCount)
                 let upper = min(max(word.characterRange.upperBound, lower), characterCount)
-                return (CGFloat(lower) + CGFloat(upper)) / 2 * Self.characterWidth
+                return (CGFloat(lower) + CGFloat(upper)) / 2 * characterWidth
             }
         }
         let centers = wordCenters
@@ -4488,7 +4598,7 @@ private struct ChordProPreviewLineView: View {
     /// on a count mismatch it interpolates across the chords by time.
     private func chordCenterX(at beatTime: TimeInterval, beatBall: LineBeatBall) -> CGFloat {
         let chords = line.chords
-        guard !chords.isEmpty else { return Self.characterWidth / 2 }
+        guard !chords.isEmpty else { return characterWidth / 2 }
         let times = beatBall.chordTimes
         let index: Int
         if times.count == chords.count {
@@ -4501,7 +4611,7 @@ private struct ChordProPreviewLineView: View {
             index = min(Int(relative * Double(chords.count)), chords.count - 1)
         }
         let chord = chords[index]
-        return (CGFloat(chord.column) + CGFloat(chord.name.count) / 2) * Self.characterWidth
+        return (CGFloat(chord.column) + CGFloat(chord.name.count) / 2) * characterWidth
     }
 
     /// Center x of each whitespace-delimited word in this line's OWN lyric, using the
@@ -4513,7 +4623,7 @@ private struct ChordProPreviewLineView: View {
         func close(_ end: Int) {
             if let wordStart = start {
                 let length = end - wordStart
-                let center = (CGFloat(wordStart) + CGFloat(length) / 2) * Self.characterWidth
+                let center = (CGFloat(wordStart) + CGFloat(length) / 2) * characterWidth
                 centers.append(center)
                 start = nil
             }
@@ -4537,8 +4647,9 @@ private struct ChordProPreviewLineView: View {
     }
 
     private var lyricText: Text {
+        let size = scale.lyricSize
         guard !line.lyric.isEmpty else {
-            return Text(" ").font(ChordProChartTypography.lyric)
+            return Text(" ").font(ChordProChartTypography.lyric(size: size))
         }
         let characters = Array(line.lyric)
         var output = Text("")
@@ -4547,7 +4658,10 @@ private struct ChordProPreviewLineView: View {
             output =
                 output
                 + Text(String(characters[index]))
-                .font(ChordProChartTypography.lyric(weight: isHighlighted ? .bold : .regular))
+                .font(
+                    ChordProChartTypography.lyric(
+                        size: size, weight: isHighlighted ? .bold : .regular)
+                )
                 .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
         }
         return output

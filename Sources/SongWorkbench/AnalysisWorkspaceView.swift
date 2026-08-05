@@ -238,13 +238,10 @@ struct AnalysisWorkspaceView: View {
         }
     }
 
+    /// Hoisted to `AppModel.stageTitle` so the top-of-window background-status row names stages
+    /// the same way these cards do (one list of labels, not two).
     private func stageTitle(_ stage: SongAnalysisStage) -> String {
-        switch stage {
-        case .separation: "Stems"
-        case .transcription: "Lyrics"
-        case .harmony: "Tempo & Chords"
-        case .chordPro: "ChordPro"
-        }
+        AppModel.stageTitle(stage)
     }
 
     private func stageStatus(_ record: AnalysisStageRecord?) -> String {

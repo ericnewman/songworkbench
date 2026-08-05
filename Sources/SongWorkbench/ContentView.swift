@@ -289,11 +289,10 @@ private struct SongSidebar: View {
             }
             .buttonStyle(.plain)
             .help(isExpanded ? "Collapse song list" : "Expand song list")
-            // Moved up from a dedicated footer bar at the bottom of the window (2026-07-06,
-            // Eric: "move the Ready indicator into the top of the screen and delete the
-            // footer bar to save space") — this header row is visible in every state
-            // (expanded or collapsed), so it's always on screen without its own chrome.
-            BackgroundStatusBar(model: model)
+            // `BackgroundStatusBar` used to sit right here, between the "Songs" disclosure and
+            // the library buttons. Its text changes length constantly, which shoved this row's
+            // buttons around; it now has its own fixed-height full-window row above this one
+            // (see `PlayerView.body`), where nothing else shares its horizontal space.
             Spacer()
             // Library actions live with the library list.
             Button("Import Songs", systemImage: "plus") {
@@ -380,13 +379,21 @@ private struct SongSidebar: View {
     }
 }
 
-/// Compact inline status indicator — shows whatever the app is doing in the background
-/// (importing/copying a song, analyzing, exporting, downloading a model, loading a waveform)
-/// so long-running work is never invisible. Lives in `SongSidebar`'s header row at the top of
-/// the window; used to be its own full-width footer bar at the bottom, which cost a whole row
-/// of vertical space for one line of text (2026-07-06, Eric: move it up, drop the footer).
+/// Status indicator — shows whatever the app is doing in the background (importing/copying a
+/// song, analyzing with its stage and per-stage percent, exporting, downloading a model,
+/// loading a waveform) so long-running work is never invisible.
+///
+/// Placement history: a full-width footer bar at the bottom → inline in `SongSidebar`'s "Songs"
+/// header row (2026-07-06, to reclaim the footer's vertical space) → its own full-window row at
+/// the very top, above the "Songs" label (2026-08-05, Eric: "it's too long for that space and it
+/// moves the layout when it changes"). Sharing a row with the library buttons meant every text
+/// change re-laid-out the sidebar header; a dedicated fixed-height row that spans the whole
+/// window cannot push anything around, and gives the longest strings room to be read.
 private struct BackgroundStatusBar: View {
     @ObservedObject var model: AppModel
+
+    /// Fixed so the row's height never depends on its content — the whole point of the move.
+    private static let rowHeight: CGFloat = 18
 
     var body: some View {
         HStack(spacing: 6) {
@@ -407,8 +414,15 @@ private struct BackgroundStatusBar: View {
                     .font(.swDisplay(11))
                     .foregroundStyle(Color.swTextSecondary)
             }
+            Spacer(minLength: 0)
         }
-        .layoutPriority(-1)
+        .frame(height: Self.rowHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Background activity")
+        .accessibilityValue(model.backgroundActivityStatus ?? "Ready")
     }
 }
 
@@ -488,7 +502,12 @@ private struct PlayerView: View {
     }
 
     var body: some View {
-        mainColumns
+        VStack(spacing: 0) {
+            // Above everything, including the "Songs" label: its own full-window row, so a long
+            // status string can never shift the sidebar header's buttons (Eric, 2026-08-05).
+            BackgroundStatusBar(model: model)
+            mainColumns
+        }
     }
 
     /// The Structure/Lyrics/Chords/ChordPro/Review segmented control, shown centered at the
