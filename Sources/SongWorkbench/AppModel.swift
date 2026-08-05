@@ -1179,7 +1179,10 @@ final class AppModel: ObservableObject {
                         // newly analyzed song shows an empty stem panel until reselected.
                         if let song = selectedSong {
                             loadVocalActivity(for: song)
-                            loadStemWaveforms(for: song)
+                            // Same song, fresh analysis: swap lanes atomically (see
+                            // `loadStemWaveforms`) so the chart's bar phase never
+                            // transits through the no-envelope fallback mid-refresh.
+                            loadStemWaveforms(for: song, clearFirst: false)
                         }
                     }
                     // Always persist the freshly computed analysis (applyAnalysis only
@@ -2702,9 +2705,14 @@ final class AppModel: ObservableObject {
     /// Computes a waveform envelope for each active frontier stem (off the main actor) so the
     /// waveform panel can render one lane per mixer channel — including refined children such as
     /// `drums.kick` when a parent has been replaced. Missing/unreadable stems are skipped.
-    private func loadStemWaveforms(for song: Song) {
+    /// `clearFirst: false` keeps the existing lanes on screen until the fresh ones are ready —
+    /// used when RE-loading the same song's stems after an analysis. Clearing first is only
+    /// right when switching songs; on a same-song refresh the clear→refill cycle flipped the
+    /// chart's accent-based bar phase to the vocal-onset fallback and back, re-anchoring every
+    /// row's downbeat twice — the "first column varies during analysis" churn.
+    private func loadStemWaveforms(for song: Song, clearFirst: Bool = true) {
         stemWaveformsTask?.cancel()
-        stemWaveforms = []
+        if clearFirst { stemWaveforms = [] }
         let manifest = stemSet ?? stemFiles?.stemSetManifest
         guard let manifest else {
             // Diagnostic: separation reported success but no stem references reached the model —
