@@ -680,16 +680,24 @@ private struct PlayerView: View {
     private var waveformContent: some View {
         if let waveform = model.waveform {
             VStack(alignment: .leading, spacing: 10) {
+                // Icon-only loop buttons: with their titles shown, this row overflows the fixed
+                // 360 pt column and EVERYTHING truncates ("Wave…", "Play…", "Clear…", and the
+                // vocal-regions count wraps). The icons are unambiguous (repeat/stop, ✕) and
+                // both buttons keep full-sentence tooltips; the texts that carry information —
+                // the panel name and the region count — render whole (Eric: "We shouldn't need
+                // to wrap or truncate these messages").
                 HStack(alignment: .center, spacing: 8) {
                     Label("Waveform", systemImage: "waveform")
                         .font(.swDisplay(15, weight: .semibold))
                         .foregroundStyle(Color.swTextPrimary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .fixedSize()
                     if !model.vocalActivityIntervals.isEmpty {
                         Text("· \(model.vocalActivityIntervals.count) vocal regions")
                             .font(.swDisplay(11))
                             .foregroundStyle(Color.swAmber)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                     Spacer()
                     Button {
@@ -704,7 +712,7 @@ private struct PlayerView: View {
                             systemImage: model.isLoopPlaying ? "stop.fill" : "repeat"
                         )
                     }
-                    .labelStyle(.titleAndIcon)
+                    .labelStyle(.iconOnly)
                     .controlSize(.small)
                     .disabled(!model.canPlayLoop)
                     .help(
@@ -716,9 +724,10 @@ private struct PlayerView: View {
                     } label: {
                         Label("Clear Loop", systemImage: "xmark.circle")
                     }
-                    .labelStyle(.titleAndIcon)
+                    .labelStyle(.iconOnly)
                     .controlSize(.small)
                     .disabled(model.loopRegion == nil)
+                    .help("Clear the loop region")
                 }
 
                 HStack(alignment: .center, spacing: 8) {
