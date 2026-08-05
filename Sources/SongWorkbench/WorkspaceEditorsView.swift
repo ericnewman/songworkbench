@@ -1010,7 +1010,6 @@ struct ChordProTabEditor: View {
     @ObservedObject private var stemPlayback: StemPlaybackService
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
-    @AppStorage("chordProBarlinesEnabled") private var barlinesEnabled = false
     /// Beats per chart row; 0 = automatic from the measured phrase period.
     @AppStorage("chordProBeatsPerRow") private var beatsPerRow = 0
     /// Always on (Eric: rhythmic spacing should never be turned off) — no longer a user toggle.
@@ -1119,7 +1118,6 @@ struct ChordProTabEditor: View {
                             highlightContext: highlightContext(style: config.highlightStyle),
                             beatBall: beatBallInput,
                             beatDots: beatDotContext,
-                            showBarlines: barlinesEnabled,
                             rhythmicSpacing: rhythmicSpacing,
                             lyricLineWords: sortedLyricLineWords,
                             showWaveform: showWaveform,
@@ -1222,7 +1220,6 @@ struct ChordProTabEditor: View {
                 Menu {
                     Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
                     Toggle("Beat dots", isOn: $beatDotsEnabled)
-                    Toggle("Barlines", isOn: $barlinesEnabled)
                     Toggle("Waveform", isOn: $showWaveform)
                     Toggle("Show Bass Notes", isOn: $showBassNotes)
                         .disabled(model.bassNotes.isEmpty)
@@ -1876,8 +1873,6 @@ private struct ChordProAppPreview: View {
     var highlightContext: ChordProPlaybackHighlightContext?
     var beatBall: BeatBallInput?
     var beatDots: BeatDotContext?
-    /// Draw faint measure barlines on the shared grid, independent of the beat-dots toggle.
-    var showBarlines = false
     var rhythmicSpacing = false
     /// Per-lyric-line word timings, indexed by lyric ordinal (same order the highlight/ball use),
     /// for rhythmic spacing — available regardless of playback.
@@ -2141,21 +2136,19 @@ private struct ChordProAppPreview: View {
             beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: resolvedBarPhase)
     }
 
-    /// Whether the vocal entrances actually sit on the beat grid. When they do, metric downbeat
-    /// anchoring makes the repeating cadence visible (pickups indent identically line to line).
-    /// When they don't (loose/rubato delivery — Summertime scores ≈ -0.09), the "honest" metric
-    /// indents scatter meaninglessly, so rows anchor on their first word instead.
-    private var vocalsFollowBeatGrid: Bool {
-        let onsets = lyricLineWords.compactMap { $0.first?.start }
-        return DownbeatEstimator.beatAlignment(beatTimes: beatTimes, onsets: onsets) >= 0.3
-    }
-
-    /// The time a row's origin column represents: the bar downbeat the line resolves onto when
-    /// the performance is beat-aligned (shared cadence column), or the first word itself when it
-    /// isn't (uniform left margin). Nil without a grid.
+    /// The time a row's origin column represents: the bar downbeat the line resolves onto.
+    /// Nil without a grid.
+    ///
+    /// ALWAYS the grid downbeat when a grid exists. This used to switch to first-word anchoring
+    /// when a lyric-alignment score (`vocalsFollowBeatGrid`, threshold 0.3) said the vocals were
+    /// rubato — but that score is computed FROM the lyric lines, so every blend pass that
+    /// regrouped lines could flip it, and the flip turned the whole gutter column on and off
+    /// mid-pipeline (Eric: "nothing in the pipeline should be varying the width of the song's
+    /// column… locked in as a function of time and beats, not tied to lyrics being present").
+    /// A rubato song now shows honestly scattered indents instead of a lyric-driven mode flip.
     private func rowDownbeatTime(forFirstWordAt onset: TimeInterval?) -> TimeInterval? {
         guard let onset, let grid = measureGrid else { return nil }
-        return vocalsFollowBeatGrid ? grid.nearestDownbeatTime(toTime: onset) : onset
+        return grid.nearestDownbeatTime(toTime: onset)
     }
 
     /// Guitar/melody-stem peaks (and lane color) covering a lyric line's pre-vocal gap
@@ -2422,7 +2415,8 @@ private struct ChordProAppPreview: View {
             forLyricOrdinal: item.lyricOrdinal)
         let itemBeatBall = beatBallValue(for: item, in: document)
         let itemBeatDots = beatDotValue(for: item, in: document)
-        let itemShowBarlines = showBarlines && vocalsFollowBeatGrid
+        // Barlines are a pure function of the beat grid — never lyric-gated, never optional.
+        let itemShowBarlines = true
         let itemTrailingRest = trailingRestSeconds(
             lastWordEnd: lineWords.last?.end,
             nextLineStart: nextLineStart)
