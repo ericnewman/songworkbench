@@ -1142,6 +1142,12 @@ struct ChordProTabEditor: View {
                             timelineChordTimesByLine: Dictionary(
                                 uniqueKeysWithValues: (model.songTimelineForPreview()?.rows ?? [])
                                     .map { ($0.number, $0.chordTimes) }),
+                            timelineRowWindowsByLine: Dictionary(
+                                uniqueKeysWithValues: (model.songTimelineForPreview()?.rows ?? [])
+                                    .compactMap { row in
+                                        row.end > row.start
+                                            ? (row.number, row.start...row.end) : nil
+                                    }),
                             bassNotes: model.bassNotes,
                             showBassNotes: showBassNotes,
                             showChordTimeLabels: showChordTimeLabels,
@@ -1912,6 +1918,12 @@ private struct ChordProAppPreview: View {
     /// Authoritative chord onset times per display line (from `SongTimeline` rows, chart
     /// order) — lets chords render at their REAL time instead of a column-derived guess.
     var timelineChordTimesByLine: [Int: [TimeInterval]] = [:]
+    /// Authoritative per-row TIME WINDOWS from the same `SongTimeline` rows (keyed by display
+    /// line number). The builder splits instrumental sections into uniform whole-bar windows;
+    /// the preview must RENDER those windows, not re-derive its own from chord onsets — chords
+    /// land anywhere in a bar, so onset-derived windows gave every row an arbitrary width and
+    /// no splitter fix could ever show through (Eric: "Not improving").
+    var timelineRowWindowsByLine: [Int: ClosedRange<TimeInterval>] = [:]
     /// Detected bass notes (backlog: Bass Note display consolidation) — shown as an optional row
     /// above each lyric line when `showBassNotes` is on, replacing the standalone Bass Notes tab.
     var bassNotes: [BassNoteObservation] = []
@@ -2735,6 +2747,14 @@ private struct ChordProAppPreview: View {
         for item: ChordProPreviewIndexedBlock,
         in document: ChordProPreviewDocument
     ) -> (start: TimeInterval, end: TimeInterval)? {
+        // The timeline's own row window wins outright: the builder made it a uniform whole-bar
+        // span, and re-deriving a window from chord onsets below (the fallback for edited
+        // charts with no timeline) yields arbitrary widths.
+        if let number = item.displayLineNumber,
+            let window = timelineRowWindowsByLine[number]
+        {
+            return (window.lowerBound, window.upperBound)
+        }
         let items = indexedBlocks(for: document)
         guard let index = items.firstIndex(where: { $0.offset == item.offset }) else { return nil }
         func window(at i: Int) -> ClosedRange<TimeInterval>? {
