@@ -77,13 +77,37 @@ enum ChordProElement: Equatable, Sendable {
 }
 
 struct ChordProChord: Equatable, Sendable, CustomStringConvertible {
-    let root: ChordProNote
+    /// `nil` for a "no chord" marker (`[N.C.]`), which is a rest rather than a harmony.
+    let root: ChordProNote?
     let suffix: String
     let bass: ChordProNote?
+    /// The author's original no-chord spelling, preserved so export round-trips byte-exactly.
+    /// Non-nil exactly when `root` is nil.
+    fileprivate let noChordText: String?
     fileprivate let leadingWhitespace: String
     fileprivate let trailingWhitespace: String
 
+    init(
+        root: ChordProNote?,
+        suffix: String,
+        bass: ChordProNote?,
+        noChordText: String? = nil,
+        leadingWhitespace: String,
+        trailingWhitespace: String
+    ) {
+        self.root = root
+        self.suffix = suffix
+        self.bass = bass
+        self.noChordText = noChordText
+        self.leadingWhitespace = leadingWhitespace
+        self.trailingWhitespace = trailingWhitespace
+    }
+
+    /// True for `[N.C.]` and friends — a notated rest, not a chord.
+    var isNoChord: Bool { root == nil }
+
     var description: String {
+        guard let root else { return noChordText ?? Self.canonicalNoChord }
         var result = root.description + suffix
         if let bass {
             result += "/" + bass.description
@@ -92,6 +116,8 @@ struct ChordProChord: Equatable, Sendable, CustomStringConvertible {
     }
 
     fileprivate func transposed(by semitones: Int) -> ChordProChord {
+        // A rest has no pitch to move. Transposing must leave it exactly as written.
+        guard let root else { return self }
         let spelling = preferredSpelling(for: semitones)
         return ChordProChord(
             root: root.transposed(by: semitones, spelling: spelling),
@@ -103,9 +129,19 @@ struct ChordProChord: Equatable, Sendable, CustomStringConvertible {
     }
 
     private func preferredSpelling(for semitones: Int) -> ChordProNote.Spelling {
-        if root.accidental == .flat || bass?.accidental == .flat { return .flats }
-        if root.accidental == .sharp || bass?.accidental == .sharp { return .sharps }
+        if root?.accidental == .flat || bass?.accidental == .flat { return .flats }
+        if root?.accidental == .sharp || bass?.accidental == .sharp { return .sharps }
         return semitones < 0 ? .flats : .sharps
+    }
+
+    fileprivate static let canonicalNoChord = "N.C."
+
+    /// Lead-sheet spellings that mean "no chord". Imported charts (and hand-authored ones) use
+    /// several; all are accepted case-insensitively and preserved verbatim on export.
+    fileprivate static let noChordSpellings: Set<String> = ["n.c.", "n.c", "nc", "no chord"]
+
+    fileprivate static func isNoChordToken(_ text: Substring) -> Bool {
+        noChordSpellings.contains(text.lowercased())
     }
 }
 
@@ -281,6 +317,20 @@ private enum ChordProParser {
 
         guard !chordText.isEmpty else {
             throw ChordProParseError.emptyChord(characterOffset: offset)
+        }
+
+        // "No chord" is a rest, not a harmony. It has no root, so it must be recognised before
+        // the root parse below — otherwise a single [N.C.] in an imported chart throws
+        // `invalidChord` and rejects the ENTIRE file.
+        if ChordProChord.isNoChordToken(chordText) {
+            return ChordProChord(
+                root: nil,
+                suffix: "",
+                bass: nil,
+                noChordText: String(chordText),
+                leadingWhitespace: String(leading),
+                trailingWhitespace: String(trailing)
+            )
         }
 
         let rootLength = chordText.dropFirst().first.map { $0 == "#" || $0 == "b" ? 2 : 1 } ?? 1

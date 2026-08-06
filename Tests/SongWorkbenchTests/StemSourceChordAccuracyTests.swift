@@ -1138,8 +1138,11 @@ final class StemSourceChordAccuracyTests: XCTestCase {
                 // Rebuilt from the parsed parts rather than reusing `chord.description` for two
                 // reasons: `ChordProNote` keeps the letter's original case, and the slash bass is
                 // dropped here so it never reaches `parse` at all.
-                let letter = String(chord.root.letter).uppercased()
-                let accidental = chord.root.accidental?.rawValue ?? ""
+                // A no-chord marker is a rest, not a harmony — it contributes nothing to the
+                // ground-truth chord sequence.
+                guard let root = chord.root else { continue }
+                let letter = String(root.letter).uppercased()
+                let accidental = root.accidental?.rawValue ?? ""
                 guard let parsed = parse(letter + accidental + chord.suffix) else { continue }
                 written.append(parsed)
             case .text:
