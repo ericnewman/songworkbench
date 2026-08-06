@@ -937,6 +937,10 @@ struct ChordProTabConfig: Sendable {
     let supportsTranspose: Bool
     /// Whether the Import button is shown.
     let supportsImport: Bool
+    /// Whether the reference-chart upload/report buttons are shown. Broader than
+    /// `supportsImport`: the plain ChordPro tab hides destructive Import but still wants
+    /// reference validation (Eric: "add an upload icon to the ChordPro").
+    var supportsReferenceUpload = true
     /// Whether the Mark Reviewed button is shown.
     let supportsMarkReviewed: Bool
     /// Whether the App Preview/Edit-or-Source segmented picker is visible.
@@ -991,6 +995,7 @@ struct ChordProTabConfig: Sendable {
         exportFileName: "Bass Notes.cho",
         supportsTranspose: true,
         supportsImport: false,
+        supportsReferenceUpload: false,
         supportsMarkReviewed: false,
         showsSecondaryMode: true,
         footerNote:
@@ -1214,9 +1219,13 @@ struct ChordProTabEditor: View {
                 }
                 .labelStyle(.iconOnly)
                 .help("Import a ChordPro file")
+            }
+            if config.supportsReferenceUpload {
                 // Reference upload: a known-good chart of THIS song to validate the generated
                 // one against — never replaces it (Eric: "upload a reference file with an
                 // option to revise or improve what we generated, or flag systemic issues").
+                // Its own gate, not `supportsImport`: the plain ChordPro tab hides destructive
+                // Import but still wants reference validation.
                 Button(
                     "Upload Reference...",
                     systemImage: model.referenceChordProSource.isEmpty
