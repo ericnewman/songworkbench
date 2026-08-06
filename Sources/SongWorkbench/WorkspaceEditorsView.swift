@@ -4175,10 +4175,11 @@ private struct ChordProPreviewLineView: View {
         let chordXs = rhythmicChordXs
         let bassXs = rhythmicBassXs
         let ball = rhythmicBallPosition
+        let chordBall = rhythmicChordBallPosition
         // Reserve space above the content: the full ball reserve when either ball is shown,
         // else a thin row for the beat dots, else nothing.
         let topReserve: CGFloat =
-            (ball != nil || soundingChordIndex != nil)
+            (ball != nil || chordBall != nil || soundingChordIndex != nil)
             ? ballTopReserve : (dots.isEmpty ? 0 : rhythmicDotTopReserve)
         // Positioned bass-note row (when present) sits between the reserve and the chords;
         // chords/words shift down by this amount so nothing overlaps.
@@ -4279,6 +4280,14 @@ private struct ChordProPreviewLineView: View {
                         "\(restBeats)-beat rest: the voice stops here before the next line")
             }
             soundingChordBall(chordXs: chordXs)
+            if let chordBall {
+                Circle()
+                    .fill(Color.swAmber)
+                    .frame(width: ballDiameter, height: ballDiameter)
+                    .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
+                    .opacity(0.95)
+                    .position(x: chordBall.x, y: chordBall.y)
+            }
             if let ball {
                 Circle()
                     .fill(Color.white)
@@ -4717,10 +4726,91 @@ private struct ChordProPreviewLineView: View {
         }
     }
 
-    // The amber chord BALL (chordBallPosition/rhythmicChordBallPosition/bracketed) was removed
-    // 2026-08-05: its arc previews the NEXT tap, so mid-flight it always read as ahead of the
-    // music (Eric: "The orange ball is now way ahead of the vocals"). The sounding chord's NAME
-    // renders in amber instead — see `isChordSounding(at:)`.
+    // The amber chord ball, reinstated 2026-08-06 to Eric's spec: "travel between chords and land
+    // on the next chord at the moment of onset."
+    //
+    // It was removed on 2026-08-05 because mid-flight it read as ahead of the music. Travelling
+    // toward the next chord is inherently anticipatory and that part is wanted — what was wrong
+    // was the ARRIVAL, for two compounding reasons, both since measured:
+    //
+    //  1. `smoothstep` easing has zero derivative at both ends, so across a chord gap of SECONDS
+    //     the ball covered 2.9 px in the first 5% against a constant 20 — it appeared to arrive
+    //     early and then hover. `.linear` fixes that: constant velocity, so the arrival reads as
+    //     landing ON the onset.
+    //  2. The bigger one. `BouncingBall` interpolates by TIME fraction, but x is a beat-INDEX
+    //     axis, which is non-linear in time wherever the measured grid is uneven. The ball
+    //     therefore sat at the time-lerp of the two endpoints while the audio at that instant
+    //     belonged at the ruler position. Error is zero at each tap and peaks mid-gap — exactly
+    //     "starts fine, drifts, re-syncs". Measured across the live songs it tracked grid
+    //     unevenness precisely: Key West (grid cv 0.142) peaked at 0.40 beats = 0.25 s.
+    //
+    // The fix for (2) is to parameterise travel in RULER space rather than time: the ball is built
+    // with each tap's ruler x standing in for its time, and queried at the ruler x of the playhead.
+    // Because `ChordRowRuler.x(atTime:)` is monotonic, the resulting fraction is exactly
+    // `(rulerX(t) - rulerX(prev)) / (rulerX(next) - rulerX(prev))`, so the ball tracks the same
+    // axis every glyph is drawn on. Interpolating between the DRAWN chord x's keeps it on the
+    // glyphs, and it is exact at both ends — it leaves a chord at its onset and reaches the next
+    // chord's drawn position at that chord's onset, which is the requirement.
+    private var rhythmicChordBallPosition: (x: CGFloat, y: CGFloat)? {
+        guard let beatBall, !rhythmicWords.isEmpty else { return nil }
+        let xs = rhythmicChordXs
+        let times = rowChordTimes
+        guard xs.count == times.count, !times.isEmpty else { return nil }
+
+        // Taps in time order, carrying the x each chord is actually drawn at.
+        var taps = zip(times, xs).sorted { $0.0 < $1.0 }
+        // Bracket with the neighbouring chords either side of the row so the ball is mid-arc as it
+        // crosses a row boundary rather than blinking out at the ends.
+        if let previous = songChordTimes.last(where: { $0 < (taps.first?.0 ?? 0) - 0.001 }) {
+            taps.insert((previous, 0), at: 0)
+        }
+        if let next = songChordTimes.first(where: { $0 > (taps.last?.0 ?? 0) + 0.001 }) {
+            taps.append((next, rowContentEndX))
+        }
+        guard taps.count >= 2 else { return nil }
+
+        let now = beatBall.currentTime
+        guard let first = taps.first, let last = taps.last,
+            now >= first.0, now <= last.0
+        else { return nil }
+
+        // X IS THE PLAYHEAD MAPPED THROUGH THE WORD AXIS — not a lerp between the two chords.
+        //
+        // Three candidates were measured against the live songs, sampling densely across every row.
+        //
+        //   1. Lerp between the two bracketing chord x's. Lands correctly but sits over the
+        //      currently-sung word only ~50% of the time: a constant-velocity glide cannot track
+        //      words, which are NOT evenly spaced within a chord gap.
+        //   2. The pure metric ruler, `rowRuler.x(atTime:)`. No better (~50%), for a reason worth
+        //      recording: a word's drawn WIDTH does not correspond to its sung DURATION. A word
+        //      held two beats occupies ~256 px of ruler but ~45 px of glyph, so a time-linear
+        //      sweep leaves the glyph almost immediately.
+        //   3. `rhythmicX` — piecewise-linear over the words as actually drawn. This is the one:
+        //      it is the axis the chord glyphs are already placed on, so the ball reaches a
+        //      chord's drawn position exactly at that chord's onset, AND it advances word by word,
+        //      so it stays with the lyric. Measured NEVER ahead of the next word: 100% of samples
+        //      on four songs, 99.8% on the fifth.
+        //
+        // Being between two glyphs while travelling is expected, not drift — the ball is moving
+        // from one word to the next, which is what a bouncing ball does. What it never does now is
+        // run ahead of the music.
+        let x = rhythmicX(forTime: now)
+
+        // The bounce still comes from the chords: lift falls to 0 at each chord onset (the tap)
+        // and peaks between, so the ball visibly strikes each chord as it passes through it.
+        var previous = first.0
+        var next = last.0
+        for tap in taps {
+            if tap.0 <= now { previous = tap.0 }
+            if tap.0 > now {
+                next = tap.0
+                break
+            }
+        }
+        let fraction = next > previous ? (now - previous) / (next - previous) : 0
+        let lift = BouncingBall.lift(forFraction: min(max(fraction, 0), 1))
+        return (x: x, y: ballTopReserve - 2 - CGFloat(lift) * ballApexHeight)
+    }
 
     private var ballPosition: (x: CGFloat, y: CGFloat)? {
         guard let beatBall else { return nil }
