@@ -211,6 +211,12 @@ final class AppModel: ObservableObject {
             persistSelectedAnalysis()
         }
     }
+    /// User-uploaded reference ChordPro chart for this song — the validation yardstick the
+    /// generated chart is compared against (`ReferenceChartComparator`). Never touched by
+    /// re-analysis or the draft builder.
+    @Published var referenceChordProSource = "" {
+        didSet { persistSelectedAnalysis() }
+    }
     @Published var estimatedBPM: Double? {
         didSet { persistSelectedAnalysis() }
     }
@@ -1821,6 +1827,7 @@ final class AppModel: ObservableObject {
         untranscribedVocalRegions = []
         chordEvents = []
         chordProSource = ""
+        referenceChordProSource = ""
         estimatedBPM = nil
         beatTimes = []
         bassNotes = []
@@ -2221,6 +2228,38 @@ final class AppModel: ObservableObject {
         chordProReviewState = .reviewed
     }
 
+    /// Loads a reference ChordPro chart for the selected song (parse-validated) and returns the
+    /// comparison against the current generated chart. The reference is stored alongside the
+    /// analysis; the generated chart is NOT modified — adopting the reference is a separate,
+    /// explicit action (`adoptReferenceChordPro`).
+    @discardableResult
+    func importReferenceChordPro(from url: URL) throws -> ReferenceChartComparison {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { url.stopAccessingSecurityScopedResource() }
+        }
+        let source = try String(contentsOf: url, encoding: .utf8)
+        _ = try ChordProDocument(parsing: source)
+        referenceChordProSource = source
+        return try ReferenceChartComparator.compare(
+            generated: chordProSource, reference: source)
+    }
+
+    /// Re-runs the reference comparison against the CURRENT generated chart (e.g. after a
+    /// re-analysis), or nil when no reference has been uploaded.
+    func referenceChartComparison() -> ReferenceChartComparison? {
+        guard !referenceChordProSource.isEmpty else { return nil }
+        return try? ReferenceChartComparator.compare(
+            generated: chordProSource, reference: referenceChordProSource)
+    }
+
+    /// Replaces the generated chart with the uploaded reference (explicit user action from the
+    /// comparison report). Review state resets via `chordProSource.didSet`.
+    func adoptReferenceChordPro() {
+        guard !referenceChordProSource.isEmpty else { return }
+        chordProSource = referenceChordProSource
+    }
+
     func importChordPro(from url: URL) throws {
         let accessing = url.startAccessingSecurityScopedResource()
         defer {
@@ -2424,6 +2463,7 @@ final class AppModel: ObservableObject {
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
+        referenceChordProSource = analysis.referenceChordProSource
         estimatedBPM = reconciledBPM
         beatTimes = reconciledBeatTimes
         sourceDuration = analysis.sourceDuration
@@ -2507,6 +2547,7 @@ final class AppModel: ObservableObject {
             sourceDuration: sourceDuration,
             chords: chordEvents,
             chordProSource: chordProSource,
+            referenceChordProSource: referenceChordProSource,
             // ALWAYS the beat tracker's original answer, never the reconciled one. The published
             // `estimatedBPM`/`beatTimes` carry the reconciled grid so the chart and playback use
             // it, but persisting that would overwrite the reconciler's own input and make each

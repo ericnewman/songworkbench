@@ -68,10 +68,13 @@ final class ChartPixelRenderAudit: XCTestCase {
             preview.timelineRowWindowsByLine = windowsByLine
             preview.lyricSegments = sortedLyrics
 
-            // Fixed viewport, dark scheme (light renders white-on-white).
+            // Width-only proposal: the eager (VStack) render path has intrinsic height, and a
+            // fixed-height frame CENTER-clips content taller than itself — the first renders
+            // silently showed only each chart's bottom 6000 px. Dark scheme (light renders
+            // white-on-white).
             let framed =
                 preview
-                .frame(width: 2400, height: 6000, alignment: .topLeading)
+                .frame(width: 2400, alignment: .topLeading)
                 .background(Color.black)
                 .environment(\.colorScheme, .dark)
 

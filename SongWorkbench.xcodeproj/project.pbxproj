@@ -37,6 +37,8 @@
 		17A2C9D2DD18E43612A1AA91 /* CoreMLStemSeparationEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14A801FE16F612929E7CA59 /* CoreMLStemSeparationEngineTests.swift */; };
 		1856ED7AC3AD494AF86E3936 /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1F2FE6C9EA4752D1CA2B99 /* ProjectStore.swift */; };
 		1B91ABE095A2655E6189B47F /* MeasureGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200D09253ACB074D2BE3C91E /* MeasureGrid.swift */; };
+		C0DEA110C401D40A11E4000D /* ReferenceChartComparator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E4000C /* ReferenceChartComparator.swift */; };
+		C0DEA110C401D40A11E40010 /* ReferenceComparisonReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E4000F /* ReferenceComparisonReportView.swift */; };
 		1CE5F840E7FA534768AD8301 /* StemMixerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADF3745325BA1DE987A3DC2 /* StemMixerModel.swift */; };
 		1E1FF69CB8739C9A69A0B0CA /* CoreMLStemSeparationEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 840EC782D1F91B658C1815E9 /* CoreMLStemSeparationEngine.swift */; };
 		1F9E8F4D1F9B4B9DCB5416C8 /* StemMixExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57FDEDC29A18294F1A074A7C /* StemMixExporter.swift */; };
@@ -138,6 +140,7 @@
 		7C9531218EB46DD3A0A50E38 /* ReferenceLyricsPromptPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7A92E08CE3B8DF213856279 /* ReferenceLyricsPromptPolicyTests.swift */; };
 		7E27A686DAF2877789346256 /* MusicalKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17BEAFFD79310A70EE044CF /* MusicalKey.swift */; };
 		7F6B80EBAA0303DE439E46FC /* SongBeatsPerLineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D12D07A267D0FCB48773CF /* SongBeatsPerLineTests.swift */; };
+		C0DEA110C401D40A11E40013 /* ReferenceChartComparatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E40012 /* ReferenceChartComparatorTests.swift */; };
 		C0DEA110C401D40A11E40007 /* ChartGeometryInvariantTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E40006 /* ChartGeometryInvariantTests.swift */; };
 		C0DEA110C401D40A11E40009 /* RealSongChartGeometryAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E40008 /* RealSongChartGeometryAudit.swift */; };
 		C0DEA110C401D40A11E4000B /* ChartPixelRenderAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E4000A /* ChartPixelRenderAudit.swift */; };
@@ -181,6 +184,8 @@
 		AD380EDECBBC281E80E4F23C /* AnalysisStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D909D5762770B55D225ACC91 /* AnalysisStage.swift */; };
 		AD4B4D3CC35571BD850129AD /* AudioCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1AA3493845BF8582D05AC82 /* AudioCaptureTests.swift */; };
 		B225DEE6040B756E236D60F3 /* MeasureGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200D09253ACB074D2BE3C91E /* MeasureGrid.swift */; };
+		C0DEA110C401D40A11E4000E /* ReferenceChartComparator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E4000C /* ReferenceChartComparator.swift */; };
+		C0DEA110C401D40A11E40011 /* ReferenceComparisonReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA110C401D40A11E4000F /* ReferenceComparisonReportView.swift */; };
 		B2BD455DCCA3FE555051B23B /* SplitProjectStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08936732674E77940D891CD8 /* SplitProjectStoreTests.swift */; };
 		B457037F04B498CF30A6196B /* BeatTrackingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFAA2DCA1E1D72145BB4338A /* BeatTrackingTests.swift */; };
 		B546D3539FE0B216A791C261 /* AudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 781A8B13BC0BE7F8BB983485 /* AudioCapture.swift */; };
@@ -332,6 +337,8 @@
 		1DBC36E05E2091F3BC04CCD2 /* WaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformView.swift; sourceTree = "<group>"; };
 		1E268C68EB02D1681E4A25AF /* ONNXSixStemSeparationEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ONNXSixStemSeparationEngineTests.swift; sourceTree = "<group>"; };
 		200D09253ACB074D2BE3C91E /* MeasureGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeasureGrid.swift; sourceTree = "<group>"; };
+		C0DEA110C401D40A11E4000C /* ReferenceChartComparator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceChartComparator.swift; sourceTree = "<group>"; };
+		C0DEA110C401D40A11E4000F /* ReferenceComparisonReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceComparisonReportView.swift; sourceTree = "<group>"; };
 		C0DEA110C401D40A11E40001 /* ChordRowRuler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordRowRuler.swift; sourceTree = "<group>"; };
 		25BAD6AC10B9CFACB46DDDF1 /* BeatTracking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatTracking.swift; sourceTree = "<group>"; };
 		25FC3370C918BBC053FADB81 /* WaveformAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaveformAnalyzer.swift; sourceTree = "<group>"; };
@@ -379,6 +386,7 @@
 		635970BAB1ED7E639D3AEC37 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		63AA894B0BFE36496F4C6A11 /* AsyncWaitHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncWaitHelper.swift; sourceTree = "<group>"; };
 		65D12D07A267D0FCB48773CF /* SongBeatsPerLineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongBeatsPerLineTests.swift; sourceTree = "<group>"; };
+		C0DEA110C401D40A11E40012 /* ReferenceChartComparatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceChartComparatorTests.swift; sourceTree = "<group>"; };
 		C0DEA110C401D40A11E40006 /* ChartGeometryInvariantTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartGeometryInvariantTests.swift; sourceTree = "<group>"; };
 		C0DEA110C401D40A11E40008 /* RealSongChartGeometryAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealSongChartGeometryAudit.swift; sourceTree = "<group>"; };
 		C0DEA110C401D40A11E4000A /* ChartPixelRenderAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartPixelRenderAudit.swift; sourceTree = "<group>"; };
@@ -595,6 +603,8 @@
 				5C06CC42A09AA9B00FFED64A /* LyricConfidencePlaceholder.swift */,
 				2D5CABD595F5A322B7D0B5CB /* LyricPhraseGrouper.swift */,
 				C0DEA110C401D40A11E40001 /* ChordRowRuler.swift */,
+				C0DEA110C401D40A11E4000C /* ReferenceChartComparator.swift */,
+				C0DEA110C401D40A11E4000F /* ReferenceComparisonReportView.swift */,
 				200D09253ACB074D2BE3C91E /* MeasureGrid.swift */,
 				75B2582B5D352CB2C6F2EDCC /* MetricalLevelReconciler.swift */,
 				291358E4E4A94631E11C3C38 /* ModelArtifactManager.swift */,
@@ -725,6 +735,7 @@
 				C0DEA110C401D40A11E4000A /* ChartPixelRenderAudit.swift */,
 				C0DEA110C401D40A11E40008 /* RealSongChartGeometryAudit.swift */,
 				C0DEA110C401D40A11E40004 /* ChordRowRulerTests.swift */,
+				C0DEA110C401D40A11E40012 /* ReferenceChartComparatorTests.swift */,
 				65D12D07A267D0FCB48773CF /* SongBeatsPerLineTests.swift */,
 				E145971CB054928A52323E70 /* SongImportPolicyTests.swift */,
 				E9454EAAA61473153143EE83 /* SongStructureOverviewTests.swift */,
@@ -986,6 +997,8 @@
 				8972371C5E35C9C9B2927C9D /* LyricConfidencePlaceholder.swift in Sources */,
 				4CBC26CFE0D871FE399431CA /* LyricPhraseGrouper.swift in Sources */,
 				C0DEA110C401D40A11E40002 /* ChordRowRuler.swift in Sources */,
+				C0DEA110C401D40A11E4000D /* ReferenceChartComparator.swift in Sources */,
+				C0DEA110C401D40A11E40010 /* ReferenceComparisonReportView.swift in Sources */,
 				1B91ABE095A2655E6189B47F /* MeasureGrid.swift in Sources */,
 				E1B4BC1D8D3A39741DC9C0D7 /* MetricalLevelReconciler.swift in Sources */,
 				A8689113A13415423B4324A8 /* ModelArtifactManager.swift in Sources */,
@@ -1074,6 +1087,8 @@
 				9A617EAFB7BCA45BAC44FE62 /* LyricConfidencePlaceholder.swift in Sources */,
 				D6FF76334344D928102D6FC6 /* LyricPhraseGrouper.swift in Sources */,
 				C0DEA110C401D40A11E40003 /* ChordRowRuler.swift in Sources */,
+				C0DEA110C401D40A11E4000E /* ReferenceChartComparator.swift in Sources */,
+				C0DEA110C401D40A11E40011 /* ReferenceComparisonReportView.swift in Sources */,
 				B225DEE6040B756E236D60F3 /* MeasureGrid.swift in Sources */,
 				6A0AA03102FC89CC4613879A /* MetricalLevelReconciler.swift in Sources */,
 				20EDE6284C4A0D8DE996FB6E /* ModelArtifactManager.swift in Sources */,
@@ -1188,6 +1203,7 @@
 				C0DEA110C401D40A11E4000B /* ChartPixelRenderAudit.swift in Sources */,
 				C0DEA110C401D40A11E40009 /* RealSongChartGeometryAudit.swift in Sources */,
 				C0DEA110C401D40A11E40005 /* ChordRowRulerTests.swift in Sources */,
+				C0DEA110C401D40A11E40013 /* ReferenceChartComparatorTests.swift in Sources */,
 				7F6B80EBAA0303DE439E46FC /* SongBeatsPerLineTests.swift in Sources */,
 				A9A4E383B21925DE800CA42E /* SongImportPolicyTests.swift in Sources */,
 				EB4723C8E188F81081977EC6 /* SongStructureOverviewTests.swift in Sources */,

@@ -483,6 +483,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var sourceDuration: TimeInterval? = nil
     var chords: [EditableChordEvent] = []
     var chordProSource = ""
+    /// User-uploaded reference ChordPro chart (a known-good chart of the same song), kept
+    /// SEPARATE from the generated `chordProSource`: it validates the generated chart via
+    /// `ReferenceChartComparator` and is never overwritten by re-analysis.
+    var referenceChordProSource = ""
     var estimatedBPM: Double?
     var beatTimes: [TimeInterval] = []
     var bassNotes: [BassNoteObservation] = []
@@ -508,6 +512,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case sourceDuration
         case chords
         case chordProSource
+        case referenceChordProSource
         case estimatedBPM
         case beatTimes
         case bassNotes
@@ -532,6 +537,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         sourceDuration: TimeInterval? = nil,
         chords: [EditableChordEvent] = [],
         chordProSource: String = "",
+        referenceChordProSource: String = "",
         estimatedBPM: Double? = nil,
         beatTimes: [TimeInterval] = [],
         bassNotes: [BassNoteObservation] = [],
@@ -554,6 +560,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.sourceDuration = sourceDuration
         self.chords = chords
         self.chordProSource = chordProSource
+        self.referenceChordProSource = referenceChordProSource
         self.estimatedBPM = estimatedBPM
         self.beatTimes = beatTimes
         self.bassNotes = bassNotes
@@ -586,6 +593,8 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             try container.decodeIfPresent(TimeInterval.self, forKey: .sourceDuration)
         chords = try container.decodeIfPresent([EditableChordEvent].self, forKey: .chords) ?? []
         chordProSource = try container.decodeIfPresent(String.self, forKey: .chordProSource) ?? ""
+        referenceChordProSource =
+            try container.decodeIfPresent(String.self, forKey: .referenceChordProSource) ?? ""
         estimatedBPM = try container.decodeIfPresent(Double.self, forKey: .estimatedBPM)
         beatTimes = try container.decodeIfPresent([TimeInterval].self, forKey: .beatTimes) ?? []
         bassNotes =

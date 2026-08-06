@@ -1064,6 +1064,10 @@ struct ChordProTabEditor: View {
     }
     @State private var errorMessage: String?
     @State private var mode = Mode.preview
+    /// Result of comparing the uploaded reference chart against the generated one; drives the
+    /// report sheet.
+    @State private var referenceComparison: ReferenceChartComparison?
+    @State private var showReferenceReport = false
 
     private let config: ChordProTabConfig
 
@@ -1181,6 +1185,16 @@ struct ChordProTabEditor: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .sheet(isPresented: $showReferenceReport) {
+            if let referenceComparison {
+                ReferenceComparisonReportView(
+                    comparison: referenceComparison,
+                    onAdopt: {
+                        model.adoptReferenceChordPro()
+                        showReferenceReport = false
+                    })
+            }
+        }
     }
 
     private var toolbar: some View {
@@ -1200,6 +1214,32 @@ struct ChordProTabEditor: View {
                 }
                 .labelStyle(.iconOnly)
                 .help("Import a ChordPro file")
+                // Reference upload: a known-good chart of THIS song to validate the generated
+                // one against — never replaces it (Eric: "upload a reference file with an
+                // option to revise or improve what we generated, or flag systemic issues").
+                Button(
+                    "Upload Reference...",
+                    systemImage: model.referenceChordProSource.isEmpty
+                        ? "doc.badge.arrow.up" : "doc.badge.arrow.up.fill"
+                ) {
+                    importReferenceDocument()
+                }
+                .labelStyle(.iconOnly)
+                .foregroundStyle(
+                    model.referenceChordProSource.isEmpty ? Color.swTextPrimary : Color.swMint
+                )
+                .help(
+                    model.referenceChordProSource.isEmpty
+                        ? "Upload a reference ChordPro chart to validate the generated one"
+                        : "Reference chart uploaded — click to replace it, or reopen the report")
+                if model.referenceChordProSource.isEmpty == false {
+                    Button("Comparison Report", systemImage: "checklist") {
+                        referenceComparison = model.referenceChartComparison()
+                        showReferenceReport = referenceComparison != nil
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Show the reference-vs-generated comparison report")
+                }
             }
             if config.showsSecondaryMode {
                 Picker(config.pickerAccessibilityLabel, selection: $mode) {
@@ -1427,6 +1467,27 @@ struct ChordProTabEditor: View {
             guard panel.runModal() == .OK, let url = panel.url else { return }
             do {
                 try model.importChordPro(from: url)
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        #else
+            errorMessage = "Importing isn\u{2019}t available on iPad yet."
+        #endif
+    }
+
+    private func importReferenceDocument() {
+        #if os(macOS)
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [
+                UTType(filenameExtension: "cho") ?? .plainText, .plainText,
+            ]
+            panel.allowsMultipleSelection = false
+            panel.message = "Choose a known-good ChordPro chart of this song"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                referenceComparison = try model.importReferenceChordPro(from: url)
+                showReferenceReport = true
                 errorMessage = nil
             } catch {
                 errorMessage = error.localizedDescription
