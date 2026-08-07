@@ -3948,6 +3948,29 @@ private struct ChordProPreviewLineView: View {
 
     /// Left px of the shared downbeat column (the pickup gutter width). Zero without a grid.
     private var gutterPx: CGFloat {
+        guard rowDownbeatSeconds != nil else { return 0 }
+        // CONSTANT across every row, and it has to be.
+        //
+        // Sizing this to each row's OWN pickup was tried on 2026-08-07 and REVERTED within the
+        // hour: it put every row's downbeat at a different x, so the beat columns no longer lined
+        // up down the page (Eric: "I still see uneven beats at the start of the lines"). The
+        // shared downbeat column is the entire reason `metricX` pins the downbeat to `gutterPx` —
+        // a per-row gutter silently destroys it.
+        //
+        // The open problem this leaves is the one that prompted the attempt: a song whose first
+        // sound is on beat one still draws two beats of blank gutter in front of it. The fix for
+        // that is a gutter computed once per SONG (the largest real pickup any row needs, else
+        // zero) rather than per row — uniform by construction, and no wasted space when nothing
+        // needs it. That needs the same song-level plumbing `beatsPerLine` uses and is not done
+        // yet; a per-row value is NOT a valid shortcut to it.
+        return max(0, CGFloat(gutterSeconds) * pixelsPerSecond)
+    }
+
+    /// Retained for the song-level gutter work described above: the room this row genuinely needs
+    /// in front of its downbeat, or 0. Leading SILENCE is not content — the song's first row
+    /// begins at 0:00 while its first sound can be a second later, and reserving for that is what
+    /// pushed the opening chord off the left edge.
+    private var requiredPickupSeconds: TimeInterval {
         guard let downbeat = rowDownbeatSeconds else { return 0 }
         // Reserve only what this row's ACTUAL pickup needs, never a flat two beats.
         //
@@ -3960,15 +3983,23 @@ private struct ChordProPreviewLineView: View {
         // A row with nothing before its downbeat now gets no gutter at all and starts flush left;
         // a row with a real pickup gets exactly as much room as that pickup occupies, capped at
         // the old two beats so a long lead-in still cannot push the shared column off-screen.
+        // The row's nominal START is deliberately NOT counted here. A row can begin in silence —
+        // the song's first row starts at 0:00 while the first sound is a second later — and
+        // reserving gutter for that silence pushes the opening chord away from the left edge,
+        // which is the very thing this is meant to prevent (Eric: the first D "is the very first
+        // sound of the song", so it belongs at the left edge). Leading audio is represented by
+        // `leadingMelodyPeaks`; when there are none, there is nothing in front of the downbeat to
+        // make room for, whatever the row's nominal start says.
+        let leadingAudioStart =
+            leadingMelodyPeaks.isEmpty ? nil : downbeat - leadingMelodySeconds
         let earliest = [
             rhythmicWords.first?.start,
             rowChordTimes.min(),
-            lineDuration > 0 ? rowStartTime : nil,
+            leadingAudioStart,
         ]
         .compactMap { $0 }.min()
         guard let earliest, earliest < downbeat else { return 0 }
-        let pickup = min(downbeat - earliest, gutterSeconds)
-        return max(0, CGFloat(pickup) * pixelsPerSecond)
+        return min(downbeat - earliest, gutterSeconds)
     }
 
     /// Width of one beat. This is THE unit of the chart: beats are equidistant by construction, so
