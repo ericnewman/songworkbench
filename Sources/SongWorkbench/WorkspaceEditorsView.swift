@@ -4266,8 +4266,16 @@ private struct ChordProPreviewLineView: View {
             // so a line that does not fit its phrase overruns the band visibly instead of being
             // silently rescaled to fit.
             if let phraseWidth {
+                // Tinted by the row's fit, so a mis-cut line is visible rather than merely
+                // measured: amber = runs long (usually two lines run together), blue = falls
+                // short (usually one line split where it should not have been).
+                let verdict = lineLengthVerdict
+                let tint: Color =
+                    verdict == .long
+                    ? Color.swAmber : (verdict == .short ? Color.swMint : Color.swTextSecondary)
+                let strength: Double = (verdict == .long || verdict == .short) ? 0.14 : 0.05
                 Rectangle()
-                    .fill(Color.swTextSecondary.opacity(0.05))
+                    .fill(tint.opacity(strength))
                     .frame(width: phraseWidth, height: contentHeight)
                     .position(x: gutterPx + phraseWidth / 2, y: contentHeight / 2)
             }
@@ -4596,6 +4604,21 @@ private struct ChordProPreviewLineView: View {
     /// How many phrases this row's content actually spans. A row materially past a whole number is
     /// the visible form of a mis-segmented line — too long usually means two lines run together,
     /// too short usually means one line split where it should not have been.
+    /// This row's fit against the song's phrase period, as a visible verdict.
+    ///
+    /// The measurement existed before this and was thrown away: `AppModel` computed
+    /// `lineLengthMeasurements` on every load and NOTHING read it, so a mis-cut line was flagged
+    /// only in memory. Computing it here, from the row's own drawn extent, is what puts it on
+    /// screen — and it needs no plumbing, because `phrasesSpanned` is already the same quantity.
+    var lineLengthVerdict: LineLengthVerdict? {
+        guard let periods = phrasesSpanned, periods > 0 else { return nil }
+        let configuration = SongBeatsPerLine.Configuration()
+        if periods >= configuration.sectionBreakThreshold { return .sectionBreak }
+        let nearest = max(1, periods.rounded())
+        if abs(periods - nearest) <= configuration.tolerance { return .onGrid }
+        return periods < 1 ? .short : .long
+    }
+
     private var phrasesSpanned: Double? {
         guard let phraseWidth, !rhythmicWords.isEmpty else { return nil }
         return (rhythmicContentWidth - gutterPx) / phraseWidth

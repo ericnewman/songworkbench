@@ -61,9 +61,9 @@ final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
             verdict?.isRetune == true
             ? MetricalLevelReconciler.reconciledBeatTimes(beatTimes: beats, ratio: verdict!.ratio)
             : beats
-        let phrased = LyricPhraseGrouper.regroup(
-            regrouped, beatTimes: reconciledBeats, tempo: bpm, chords: analysis.chords ?? [])
-        return (phrased, reconciledBeats, bpm)
+        // `LyricPhraseGrouper` was deleted 2026-08-07 (it fired on zero real songs); the real
+        // pipeline now goes straight from the regroup to the recutter, and so does this replica.
+        return (regrouped, reconciledBeats, bpm)
     }
 
     /// Sensitivity sweep for the "is this a real gap" floor, kept because it is what settled

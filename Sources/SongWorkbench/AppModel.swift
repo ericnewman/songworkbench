@@ -223,17 +223,6 @@ final class AppModel: ObservableObject {
     @Published var beatTimes: [TimeInterval] = [] {
         didSet { persistSelectedAnalysis() }
     }
-    /// The metrical-level verdict for the selected song, recomputed on load alongside the other
-    /// unconditional post-passes. Diagnostic: it explains why `estimatedBPM` may differ from the
-    /// beat tracker's own answer, and surfaces a near-tie the caller should arbitrate.
-    @Published var metricalVerdict: MetricalLevelReconciler.Verdict?
-    /// The song's phrase period — the reference extent the chart draws each row to. Period only:
-    /// consumers must anchor to a line's own measured onset, never to an absolute slot boundary
-    /// (downbeat phase was measured unrecoverable; see `SongBeatsPerLine`).
-    @Published var beatsPerLineFit: BeatsPerLineFit?
-    /// Per-line fit against `beatsPerLineFit`. A `.short` or `.long` verdict marks a line whose
-    /// boundaries are probably wrong, which is the segmentation defect made visible.
-    @Published var lineLengthMeasurements: [LineLengthMeasurement] = []
     /// The beat tracker's ORIGINAL tempo and grid for the selected song, captured before metrical
     /// reconciliation and written back by `persistSelectedAnalysis`. The reconciler's input must
     /// survive every save, or repeated loads compound their own output.
@@ -2407,7 +2396,6 @@ final class AppModel: ObservableObject {
             bpm: analysis.estimatedBPM ?? 0,
             beatTimes: analysis.beatTimes,
             lineOnsets: regroupedLyrics.map(\.start))
-        metricalVerdict = verdict
         unreconciledEstimatedBPM = analysis.estimatedBPM
         unreconciledBeatTimes = analysis.beatTimes
         let reconciledBPM: Double? =
@@ -2417,21 +2405,11 @@ final class AppModel: ObservableObject {
             ? MetricalLevelReconciler.reconciledBeatTimes(
                 beatTimes: analysis.beatTimes, ratio: verdict!.ratio)
             : analysis.beatTimes
-        // Bar-period-aware re-segmentation (backlog #9 Phase 1) — a further post-pass over
-        // already-grouped lines, run here (not inside TranscriptionStage) because it needs
-        // BOTH finished lyrics and finished harmony, and those two stages run concurrently
-        // (see `.scratch/PRD-phrase-structure-lyric-grouper.md` §2). Unconditional on every
-        // load, exactly like `TimedLyricSegmentGrouper.regroup` above: it's pure/idempotent and
-        // reads whatever chords/beats currently sit in the document, so a harmony-only
-        // re-analysis is picked up automatically the next time the song is opened — no
-        // chords-digest/version-tag plumbing needed (the PRD §6 versioning question is resolved
-        // by following this existing unconditional-post-pass pattern rather than adding new
-        // staleness tracking).
-        let phraseGroupedLyrics = LyricPhraseGrouper.regroup(
-            regroupedLyrics,
-            beatTimes: reconciledBeatTimes,
-            tempo: reconciledBPM,
-            chords: analysis.chords)
+        // `LyricPhraseGrouper` was removed 2026-08-07. It attempted this same bar-period
+        // re-segmentation from chord-label autocorrelation and was MEASURED to fire on zero real
+        // songs (confidence 0.09-0.29 against its own 0.75 gate) - it ran on every load and
+        // returned its input unchanged, every time. `PhrasePeriodLineRecutter` below does the job
+        // it was meant to do, from line periodicity rather than chord labels, and actually fires.
         // Phrase-period re-cut (task #8) — the last of the three unconditional, pure, load-time
         // lyric post-passes, and deliberately last because it needs the lines in their final
         // grouped form and the beat grid in its final reconciled form. Splits a row spanning
@@ -2442,7 +2420,7 @@ final class AppModel: ObservableObject {
         // load-time pass that feeds its own input is the loop that walked one song's tempo
         // 101.3 -> 152.0 -> 81.1 (tasks/lessons.md, 2026-08-05).
         let recutLyrics = PhrasePeriodLineRecutter.recut(
-            phraseGroupedLyrics, beatTimes: reconciledBeatTimes, tempo: reconciledBPM)
+            regroupedLyrics, beatTimes: reconciledBeatTimes, tempo: reconciledBPM)
         let lyricsRegrouped = recutLyrics != analysis.lyrics
         // All three passes above rebuild plain `TimedLyricSegment`s straight from words, with
         // no way to carry a per-line ANNOTATION through (`confidence` is deliberately allowed to
@@ -2453,23 +2431,6 @@ final class AppModel: ObservableObject {
         // `lyricSegments`, which may belong to whatever song was previously selected).
         lyricSegments = TimedLyricSegment.reconciled(
             newSegments: recutLyrics, against: analysis.lyrics)
-        // Phrase period + per-line fit, from the FINAL lines on the reconciled grid. Derived, not
-        // persisted: it is cheap, and recomputing keeps it honest when lines are edited.
-        beatsPerLineFit = SongBeatsPerLine.estimate(
-            beatTimes: reconciledBeatTimes,
-            bpm: reconciledBPM ?? 0,
-            lineOnsets: lyricSegments.map(\.start))
-        lineLengthMeasurements =
-            beatsPerLineFit.flatMap { fit -> [LineLengthMeasurement]? in
-                guard
-                    let beatLength = MetricalLevelReconciler.medianBeatLength(
-                        beatTimes: reconciledBeatTimes, bpm: reconciledBPM ?? 0)
-                else { return nil }
-                return SongBeatsPerLine.measure(
-                    lineOnsets: lyricSegments.map(\.start),
-                    beatsPerLine: fit.beatsPerLine,
-                    beatLength: beatLength)
-            } ?? []
         lyricBlendRows = analysis.lyricBlendRows
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
