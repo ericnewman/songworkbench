@@ -3948,7 +3948,27 @@ private struct ChordProPreviewLineView: View {
 
     /// Left px of the shared downbeat column (the pickup gutter width). Zero without a grid.
     private var gutterPx: CGFloat {
-        rowDownbeatSeconds == nil ? 0 : max(0, CGFloat(gutterSeconds) * pixelsPerSecond)
+        guard let downbeat = rowDownbeatSeconds else { return 0 }
+        // Reserve only what this row's ACTUAL pickup needs, never a flat two beats.
+        //
+        // The gutter exists so anacrusis content renders to the LEFT of the downbeat instead of
+        // clipping. It used to be reserved unconditionally, which meant every row — including the
+        // song's very first — drew its downbeat two beats in, with nothing in front of it. A song
+        // that opens with a chord on beat one therefore appeared to start two beats late (Eric, on
+        // Doc Holiday, whose first chord is at beat index 0.00). The blank gutter WAS the offset.
+        //
+        // A row with nothing before its downbeat now gets no gutter at all and starts flush left;
+        // a row with a real pickup gets exactly as much room as that pickup occupies, capped at
+        // the old two beats so a long lead-in still cannot push the shared column off-screen.
+        let earliest = [
+            rhythmicWords.first?.start,
+            rowChordTimes.min(),
+            lineDuration > 0 ? rowStartTime : nil,
+        ]
+        .compactMap { $0 }.min()
+        guard let earliest, earliest < downbeat else { return 0 }
+        let pickup = min(downbeat - earliest, gutterSeconds)
+        return max(0, CGFloat(pickup) * pixelsPerSecond)
     }
 
     /// Width of one beat. This is THE unit of the chart: beats are equidistant by construction, so
@@ -4545,7 +4565,25 @@ private struct ChordProPreviewLineView: View {
     private var rhythmicBeatDotPositions: [CGFloat] {
         guard let beatDots else { return [] }
         guard !rhythmicWords.isEmpty else { return [] }
-        return rowRuler.beatXs(from: beatDots.segmentStart, to: beatDots.segmentEnd)
+        // Dots span the row's whole SOUNDING extent, not just its sung span.
+        //
+        // They used to run `segmentStart...segmentEnd` — the lyric's own start and end — so the
+        // instrumental lead-in at the head of a row got no dots at all, while the waveform strip
+        // underneath plainly showed audio there. Eric: "if the music is playing, there MUST be
+        // beats." The beats existed; they were simply outside the window being asked for.
+        //
+        // The row's real extent is the earliest of its lyric start, its first chord and its strip
+        // start, through to the later of the lyric end and the strip end.
+        let starts = [
+            beatDots.segmentStart, rhythmicWords.first?.start, rowChordTimes.min(),
+            lineDuration > 0 ? rowStartTime : nil,
+        ].compactMap { $0 }
+        let ends = [
+            beatDots.segmentEnd, rhythmicWords.last?.end, rowChordTimes.max(),
+            lineDuration > 0 ? rowStartTime + lineDuration : nil,
+        ].compactMap { $0 }
+        guard let from = starts.min(), let to = ends.max(), to > from else { return [] }
+        return rowRuler.beatXs(from: from, to: to)
     }
 
     /// Right edge of this row's time content on the ruler — the words or the strip's real
