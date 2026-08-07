@@ -2253,17 +2253,32 @@ struct ChordProAppPreview: View {
             measureGrid = nil
             return
         }
-        let resolvedBarPhase: Int
-        if DownbeatEstimator.downbeatConfidence(beatStrengths: strengths, beatsPerBar: beatsPerBar)
-            >= 0.08
-        {
-            resolvedBarPhase = DownbeatEstimator.barPhase(
-                beatStrengths: strengths, beatsPerBar: beatsPerBar)
-        } else {
-            let onsets = lyricLineWords.compactMap { $0.first?.start }
-            resolvedBarPhase = DownbeatEstimator.barPhase(
-                beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
-        }
+        // Bar phase: MEASURED evidence when it is actually strong, otherwise the musical prior —
+        // a song begins on a downbeat.
+        //
+        // The fallback used to be a histogram of lyric-line onsets, and that was the wrong thing
+        // to fall back TO. Measured across the library, chord onsets concentrate on a phase only
+        // 1.15×–1.37× above flat, i.e. at or near chance, so the old fallback placed bars at an
+        // essentially arbitrary offset. The visible consequence was that songs started partway
+        // through a measure (Eric: "it seems unusual that the song starts on a fraction of a
+        // measure") — with the stray part-bar then showing up at the end of every instrumental row.
+        //
+        // Anchoring to beat 0 instead is both the convention and, on this library, simply true:
+        // the first chord lands within a fifth of a beat of beat 0 on FOUR of five songs
+        // (−0.20, 0.00, 0.00, 0.22; the one exception is the song whose grouping is broken on
+        // every other measurement too). Beat 0 of the drum-locked grid is the song's first beat,
+        // so `barPhase = 0` puts the first downbeat there.
+        //
+        // The accent branch is kept and still wins when it clears its gate — that is not a
+        // formality. Flip Flops is the one song with real phase evidence (chord onsets peak 1.72×
+        // above flat) and its true phase is 1, NOT 0, so a blanket phase-0 would break the single
+        // song we actually know the answer for. Strong evidence first, prior second.
+        let accentConfidence = DownbeatEstimator.downbeatConfidence(
+            beatStrengths: strengths, beatsPerBar: beatsPerBar)
+        let resolvedBarPhase =
+            accentConfidence >= 0.08
+            ? DownbeatEstimator.barPhase(beatStrengths: strengths, beatsPerBar: beatsPerBar)
+            : 0
         barPhase = resolvedBarPhase
 
         guard let bpm, bpm > 0 else {
