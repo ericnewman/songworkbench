@@ -12,6 +12,23 @@ import XCTest
 /// `SW_RECUT_UNGATED=1` additionally reports what the pass WOULD have done on songs the accept
 /// gate rejected.
 final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
+
+    /// `RhymeDetector.shared` reads its table from `Bundle.main`, which under `swift test` is the
+    /// test runner — so it loads EMPTY and every rhyme lookup returns nil, silently disabling the
+    /// rhyme licence. Load the real dictionary from the repo instead, or this diagnostic measures
+    /// the rhyme path as a no-op and reports no change.
+    private func repoRhymeDetector() throws -> RhymeDetector {
+        var dir = URL(fileURLWithPath: #filePath)
+        while dir.pathComponents.count > 1 {
+            dir.deleteLastPathComponent()
+            let candidate = dir.appendingPathComponent("Resources/cmudict_rhyme.tsv")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                let text = try String(contentsOf: candidate, encoding: .utf8)
+                return RhymeDetector(table: RhymeDetector.parseTable(text))
+            }
+        }
+        throw XCTSkip("cmudict_rhyme.tsv not found next to the sources")
+    }
     private struct SongDocument: Decodable {
         struct Analysis: Decodable {
             var lyrics: [TimedLyricSegment]?
@@ -61,6 +78,7 @@ final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
         )
         .filter { $0.pathExtension == "json" }
         .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let detector = try repoRhymeDetector()
         for floor in [0.05, 0.08, 0.12, 0.18, 0.25] {
             var fired = 0
             var summary: [String] = []
@@ -72,7 +90,7 @@ final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
                 let input = pipelineInput(analysis)
                 let (_, report) = PhrasePeriodLineRecutter.recutReporting(
                     input.lines, beatTimes: input.beats, tempo: input.bpm,
-                    configuration: .init(minimumGapSeconds: floor))
+                    configuration: .init(minimumGapSeconds: floor), detector: detector)
                 guard let report else { continue }
                 if report.accepted { fired += 1 }
                 summary.append(
@@ -91,6 +109,7 @@ final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
         try XCTSkipUnless(
             environment["SW_RECUT_DIAG"] == "1", "manual diagnostic; set SW_RECUT_DIAG=1")
         let ungated = environment["SW_RECUT_UNGATED"] == "1"
+        let detector = try repoRhymeDetector()
         let urls = try FileManager.default.contentsOfDirectory(
             at: songsDirectory, includingPropertiesForKeys: nil
         )
@@ -107,7 +126,7 @@ final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
             let title = (document.sourcePath as NSString?)?.lastPathComponent ?? "?"
             let input = pipelineInput(analysis)
             let (lines, report) = PhrasePeriodLineRecutter.recutReporting(
-                input.lines, beatTimes: input.beats, tempo: input.bpm)
+                input.lines, beatTimes: input.beats, tempo: input.bpm, detector: detector)
             let fit = SongBeatsPerLine.estimate(
                 beatTimes: input.beats, bpm: input.bpm ?? 0,
                 lineOnsets: input.lines.map(\.start))
