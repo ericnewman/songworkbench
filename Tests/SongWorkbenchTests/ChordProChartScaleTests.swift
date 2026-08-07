@@ -32,13 +32,17 @@ final class ChordProChartScaleTests: XCTestCase {
     /// Out-of-range sizes clamp rather than trip an assertion: the value comes from `@AppStorage`,
     /// which can hold whatever an older build (or a hand-edited defaults plist) left behind.
     func testFontSizeClampsToTheSliderRange() {
+        // The floor is `smallestFontSize` (1/3×), NOT `minimumFontSize` (1×): 1× is the slider's
+        // CENTRE now, so zooming out below it is reachable and must not clamp away.
         XCTAssertEqual(
-            ChordProChartScale(fontSize: 4).fontSize,
-            ChordProChartScale.minimumFontSize)
+            ChordProChartScale(fontSize: 1).fontSize,
+            ChordProChartScale.smallestFontSize)
         XCTAssertEqual(
             ChordProChartScale(fontSize: 400).fontSize,
             ChordProChartScale.maximumFontSize)
-        XCTAssertEqual(ChordProChartScale(fontSize: 0).factor, 1, accuracy: 0.0001)
+        XCTAssertEqual(
+            ChordProChartScale(fontSize: 0).factor,
+            ChordProChartScale.minimumZoom, accuracy: 0.0001)
     }
 
     /// Chord glyphs stay at 13/15 of the lyric size at EVERY step, so the chart's internal
@@ -235,5 +239,37 @@ final class ChordProChartScaleTests: XCTestCase {
 
         XCTAssertEqual(
             ChordProChartScale(fontSize: 15, fitFactor: .nan).fitFactor, 1, accuracy: 0.0001)
+    }
+}
+
+extension ChordProChartScaleTests {
+    /// 1× must sit at the CENTRE of the zoom slider, not at an end.
+    func testOneTimesZoomIsTheSliderCentre() {
+        let reference = Double(ChordProChartScale.minimumFontSize)
+        let halfRange = log2(Double(ChordProChartScale.maximumZoom))
+        // The slider is mapped to log2(zoom). Its midpoint is 0, which must be exactly 1×.
+        let centreFontSize = reference * pow(2, 0)
+        XCTAssertEqual(
+            ChordProChartScale(fontSize: CGFloat(centreFontSize)).zoom, 1, accuracy: 1e-9)
+        // Both ends are the same distance from the centre, which is what centres 1×.
+        let low = reference * pow(2, -halfRange)
+        let high = reference * pow(2, halfRange)
+        XCTAssertEqual(
+            ChordProChartScale(fontSize: CGFloat(low)).zoom,
+            ChordProChartScale.minimumZoom, accuracy: 1e-6)
+        XCTAssertEqual(
+            ChordProChartScale(fontSize: CGFloat(high)).zoom,
+            ChordProChartScale.maximumZoom, accuracy: 1e-6)
+        // Symmetry: zooming out one notch and in one notch are reciprocal.
+        let outOne = ChordProChartScale(fontSize: CGFloat(reference * pow(2, -halfRange / 2))).zoom
+        let inOne = ChordProChartScale(fontSize: CGFloat(reference * pow(2, halfRange / 2))).zoom
+        XCTAssertEqual(Double(outOne * inOne), 1, accuracy: 1e-6)
+    }
+
+    func testZoomOutBelowOneIsNowReachable() {
+        // The old clamp floor was 1×, which is why the slider could only zoom IN.
+        XCTAssertLessThan(ChordProChartScale.smallestFontSize, ChordProChartScale.minimumFontSize)
+        let out = ChordProChartScale(fontSize: ChordProChartScale.smallestFontSize)
+        XCTAssertEqual(out.zoom, ChordProChartScale.minimumZoom, accuracy: 1e-9)
     }
 }

@@ -69,18 +69,35 @@ enum ChordProChartTypography {
 /// multiplies `pixelsPerSecond` and `characterWidth` together, which leaves every ratio in the
 /// layout — and so every beat column — exactly where it was.
 struct ChordProChartScale: Equatable, Sendable {
-    /// 1× zoom: the chart's authored body size, and the left end of the zoom slider.
+    /// The 1× reference: the chart's authored body size. `zoom` is measured against this, and the
+    /// slider is centred on it — NOT its left end. 1× is the window fit, which is the value the
+    /// control should rest at, so it belongs in the middle with equal travel either way.
     static let minimumFontSize: CGFloat = ChordProChartTypography.lyricSize
-    /// 3× zoom. Was 2× while the slider was a font-size control on a fixed axis; the axis now
-    /// STARTS fitted to the window, which on a long phrase is well under 1×, so the zoom has to
-    /// reach further to bring the chart back up to music-stand size.
-    static let maximumFontSize: CGFloat = minimumFontSize * 3
+    /// Zoom-out limit. Symmetric with `maximumZoom` about 1×, which is what puts 1× at the
+    /// slider's centre: the control is mapped logarithmically, so ×3 out and ×3 in are equal
+    /// distances from the middle.
+    static let minimumZoom: CGFloat = 1.0 / 3.0
+    /// Zoom-in limit. Was 2× while the slider was a font-size control on a fixed axis; the axis
+    /// now STARTS fitted to the window, which on a long phrase is well under 1×, so the zoom has
+    /// to reach further to bring the chart back up to music-stand size.
+    static let maximumZoom: CGFloat = 3
+    /// Smallest and largest stored body sizes (the preference still stores a point size).
+    static let smallestFontSize: CGFloat = minimumFontSize * minimumZoom
+    static let maximumFontSize: CGFloat = minimumFontSize * maximumZoom
     /// One slider step = 0.1× zoom.
     static let step: CGFloat = minimumFontSize / 10
 
-    /// Degenerate-input guards on the fit only. A viewport a few pixels wide, or a phrase period
-    /// of 200 beats, must not collapse the chart to invisible or blow it up to gigapixels.
+    /// Degenerate-input guards on the fit only. A viewport a few pixels wide must not collapse the
+    /// chart to invisible.
     static let minimumFitFactor: CGFloat = 0.25
+    /// Upper guard on the fit, so a degenerate period cannot blow the chart up to gigapixels.
+    ///
+    /// NOTE this deliberately still allows the fit to MAGNIFY, because "one phrase period fills
+    /// the width" is the agreed invariant (`ChartGeometryInvariantTests`) and a short period
+    /// therefore has to stretch: a 4-beat phrase across a wide pane is ~300 px/beat against the
+    /// authored 128. That magnification is what makes a P=4 song look large. The remedy is the
+    /// zoom control — which now centres on 1× and reaches 1/3×, so the chart can be shrunk, which
+    /// it could not be while 1× was the slider's floor.
     static let maximumFitFactor: CGFloat = 4
 
     /// Body (lyric) font size in points at 1× fit, clamped into
@@ -90,7 +107,7 @@ struct ChordProChartScale: Equatable, Sendable {
     let fitFactor: CGFloat
 
     init(fontSize: CGFloat, fitFactor: CGFloat = 1) {
-        self.fontSize = min(max(fontSize, Self.minimumFontSize), Self.maximumFontSize)
+        self.fontSize = min(max(fontSize, Self.smallestFontSize), Self.maximumFontSize)
         self.fitFactor = min(
             max(fitFactor.isFinite ? fitFactor : 1, Self.minimumFitFactor), Self.maximumFitFactor)
     }

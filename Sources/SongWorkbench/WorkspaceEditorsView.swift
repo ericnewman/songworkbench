@@ -1366,27 +1366,33 @@ struct ChordProTabEditor: View {
     /// (see `ChordProChartScale`), so zooming never shifts a word off its beat column. Compact and
     /// fixed-width because the toolbar it lives in is width-constrained.
     private var fontSizeControl: some View {
-        let smallest = Double(ChordProChartScale.minimumFontSize)
-        let largest = Double(ChordProChartScale.maximumFontSize)
-        let zoom = chordProFontSize / Double(ChordProChartScale.minimumFontSize)
+        let reference = Double(ChordProChartScale.minimumFontSize)
+        let zoom = chordProFontSize / reference
+        // LOG-MAPPED so 1× sits at the CENTRE. The travel is symmetric in octaves, not in points:
+        // a linear point-size slider over 1/3×…3× would put 1× a third of the way along, because
+        // halving and doubling are equal zoom steps but wildly unequal point steps. Mapping the
+        // slider to log2(zoom) over ±log2(3) makes zoom-out and zoom-in the same distance from the
+        // middle, which is what "1× is centred" has to mean for a multiplicative control.
+        let halfRange = log2(Double(ChordProChartScale.maximumZoom))
+        let exponent = Binding<Double>(
+            get: { log2(max(chordProFontSize / reference, 0.0001)) },
+            set: { chordProFontSize = reference * pow(2, $0) }
+        )
         return HStack(spacing: 6) {
             Image(systemName: "plus.magnifyingglass")
                 .foregroundStyle(Color.swTextSecondary)
-            Slider(
-                value: $chordProFontSize,
-                in: smallest...largest,
-                step: Double(ChordProChartScale.step)
-            )
-            .frame(width: 110)
-            .accessibilityIdentifier("chordpro-font-size-slider")
+            Slider(value: exponent, in: -halfRange...halfRange)
+                .frame(width: 110)
+                .accessibilityIdentifier("chordpro-font-size-slider")
             Text(String(format: "%.1f×", zoom))
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
                 .frame(width: 38, alignment: .leading)
         }
         .help(
-            "Chart zoom. 1.0× fits one phrase to the window width; larger magnifies the whole "
-                + "chart proportionally — text, spacing and the beat grid together.")
+            "Chart zoom. The slider's centre is 1.0×, which fits one phrase to the window width; "
+                + "right magnifies the whole chart proportionally — text, spacing and the beat "
+                + "grid together — and left shrinks it to fit more on screen.")
     }
 
     /// Small popover explaining the shaded backgrounds behind chord names: reuses
