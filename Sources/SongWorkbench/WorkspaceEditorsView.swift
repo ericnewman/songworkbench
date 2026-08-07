@@ -1034,10 +1034,11 @@ struct ChordProTabEditor: View {
     /// Show a second, amber ball bouncing chord-onset to chord-onset alongside the white word
     /// ball. The white ball keeps tapping words (Eric's model, 2026-07-02) — this adds the chord
     /// cue next to it rather than replacing it, because what matters is how the two RELATE.
-    /// Body (lyric) font size for the chart, in points — the one input to the chart's proportional
-    /// zoom (see `ChordProChartScale`). Shared by BOTH ChordPro surfaces, so the size you pick on
-    /// the ChordPro tab is the size the Review tab shows: they are two views of one chart.
-    /// Defaults to the minimum, which is the size the chart has always rendered at.
+    /// The chart's ZOOM, stored as the 1×-fit body point size (15 = 1.0×, 45 = 3.0×) so the
+    /// preference an earlier build wrote keeps meaning the same zoom. The one user input to
+    /// `ChordProChartScale`; shared by BOTH ChordPro surfaces, so the zoom you pick on the
+    /// ChordPro tab is the zoom the Review tab shows — they are two views of one chart. Defaults
+    /// to 1.0×, which on the Review chart means "fit one phrase to the window".
     @AppStorage("chordProFontSize") private var chordProFontSize: Double = 15
     /// Drives the small chord-confidence-shading legend popover in the toolbar (backlog #15).
     @State private var showConfidenceLegend = false
@@ -1354,15 +1355,22 @@ struct ChordProTabEditor: View {
         .fixedSize()
     }
 
-    /// Chart text size, in whole points from the current size (15) up to double it (30). The
-    /// chart scales PROPORTIONALLY — glyphs, the horizontal time axis, and every reserve move
-    /// together (see `ChordProChartScale`), so bigger text never shifts a word off its beat
-    /// column. Compact and fixed-width because the toolbar it lives in is width-constrained.
+    /// Chart ZOOM, 1.0×–3.0× in 0.1× steps. 1.0× is "fit the window": the Review chart sizes its
+    /// beat so one phrase period exactly fills the available width, so a correctly cut row needs
+    /// no horizontal scrolling. Above 1.0× the chart is magnified and scrolls horizontally again —
+    /// that is what zooming in means.
+    ///
+    /// The stored value is still the 1×-fit body point size (15…45), so the existing
+    /// `chordProFontSize` preference keeps its meaning; the readout shows what it does. The chart
+    /// scales PROPORTIONALLY — glyphs, the horizontal time axis, and every reserve move together
+    /// (see `ChordProChartScale`), so zooming never shifts a word off its beat column. Compact and
+    /// fixed-width because the toolbar it lives in is width-constrained.
     private var fontSizeControl: some View {
         let smallest = Double(ChordProChartScale.minimumFontSize)
         let largest = Double(ChordProChartScale.maximumFontSize)
+        let zoom = chordProFontSize / Double(ChordProChartScale.minimumFontSize)
         return HStack(spacing: 6) {
-            Image(systemName: "textformat.size")
+            Image(systemName: "plus.magnifyingglass")
                 .foregroundStyle(Color.swTextSecondary)
             Slider(
                 value: $chordProFontSize,
@@ -1371,14 +1379,14 @@ struct ChordProTabEditor: View {
             )
             .frame(width: 110)
             .accessibilityIdentifier("chordpro-font-size-slider")
-            Text("\(Int(chordProFontSize)) pt")
+            Text(String(format: "%.1f×", zoom))
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
                 .frame(width: 38, alignment: .leading)
         }
         .help(
-            "Chart text size. Scales the whole chart proportionally — "
-                + "text, spacing and the beat grid together.")
+            "Chart zoom. 1.0× fits one phrase to the window width; larger magnifies the whole "
+                + "chart proportionally — text, spacing and the beat grid together.")
     }
 
     /// Small popover explaining the shaded backgrounds behind chord names: reuses
@@ -1932,12 +1940,43 @@ struct ChordProAppPreview: View {
     /// produces nothing under ImageRenderer. Never set on screen — laziness matters there.
     var eagerLayoutForRendering = false
 
+    /// Viewport width for the WINDOW FIT when there is no `GeometryReader` to measure one — i.e.
+    /// the render-audit path only. On screen the live viewport width is used instead. 0 = unknown,
+    /// which leaves the chart at its authored 1× scale.
+    var renderWidthForFitting: CGFloat = 0
+
     @ViewBuilder
-    fileprivate func chartRows(in document: ChordProPreviewDocument) -> some View {
+    fileprivate func chartRows(
+        in document: ChordProPreviewDocument, availableWidth: CGFloat
+    ) -> some View {
+        let rowScale = fittedScale(availableWidth: availableWidth)
         ForEach(indexedBlocks(for: document), id: \.offset) { item in
-            blockRow(for: item, in: document)
+            blockRow(for: item, in: document, scale: rowScale)
                 .id(item.offset)
         }
+    }
+
+    /// The scale every row renders at: the caller's zoom, times the fit that makes ONE PHRASE
+    /// PERIOD exactly fill `availableWidth`. See `ChordProChartScale.fitFactor`, which returns 1
+    /// (today's fixed-`pixelsPerSecond` chart) whenever the period or the tempo is unavailable.
+    ///
+    /// Scaling to the phrase and not to the WIDEST row is deliberate: rows measured 1.5×–3.3×
+    /// max/median across the library, so fitting the longest row would push the median row down to
+    /// 30% of the width. A P-beat row fills the width exactly; a row that overruns is a visible
+    /// segmentation defect, which is the same thing the phrase frame already says.
+    private func fittedScale(availableWidth: CGFloat) -> ChordProChartScale {
+        ChordProChartScale(
+            fontSize: scale.fontSize,
+            fitFactor: ChordProChartScale.fitFactor(
+                availableWidth: availableWidth,
+                horizontalInset: ChordProPreviewLineLayout.chartHorizontalInset,
+                rowLeadingWidth: ChordProPreviewLineLayout.rowLeadingWidth,
+                beatsPerLine: phraseBeats ?? 0,
+                gutterBeats: ChordProPreviewLineLayout.gutterBeats,
+                beatLengthSeconds: beatLengthSeconds,
+                basePixelsPerSecond: ChordProPreviewLineLayout.pixelsPerSecond
+            )
+        )
     }
 
     /// Playback auto-scroll animation: a slow symmetric ease so each line advance glides the
@@ -2131,8 +2170,11 @@ struct ChordProAppPreview: View {
     /// Seconds per beat (60/bpm), or 0 without a tempo.
     private var beatLengthSeconds: TimeInterval { (bpm.map { $0 > 0 ? 60 / $0 : 0 }) ?? 0 }
 
-    /// Pickup gutter width: two beats to the left of the shared downbeat column.
-    private var gutterSeconds: TimeInterval { beatLengthSeconds * 2 }
+    /// Pickup gutter width: `gutterBeats` to the left of the shared downbeat column. Shares that
+    /// constant with the window fit, which has to reserve the same space.
+    private var gutterSeconds: TimeInterval {
+        beatLengthSeconds * Double(ChordProPreviewLineLayout.gutterBeats)
+    }
 
     /// Accent energy at each beat, sampled from drums + bass stems (a short window around the beat
     /// to catch the transient) — CACHED (see `gridDependencyKey`/`refreshGrid()` below). This scan
@@ -2384,7 +2426,7 @@ struct ChordProAppPreview: View {
                 // under ImageRenderer (blank PNGs); the rows themselves are identical.
                 case .success(let document) where eagerLayoutForRendering:
                     VStack(alignment: .leading, spacing: 10) {
-                        chartRows(in: document)
+                        chartRows(in: document, availableWidth: renderWidthForFitting)
                     }
                     .padding(12)
                     .background(Color.swTextBackground)
@@ -2396,13 +2438,21 @@ struct ChordProAppPreview: View {
                                 // LazyVStack never materializes its rows inside ImageRenderer,
                                 // which rendered blank PNGs. Same ForEach either way.
                                 Group {
+                                    // The chart is sized to the VIEWPORT, not to its content: one
+                                    // phrase period fills `viewport.size.width` exactly (see
+                                    // `fittedScale`), so a correctly cut row needs no horizontal
+                                    // scrolling at 1× zoom.
                                     if eagerLayoutForRendering {
                                         VStack(alignment: .leading, spacing: 10) {
-                                            chartRows(in: document)
+                                            chartRows(
+                                                in: document,
+                                                availableWidth: viewport.size.width)
                                         }
                                     } else {
                                         LazyVStack(alignment: .leading, spacing: 10) {
-                                            chartRows(in: document)
+                                            chartRows(
+                                                in: document,
+                                                availableWidth: viewport.size.width)
                                         }
                                     }
                                 }
@@ -2478,7 +2528,8 @@ struct ChordProAppPreview: View {
     /// function's statements are checked individually, so this has no such limit.
     @ViewBuilder
     private func blockRow(
-        for item: ChordProPreviewIndexedBlock, in document: ChordProPreviewDocument
+        for item: ChordProPreviewIndexedBlock, in document: ChordProPreviewDocument,
+        scale rowScale: ChordProChartScale
     ) -> some View {
         let strip = lineStrip(for: item, in: document)
         let lineWords = wordTimings(
@@ -2536,7 +2587,7 @@ struct ChordProAppPreview: View {
             forLyricOrdinal: item.lyricOrdinal)
         ChordProPreviewBlockView(
             block: item.block,
-            scale: scale,
+            scale: rowScale,
             highlight: itemHighlight,
             playheadTime: highlightContext?.currentTime,
             beatBall: itemBeatBall,
@@ -3477,6 +3528,21 @@ private struct ChordProPreviewBlockView: View {
 }
 
 enum ChordProPreviewLineLayout {
+    /// Horizontal space the chart's own chrome takes out of the viewport before any row is drawn:
+    /// the content padding on both sides (12 + 12), plus 4 px so a full-width row's last pixel
+    /// isn't flush against the border and a hairline rounding error can't tip it into a scroll.
+    static let chartHorizontalInset: CGFloat = 28
+
+    /// 1×-authored width of the per-row furniture to the LEFT of the time axis: the line-number
+    /// column (22) and its `HStack` spacing (8). It scales with the chart, so it belongs inside
+    /// the window fit's denominator rather than in `chartHorizontalInset`.
+    static let rowLeadingWidth: CGFloat = 30
+
+    /// Pickup gutter reserved left of every row's downbeat column, in beats — anacrusis words that
+    /// begin before the downbeat render there, so the window fit has to pay for it. Drives
+    /// `ChordProAppPreview.gutterSeconds`, which is the same gutter measured in time.
+    static let gutterBeats: CGFloat = 2
+
     /// 1.0 — chord-only rows share the SAME pixels-per-second as sung rows.
     ///
     /// This was 1.35, which meant a second of music occupied 135 px on an instrumental row and

@@ -2432,8 +2432,19 @@ final class AppModel: ObservableObject {
             beatTimes: reconciledBeatTimes,
             tempo: reconciledBPM,
             chords: analysis.chords)
-        let lyricsRegrouped = phraseGroupedLyrics != analysis.lyrics
-        // Both regroup passes above rebuild plain `TimedLyricSegment`s straight from words, with
+        // Phrase-period re-cut (task #8) — the last of the three unconditional, pure, load-time
+        // lyric post-passes, and deliberately last because it needs the lines in their final
+        // grouped form and the beat grid in its final reconciled form. Splits a row spanning
+        // materially more than one period at a REAL inter-word gap near `that row's own onset +
+        // k · P`, and folds a too-short row into its neighbour; declines outright (returns its
+        // input verbatim) on any song it cannot measurably improve. Nothing here is persisted —
+        // this reads the STORED lyrics every load and never writes back into them, because a
+        // load-time pass that feeds its own input is the loop that walked one song's tempo
+        // 101.3 -> 152.0 -> 81.1 (tasks/lessons.md, 2026-08-05).
+        let recutLyrics = PhrasePeriodLineRecutter.recut(
+            phraseGroupedLyrics, beatTimes: reconciledBeatTimes, tempo: reconciledBPM)
+        let lyricsRegrouped = recutLyrics != analysis.lyrics
+        // All three passes above rebuild plain `TimedLyricSegment`s straight from words, with
         // no way to carry a per-line ANNOTATION through (`confidence` is deliberately allowed to
         // be lost this way — see its doc comment — but `overrideText`/`accepted` are user-authored
         // corrections from the Review chart and must survive every load, not just a fresh
@@ -2441,7 +2452,7 @@ final class AppModel: ObservableObject {
         // them forward from the STORED document's own lyrics (not the live in-memory
         // `lyricSegments`, which may belong to whatever song was previously selected).
         lyricSegments = TimedLyricSegment.reconciled(
-            newSegments: phraseGroupedLyrics, against: analysis.lyrics)
+            newSegments: recutLyrics, against: analysis.lyrics)
         // Phrase period + per-line fit, from the FINAL lines on the reconciled grid. Derived, not
         // persisted: it is cheap, and recomputing keeps it honest when lines are edited.
         beatsPerLineFit = SongBeatsPerLine.estimate(

@@ -49,10 +49,18 @@ enum ChordProChartTypography {
     }
 }
 
-/// The chart's ONE zoom factor, shared by both ChordPro surfaces (the plain ChordPro tab and the
-/// Review chart). The user picks a body font size; everything else in the chart — chord and bass
-/// glyph sizes, the horizontal time axis, the ball/beat-dot/bass reserves, row heights — is that
-/// size divided by the 1× body size.
+/// The chart's ONE scale factor, shared by both ChordPro surfaces (the plain ChordPro tab and the
+/// Review chart). Everything in the chart — chord and bass glyph sizes, the horizontal time axis,
+/// the ball/beat-dot/bass reserves, row heights — is one 1×-authored constant times `factor`.
+///
+/// `factor` has two independent halves:
+///
+/// * `fitFactor` — the WINDOW FIT. The Review chart sizes its beat so that ONE PHRASE PERIOD
+///   exactly fills the available width (see `fitFactor(availableWidth:…)`), so a correctly cut
+///   row runs edge to edge and needs no horizontal scrolling. 1 when there is no recoverable
+///   phrase period, which is exactly the fixed-`pixelsPerSecond` chart this replaced.
+/// * `zoom` — the USER's slider, 1× (fit the window) upward. Past 1× the chart deliberately
+///   overflows and scrolls horizontally again; that is what zooming in means.
 ///
 /// Scaling the font WITHOUT the horizontal axis would be a bug, not a smaller feature: the Review
 /// chart lays words out at their measured time and then nudges a colliding word right by whole
@@ -61,33 +69,90 @@ enum ChordProChartTypography {
 /// multiplies `pixelsPerSecond` and `characterWidth` together, which leaves every ratio in the
 /// layout — and so every beat column — exactly where it was.
 struct ChordProChartScale: Equatable, Sendable {
-    /// The chart's current size IS the minimum; the slider only ever grows it.
+    /// 1× zoom: the chart's authored body size, and the left end of the zoom slider.
     static let minimumFontSize: CGFloat = ChordProChartTypography.lyricSize
-    /// Double, per Eric — far enough to read from a music stand.
-    static let maximumFontSize: CGFloat = minimumFontSize * 2
-    /// Whole points: the slider's step, and what the readout shows.
-    static let step: CGFloat = 1
+    /// 3× zoom. Was 2× while the slider was a font-size control on a fixed axis; the axis now
+    /// STARTS fitted to the window, which on a long phrase is well under 1×, so the zoom has to
+    /// reach further to bring the chart back up to music-stand size.
+    static let maximumFontSize: CGFloat = minimumFontSize * 3
+    /// One slider step = 0.1× zoom.
+    static let step: CGFloat = minimumFontSize / 10
 
-    /// Body (lyric) font size in points, clamped into `minimumFontSize...maximumFontSize`.
+    /// Degenerate-input guards on the fit only. A viewport a few pixels wide, or a phrase period
+    /// of 200 beats, must not collapse the chart to invisible or blow it up to gigapixels.
+    static let minimumFitFactor: CGFloat = 0.25
+    static let maximumFitFactor: CGFloat = 4
+
+    /// Body (lyric) font size in points at 1× fit, clamped into
+    /// `minimumFontSize...maximumFontSize`. This IS the zoom control's value.
     let fontSize: CGFloat
+    /// The window fit (see the type comment). 1 = the chart's authored scale.
+    let fitFactor: CGFloat
 
-    init(fontSize: CGFloat) {
+    init(fontSize: CGFloat, fitFactor: CGFloat = 1) {
         self.fontSize = min(max(fontSize, Self.minimumFontSize), Self.maximumFontSize)
+        self.fitFactor = min(
+            max(fitFactor.isFinite ? fitFactor : 1, Self.minimumFitFactor), Self.maximumFitFactor)
     }
 
     /// The unscaled chart — what every call site renders when no size has been chosen.
     static let base = ChordProChartScale(fontSize: minimumFontSize)
 
-    /// Multiplier for EVERY length in the chart. 1.0 at the minimum size, 2.0 at the maximum.
-    var factor: CGFloat { fontSize / Self.minimumFontSize }
+    /// The user's zoom: 1.0 at the slider's left end (fit the window), 3.0 at its right end.
+    var zoom: CGFloat { fontSize / Self.minimumFontSize }
 
-    /// A 1×-authored length at the current size.
+    /// Multiplier for EVERY length in the chart — fit and zoom together.
+    var factor: CGFloat { zoom * fitFactor }
+
+    /// A 1×-authored length at the current scale.
     func scaled(_ length: CGFloat) -> CGFloat { length * factor }
 
-    /// Lyric/word glyph size — identical to `fontSize`, named for symmetry with `chordSize`.
+    /// Lyric/word glyph size. Equal to `fontSize` at 1× fit; a fitted chart shrinks the glyphs by
+    /// the SAME factor as the axis, which is the whole point (see the type comment).
     var lyricSize: CGFloat { scaled(ChordProChartTypography.lyricSize) }
     /// Chord (and bass-note) glyph size, holding the 13:15 ratio against the lyrics.
     var chordSize: CGFloat { scaled(ChordProChartTypography.chordSize) }
+
+    /// THE fit maths, as a pure function: the factor at which ONE PHRASE PERIOD exactly fills the
+    /// width available to the chart.
+    ///
+    /// A row's drawn extent is `rowLeadingWidth` (the line-number column and its spacing) plus the
+    /// pickup gutter plus the phrase itself — everything but the view's own padding scales with
+    /// the chart, so the whole denominator is the 1×-authored width of one phrase row:
+    ///
+    ///     phraseRowWidth1x = rowLeadingWidth
+    ///                      + (beatsPerLine + gutterBeats) × beatLength × basePixelsPerSecond
+    ///     fit = (availableWidth − horizontalInset) ÷ phraseRowWidth1x
+    ///
+    /// Note what (nearly) cancels: the fitted pixels-per-BEAT comes out as width ÷ beats — the
+    /// definition of "one phrase fills the window" — near enough independent of tempo. Only the
+    /// line-number column keeps it from cancelling exactly, since that scales with the chart too
+    /// and so takes a slightly tempo-dependent share of the width. The ROW width is exact.
+    ///
+    /// Returns 1 — today's fixed `pixelsPerSecond` chart, unchanged — whenever the fit is
+    /// undefined: no recoverable phrase period (`beatsPerLine == 0`), no tempo, or no viewport
+    /// yet. Nothing regresses on a song whose period was never found.
+    static func fitFactor(
+        availableWidth: CGFloat,
+        horizontalInset: CGFloat,
+        rowLeadingWidth: CGFloat,
+        beatsPerLine: Int,
+        gutterBeats: CGFloat,
+        beatLengthSeconds: TimeInterval,
+        basePixelsPerSecond: CGFloat
+    ) -> CGFloat {
+        let usableWidth = availableWidth - horizontalInset
+        guard beatsPerLine > 0, beatLengthSeconds > 0, basePixelsPerSecond > 0,
+            usableWidth > 1, usableWidth.isFinite
+        else { return 1 }
+        let columnBeats = CGFloat(beatsPerLine) + max(0, gutterBeats)
+        let phraseWidthAt1x =
+            max(0, rowLeadingWidth)
+            + columnBeats * CGFloat(beatLengthSeconds) * basePixelsPerSecond
+        guard phraseWidthAt1x > 1 else { return 1 }
+        return min(
+            max(usableWidth / phraseWidthAt1x, minimumFitFactor), maximumFitFactor)
+    }
 }
 
 struct ChordProReadOnlyView: View {

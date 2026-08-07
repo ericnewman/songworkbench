@@ -162,4 +162,55 @@ final class ChartGeometryInvariantTests: XCTestCase {
             distinctPhases.count, 1,
             "beat dots must sit in shared columns; found phases \(distinctPhases)")
     }
+
+    /// The WINDOW FIT, end to end through the real ruler: at 1× zoom a row exactly one phrase
+    /// period long ends inside the viewport, on every viewport width. Asserted here rather than
+    /// only on the fit arithmetic because the promise is about pixels the `ChordRowRuler`
+    /// produces — the seam is where the last round of layout bugs lived.
+    func testAPhraseLongRowFitsTheViewportAtOneZoom() throws {
+        let input = makeInput()
+        let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120)
+        let beatLength = 0.5
+        let inset = ChordProPreviewLineLayout.chartHorizontalInset
+        let leading = ChordProPreviewLineLayout.rowLeadingWidth
+        let gutterBeats = ChordProPreviewLineLayout.gutterBeats
+
+        for viewportWidth: CGFloat in [800, 1200, 1600, 2400] {
+            for beatsPerLine in [4, 8, 12, 16] {
+                let scale = ChordProChartScale(
+                    fontSize: ChordProChartScale.minimumFontSize,
+                    fitFactor: ChordProChartScale.fitFactor(
+                        availableWidth: viewportWidth,
+                        horizontalInset: inset,
+                        rowLeadingWidth: leading,
+                        beatsPerLine: beatsPerLine,
+                        gutterBeats: gutterBeats,
+                        beatLengthSeconds: beatLength,
+                        basePixelsPerSecond: ChordProPreviewLineLayout.pixelsPerSecond))
+                let scaledPixelsPerSecond = scale.scaled(
+                    ChordProPreviewLineLayout.pixelsPerSecond)
+                let pixelsPerBeat = CGFloat(beatLength) * scaledPixelsPerSecond
+                let downbeat = grid.nearestDownbeatTime(toTime: 24.0)
+                let ruler = ChordRowRuler(
+                    grid: grid, originTime: downbeat, gutterPx: gutterBeats * pixelsPerBeat,
+                    pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: scaledPixelsPerSecond)
+
+                // The row's right edge on screen: content end, plus the line-number column to its
+                // left and the chart's own padding.
+                let phraseEnd = downbeat + beatLength * Double(beatsPerLine)
+                let rightEdge = ruler.x(atTime: phraseEnd) + scale.scaled(leading) + inset
+
+                // Exactly the viewport: it fits AND fills — not a fit that shrinks to be safe.
+                XCTAssertEqual(
+                    rightEdge, viewportWidth, accuracy: 0.5,
+                    "P=\(beatsPerLine) does not fill a \(viewportWidth) px viewport at 1× zoom")
+                // Beats stay exactly equidistant on the fitted axis.
+                let xs = ruler.beatXs(from: downbeat, to: phraseEnd)
+                let gaps = zip(xs, xs.dropFirst()).map { $1 - $0 }
+                for gap in gaps {
+                    XCTAssertEqual(gap, pixelsPerBeat, accuracy: 0.0001)
+                }
+            }
+        }
+    }
 }

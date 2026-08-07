@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 
 @testable import SongWorkbench
@@ -133,5 +134,124 @@ final class RealSongChartGeometryAudit: XCTestCase {
         XCTAssertTrue(
             failures.isEmpty,
             "\(failures.count) geometry violations:\n\(failures.joined(separator: "\n"))")
+    }
+
+    /// The WINDOW FIT measured on the real library: with the chart scaled so one phrase period
+    /// fills the viewport, how wide does each song's rows actually render?
+    ///
+    /// Asserts the promise — a P-beat row fits — and REPORTS the distribution, because a row that
+    /// overruns is not a layout bug: it is a line cut longer than a phrase, which the phrase frame
+    /// already flags. The overflow rate here is the same defect counted in pixels.
+    func testFittedChartRowWidthsAgainstTheViewport() async throws {
+        guard ProcessInfo.processInfo.environment["CCS_REAL_SONG_AUDIT"] == "1" else {
+            throw XCTSkip("Set CCS_REAL_SONG_AUDIT=1 to audit the local song library.")
+        }
+        let viewportWidth = CGFloat(
+            Double(ProcessInfo.processInfo.environment["CCS_CHART_VIEWPORT"] ?? "") ?? 1400)
+        let inset = ChordProPreviewLineLayout.chartHorizontalInset
+        let leading = ChordProPreviewLineLayout.rowLeadingWidth
+        let gutterBeats = ChordProPreviewLineLayout.gutterBeats
+        let baseCharacterWidth = NSString(string: "M").size(withAttributes: [
+            .font: PlatformFont.monospacedSystemFont(
+                ofSize: ChordProChartTypography.lyricSize, weight: .regular)
+        ]).width
+
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("SongWorkbench", isDirectory: true)
+        let document = try await SplitProjectStore(directoryURL: base).load()
+
+        var audited = 0
+        var failures: [String] = []
+        print("=== FITTED CHART WIDTH AUDIT (viewport \(Int(viewportWidth)) px, 1× zoom) ===")
+
+        for song in document.songs {
+            guard let analysis = song.analysis,
+                analysis.beatTimes.count >= 8,
+                let bpm = analysis.estimatedBPM, bpm > 0,
+                analysis.lyrics.count >= 2
+            else { continue }
+            let title = URL(fileURLWithPath: song.sourcePath).deletingPathExtension()
+                .lastPathComponent
+            let beatLength = 60.0 / bpm
+            let lines = analysis.lyrics.sorted { $0.start < $1.start }.filter { !$0.words.isEmpty }
+
+            // The chart's own phrase period, including its low-occupancy doubling rule.
+            guard
+                let phraseFit = SongBeatsPerLine.estimate(
+                    beatTimes: analysis.beatTimes, bpm: bpm,
+                    lineOnsets: lines.compactMap { $0.words.first?.start })
+            else {
+                print("• \(title) — no phrase period: chart stays at the fixed 200 px/s axis")
+                continue
+            }
+            let beatsPerLine =
+                (phraseFit.occupancy < 0.5 && phraseFit.beatsPerLine < 16)
+                ? phraseFit.beatsPerLine * 2 : phraseFit.beatsPerLine
+            audited += 1
+
+            let scale = ChordProChartScale(
+                fontSize: ChordProChartScale.minimumFontSize,
+                fitFactor: ChordProChartScale.fitFactor(
+                    availableWidth: viewportWidth,
+                    horizontalInset: inset,
+                    rowLeadingWidth: leading,
+                    beatsPerLine: beatsPerLine,
+                    gutterBeats: gutterBeats,
+                    beatLengthSeconds: beatLength,
+                    basePixelsPerSecond: ChordProPreviewLineLayout.pixelsPerSecond))
+            let pixelsPerSecond = scale.scaled(ChordProPreviewLineLayout.pixelsPerSecond)
+            let pixelsPerBeat = CGFloat(beatLength) * pixelsPerSecond
+            let characterWidth = scale.scaled(baseCharacterWidth)
+            let grid = MeasureGrid(beatTimes: analysis.beatTimes, bpm: bpm)
+            let rowChrome = scale.scaled(leading) + inset
+
+            // Right edge of each sung row, built the way the chart builds it: the row's own
+            // downbeat pinned at the gutter, words placed through the ruler. (Collision nudges
+            // are not modelled — they only ever push right, so this is a lower bound.)
+            var rightEdges: [CGFloat] = []
+            for line in lines {
+                let downbeat = grid.nearestDownbeatTime(toTime: line.words[0].start)
+                let ruler = ChordRowRuler(
+                    grid: grid, originTime: downbeat, gutterPx: gutterBeats * pixelsPerBeat,
+                    pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
+                let wordEnds = line.words.map { word in
+                    ruler.x(atTime: word.start) + CGFloat(word.text.count) * characterWidth
+                }
+                rightEdges.append((wordEnds.max() ?? 0) + rowChrome)
+            }
+            guard !rightEdges.isEmpty else { continue }
+
+            // The promise: a row exactly one phrase long ends at the viewport's right edge.
+            let downbeat = grid.nearestDownbeatTime(toTime: lines[0].words[0].start)
+            let ruler = ChordRowRuler(
+                grid: grid, originTime: downbeat, gutterPx: gutterBeats * pixelsPerBeat,
+                pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
+            let phraseRowEdge =
+                ruler.x(atTime: downbeat + beatLength * Double(beatsPerLine)) + rowChrome
+            if phraseRowEdge > viewportWidth + 1 {
+                failures.append(
+                    "\(title): a \(beatsPerLine)-beat row renders "
+                        + "\(String(format: "%.0f", phraseRowEdge)) px in a "
+                        + "\(String(format: "%.0f", viewportWidth)) px viewport")
+            }
+
+            let sorted = rightEdges.sorted()
+            let median = sorted[sorted.count / 2]
+            let overflowing = rightEdges.filter { $0 > viewportWidth + 1 }.count
+            print(
+                "• \(title) — P=\(beatsPerLine) beats, fit \(String(format: "%.2f", scale.fitFactor))×"
+                    + " (\(String(format: "%.1f", scale.lyricSize)) pt,"
+                    + " \(String(format: "%.0f", pixelsPerBeat)) px/beat) | "
+                    + "P-row \(String(format: "%.0f", phraseRowEdge)) px | rows median "
+                    + "\(String(format: "%.0f", median)) max "
+                    + "\(String(format: "%.0f", sorted.last!)) px | "
+                    + "\(overflowing)/\(rightEdges.count) over the window")
+        }
+
+        XCTAssertGreaterThan(audited, 0, "no songs with a phrase period — audit ran on nothing")
+        XCTAssertTrue(
+            failures.isEmpty,
+            "\(failures.count) rows do not fit:\n\(failures.joined(separator: "\n"))")
     }
 }

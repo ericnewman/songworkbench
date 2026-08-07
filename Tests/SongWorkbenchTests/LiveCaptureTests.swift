@@ -96,7 +96,11 @@ final class LiveCaptureTests: XCTestCase {
         let model = AppModel(store: store)
         await model.restoreProjects()
         model.importSongs(from: [url])
-        try await Task.sleep(for: .milliseconds(50))
+        // `importSongs` localizes each file on its own background Task, so a fixed sleep is a
+        // race, not a wait — it only ever passed because import happened to finish inside 50ms.
+        // Adding load-time lyric work pushed it past that margin and the test started failing on
+        // a line that runs BEFORE any of the new code. Poll for the real condition instead.
+        try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
         model.select(song)
 

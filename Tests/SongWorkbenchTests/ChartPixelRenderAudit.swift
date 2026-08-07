@@ -15,6 +15,10 @@ final class ChartPixelRenderAudit: XCTestCase {
         guard ProcessInfo.processInfo.environment["CCS_REAL_SONG_AUDIT"] == "1" else {
             throw XCTSkip("Set CCS_REAL_SONG_AUDIT=1 to render the local song library.")
         }
+        // Stands in for the Review pane's width. Override with CCS_CHART_RENDER_WIDTH to see the
+        // chart at another window size — the whole chart is scaled to it (see `fittedScale`).
+        let renderWidth = CGFloat(
+            Double(ProcessInfo.processInfo.environment["CCS_CHART_RENDER_WIDTH"] ?? "") ?? 1400)
         let outputDirectory = URL(
             fileURLWithPath: ProcessInfo.processInfo.environment["CCS_CHART_RENDER_DIR"]
                 ?? NSTemporaryDirectory() + "/chart-renders")
@@ -57,6 +61,9 @@ final class ChartPixelRenderAudit: XCTestCase {
                 })
             var preview = ChordProAppPreview(source: result.source)
             preview.eagerLayoutForRendering = true
+            // The render path has no GeometryReader to measure a viewport, so hand it the same
+            // width the frame below imposes: rows then fit it exactly the way they do on screen.
+            preview.renderWidthForFitting = renderWidth
             preview.rhythmicSpacing = true
             preview.lyricLineWords = sortedLyrics.map(\.words)
             preview.lyricLineWindows = sortedLyrics.map { $0.start...$0.end }
@@ -74,7 +81,7 @@ final class ChartPixelRenderAudit: XCTestCase {
             // white-on-white).
             let framed =
                 preview
-                .frame(width: 2400, alignment: .topLeading)
+                .frame(width: renderWidth, alignment: .topLeading)
                 .background(Color.black)
                 .environment(\.colorScheme, .dark)
 
