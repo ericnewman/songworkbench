@@ -306,7 +306,6 @@ private struct TimedLyricsEditor: View {
     @State private var showReferenceLyrics = false
     /// Session-only dismissal, keyed by song so switching to a different un-referenced song
     /// shows the prompt again rather than staying dismissed forever after the first song.
-    @State private var dismissedReferenceBannerForSongID: Song.ID?
 
     init(model: AppModel) {
         self.model = model
@@ -376,16 +375,6 @@ private struct TimedLyricsEditor: View {
         return rows
     }
 
-    /// C1: show the reference-lyrics prompt when this song has transcribed lyrics to review,
-    /// no reference text is set yet, and the user hasn't dismissed it this session for THIS song.
-    private var shouldShowReferenceLyricsPrompt: Bool {
-        ReferenceLyricsPromptPolicy.shouldPrompt(
-            referenceLyrics: model.referenceLyrics,
-            hasLyricSegments: !model.lyricSegments.isEmpty,
-            selectedSongID: model.selectedSongID,
-            dismissedForSongID: dismissedReferenceBannerForSongID)
-    }
-
     /// Playhead shared with the waveform (`ContentView` uses `activePlaybackTime`).
     private var playheadTime: TimeInterval { model.lyricHighlightTime }
 
@@ -418,12 +407,6 @@ private struct TimedLyricsEditor: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if shouldShowReferenceLyricsPrompt {
-                ReferenceLyricsPromptBanner(
-                    pasteAction: { showReferenceLyrics = true },
-                    dismissAction: { dismissedReferenceBannerForSongID = model.selectedSongID }
-                )
-            }
             HStack {
                 Text("Timestamped Lyrics")
                     .font(.swDisplay(15, weight: .semibold))
@@ -600,64 +583,6 @@ private struct TimedLyricsEditor: View {
     }
 }
 
-/// Pure gating logic for the Lyrics tab's reference-lyrics prompt banner (C1, backlog #8),
-/// factored out of `TimedLyricsEditor.shouldShowReferenceLyricsPrompt` so it's directly unit
-/// testable without standing up the view's `@ObservedObject`/`@State` machinery. Not `private`
-/// so `SongWorkbenchTests` can call it via `@testable import`.
-enum ReferenceLyricsPromptPolicy {
-    static func shouldPrompt(
-        referenceLyrics: String,
-        hasLyricSegments: Bool,
-        selectedSongID: Song.ID?,
-        dismissedForSongID: Song.ID?
-    ) -> Bool {
-        guard let selectedSongID, hasLyricSegments else { return false }
-        guard referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
-        }
-        return dismissedForSongID != selectedSongID
-    }
-}
-
-/// C1 (backlog #8): a lightweight, dismissible prompt shown at the top of the Lyrics tab —
-/// where a user actually notices ASR mistakes — for songs with no reference lyrics set yet.
-/// Makes pasting real lyrics (when they exist, e.g. a cover) the discoverable/primary path
-/// instead of a small button buried in the collapsible Song Analysis card. That original
-/// button + sheet stay as-is; this just opens the SAME `ReferenceLyricsSheet` from a second,
-/// better-placed entry point.
-private struct ReferenceLyricsPromptBanner: View {
-    let pasteAction: () -> Void
-    let dismissAction: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "text.alignleft")
-                .foregroundStyle(Color.swAccent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Have the real lyrics for this song?")
-                    .font(.swDisplay(12, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                Text("Paste them for perfectly accurate words and line breaks.")
-                    .font(.caption)
-                    .foregroundStyle(Color.swTextSecondary)
-            }
-            Spacer()
-            Button("Paste Lyrics", action: pasteAction)
-                .swProminentButtonStyle()
-                .controlSize(.small)
-            Button("Dismiss", systemImage: "xmark", action: dismissAction)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .help(
-                    "Hide this prompt for this song (you can still use Reference Lyrics in the "
-                        + "Song Analysis card).")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color.swAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 private enum LyricsEditorRow: Identifiable {
     case section(LyricTimelineSection)
     case lyric(TimedLyricSegment.ID)
@@ -743,8 +668,290 @@ private struct LyricTimeField: View {
     }
 }
 
+extension ChordConfidenceBand {
+    /// Red through amber to green. `manual` is deliberately outside that ramp — a hand-added
+    /// chord carries no confidence measurement, and colouring it red would read as "the detector
+    /// is unsure" about a chord the user typed themselves.
+    var fillColor: Color {
+        switch self {
+        case .low: Color.swCoral.opacity(0.28)
+        case .medium: Color.orange.opacity(0.26)
+        case .high: Color.swMint.opacity(0.26)
+        case .manual: Color.swAccent.opacity(0.18)
+        }
+    }
+
+    var strokeColor: Color {
+        switch self {
+        case .low: Color.swCoral.opacity(0.75)
+        case .medium: Color.orange.opacity(0.7)
+        case .high: Color.swMint.opacity(0.7)
+        case .manual: Color.swAccent.opacity(0.6)
+        }
+    }
+}
+
+/// One song-sheet row of the chord grid: its lyric (or instrumental label) above, the chords that
+/// sound under it laid out left to right below.
+private struct ChordGridRowView: View {
+    let row: ChordGridRowBuilder.Row
+    @ObservedObject var model: AppModel
+    /// Event id → index into `model.chordEvents`, built once per grid rebuild so a cell can find
+    /// its binding in constant time instead of scanning every event.
+    let eventIndexByID: [EditableChordEvent.ID: Int]
+    @Binding var selectedEventID: EditableChordEvent.ID?
+    /// Chord currently sounding, from the shared playhead. `nil` when nothing is playing yet.
+    let soundingEventID: EditableChordEvent.ID?
+    let playheadTime: TimeInterval
+    /// Seconds spanned by the full row width, shared by EVERY row so one second is the same
+    /// distance everywhere. Without a shared span each row would stretch to fill the panel and a
+    /// two-second line would look as long as a ten-second one — the spacing would encode nothing.
+    let axisSpan: TimeInterval
+
+    /// End of this row's axis. Rows shorter than `axisSpan` simply stop short of the right edge,
+    /// which is what makes the spacing comparable between rows.
+    private var axisEnd: TimeInterval { row.start + axisSpan }
+
+    /// The lyric with the word being sung right now in bold. Plain text when this row is not the
+    /// one under the playhead, so only one word in the whole grid is ever emphasised.
+    private var lyricText: AttributedString {
+        let plain = row.lyric ?? ""
+        var text = AttributedString(plain)
+        guard let segment = row.segment,
+            playheadTime >= segment.start,
+            let range = ChordGridRowBuilder.singingWordRange(in: segment, at: playheadTime),
+            range.lowerBound >= 0, range.upperBound <= plain.count,
+            range.lowerBound < range.upperBound
+        else { return text }
+        let lower = text.index(text.startIndex, offsetByCharacters: range.lowerBound)
+        let upper = text.index(text.startIndex, offsetByCharacters: range.upperBound)
+        text[lower..<upper].inlinePresentationIntent = .stronglyEmphasized
+        return text
+    }
+
+    private var isActiveRow: Bool {
+        row.eventIDs.contains { $0 == soundingEventID }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            // Chords and words share ONE time axis, so a chord sits over the word it lands on and
+            // the gap between two words is the actual pause between them.
+            TimeAxisRowLayout(times: chordTimes, start: row.start, end: axisEnd) {
+                ForEach(row.eventIDs, id: \.self) { eventID in
+                    if let index = eventIndexByID[eventID], index < model.chordEvents.count {
+                        ChordGridCell(
+                            event: $model.chordEvents[index],
+                            isIncluded: model.isChordIncludedInChordPro(model.chordEvents[index]),
+                            isSelected: selectedEventID == eventID,
+                            isSounding: soundingEventID == eventID,
+                            selectedEventID: $selectedEventID,
+                            remove: { model.chordEvents.removeAll { $0.id == eventID } }
+                        )
+                    }
+                }
+                if row.eventIDs.isEmpty {
+                    // A sung line with no chord change over it. The chart shows this line bare, so
+                    // the grid must too — an omitted row would misalign every row beneath it.
+                    Text("—")
+                        .font(.swMono(12))
+                        .foregroundStyle(Color.swTextSecondary.opacity(0.5))
+                }
+            }
+            .frame(height: 24)
+
+            if row.isInstrumental {
+                Text(row.instrumentalLabel ?? "Instrumental")
+                    .font(.swDisplay(11, weight: .semibold))
+                    .foregroundStyle(Color.swAccent)
+            } else if timedWords.isEmpty {
+                // No word timings on this line, so there is no honest way to space it. Render the
+                // line as plain flowing text rather than inventing positions.
+                Text(lyricText)
+                    .font(.swDisplay(12))
+                    .foregroundStyle(Color.swTextPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                TimeAxisRowLayout(times: timedWords.map(\.start), start: row.start, end: axisEnd) {
+                    ForEach(Array(timedWords.enumerated()), id: \.offset) { _, word in
+                        Text(word.text)
+                            .font(.swDisplay(12))
+                            .fontWeight(isSinging(word) ? .bold : .regular)
+                            .foregroundStyle(Color.swTextPrimary)
+                            .fixedSize()
+                    }
+                }
+                .frame(height: 17)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            isActiveRow
+                ? Color.swAccent.opacity(0.12)
+                : (row.isInstrumental ? Color.swAccent.opacity(0.05) : Color.clear),
+            in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Song time of each chord cell, in the order the cells are emitted.
+    private var chordTimes: [TimeInterval] {
+        row.eventIDs.compactMap { id in
+            guard let index = eventIndexByID[id], index < model.chordEvents.count else {
+                return nil
+            }
+            return model.chordEvents[index].time
+        }
+    }
+
+    private var timedWords: [TimedLyricWord] {
+        (row.segment?.words ?? []).sorted { $0.start < $1.start }
+    }
+
+    /// Whether this word is the one being sung, using the same rule as the character-range
+    /// helper so the two never disagree about which word is current.
+    private func isSinging(_ word: TimedLyricWord) -> Bool {
+        guard let segment = row.segment, playheadTime >= segment.start,
+            let range = ChordGridRowBuilder.singingWordRange(in: segment, at: playheadTime)
+        else { return false }
+        return word.characterRange == range
+    }
+}
+
+private struct ChordGridCell: View {
+    @Binding var event: EditableChordEvent
+    let isIncluded: Bool
+    let isSelected: Bool
+    /// Whether this is the chord ringing right now. Distinct from `isSelected`, which is the
+    /// popover the user opened — both can be true at once and must stay visually separable.
+    let isSounding: Bool
+    @Binding var selectedEventID: EditableChordEvent.ID?
+    let remove: () -> Void
+
+    private var band: ChordConfidenceBand {
+        ChordConfidenceBand.band(for: event.confidence)
+    }
+
+    var body: some View {
+        Button {
+            selectedEventID = isSelected ? nil : event.id
+        } label: {
+            Text(event.chord.isEmpty ? "—" : event.chord)
+                .font(.swMono(13, weight: .semibold))
+                .foregroundStyle(Color.swTextPrimary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .frame(minWidth: 40)
+                .background(
+                    isSounding ? Color.swAccent.opacity(0.55) : band.fillColor,
+                    in: RoundedRectangle(cornerRadius: 5)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(
+                            isSelected ? Color.swTextPrimary : band.strokeColor,
+                            lineWidth: isSelected ? 2 : 1)
+                )
+                .scaleEffect(isSounding ? 1.08 : 1)
+                .animation(.easeOut(duration: 0.12), value: isSounding)
+                // Excluded chords stay visible but recede: they are still real detections, and
+                // hiding them would make the confidence slider's effect invisible here.
+                .opacity(isIncluded ? 1 : 0.45)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(band.label) — click for timing and detection details")
+        .popover(
+            isPresented: Binding(
+                get: { isSelected },
+                set: { if !$0 { selectedEventID = nil } }
+            )
+        ) {
+            ChordGridDetailPopover(event: $event, isIncluded: isIncluded, remove: remove)
+        }
+    }
+}
+
+/// The numbers that used to sit in every row, shown for one chord on demand.
+private struct ChordGridDetailPopover: View {
+    @Binding var event: EditableChordEvent
+    let isIncluded: Bool
+    let remove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                TextField("Chord", text: $event.chord)
+                    .font(.swMono(13, weight: .semibold))
+                    .frame(width: 90)
+                Spacer()
+                Button("Remove", systemImage: "trash", role: .destructive, action: remove)
+                    .labelStyle(.iconOnly)
+            }
+            Divider()
+            LabeledContent("Time") {
+                TextField(
+                    "Time", value: $event.time,
+                    format: .number.precision(.fractionLength(2))
+                )
+                .frame(width: 70)
+            }
+            LabeledContent("Confidence") {
+                if let confidence = event.confidence {
+                    Text(confidence, format: .percent.precision(.fractionLength(0)))
+                        .font(.swMono(12))
+                } else {
+                    Text("Added manually").font(.swDisplay(11))
+                }
+            }
+            LabeledContent("ChordPro") {
+                Text(isIncluded ? "Included" : "Below threshold")
+                    .font(.swDisplay(11))
+                    .foregroundStyle(isIncluded ? Color.swMint : Color.swTextSecondary)
+            }
+            if let manual = event.manualTime {
+                LabeledContent("Dragged to") {
+                    Text(manual, format: .number.precision(.fractionLength(2)))
+                        .font(.swMono(12))
+                }
+            }
+            // Where the other placement rules would have put this same chord change. Recorded by
+            // the harmony stage so the alternatives can be compared without re-analysing.
+            ForEach(ChordPlacementVariant.allCases, id: \.self) { variant in
+                if let candidate = event.placementCandidates[variant.rawValue] {
+                    LabeledContent(variant.displayName) {
+                        Text(candidate, format: .number.precision(.fractionLength(2)))
+                            .font(.swMono(12))
+                            .foregroundStyle(Color.swTextSecondary)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 260)
+    }
+}
+
 private struct ChordTimelineEditor: View {
     @ObservedObject var model: AppModel
+    // Observe playback directly, exactly as `TimedLyricsEditor` does. `AppModel` reads the clock
+    // through `activeClock` but does NOT republish its ticks, so a view that observes only the
+    // model never re-renders while audio plays — which is why the chord highlight sat frozen.
+    @ObservedObject private var playback: AudioPlaybackService
+    @ObservedObject private var stemPlayback: StemPlaybackService
+    /// The chord cell whose detail popover is open, if any.
+    @State private var selectedChordEventID: EditableChordEvent.ID?
+    /// Grid state cached off the playhead — see `rebuildGrid()`.
+    @State private var gridRows: [ChordGridRowBuilder.Row] = []
+    @State private var gridAxisSpan: TimeInterval = 4
+    @State private var eventIndexByID: [EditableChordEvent.ID: Int] = [:]
+
+    init(model: AppModel) {
+        self.model = model
+        playback = model.playback
+        stemPlayback = model.stemPlayback
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -829,41 +1036,34 @@ private struct ChordTimelineEditor: View {
                 "Detected chords below this confidence are omitted from generated ChordPro. "
                     + "Manual chords are always included."
             )
-            List {
-                ForEach($model.chordEvents) { $event in
-                    HStack {
-                        Image(
-                            systemName: model.isChordIncludedInChordPro(event)
-                                ? "checkmark.circle.fill" : "minus.circle"
-                        )
-                        .foregroundStyle(
-                            model.isChordIncludedInChordPro(event)
-                                ? Color.swAccent : Color.swTextSecondary
-                        )
-                        .help(
-                            model.isChordIncludedInChordPro(event)
-                                ? "Included in generated ChordPro"
-                                : "Excluded by confidence threshold"
-                        )
-                        TextField(
-                            "Time", value: $event.time,
-                            format: .number.precision(.fractionLength(2))
-                        )
-                        .frame(width: 80)
-                        TextField("Chord", text: $event.chord)
-                            .frame(width: 100)
-                        if let confidence = event.confidence {
-                            Text(confidence, format: .percent.precision(.fractionLength(0)))
-                                .font(.swMono(12))
-                                .foregroundStyle(Color.swTextSecondary)
+            chordConfidenceLegend
+            ScrollViewReader { scroller in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(gridRows) { row in
+                            ChordGridRowView(
+                                row: row,
+                                model: model,
+                                eventIndexByID: eventIndexByID,
+                                selectedEventID: $selectedChordEventID,
+                                soundingEventID: soundingChordEventID,
+                                playheadTime: model.lyricHighlightTime,
+                                axisSpan: gridAxisSpan
+                            )
+                            .id(row.id)
                         }
-                        Spacer()
-                        Button("Remove", systemImage: "trash", role: .destructive) {
-                            model.chordEvents.removeAll { $0.id == event.id }
-                        }
-                        .labelStyle(.iconOnly)
                     }
-                    .opacity(model.isChordIncludedInChordPro(event) ? 1 : 0.55)
+                    .padding(.vertical, 4)
+                }
+                // The CHORD leads, everywhere. Following the lyric would stall the view through
+                // every instrumental break, which is exactly where a player needs the chart most.
+                .onChange(of: soundingChordEventID) { _, newValue in
+                    guard let newValue,
+                        let row = gridRows.first(where: { $0.eventIDs.contains(newValue) })
+                    else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        scroller.scrollTo(row.id, anchor: .center)
+                    }
                 }
             }
             .overlay {
@@ -877,6 +1077,64 @@ private struct ChordTimelineEditor: View {
             }
         }
         .padding()
+        .onAppear { rebuildGrid() }
+        .onChange(of: model.chordEvents) { _, _ in rebuildGrid() }
+        .onChange(of: model.lyricSegments) { _, _ in rebuildGrid() }
+        .onChange(of: model.beatTimes) { _, _ in rebuildGrid() }
+        .onChange(of: model.barGrid) { _, _ in rebuildGrid() }
+    }
+
+    /// Rebuild the cached grid. Called on appear and whenever the chords or lyrics actually
+    /// change — NOT on every playhead tick.
+    ///
+    /// This caching is what makes playback highlighting keep up. Everything here is a function of
+    /// the events and the lyric lines only, but as plain computed properties they re-ran on every
+    /// body evaluation, and the body re-evaluates on every clock publish: rows were built twice
+    /// per frame (once for the rows, once for the axis span), and each cell then did a linear
+    /// `firstIndex(where:)` over all events to find its binding — quadratic in the chord count,
+    /// tens of thousands of comparisons per frame on a 150-chord song.
+    private func rebuildGrid() {
+        gridRows = ChordGridRowBuilder.rows(
+            events: model.chordEvents,
+            lyricSegments: model.lyricSegments,
+            sourceDuration: model.sourceDuration,
+            beatTimes: model.beatTimes,
+            beatsPerBar: (model.barGrid ?? .unknown).beatsPerBar,
+            barPhase: (model.barGrid ?? .unknown).barPhase
+        )
+        gridAxisSpan = max(gridRows.map { $0.end - $0.start }.max() ?? 0, 4)
+        eventIndexByID = Dictionary(
+            uniqueKeysWithValues: model.chordEvents.enumerated().map { ($1.id, $0) })
+    }
+
+    /// The chord ringing at the playhead, so the grid can light it up during playback.
+    private var soundingChordEventID: EditableChordEvent.ID? {
+        ChordGridRowBuilder.soundingEventID(
+            events: model.chordEvents, at: model.lyricHighlightTime)
+    }
+
+    /// What the cell colours mean. Without this the grid is a wall of unexplained colour.
+    private var chordConfidenceLegend: some View {
+        HStack(spacing: 12) {
+            ForEach(ChordConfidenceBand.allCases, id: \.self) { band in
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(band.fillColor)
+                        .frame(width: 12, height: 12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3)
+                                .strokeBorder(band.strokeColor, lineWidth: 1))
+                    Text(band.label)
+                        .font(.swDisplay(10))
+                        .foregroundStyle(Color.swTextSecondary)
+                }
+            }
+            Spacer()
+            Text("Click a chord for its timing and detection details")
+                .font(.swDisplay(10))
+                .foregroundStyle(Color.swTextSecondary)
+        }
+        .padding(.horizontal, 2)
     }
 
     private var isAnalysisRunning: Bool {
@@ -948,11 +1206,15 @@ struct ChordProTabConfig: Sendable {
     let showsSecondaryMode: Bool
     /// Footer caption shown beneath the body, if any.
     let footerNote: String?
-    /// Whether this surface shows the playback/review chrome layered OVER the chart: the bouncing
-    /// ball, beat dots, barlines, waveform, bass-note row, chord time labels, confidence shading,
-    /// and the per-line accept/edit affordances. `false` renders the chart the way a ChordPro file
-    /// actually reads — chords positioned above lyric text, plus directives — and nothing else.
-    var showsPlaybackChrome = true
+    /// Whether this surface renders through the timeline-aware preview chart. Review uses it for
+    /// all overlays; the ChordPro playback surface uses it only so the bouncing balls share the same
+    /// row and timing mapping as Review.
+    var rendersPlaybackChart = true
+    /// Whether this surface exposes playback display controls and draws the bouncing balls.
+    var showsPlaybackControls = true
+    /// Whether this surface exposes Review-only affordances: beat dots, waveform, bass row, chord
+    /// time labels, placement A/B, confidence legend, and per-line accept/edit/drag controls.
+    var showsReviewAffordances = true
 
     static let chordPro = ChordProTabConfig(
         kind: .chordPro,
@@ -982,7 +1244,7 @@ struct ChordProTabConfig: Sendable {
         supportsMarkReviewed: false,
         showsSecondaryMode: false,
         footerNote: nil,
-        showsPlaybackChrome: false
+        showsReviewAffordances: false
     )
 
     static let bassNote = ChordProTabConfig(
@@ -1013,7 +1275,10 @@ struct ChordProTabEditor: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
-    @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
+    /// The white word-tracking ball was removed (Eric, 2026-08-20: "we can eliminate the white
+    /// bouncing ball") — the word highlight and the amber chord ball carry the playback cue.
+    /// Kept as a `let` gating all its machinery off, same pattern as `rhythmicSpacing` below.
+    private let bouncingBallEnabled = false
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     /// Beats per chart row; 0 = automatic from the measured phrase period.
     @AppStorage("chordProBeatsPerRow") private var beatsPerRow = 0
@@ -1073,7 +1338,12 @@ struct ChordProTabEditor: View {
     /// Result of comparing the uploaded reference chart against the generated one; drives the
     /// report sheet.
     @State private var referenceComparison: ReferenceChartComparison?
+    /// How well the RECORDING backs each chart — the evidence behind "which of these is right?".
+    @State private var audioValidation: ReferenceChartAudioValidation.Result?
     @State private var showReferenceReport = false
+    /// Whether the uploaded reference chart is being shown instead of the generated one. View
+    /// only — see `previewSource`.
+    @State private var showingReference = false
 
     private let config: ChordProTabConfig
 
@@ -1108,7 +1378,7 @@ struct ChordProTabEditor: View {
                     switch mode {
                     case .secondary:
                         secondaryBody
-                    case .preview where !config.showsPlaybackChrome:
+                    case .preview where !config.rendersPlaybackChart:
                         // Plain ChordPro: the chart as a .cho file reads it. Deliberately NOT
                         // `ChordProAppPreview` with everything switched off — that view's overlays
                         // and accept/edit affordances are the Review tab's job, and threading
@@ -1119,33 +1389,41 @@ struct ChordProTabEditor: View {
                             scale: chartScale)
                     case .preview:
                         ChordProAppPreview(
+                            barGrid: model.barGrid,
                             source: previewSource,
                             scale: chartScale,
                             transpose: config.supportsTranspose ? model.chordProTranspose : 0,
                             auditionedPlacement: model.auditionedPlacement,
                             placementPicks: model.chordPlacementPicks,
-                            highlightContext: highlightContext(style: config.highlightStyle),
-                            beatBall: beatBallInput,
-                            beatDots: beatDotContext,
+                            highlightContext: config.showsReviewAffordances
+                                ? highlightContext(style: config.highlightStyle) : nil,
+                            beatBall: config.showsPlaybackControls ? beatBallInput : nil,
+                            beatDots: config.showsReviewAffordances ? beatDotContext : nil,
                             rhythmicSpacing: rhythmicSpacing,
                             lyricLineWords: sortedLyricLineWords,
-                            showWaveform: showWaveform,
-                            audioEnvelope: model.vocalWaveform ?? model.waveform,
+                            showWaveform: config.showsReviewAffordances && showWaveform,
+                            audioEnvelope: config.showsReviewAffordances
+                                ? (model.vocalWaveform ?? model.waveform) : nil,
                             audioEnvelopeIsVocals: model.vocalWaveform != nil,
-                            guitarEnvelope: model.stemWaveformEnvelope(for: .guitar),
-                            pianoEnvelope: model.stemWaveformEnvelope(for: .piano),
-                            drumsEnvelope: model.stemWaveformEnvelope(for: .drums),
-                            bassEnvelope: model.stemWaveformEnvelope(for: .bass),
+                            guitarEnvelope: config.showsReviewAffordances
+                                ? model.stemWaveformEnvelope(for: .guitar) : nil,
+                            pianoEnvelope: config.showsReviewAffordances
+                                ? model.stemWaveformEnvelope(for: .piano) : nil,
+                            drumsEnvelope: config.showsReviewAffordances
+                                ? model.stemWaveformEnvelope(for: .drums) : nil,
+                            bassEnvelope: config.showsReviewAffordances
+                                ? model.stemWaveformEnvelope(for: .bass) : nil,
                             lyricLineWindows: sortedLyricLineWindows,
                             songDuration: model.timelineDuration,
                             bpm: model.estimatedBPM,
                             beatsPerRowOverride: beatsPerRow,
                             beatTimes: model.beatTimes,
                             chordOnsetTimes: model.chordEvents.map(\.time).sorted(),
-                            untranscribedLineNumbers: Set(
-                                (model.songTimelineForPreview()?.rows
-                                    .filter(\.containsUntranscribedVocals)
-                                    .map(\.number)) ?? []),
+                            untranscribedLineNumbers: config.showsReviewAffordances
+                                ? Set(
+                                    (model.songTimelineForPreview()?.rows
+                                        .filter(\.containsUntranscribedVocals)
+                                        .map(\.number)) ?? []) : [],
                             // B3: authoritative per-row chord TIMES so the preview places
                             // each chord at its real moment instead of re-deriving it from
                             // character columns (nil-safe: empty for edited charts).
@@ -1159,11 +1437,13 @@ struct ChordProTabEditor: View {
                                             ? (row.number, row.start...row.end) : nil
                                     }),
                             bassNotes: model.bassNotes,
-                            showBassNotes: showBassNotes,
-                            showChordTimeLabels: showChordTimeLabels,
+                            showBassNotes: config.showsReviewAffordances && showBassNotes,
+                            showChordTimeLabels: config.showsReviewAffordances
+                                && showChordTimeLabels,
                             songChordTimes: model.placedChordTimes,
                             lyricSegments: sortedLyricSegments,
                             chordEvents: model.chordEvents,
+                            showsReviewAffordances: config.showsReviewAffordances,
                             onToggleLyricAccepted: { id in model.toggleLyricAccepted(id: id) },
                             onCommitLyricOverride: { id, text in
                                 model.setLyricOverrideText(id: id, text: text)
@@ -1191,10 +1471,14 @@ struct ChordProTabEditor: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onChange(of: model.referenceChordProSource) { _, newValue in
+            if newValue.isEmpty { showingReference = false }
+        }
         .sheet(isPresented: $showReferenceReport) {
             if let referenceComparison {
                 ReferenceComparisonReportView(
                     comparison: referenceComparison,
+                    audioValidation: audioValidation,
                     onAdopt: {
                         model.adoptReferenceChordPro()
                         showReferenceReport = false
@@ -1243,8 +1527,17 @@ struct ChordProTabEditor: View {
                         ? "Upload a reference ChordPro chart to validate the generated one"
                         : "Reference chart uploaded — click to replace it, or reopen the report")
                 if model.referenceChordProSource.isEmpty == false {
+                    Picker("Chart shown", selection: $showingReference) {
+                        Text("Generated").tag(false)
+                        Text("Uploaded").tag(true)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 160)
+                    .help("Switch between the generated chart and the uploaded one (view only)")
                     Button("Comparison Report", systemImage: "checklist") {
                         referenceComparison = model.referenceChartComparison()
+                        audioValidation = model.referenceChartAudioValidation()
                         showReferenceReport = referenceComparison != nil
                     }
                     .labelStyle(.iconOnly)
@@ -1264,20 +1557,16 @@ struct ChordProTabEditor: View {
             // display control that acts on the chart itself rather than on the Review tab's
             // overlays, so it belongs on both surfaces (Eric: the slider goes in both tabs).
             fontSizeControl
-            // Timing offset, the display toggles and the shading legend all act on chrome the
-            // plain ChordPro tab does not draw, so they are hidden there rather than left as
-            // controls that appear to do nothing.
-            if config.showsPlaybackChrome {
+            if config.showsPlaybackControls {
                 timingOffsetControl
-                // The display toggles live in one compact "View" menu so their labels can't
-                // wrap and crowd the toolbar.
                 Menu {
-                    Toggle("Bouncing ball", isOn: $bouncingBallEnabled)
-                    Toggle("Beat dots", isOn: $beatDotsEnabled)
-                    Toggle("Waveform", isOn: $showWaveform)
-                    Toggle("Show Bass Notes", isOn: $showBassNotes)
-                        .disabled(model.bassNotes.isEmpty)
-                    Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
+                    if config.showsReviewAffordances {
+                        Toggle("Beat dots", isOn: $beatDotsEnabled)
+                        Toggle("Waveform", isOn: $showWaveform)
+                        Toggle("Show Bass Notes", isOn: $showBassNotes)
+                            .disabled(model.bassNotes.isEmpty)
+                        Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
+                    }
                     Picker("Beats per Row", selection: $beatsPerRow) {
                         Text("Auto").tag(0)
                         Text("4").tag(4)
@@ -1290,9 +1579,13 @@ struct ChordProTabEditor: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help(
-                    "Show/hide the bouncing ball, beat dots, measure barlines, "
-                        + "the per-line waveform, the detected bass note row, "
-                        + "and each chord's raw detected timestamp")
+                    config.showsReviewAffordances
+                        ? "Show/hide beat dots, measure barlines, the per-line waveform, "
+                            + "the detected bass note row, "
+                            + "and each chord's raw detected timestamp"
+                        : "Choose the chart row length")
+            }
+            if config.showsReviewAffordances {
                 // Chord-placement A/B. A chord change is an inference, but WHERE it sits is a
                 // separate question with more than one defensible answer, and the pipeline is its
                 // own only witness — the `.cho` charts are untimed and were generated by earlier
@@ -1457,6 +1750,12 @@ struct ChordProTabEditor: View {
     }
 
     private var previewSource: String {
+        // Viewing the uploaded chart is non-destructive: it swaps what is RENDERED and nothing
+        // else. Replacing the generated chart with it stays a separate, explicit action
+        // (`adoptReferenceChordPro`), so a look is never a commitment.
+        if showingReference, !model.referenceChordProSource.isEmpty {
+            return model.referenceChordProSource
+        }
         switch config.kind {
         case .chordPro:
             return model.chordProSource
@@ -1625,44 +1924,42 @@ struct ChordProTabEditor: View {
     /// stretches (intros, breaks) park the ball at the upcoming line.
     private static let waitingBallMinimumGap: TimeInterval = 2
 
-    /// Compact render-only timing-offset tuner for the bouncing ball / position
-    /// indicator. −500…+500 ms, center = 0. Only shown when the ball is enabled.
+    /// Compact render-only timing-offset tuner for the playback position indicators (word
+    /// highlight and amber chord ball). −500…+500 ms, center = 0.
     @ViewBuilder private var timingOffsetControl: some View {
-        if bouncingBallEnabled {
-            let offsetBinding = Binding<Double>(
-                get: { Double(model.chordProTimingOffsetMS) },
-                set: { raw in
-                    // Center detent: snap small drags back to exactly 0.
-                    let snapped = abs(raw) < 15 ? 0 : raw
-                    model.chordProTimingOffsetMS = Int(snapped.rounded())
-                }
-            )
-            HStack(spacing: 6) {
-                VStack(spacing: 1) {
-                    Slider(value: offsetBinding, in: -500...500)
-                        .frame(width: 90)
-                    Text("Timing")
-                        .font(.swDisplay(10))
-                        .foregroundStyle(Color.swTextSecondary)
-                        .fixedSize()
-                }
-                .help(
-                    "Shift the bouncing ball earlier/later relative to playback "
-                        + "(render only; does not change audio). Reset to remove the offset.")
-                Button("Reset") { model.chordProTimingOffsetMS = 0 }
-                    .font(.swDisplay(11))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.swTextSecondary)
-                    .fixedSize()
-                    .disabled(model.chordProTimingOffsetMS == 0)
-                    .help("Reset timing offset to 0 ms")
-                let sign = model.chordProTimingOffsetMS > 0 ? "+" : ""
-                Text("\(sign)\(model.chordProTimingOffsetMS) ms")
-                    .font(.swDisplay(11).monospacedDigit())
-                    .foregroundStyle(Color.swTextSecondary)
-                    .fixedSize()
-                    .frame(width: 52, alignment: .leading)
+        let offsetBinding = Binding<Double>(
+            get: { Double(model.chordProTimingOffsetMS) },
+            set: { raw in
+                // Center detent: snap small drags back to exactly 0.
+                let snapped = abs(raw) < 15 ? 0 : raw
+                model.chordProTimingOffsetMS = Int(snapped.rounded())
             }
+        )
+        HStack(spacing: 6) {
+            VStack(spacing: 1) {
+                Slider(value: offsetBinding, in: -500...500)
+                    .frame(width: 90)
+                Text("Timing")
+                    .font(.swDisplay(10))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .fixedSize()
+            }
+            .help(
+                "Shift the highlight and chord indicator earlier/later relative to playback "
+                    + "(render only; does not change audio). Reset to remove the offset.")
+            Button("Reset") { model.chordProTimingOffsetMS = 0 }
+                .font(.swDisplay(11))
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.swTextSecondary)
+                .fixedSize()
+                .disabled(model.chordProTimingOffsetMS == 0)
+                .help("Reset timing offset to 0 ms")
+            let sign = model.chordProTimingOffsetMS > 0 ? "+" : ""
+            Text("\(sign)\(model.chordProTimingOffsetMS) ms")
+                .font(.swDisplay(11).monospacedDigit())
+                .foregroundStyle(Color.swTextSecondary)
+                .fixedSize()
+                .frame(width: 52, alignment: .leading)
         }
     }
 
@@ -1942,6 +2239,13 @@ struct BeatBallInput: Equatable {
 
 // Internal (not private) so the headless pixel-render audit can instantiate the REAL preview.
 struct ChordProAppPreview: View {
+    /// The song's ONE bar grid (`SongBarGrid`), estimated once by the harmony stage. Passed in
+    /// rather than re-derived here: this view used to estimate its own bar phase from the display
+    /// waveform envelopes — a third opinion, alongside the decoder's and the ChordPro builder's —
+    /// so barlines could be drawn where the chart text disagreed. `nil` for songs analysed before
+    /// the shared grid existed, which keeps the local estimate as a fallback.
+    var barGrid: SongBarGrid?
+
     /// Render-audit mode: materialize every row eagerly (plain VStack) because LazyVStack
     /// produces nothing under ImageRenderer. Never set on screen — laziness matters there.
     var eagerLayoutForRendering = false
@@ -2070,6 +2374,9 @@ struct ChordProAppPreview: View {
     /// its row's authoritative onset time (`EditableChordEvent.matching(rowTime:in:)`) so the
     /// chart can show confidence tint, accept state, and drag-to-reposition.
     var chordEvents: [EditableChordEvent] = []
+    /// Review-only controls and markings. ChordPro playback still uses this renderer for the ball,
+    /// but keeps accept/edit/tint/drag UI out of the plain chart surface.
+    var showsReviewAffordances = true
     var onToggleLyricAccepted: (TimedLyricSegment.ID) -> Void = { _ in }
     var onCommitLyricOverride: (TimedLyricSegment.ID, String) -> Void = { _, _ in }
     var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
@@ -2135,14 +2442,14 @@ struct ChordProAppPreview: View {
             for: bassNotes, inWindow: lyricLineWindows[ordinal], transposedBy: transpose)
     }
 
-    /// Beats per bar: 4/4 by default, but estimated from the lyric-line phrase structure so a
-    /// song whose lines are consistently spaced by e.g. 5 detected beats (tactus found at a 5:4
-    /// metrical level) gets a 5-beat bar — otherwise every line lands one beat later in the bar
-    /// than the previous and the rendered rows cascade rightward.
+    /// Beats per bar: the song's shared `SongBarGrid` when supplied (it always is from the app
+    /// model now), else estimated from the lyric-line phrase structure — the same signal
+    /// `SongBarGridEstimator` reads — so a 5:4 song still gets a 5-beat bar without one.
     private var beatsPerBar: Int {
-        DownbeatEstimator.estimateBeatsPerBar(
-            beatTimes: beatTimes,
-            onsets: lyricLineWords.compactMap { $0.first?.start })
+        barGrid?.beatsPerBar
+            ?? DownbeatEstimator.estimateBeatsPerBar(
+                beatTimes: beatTimes,
+                onsets: lyricLineWords.compactMap { $0.first?.start })
     }
 
     /// The song's phrase period in beats — how far apart sung lines actually sit, pooled across
@@ -2176,9 +2483,13 @@ struct ChordProAppPreview: View {
     /// Seconds per beat (60/bpm), or 0 without a tempo.
     private var beatLengthSeconds: TimeInterval { (bpm.map { $0 > 0 ? 60 / $0 : 0 }) ?? 0 }
 
-    /// Pickup gutter width: `gutterBeats` to the left of the shared downbeat column. Shares that
-    /// constant with the window fit, which has to reserve the same space.
-    private var gutterSeconds: TimeInterval {
+    /// Length of the instrumental tail after a row's last word — a FIXED two beats on every row,
+    /// so every row's tail reads the same.
+    ///
+    /// This used to borrow the song-level pickup gutter, which was the same two beats. The gutter
+    /// is now sized per row (`ChartPickupGutter`) and is often zero, so the tail needs its own
+    /// constant: without one, a row with no pickup would silently lose its trailing waveform too.
+    private var melodyTailSeconds: TimeInterval {
         beatLengthSeconds * Double(ChordProPreviewLineLayout.gutterBeats)
     }
 
@@ -2207,12 +2518,13 @@ struct ChordProAppPreview: View {
         let drumsEnvelope: WaveformEnvelope?
         let bassEnvelope: WaveformEnvelope?
         let lyricLineWords: [[TimedLyricWord]]
+        let barGrid: SongBarGrid?
     }
 
     private var gridDependencyKey: GridDependencyKey {
         GridDependencyKey(
             beatTimes: beatTimes, bpm: bpm, drumsEnvelope: drumsEnvelope,
-            bassEnvelope: bassEnvelope, lyricLineWords: lyricLineWords)
+            bassEnvelope: bassEnvelope, lyricLineWords: lyricLineWords, barGrid: barGrid)
     }
 
     /// Recomputes `beatStrengths`/`barPhase`/`measureGrid` from scratch — the ORIGINAL logic these
@@ -2253,40 +2565,27 @@ struct ChordProAppPreview: View {
             measureGrid = nil
             return
         }
-        // Bar phase: MEASURED evidence when it is actually strong, otherwise the musical prior —
-        // a song begins on a downbeat.
-        //
-        // The fallback used to be a histogram of lyric-line onsets, and that was the wrong thing
-        // to fall back TO. Measured across the library, chord onsets concentrate on a phase only
-        // 1.15×–1.37× above flat, i.e. at or near chance, so the old fallback placed bars at an
-        // essentially arbitrary offset. The visible consequence was that songs started partway
-        // through a measure (Eric: "it seems unusual that the song starts on a fraction of a
-        // measure") — with the stray part-bar then showing up at the end of every instrumental row.
-        //
-        // Anchoring to beat 0 instead is both the convention and, on this library, simply true:
-        // the first chord lands within a fifth of a beat of beat 0 on FOUR of five songs
-        // (−0.20, 0.00, 0.00, 0.22; the one exception is the song whose grouping is broken on
-        // every other measurement too). Beat 0 of the drum-locked grid is the song's first beat,
-        // so `barPhase = 0` puts the first downbeat there.
-        //
-        // The accent branch is kept and still wins when it clears its gate — that is not a
-        // formality. Flip Flops is the one song with real phase evidence (chord onsets peak 1.72×
-        // above flat) and its true phase is 1, NOT 0, so a blanket phase-0 would break the single
-        // song we actually know the answer for. Strong evidence first, prior second.
-        let accentConfidence = DownbeatEstimator.downbeatConfidence(
-            beatStrengths: strengths, beatsPerBar: beatsPerBar)
-        let resolvedBarPhase =
-            accentConfidence >= 0.08
-            ? DownbeatEstimator.barPhase(beatStrengths: strengths, beatsPerBar: beatsPerBar)
-            : 0
-        barPhase = resolvedBarPhase
+        // The song's SHARED grid (`SongBarGrid`, estimated once by the harmony stage from the
+        // drum stem), or — when this view is shown without one — the same estimator run on the
+        // display waveform accents. One algorithm either way: the gate-and-anchor logic that
+        // used to be duplicated inline here IS `SongBarGridEstimator.estimate`. Drawing a
+        // barline somewhere the text disagrees with is exactly the class of bug this
+        // unification exists to end.
+        let shared =
+            barGrid
+            ?? SongBarGridEstimator.estimate(
+                beatTimes: beatTimes,
+                beatStrengths: strengths,
+                lyricLineOnsets: lyricLineWords.compactMap { $0.first?.start })
+        barPhase = shared.barPhase
 
         guard let bpm, bpm > 0 else {
             measureGrid = nil
             return
         }
         measureGrid = MeasureGrid(
-            beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: resolvedBarPhase)
+            beatTimes: beatTimes, bpm: bpm, beatsPerBar: shared.beatsPerBar,
+            barPhase: shared.barPhase)
     }
 
     /// The time a row's origin column represents: the bar downbeat the line resolves onto.
@@ -2311,8 +2610,12 @@ struct ChordProAppPreview: View {
     /// music. There should be no gaps at the start of lines"). Clamped only at the song start.
     /// Applies to every row kind: on an instrumental continuation row this shows the previous
     /// row's last two beats, which is exactly what the ear hears there.
+    ///
+    /// `gutterSeconds` is the ROW's own gutter, not a song constant: the fill has to start where
+    /// the row's left edge actually is, or a row with no pickup would draw two beats of peaks that
+    /// its ruler then clamps on top of each other at x = 0.
     private func leadingMelodyFill(
-        upTo onset: TimeInterval?, rowDownbeat: TimeInterval?
+        upTo onset: TimeInterval?, rowDownbeat: TimeInterval?, gutterSeconds: TimeInterval
     ) -> (peaks: [Float], color: Color, seconds: TimeInterval) {
         guard let onset, let lane = instrumentalLane else {
             return ([], .swViolet, 0)
@@ -2331,7 +2634,7 @@ struct ChordProAppPreview: View {
         lastWordEnd: TimeInterval?
     ) -> (peaks: [Float], seconds: TimeInterval) {
         guard let end = lastWordEnd, let lane = instrumentalLane else { return ([], 0) }
-        let stop = end + gutterSeconds
+        let stop = end + melodyTailSeconds
         let seconds = max(0, stop - end)
         guard seconds > 0.05 else { return ([], 0) }
         return (peaks(in: (end, stop), from: lane.envelope), seconds)
@@ -2576,12 +2879,20 @@ struct ChordProAppPreview: View {
             }
         // Row-kind agnostic: sung rows fill up to the first word, instrumental rows up to
         // their window start — every row opens flush with audio (no left-edge gaps).
+        let chordRow = chordRowData(for: item)
+        // This row's OWN pickup gutter, in whole beats. See `ChartPickupGutter` for why it is
+        // per-row, why it is quantised, and why neither the row's nominal start nor the leading
+        // melody fill may feed into it.
+        let rowGutterSeconds = ChartPickupGutter.seconds(
+            downbeat: rowDownbeat,
+            earliestContent: [lineWords.first?.start, chordRow.effectiveTimes.min()]
+                .compactMap { $0 }.min(),
+            beatLengthSeconds: beatLengthSeconds)
         let leadingMelody = leadingMelodyFill(
-            upTo: rowAnchorTime, rowDownbeat: rowDownbeat)
+            upTo: rowAnchorTime, rowDownbeat: rowDownbeat, gutterSeconds: rowGutterSeconds)
         let trailingMelody = trailingMelodyFill(
             lastWordEnd: lineWords.last?.end
                 ?? (strip.duration > 0 ? strip.start + strip.duration : nil))
-        let chordRow = chordRowData(for: item)
         // Every argument below is pre-computed into its own `let`
         // (rather than inlined as an expression in the call) —
         // this view's `ChordProPreviewBlockView(...)` call has
@@ -2620,7 +2931,7 @@ struct ChordProAppPreview: View {
             rowStartTime: strip.start,
             stripColor: strip.color,
             rowDownbeatSeconds: rowDownbeat,
-            gutterSeconds: gutterSeconds,
+            gutterSeconds: rowGutterSeconds,
             beatLengthSeconds: beatLengthSeconds,
             beatsPerBar: beatsPerBar,
             beatsPerLine: phraseBeats ?? 0,
@@ -2641,6 +2952,7 @@ struct ChordProAppPreview: View {
             showChordTimeLabels: showChordTimeLabels,
             songChordTimes: songChordTimes,
             lyricSegment: itemLyricSegment,
+            showsReviewAffordances: showsReviewAffordances,
             onToggleLyricAccepted: onToggleLyricAccepted,
             onCommitLyricOverride: onCommitLyricOverride,
             rowChordEvents: chordRow.events,
@@ -3362,6 +3674,7 @@ private struct ChordProPreviewBlockView: View {
     /// interactivity); `nil` for chord-only/non-lyric blocks. Drives the accept toggle, the
     /// confidence tint, and the edited-line text when set.
     var lyricSegment: TimedLyricSegment?
+    var showsReviewAffordances = true
     var onToggleLyricAccepted: (TimedLyricSegment.ID) -> Void = { _ in }
     var onCommitLyricOverride: (TimedLyricSegment.ID, String) -> Void = { _, _ in }
     /// Real chord events behind this row's rendered chords, index-aligned with the block's
@@ -3472,12 +3785,13 @@ private struct ChordProPreviewBlockView: View {
                         trailingRestSeconds: trailingRestSeconds,
                         rowChordTimes: rowChordTimes,
                         rowChordEvents: rowChordEvents,
+                        showsReviewAffordances: showsReviewAffordances,
                         onToggleChordAccepted: onToggleChordAccepted,
                         onSetChordManualTime: onSetChordManualTime,
                         overrideText: lyricSegment?.overrideText,
                         rowBassNotes: rowBassNotes)
                 }
-                if line.hasSungText, let lyricSegment {
+                if showsReviewAffordances, line.hasSungText, let lyricSegment {
                     lyricControls(for: lyricSegment)
                 }
             }
@@ -3561,8 +3875,29 @@ enum ChordProPreviewLineLayout {
 
     /// Pickup gutter reserved left of every row's downbeat column, in beats — anacrusis words that
     /// begin before the downbeat render there, so the window fit has to pay for it. Drives
-    /// `ChordProAppPreview.gutterSeconds`, which is the same gutter measured in time.
+    /// the CAP on `ChartPickupGutter`, which sizes each row's gutter in whole beats.
     static let gutterBeats: CGFloat = 2
+
+    /// Minimum width a rhythmic row must reserve to show its reference phrase frame. The lyric's
+    /// measured content may be much shorter, but the presentation still needs this much layout width
+    /// or the phrase frame becomes an overflow drawing instead of the row's visible ruler.
+    static func referenceFrameEndX(
+        gutterPx: CGFloat,
+        reservedGutterPx: CGFloat,
+        phraseWidth: CGFloat?
+    ) -> CGFloat {
+        guard let phraseWidth, phraseWidth > 1 else { return 0 }
+        return max(0, gutterPx, reservedGutterPx) + phraseWidth
+    }
+
+    static func rhythmicFrameWidth(
+        wordExtent: CGFloat,
+        chordExtent: CGFloat,
+        bassExtent: CGFloat,
+        rowContentEndX: CGFloat
+    ) -> CGFloat {
+        max(1, wordExtent, chordExtent, bassExtent, rowContentEndX)
+    }
 
     /// 1.0 — chord-only rows share the SAME pixels-per-second as sung rows.
     ///
@@ -3682,13 +4017,14 @@ private struct ChordProPreviewLineView: View {
     var rowStartTime: TimeInterval = 0
     /// Color of the audio strip — matches the source stem's lane color in the waveform panel.
     var stripColor: Color = .swAmber
-    /// The song time of the bar downbeat this line resolves onto. All rows pin this downbeat to a
-    /// fixed column (`gutterSeconds` from the left), so on the shared constant-pixels-per-second
-    /// scale every bar is the same width and beats line up vertically across rows — the song's
-    /// repeating cadence. `nil` (no beat grid) falls back to first-word-flush-left.
+    /// The song time of the bar downbeat this line resolves onto. Pinned to `gutterSeconds` from
+    /// the row's left edge, so on the shared constant-pixels-per-second scale every bar is the
+    /// same width and beats line up vertically across rows — the song's repeating cadence.
+    /// `nil` (no beat grid) falls back to first-word-flush-left.
     var rowDownbeatSeconds: TimeInterval?
-    /// Pickup gutter to the LEFT of the shared downbeat column, in seconds (×pixelsPerSecond → px),
-    /// so anacrusis words that begin before the downbeat render before it instead of clipping.
+    /// This ROW's pickup gutter, to the LEFT of its downbeat, so anacrusis words that begin before
+    /// the downbeat render before it instead of clipping. Always a whole number of beats, and
+    /// often zero — see `ChartPickupGutter` for why per-row is safe only when quantised.
     var gutterSeconds: TimeInterval = 0
     /// Seconds per beat (60/bpm), used to draw faint barlines at the bar downbeats.
     var beatLengthSeconds: TimeInterval = 0
@@ -3732,6 +4068,7 @@ private struct ChordProPreviewLineView: View {
     /// where there's no live match (edited/legacy charts, or `rowChordTimes` doesn't pair 1:1).
     /// Drives confidence tint, tap-to-accept, and drag-to-reposition.
     var rowChordEvents: [EditableChordEvent?] = []
+    var showsReviewAffordances = true
     var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
     var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
     /// A user-typed correction for this line (backlog #15 Phase 2 remainder). When set, the line
@@ -3758,6 +4095,9 @@ private struct ChordProPreviewLineView: View {
     /// The chart's time scale at the current size — see `ChordProPreviewLineLayout`.
     private var pixelsPerSecond: CGFloat {
         scale.scaled(ChordProPreviewLineLayout.pixelsPerSecond)
+    }
+    private var maximumGutterPx: CGFloat {
+        ChordProPreviewLineLayout.gutterBeats * pixelsPerBeat
     }
     private var ballTopReserve: CGFloat { scale.scaled(Self.baseBallTopReserve) }
     private var ballApexHeight: CGFloat { scale.scaled(Self.baseBallApexHeight) }
@@ -3795,13 +4135,15 @@ private struct ChordProPreviewLineView: View {
 
     /// Live chord event behind `line.chords[index]`, or `nil` if unmatched.
     private func chordEvent(at index: Int) -> EditableChordEvent? {
-        rowChordEvents.indices.contains(index) ? rowChordEvents[index] : nil
+        guard showsReviewAffordances else { return nil }
+        return rowChordEvents.indices.contains(index) ? rowChordEvents[index] : nil
     }
 
     /// Tint for a chord's glyph: clear once accepted (matches `ReviewConfidenceTier.high`'s
     /// "nothing to flag" treatment), else driven by its confidence tier. Unmatched chords (no
     /// live event, e.g. an edited/legacy chart) never tint — there's nothing to accept/drag.
     private func chordTint(at index: Int) -> Color {
+        guard showsReviewAffordances else { return .clear }
         guard let event = chordEvent(at: index), !event.accepted else { return .clear }
         return ReviewConfidenceTier(event.confidence).tint
     }
@@ -3946,60 +4288,27 @@ private struct ChordProPreviewLineView: View {
         rowDownbeatSeconds ?? rhythmicWords.first?.start ?? rowStartTime
     }
 
-    /// Left px of the shared downbeat column (the pickup gutter width). Zero without a grid.
+    /// Left px of this row's downbeat column — the pickup gutter width. Zero without a grid, and
+    /// zero on any row whose first sound lands on the downbeat.
+    ///
+    /// ALWAYS an exact integer multiple of `pixelsPerBeat`, because `ChartPickupGutter` hands this
+    /// row a whole number of beats. That is the whole design: it is what lets the gutter differ
+    /// between rows without breaking the page's beat columns.
+    ///
+    /// A CONTINUOUS per-row gutter was tried on 2026-08-07 and reverted within the hour — it put
+    /// each downbeat at an arbitrary sub-beat x, so beat dots and barlines no longer lined up down
+    /// the page (Eric: "I still see uneven beats at the start of the lines"). A SONG-LEVEL gutter
+    /// was then specced and measured before being built: every song in the library has some row
+    /// with a 1.6–2.1 beat pickup at every bar phase, so the song-level maximum pins to the
+    /// 2-beat cap and renders identically to the flat gutter it replaces. Whole-beat
+    /// quantisation is what makes per-row safe; do not un-quantise it.
+    ///
+    /// Derived by dividing back out of `gutterSeconds` and multiplying by `pixelsPerBeat` rather
+    /// than by scaling seconds directly, so the multiple stays exact in floating point.
     private var gutterPx: CGFloat {
-        guard rowDownbeatSeconds != nil else { return 0 }
-        // CONSTANT across every row, and it has to be.
-        //
-        // Sizing this to each row's OWN pickup was tried on 2026-08-07 and REVERTED within the
-        // hour: it put every row's downbeat at a different x, so the beat columns no longer lined
-        // up down the page (Eric: "I still see uneven beats at the start of the lines"). The
-        // shared downbeat column is the entire reason `metricX` pins the downbeat to `gutterPx` —
-        // a per-row gutter silently destroys it.
-        //
-        // The open problem this leaves is the one that prompted the attempt: a song whose first
-        // sound is on beat one still draws two beats of blank gutter in front of it. The fix for
-        // that is a gutter computed once per SONG (the largest real pickup any row needs, else
-        // zero) rather than per row — uniform by construction, and no wasted space when nothing
-        // needs it. That needs the same song-level plumbing `beatsPerLine` uses and is not done
-        // yet; a per-row value is NOT a valid shortcut to it.
-        return max(0, CGFloat(gutterSeconds) * pixelsPerSecond)
-    }
-
-    /// Retained for the song-level gutter work described above: the room this row genuinely needs
-    /// in front of its downbeat, or 0. Leading SILENCE is not content — the song's first row
-    /// begins at 0:00 while its first sound can be a second later, and reserving for that is what
-    /// pushed the opening chord off the left edge.
-    private var requiredPickupSeconds: TimeInterval {
-        guard let downbeat = rowDownbeatSeconds else { return 0 }
-        // Reserve only what this row's ACTUAL pickup needs, never a flat two beats.
-        //
-        // The gutter exists so anacrusis content renders to the LEFT of the downbeat instead of
-        // clipping. It used to be reserved unconditionally, which meant every row — including the
-        // song's very first — drew its downbeat two beats in, with nothing in front of it. A song
-        // that opens with a chord on beat one therefore appeared to start two beats late (Eric, on
-        // Doc Holiday, whose first chord is at beat index 0.00). The blank gutter WAS the offset.
-        //
-        // A row with nothing before its downbeat now gets no gutter at all and starts flush left;
-        // a row with a real pickup gets exactly as much room as that pickup occupies, capped at
-        // the old two beats so a long lead-in still cannot push the shared column off-screen.
-        // The row's nominal START is deliberately NOT counted here. A row can begin in silence —
-        // the song's first row starts at 0:00 while the first sound is a second later — and
-        // reserving gutter for that silence pushes the opening chord away from the left edge,
-        // which is the very thing this is meant to prevent (Eric: the first D "is the very first
-        // sound of the song", so it belongs at the left edge). Leading audio is represented by
-        // `leadingMelodyPeaks`; when there are none, there is nothing in front of the downbeat to
-        // make room for, whatever the row's nominal start says.
-        let leadingAudioStart =
-            leadingMelodyPeaks.isEmpty ? nil : downbeat - leadingMelodySeconds
-        let earliest = [
-            rhythmicWords.first?.start,
-            rowChordTimes.min(),
-            leadingAudioStart,
-        ]
-        .compactMap { $0 }.min()
-        guard let earliest, earliest < downbeat else { return 0 }
-        return min(downbeat - earliest, gutterSeconds)
+        guard rowDownbeatSeconds != nil, beatLengthSeconds > 0, gutterSeconds > 0 else { return 0 }
+        let beats = (gutterSeconds / beatLengthSeconds).rounded()
+        return max(0, CGFloat(beats) * pixelsPerBeat)
     }
 
     /// Width of one beat. This is THE unit of the chart: beats are equidistant by construction, so
@@ -4094,6 +4403,7 @@ private struct ChordProPreviewLineView: View {
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(x: monospaceChordX(chord, at: index))
                     .onTapGesture {
+                        guard showsReviewAffordances else { return }
                         if let event = chordEvent(at: index) {
                             onToggleChordAccepted(event.id)
                         }
@@ -4167,7 +4477,14 @@ private struct ChordProPreviewLineView: View {
     /// old column-fraction-of-text positioning when times aren't available 1:1, or off the
     /// rhythmic axis entirely (monospace mode, no duration).
     private func monospaceChordX(_ chord: ChordProPreviewChord, at index: Int) -> CGFloat {
+        // The times must pair 1:1 with the rendered chords, exactly as `rhythmicChordXs` requires
+        // on sung rows. A bounds check alone was not enough: `chordOnlyLine` REPRINTS a sustained
+        // chord once per bar (`| [C] | [C] | [F] |`), while `chordTimes` carries only the real
+        // events — so token 1, the bar-2 sustain of C, was drawn at F's time, and every token past
+        // the end of the shorter array silently fell through to a different axis. That fires on
+        // almost every intro, outro, and break with a chord held longer than a bar.
         if isInstrumentalLine, rhythmicSpacing, lineDuration > 0,
+            rowChordTimes.count == line.chords.count,
             rowChordTimes.indices.contains(index)
         {
             // Through the row ruler, same as a word on a sung row — a chord at time t sits at
@@ -4322,8 +4639,7 @@ private struct ChordProPreviewLineView: View {
         // Positioned bass-note row (when present) sits between the reserve and the chords;
         // chords/words shift down by this amount so nothing overlaps.
         let bassReserve: CGFloat = bassXs.isEmpty ? 0 : bassRowReserve
-        let totalWidth =
-            (xs.last ?? 0) + rhythmicWordWidth(at: max(words.count - 1, 0)) + characterWidth
+        let totalWidth = rhythmicFrameWidth
         let contentHeight = contentBandHeight + topReserve + bassReserve
         let dotSize = scale.scaled(3.5)
         return ZStack(alignment: .topLeading) {
@@ -4626,7 +4942,15 @@ private struct ChordProPreviewLineView: View {
         if lineDuration > 0 {
             end = max(end, rowRuler.x(atTime: rowStartTime + lineDuration))
         }
-        return end
+        return max(end, referenceFrameEndX)
+    }
+
+    /// Right edge of the row's reference frame: pickup gutter plus one phrase period.
+    private var referenceFrameEndX: CGFloat {
+        ChordProPreviewLineLayout.referenceFrameEndX(
+            gutterPx: gutterPx,
+            reservedGutterPx: maximumGutterPx,
+            phraseWidth: phraseWidth)
     }
 
     /// x of each bar downbeat across this line's rendered width, on the shared metric grid — for
@@ -4683,6 +5007,26 @@ private struct ChordProPreviewLineView: View {
     /// Right edge of this row's rendered content, used to tell whether it overruns its phrase frame.
     private var rhythmicContentWidth: CGFloat {
         (rhythmicWordXs.last ?? 0) + rhythmicWordWidth(at: max(rhythmicWords.count - 1, 0))
+    }
+
+    /// The width SwiftUI must reserve for a rhythmic row. `rhythmicContentWidth` remains the lyric's
+    /// measured span for short/long verdicts; this presentation width also reserves the reference
+    /// phrase frame so short rows do not collapse to a tiny island inside a wide viewport.
+    private var rhythmicFrameWidth: CGFloat {
+        let wordExtent = rhythmicContentWidth + characterWidth
+        let chordExtent =
+            zip(rhythmicChordXs, line.chords)
+            .map { pair in pair.0 + CGFloat(pair.1.name.count) * characterWidth }
+            .max() ?? 0
+        let bassExtent =
+            zip(rhythmicBassXs, rowBassNotes)
+            .map { pair in pair.0 + CGFloat(pair.1.name.count) * characterWidth }
+            .max() ?? 0
+        return ChordProPreviewLineLayout.rhythmicFrameWidth(
+            wordExtent: wordExtent,
+            chordExtent: chordExtent + characterWidth,
+            bassExtent: bassExtent + characterWidth,
+            rowContentEndX: rowContentEndX)
     }
 
     /// How many phrases this row's content actually spans. A row materially past a whole number is
@@ -4829,6 +5173,7 @@ private struct ChordProPreviewLineView: View {
                         // typeset over words, not seconds), so only tap-to-accept is offered
                         // here — free-timestamp drag needs rhythmic mode's real time axis.
                         .onTapGesture {
+                            guard showsReviewAffordances else { return }
                             if let event = chordEvent(at: index) {
                                 onToggleChordAccepted(event.id)
                             }

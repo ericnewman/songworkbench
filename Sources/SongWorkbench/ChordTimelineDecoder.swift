@@ -55,10 +55,19 @@ struct ChordTimelineDecoder: Sendable {
     /// Floor on the COMBINED (metric × onset) discount, as a fraction of the base penalty —
     /// stacked discounts must never make switching effectively free.
     var minimumPenaltyFraction: Float = 0.35
-    /// Evidence mass assigned to the no-chord state in every window. Windows whose total
-    /// label evidence is comparable to this floor decode as "no chord" and emit nothing
-    /// (the previous chord sustains).
-    var noChordFloor: Float = 0.5
+    /// Evidence assigned to the no-chord state in every window, on a PER-FRAME scale. Windows
+    /// whose mean label evidence is comparable to this floor decode as "no chord" and emit
+    /// nothing (the previous chord sustains).
+    ///
+    /// 0.07, down from 0.5, because the quantity it is compared against changed meaning. Window
+    /// scores are confidence SUMS, so they scale with frames-per-window and therefore with
+    /// tempo; comparing an absolute floor against them made the no-chord boundary the only
+    /// tempo-sensitive decision in the Viterbi — the same evidence ratio emitted a chord at
+    /// 60 BPM and dropped it at 180. `decode` now divides by the window's frame count, and this
+    /// constant is the old 0.5 divided by a typical ~7-frame window (a 94 BPM beat at the
+    /// 92.9 ms chroma hop), so behaviour at ordinary tempi is preserved while fast songs stop
+    /// losing chords to the floor.
+    var noChordFloor: Float = 0.07
     /// Frames below this confidence are ignored, matching `ChordEventReducer`.
     var minimumConfidence: Float = 0.45
 
@@ -179,6 +188,73 @@ struct ChordTimelineDecoder: Sendable {
         /// Mean UNSCALED frame confidence per label, reported on emitted events so the
         /// persisted confidence keeps its original meaning for thresholds and UI.
         let meanRawConfidence: [String: Float]
+        /// Frames pooled into this window. `scores` are sums over these, so anything comparing
+        /// them against an absolute constant must divide by this first — see the no-chord
+        /// emission in `decode`.
+        let frameCount: Int
+    }
+
+    /// Extends a beat grid BACKWARD so it covers audio that starts before the first beat.
+    ///
+    /// `DrumBeatGrid.beatTimes` deliberately drops every beat before the first drum onset — for a
+    /// click track that is right, since the band has not come in yet. But the same grid is the
+    /// DECODE grid, and `windowEvidence` only builds windows between consecutive beats, silently
+    /// discarding observations before `beatTimes[0]`. A song with a solo-guitar intro therefore
+    /// decoded to NO chords at all until the drums entered.
+    ///
+    /// Beats are extrapolated at the grid's own median interval, so the added beats stay in
+    /// phase with the measured ones. Only the decode grid is extended; `document.beatTimes` — and
+    /// so the click track and every chart element — keeps the drum-locked start.
+    static func extendedBackward(
+        _ beatTimes: [TimeInterval],
+        toCover earliestTime: TimeInterval
+    ) -> [TimeInterval] {
+        guard beatTimes.count >= 2, let first = beatTimes.first, earliestTime < first else {
+            return beatTimes
+        }
+        var intervals: [TimeInterval] = []
+        for index in 0..<(beatTimes.count - 1) {
+            let step = beatTimes[index + 1] - beatTimes[index]
+            if step > 0 { intervals.append(step) }
+        }
+        guard !intervals.isEmpty else { return beatTimes }
+        intervals.sort()
+        let interval = intervals[intervals.count / 2]
+        guard interval > 0 else { return beatTimes }
+
+        var prefix: [TimeInterval] = []
+        var time = first - interval
+        // Capped so a degenerate interval can never spin this loop.
+        while time >= earliestTime, prefix.count < 4096 {
+            prefix.append(time)
+            time -= interval
+        }
+        return prefix.reversed() + beatTimes
+    }
+
+    /// Splits each beat interval into `subdivision` equal windows, so the decoder can resolve a
+    /// chord change that lands inside a beat.
+    ///
+    /// The decoder emits at most one chord per window, so window length IS the shortest chord the
+    /// pipeline can express — on the raw beat grid that floor is one beat, and an eighth-note
+    /// change is simply not representable no matter how permissive later filters are.
+    ///
+    /// Only the DECODE grid is subdivided. Everything downstream — onset snapping, the duration
+    /// filter, the chart's bar lines, playback — stays on the real beat grid, because those are
+    /// about beats, not about decode resolution.
+    static func subdivided(_ beatTimes: [TimeInterval], by subdivision: Int) -> [TimeInterval] {
+        guard subdivision > 1, beatTimes.count >= 2 else { return beatTimes }
+        var result: [TimeInterval] = []
+        result.reserveCapacity((beatTimes.count - 1) * subdivision + 1)
+        for index in 0..<(beatTimes.count - 1) {
+            let start = beatTimes[index]
+            let step = (beatTimes[index + 1] - start) / Double(subdivision)
+            for step_index in 0..<subdivision {
+                result.append(start + step * Double(step_index))
+            }
+        }
+        result.append(beatTimes[beatTimes.count - 1])
+        return result
     }
 
     static func windowEvidence(
@@ -209,7 +285,13 @@ struct ChordTimelineDecoder: Sendable {
             let means = sums.reduce(into: [String: Float]()) { result, entry in
                 result[entry.key] = entry.value / Float(max(counts[entry.key] ?? 1, 1))
             }
-            windows.append(WindowEvidence(start: start, scores: scores, meanRawConfidence: means))
+            windows.append(
+                WindowEvidence(
+                    start: start,
+                    scores: scores,
+                    meanRawConfidence: means,
+                    frameCount: counts.values.reduce(0, +)
+                ))
         }
         return windows
     }
@@ -300,12 +382,28 @@ struct ChordTimelineDecoder: Sendable {
         for (windowIndex, window) in windows.enumerated() {
             let switchPenalty =
                 windowIndex < switchPenalties.count ? switchPenalties[windowIndex] : 0
-            let total = window.scores.values.reduce(0, +)
+            let rawTotal = window.scores.values.reduce(0, +)
+            // Normalize the window's evidence to a PER-FRAME scale before comparing it against
+            // `noChordFloor`.
+            //
+            // `scores` are confidence SUMS, so they grow with frames-per-window, which grows as
+            // tempo falls. `noChordFloor` is an absolute constant. Comparing the two directly
+            // made the only tempo-sensitive decision in the Viterbi the one that decides whether
+            // a chord exists at all: at 60 BPM a window holds ~10.8 frames and a label carrying
+            // two thirds of the evidence comfortably beats no-chord, while at 180 BPM the same
+            // ratio over ~3.6 frames LOSES to it and the decoder emits nothing. Same music, same
+            // evidence ratio, opposite outcome.
+            //
+            // Dividing both the total and each label by the frame count leaves every
+            // label-vs-label comparison untouched (they already shared the divisor) and makes
+            // only the no-chord boundary tempo-invariant.
+            let frameScale = 1 / Float(max(window.frameCount, 1))
+            let total = rawTotal * frameScale
             var emission = [Float](repeating: 0, count: stateCount)
             if total > 0 {
                 emission[0] = log(noChordFloor / (total + noChordFloor))
                 for (index, label) in labels.enumerated() {
-                    let score = max(window.scores[label] ?? 0, 1e-3)
+                    let score = max((window.scores[label] ?? 0) * frameScale, 1e-3)
                     emission[index + 1] = log(score / (total + noChordFloor))
                 }
             } else {

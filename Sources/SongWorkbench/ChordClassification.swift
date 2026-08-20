@@ -130,11 +130,23 @@ struct ChordAnalysisPipeline: Sendable {
     /// Root-weight passed to the classifier; tunable for trial-and-error comparisons.
     var rootWeight: Float = ChordClassifier().rootWeight
 
+    /// Per-frame chord labels together with the chroma vectors they were classified from.
+    /// The chroma is the raw pitch-content evidence: `ChromaChangePointDetector` reads it to find
+    /// where the harmony genuinely CHANGES, which a sequence of labels can only approximate.
+    struct FrameAnalysis: Sendable {
+        let observations: [ChordObservation]
+        let chroma: [ChromaVector]
+    }
+
     func analyze(samples: [Float]) throws -> [ChordObservation] {
+        try analyzeFrames(samples: samples).observations
+    }
+
+    func analyzeFrames(samples: [Float]) throws -> FrameAnalysis {
         let framer = MonoSampleFramer(configuration: configuration)
         let startIndices = framer.frameStartIndices(forSampleCount: samples.count)
         let frameCount = startIndices.count
-        guard frameCount > 0 else { return [] }
+        guard frameCount > 0 else { return FrameAnalysis(observations: [], chroma: []) }
 
         let spectrumAnalyzer = MagnitudeSpectrumAnalyzer()
         let chromaAnalyzer = ChromaAnalyzer()
@@ -189,8 +201,8 @@ struct ChordAnalysisPipeline: Sendable {
                         sampleRate: sampleRate,
                         transform: transform
                     )
-                    let observation = classifier.classify(chromaAnalyzer.analyze(spectrum))
-                    results.store(observation, at: index)
+                    let chroma = chromaAnalyzer.analyze(spectrum)
+                    results.store(classifier.classify(chroma), chroma: chroma, at: index)
                 }
             } catch {
                 errorBox.record(error)
@@ -382,18 +394,24 @@ struct BassInformedChordRefiner: Sendable {
 /// exactly once by exactly one chunk, so the unsynchronized element writes do not race.
 private final class ResultBuffer: @unchecked Sendable {
     private var storage: [ChordObservation?]
+    private var chromaStorage: [ChromaVector?]
 
     init(count: Int) {
         storage = Array(repeating: nil, count: count)
+        chromaStorage = Array(repeating: nil, count: count)
     }
 
-    func store(_ observation: ChordObservation, at index: Int) {
+    func store(_ observation: ChordObservation, chroma: ChromaVector, at index: Int) {
         storage[index] = observation
+        chromaStorage[index] = chroma
     }
 
-    /// Returns the fully-populated array. Only call after all chunks have completed successfully.
-    func finished() -> [ChordObservation] {
-        storage.map { $0! }
+    /// Returns the fully-populated arrays. Only call after all chunks have completed successfully.
+    func finished() -> ChordAnalysisPipeline.FrameAnalysis {
+        ChordAnalysisPipeline.FrameAnalysis(
+            observations: storage.map { $0! },
+            chroma: chromaStorage.map { $0! }
+        )
     }
 }
 

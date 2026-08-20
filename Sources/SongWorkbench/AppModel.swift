@@ -223,11 +223,20 @@ final class AppModel: ObservableObject {
     @Published var beatTimes: [TimeInterval] = [] {
         didSet { persistSelectedAnalysis() }
     }
-    /// The beat tracker's ORIGINAL tempo and grid for the selected song, captured before metrical
-    /// reconciliation and written back by `persistSelectedAnalysis`. The reconciler's input must
-    /// survive every save, or repeated loads compound their own output.
-    private var unreconciledEstimatedBPM: Double?
-    private var unreconciledBeatTimes: [TimeInterval]?
+    /// Audio placement evidence kept from the harmony stage, mirrored from the document so an
+    /// uploaded reference chart can be judged against the recording without re-analysing. Empty /
+    /// `nil` for songs analysed before these were recorded.
+    @Published private(set) var instrumentAttackOnsets: [TimeInterval]?
+    /// The song's ONE bar grid, from the harmony stage. Everything that needs to know which beat
+    /// is beat 1 reads this rather than estimating its own — see `SongBarGrid`.
+    @Published private(set) var barGrid: SongBarGrid?
+    @Published private(set) var harmonicChangePoints: [TimeInterval]?
+    @Published private(set) var frameChordObservations: [ChordObservation]?
+    /// The selected document's timing provenance, mirrored so `persistSelectedAnalysis` can
+    /// write it back: the beat tracker's raw answer (when a retune fired) and the
+    /// `AnalysisTimingPostPasses` stamp. See `PreReconciliationTiming`.
+    private var preReconciliationTiming: PreReconciliationTiming?
+    private var timingPostPassTag: String?
     /// Full audio duration from transcription (seconds), for intro/outro timeline bounds.
     @Published var sourceDuration: TimeInterval? {
         didSet { persistSelectedAnalysis() }
@@ -355,6 +364,42 @@ final class AppModel: ObservableObject {
         case .chordPro: "ChordPro"
         }
     }
+
+    static func waveformStemProgressMessage(for rawMessage: String) -> String {
+        switch rawMessage {
+        case StemSeparationProgress.Phase.refining.rawValue:
+            "Refining stems"
+        case StemSeparationProgress.Phase.separating.rawValue:
+            "Generating stems"
+        case StemSeparationProgress.Phase.writingOutputs.rawValue:
+            "Finalizing stems"
+        case "loadedFromCache":
+            "Loading saved stems"
+        case StemSeparationProgress.Phase.loadingModel.rawValue,
+            StemSeparationProgress.Phase.preparingAudio.rawValue:
+            "Preparing stems"
+        default:
+            "Preparing stems"
+        }
+    }
+
+    static func waveformStemProgress(
+        selectedSongID: Song.ID?,
+        currentAnalyzedSongID: Song.ID?,
+        isRunning: Bool,
+        progress: SongAnalysisPipelineProgress?
+    ) -> WaveformStemProgress? {
+        guard isRunning,
+            selectedSongID == currentAnalyzedSongID,
+            let progress,
+            progress.stage == .separation
+        else { return nil }
+        return WaveformStemProgress(
+            message: waveformStemProgressMessage(for: progress.message),
+            fractionCompleted: min(max(progress.stageFraction, 0), 1)
+        )
+    }
+
     static let accuracyDecodeSpeedDefaultsKey = "accuracyDecodeSpeed"
     /// Pitch-preserved playback-speed factor applied to the vocals stem before Whisper (Accuracy)
     /// transcription. < 1 slows the audio, which can improve recognition of fast / dense singing;
@@ -414,6 +459,7 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var songAnalysisProgress: SongAnalysisPipelineProgress?
     @Published private(set) var isSongAnalysisRunning = false
+    @Published private(set) var currentAnalyzedSongID: Song.ID?
     /// While "Re-analyze All Songs" runs, the song currently being processed and its position in
     /// the queue, so the progress UI can show "Re-analyzing 3 of 25: <title>". Nil otherwise.
     @Published private(set) var reanalyzeAllStatus: ReanalyzeAllStatus?
@@ -423,6 +469,21 @@ final class AppModel: ObservableObject {
         var total: Int
         var title: String
     }
+
+    struct WaveformStemProgress: Equatable {
+        let message: String
+        let fractionCompleted: Double
+    }
+
+    var waveformStemProgress: WaveformStemProgress? {
+        Self.waveformStemProgress(
+            selectedSongID: selectedSongID,
+            currentAnalyzedSongID: currentAnalyzedSongID,
+            isRunning: isSongAnalysisRunning,
+            progress: songAnalysisProgress
+        )
+    }
+
     @Published private(set) var activePlaybackSource = PlaybackSource.recording
     @Published private(set) var modelPackageStatuses: [String: ModelPackageStatus] = [:]
     @Published private(set) var modelInstallProgress: [String: Double] = [:]
@@ -432,6 +493,16 @@ final class AppModel: ObservableObject {
     }
 
     /// Opt-in Advanced Desktop stem refinement (DrumSep children, future guitar parts).
+    /// Smaller separation segment: much less memory, weaker stems. See
+    /// `AnalysisCapabilityProfile.prefersLowMemorySeparation`.
+    var lowMemorySeparationEnabled: Bool {
+        get { AnalysisCapabilityProfile.prefersLowMemorySeparation }
+        set {
+            AnalysisCapabilityProfile.prefersLowMemorySeparation = newValue
+            objectWillChange.send()
+        }
+    }
+
     var advancedStemRefinementEnabled: Bool {
         get { AnalysisCapabilityProfile.prefersAdvancedStemRefinement }
         set {
@@ -733,7 +804,8 @@ final class AppModel: ObservableObject {
                     confidenceThreshold: chordConfidenceThreshold,
                     beatTimes: beatTimes,
                     sourceDuration: sourceDuration,
-                    untranscribedVocalRegions: untranscribedVocalRegions
+                    untranscribedVocalRegions: untranscribedVocalRegions,
+                    barGrid: barGrid
                 ),
                 comment: ChordProDraftBuilder.bassNoteDraftComment,
                 chordLabel: { $0.chord }
@@ -748,7 +820,8 @@ final class AppModel: ObservableObject {
                 confidenceThreshold: chordConfidenceThreshold,
                 beatTimes: beatTimes,
                 sourceDuration: sourceDuration,
-                untranscribedVocalRegions: untranscribedVocalRegions
+                untranscribedVocalRegions: untranscribedVocalRegions,
+                barGrid: barGrid
             ),
             comment: ChordProDraftBuilder.bassNoteDraftComment,
             chordLabel: { BassNote(chordSymbol: $0.chord)?.label }
@@ -818,6 +891,10 @@ final class AppModel: ObservableObject {
         seekActivePlayback(to: min(max(activePlaybackTime + interval, 0), activePlaybackDuration))
     }
 
+    /// Package IDs currently being re-verified, so the row can show it is working. Verification
+    /// re-hashes the whole package and can take seconds on the larger models.
+    @Published var modelVerifyInProgress: Set<String> = []
+
     func installModelPackage(_ descriptor: ModelPackageDescriptor) {
         modelInstallTasks[descriptor.id]?.cancel()
         modelInstallProgress[descriptor.id] = 0
@@ -863,15 +940,44 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Re-hashes the installed package against its manifest and REPORTS the outcome. Reporting is
+    /// the point: verification re-reads hundreds of megabytes and then writes back a status that is
+    /// usually identical to the one already on screen, so without a message the button is
+    /// indistinguishable from a no-op (Eric: "Verify does nothing"). It also clears a stale install
+    /// error, which previously only Install-success and Remove-success did — leaving a failed
+    /// install's banner stuck on screen with no obvious way to dismiss it.
     func verifyModelPackage(_ descriptor: ModelPackageDescriptor) {
+        modelVerifyInProgress.insert(descriptor.id)
         Task { [weak self] in
             guard let self else { return }
-            modelPackageStatuses[descriptor.id] = await modelPackageManager.status(for: descriptor)
+            let status = await modelPackageManager.status(for: descriptor)
+            modelPackageStatuses[descriptor.id] = status
+            modelVerifyInProgress.remove(descriptor.id)
+            switch status {
+            case .installed:
+                projectErrorMessage = nil
+            case .available:
+                projectErrorMessage =
+                    "\(descriptor.displayName) is not installed."
+            case .invalid(let reason):
+                projectErrorMessage = "\(descriptor.displayName) failed verification: \(reason)"
+            }
         }
+    }
+
+    /// User-initiated analysis stops audible playback (Eric: "if a user starts a new analysis
+    /// during playback, playback should stop"). Pauses BOTH services — whichever backs
+    /// `activePlaybackSource` is the audible one; pausing the other is a harmless no-op.
+    /// Background queue drains (auto-analysis after an import landing mid-song) deliberately
+    /// do NOT call this, so listening isn't interrupted by background work.
+    private func stopPlaybackForAnalysis() {
+        playback.pause()
+        stemPlayback.pause()
     }
 
     func analyzeSelectedSong(replaceExistingChordPro: Bool = false) {
         guard let song = selectedSong else { return }
+        stopPlaybackForAnalysis()
         runAnalysis(
             for: song,
             stages: Set(SongAnalysisStage.allCases),
@@ -915,6 +1021,7 @@ final class AppModel: ObservableObject {
     /// reverts to the raw ASR lines.
     func applyReferenceLyrics() {
         guard let song = selectedSong else { return }
+        stopPlaybackForAnalysis()
         runAnalysis(
             for: song,
             stages: [.transcription, .chordPro],
@@ -944,6 +1051,7 @@ final class AppModel: ObservableObject {
     /// a bulk re-analyze and running Analyze again on it individually will populate its blend
     /// candidates.
     func reanalyzeAllSongs() {
+        stopPlaybackForAnalysis()
         enqueueForAnalysis(songs)
     }
 
@@ -956,8 +1064,51 @@ final class AppModel: ObservableObject {
     /// `beginAnalysis`'s completion always calls `startNextQueuedAnalysisIfIdle()` after
     /// handling its own outcome, so whichever analysis finishes next — queue-driven or a direct
     /// `analyzeSelectedSong` call — automatically picks up anything still waiting here.
-    private var analysisQueue: [Song] = []
+    @Published private var analysisQueue: [Song] = []
     private var analysisQueueCompletedCount = 0
+
+    /// What the library list's status icon shows for one song: which analysis artifacts exist,
+    /// and whether the song is analyzing now or waiting its turn in the queue.
+    struct SongLibraryStatus {
+        let hasStems: Bool
+        let hasLyrics: Bool
+        let hasChords: Bool
+        let hasChart: Bool
+        let isActive: Bool
+
+        var isComplete: Bool { hasStems && hasLyrics && hasChords && hasChart }
+        var hasAny: Bool { hasStems || hasLyrics || hasChords || hasChart }
+
+        var iconSystemName: String {
+            if isActive { return "arrow.triangle.2.circlepath" }
+            if isComplete { return "checkmark.circle.fill" }
+            if hasAny { return "circle.lefthalf.filled" }
+            return "circle.dotted"
+        }
+
+        var helpText: String {
+            if isActive { return "Analyzing…" }
+            func mark(_ has: Bool) -> String { has ? "✓" : "—" }
+            return "Stems \(mark(hasStems)) · Lyrics \(mark(hasLyrics)) · "
+                + "Chords \(mark(hasChords)) · Chart \(mark(hasChart))"
+        }
+    }
+
+    func libraryStatus(for songID: Song.ID) -> SongLibraryStatus {
+        let document = analysisBySongID[songID]
+        // The running song stays at the queue's head until it completes; a direct
+        // "Analyze Song" run has no queue entry, so fall back to the selected song.
+        let isActive =
+            analysisQueue.contains { $0.id == songID }
+            || (isSongAnalysisRunning && analysisQueue.isEmpty && selectedSongID == songID)
+        return SongLibraryStatus(
+            hasStems: document?.stems != nil,
+            hasLyrics: !(document?.lyrics.isEmpty ?? true),
+            hasChords: !(document?.chords.isEmpty ?? true),
+            hasChart: !(document?.chordProSource.isEmpty ?? true),
+            isActive: isActive
+        )
+    }
 
     /// Adds songs to `analysisQueue` (skipping ones already queued) and starts draining it if
     /// nothing is currently analyzing. Never interrupts an in-flight analysis — new arrivals
@@ -1030,6 +1181,7 @@ final class AppModel: ObservableObject {
         // off an iCloud download) and abort so nothing is half-written — the user retries once
         // the file is available.
         isSongAnalysisRunning = true
+        currentAnalyzedSongID = song.id
         songAnalysisProgress = SongAnalysisPipelineProgress(
             stage: nil, completedStages: 0, totalStages: stages.count,
             stageFraction: 0, message: "Checking source file")
@@ -1051,6 +1203,7 @@ final class AppModel: ObservableObject {
                     runLyricBlend: runLyricBlend, completion: completion)
             case .unavailable(let message):
                 self.isSongAnalysisRunning = false
+                self.currentAnalyzedSongID = nil
                 self.projectErrorMessage = message
                 completion?(false)
             }
@@ -1137,7 +1290,7 @@ final class AppModel: ObservableObject {
             request: request,
             onStatuses: { [weak self] runID, statuses in
                 guard self?.activeAnalysisRunID == runID else { return }
-                for (id, status) in statuses { self?.modelPackageStatuses[id] = status }
+                self?.noteModelStatuses(statuses)
             },
             onProgress: { [weak self] runID, value in
                 guard self?.activeAnalysisRunID == runID,
@@ -1185,15 +1338,23 @@ final class AppModel: ObservableObject {
                     // often isn't).
                     scheduleSave()
                     isSongAnalysisRunning = false
+                    currentAnalyzedSongID = nil
                     cancelled = result.wasCancelled
                     if !result.wasCancelled {
-                        projectErrorMessage = nil
+                        // A stage that fails does NOT fail the run: it returns a `.failed` stage
+                        // record and the pipeline reports success. Clearing the error here was
+                        // what made a stem-separation failure — an ONNX model that would not
+                        // load, say — completely silent: the run "succeeded", the message was
+                        // wiped, and the only trace was a stage chip the user had no reason to
+                        // inspect. Report what actually broke instead.
+                        projectErrorMessage = Self.failedStageMessage(in: result.document)
                     }
                     if runLyricBlend, !result.wasCancelled, stages.contains(.transcription) {
                         runLyricBlendPasses(for: song, primaryDocument: result.document)
                     }
                 case .failure(let error):
                     isSongAnalysisRunning = false
+                    currentAnalyzedSongID = nil
                     cancelled = error is CancellationError
                     if !(error is CancellationError) {
                         projectErrorMessage =
@@ -1304,6 +1465,10 @@ final class AppModel: ObservableObject {
             let oldLyrics = updated.lyrics
             updated.lyrics = TimedLyricSegment.reconciled(
                 newSegments: LyricBlendRowBuilder.effectiveLyrics(from: rows), against: oldLyrics)
+            // Blend rewrote the lyrics outside the pipeline; re-derive the displayed timing
+            // (regroup/reconcile/recut, from the raw beats it restores itself) before the chart
+            // is rebuilt from these values.
+            AnalysisTimingPostPasses.apply(to: &updated)
             // The chart must follow the lyrics: this overwrite previously left the GENERATED
             // ChordPro draft stale, so the chart kept showing pre-blend run-on lines after
             // the lyric list was already fixed (field case: chart line 12 "settle down,
@@ -1325,7 +1490,9 @@ final class AppModel: ObservableObject {
                         beatTimes: updated.beatTimes,
                         sourceDuration: updated.sourceDuration,
                         untranscribedVocalRegions: updated.untranscribedVocalRegions,
-                        estimatedKey: updated.estimatedKey
+                        estimatedKey: updated.estimatedKey,
+                        barGrid: updated.barGrid,
+                        bassNotes: updated.bassNotes
                     ))
             }
             self.analysisBySongID[songID] = updated
@@ -1367,7 +1534,7 @@ final class AppModel: ObservableObject {
             analysisCoordinator.run(
                 request: request,
                 onStatuses: { [weak self] _, statuses in
-                    for (id, status) in statuses { self?.modelPackageStatuses[id] = status }
+                    self?.noteModelStatuses(statuses)
                 },
                 onProgress: { _, _ in },
                 onFinish: { _, outcome in
@@ -1503,9 +1670,10 @@ final class AppModel: ObservableObject {
             projectErrorMessage = "No supported audio files were found."
             for url in accessedURLs { url.stopAccessingSecurityScopedResource() }
             return
-        } else if imported.count < candidates.count {
-            projectErrorMessage = "Some files use unsupported audio formats."
         }
+        // Unsupported files are reported in the end-of-batch summary below instead of as an
+        // error banner — a folder drop legitimately contains artwork/text beside the audio.
+        let unsupportedCount = max(candidates.count - imported.count, 0)
         // Copy each source into local app storage and import the LOCAL copy, so analysis never
         // depends on a cloud provider (iCloud / Google Drive) that serves online-only files or
         // refuses a direct open() with EPERM. iCloud items are downloaded first. A single
@@ -1519,51 +1687,166 @@ final class AppModel: ObservableObject {
                 for url in accessedURLs { url.stopAccessingSecurityScopedResource() }
             }
             guard let self else { return }
-            var localizedSongs: [Song] = []
+            // IDs present before this batch, kept unmutated so `refreshedExisting` below can still
+            // tell "already in the library" from "added by this batch".
+            let originalIDs = Set(self.songs.map(\.id))
+            var seenIDs = originalIDs
+            var newSongs: [Song] = []
+            var refreshedSongs: [Song] = []
             var firstFailure: String?
-            for (index, song) in imported.enumerated() {
-                // Surface the copy/download step — an iCloud item can take a while to
-                // materialize and the song only appears in the list afterwards.
-                self.importStatus =
-                    imported.count == 1
-                    ? "Importing “\(song.title)”…"
-                    : "Importing \(index + 1) of \(imported.count): \(song.title)…"
-                switch await AppModel.localizedSource(for: song.url) {
-                case .success(let localURL):
-                    localizedSongs.append(Song(url: localURL))
-                case .failure(let reason):
-                    AppModel.importLog.error(
-                        "importSongs: localization FAILED for \(song.title, privacy: .public): \(reason, privacy: .public)"
-                    )
-                    if firstFailure == nil { firstFailure = reason }
+            var completed = 0
+            // Content-level duplicate guard: the same AUDIO dropped from a different folder
+            // gets a different local copy (copies are keyed by original path) and so a
+            // different song id — only its bytes give it away. Existing library files are
+            // snapshotted here; each import is digested off-main in its localization task.
+            let existingLibraryFiles = self.songs.map(\.url)
+            var acceptedDigests: Set<String> = []
+            var skippedDuplicates = 0
+            // Where this batch's songs begin, and which picked indices have landed so far, so
+            // concurrent completions still slot into the user's picked order.
+            let batchInsertionBase = self.songs.count
+            var insertedBatchIndices: [Int] = []
+
+            // Localize CONCURRENTLY. Each file's copy is keyed by a hash of its own original
+            // path, so no two sources ever contend for a destination — but the loop used to run
+            // them strictly one after another, so a batch cost the SUM of every download, copy,
+            // and content hash. Bounded rather than unbounded: a wide fan-out of simultaneous
+            // iCloud downloads and whole-file copies is slower than a few at a time, not faster.
+            let maximumConcurrentImports = 4
+            await withTaskGroup(
+                of: (
+                    index: Int, song: Song, outcome: LocalizedSourceOutcome,
+                    digest: String?, duplicateOfTitle: String?
+                ).self
+            ) { group in
+                var next = 0
+                func startNext() {
+                    guard next < imported.count else { return }
+                    let song = imported[next]
+                    let index = next
+                    next += 1
+                    group.addTask {
+                        let outcome = await AppModel.localizedSource(for: song.url)
+                        var digest: String?
+                        var duplicateOfTitle: String?
+                        if case .success(let localURL, _) = outcome {
+                            (digest, duplicateOfTitle) = AppModel.importDuplicateProbe(
+                                localURL: localURL, existing: existingLibraryFiles)
+                        }
+                        return (index, song, outcome, digest, duplicateOfTitle)
+                    }
+                }
+                for _ in 0..<min(maximumConcurrentImports, imported.count) { startNext() }
+
+                while let result = await group.next() {
+                    let song = result.song
+                    completed += 1
+                    // Progress by COMPLETION count — with several in flight, an index would jump
+                    // around and read as a bug.
+                    self.importStatus =
+                        imported.count == 1
+                        ? "Importing “\(song.title)”…"
+                        : "Imported \(completed) of \(imported.count)…"
+                    startNext()
+                    switch result.outcome {
+                    case .success(let localURL, let refreshed):
+                        let localSong = Song(url: localURL)
+                        if refreshed { refreshedSongs.append(localSong) }
+                        // Show each song the moment IT lands, rather than holding the whole batch
+                        // back until the last file finishes — a ten-file import previously showed
+                        // nothing at all until every copy completed.
+                        if !seenIDs.contains(localSong.id) {
+                            // Same bytes as an existing library song, or as a file accepted
+                            // earlier in THIS batch (two copies dropped together): skip it and
+                            // say so in the summary rather than growing a twin.
+                            if let duplicateOfTitle = result.duplicateOfTitle {
+                                skippedDuplicates += 1
+                                AppModel.importLog.log(
+                                    "importSongs: skipped \(song.title, privacy: .public) — same content as \(duplicateOfTitle, privacy: .public)"
+                                )
+                                continue
+                            }
+                            if let digest = result.digest,
+                                !acceptedDigests.insert(digest).inserted
+                            {
+                                skippedDuplicates += 1
+                                continue
+                            }
+                            seenIDs.insert(localSong.id)
+                            newSongs.append(localSong)
+                            // Land at the END of the library, in the order the user PICKED them
+                            // — not the order they happened to finish copying (localization runs
+                            // several at a time), and not alphabetically, which would silently
+                            // reshuffle a hand-ordered library on every import.
+                            let offset = insertedBatchIndices.filter { $0 < result.index }.count
+                            self.songs.insert(localSong, at: batchInsertionBase + offset)
+                            insertedBatchIndices.append(result.index)
+                            // Auto-select the first song of the batch as soon as it exists, on the
+                            // same terms as before: never while something is already analyzing (see
+                            // the note below on `resetSelectedSongProgressState`).
+                            if newSongs.count == 1, !self.isSongAnalysisRunning,
+                                selectImmediately || self.selectedSongID == nil
+                            {
+                                self.select(localSong)
+                            }
+                        }
+                    case .failure(let reason):
+                        AppModel.importLog.error(
+                            "importSongs: localization FAILED for \(song.title, privacy: .public): \(reason, privacy: .public)"
+                        )
+                        if firstFailure == nil { firstFailure = reason }
+                    }
                 }
             }
-            self.importStatus = nil
-            let existingIDs = Set(self.songs.map(\.id))
-            let newSongs = localizedSongs.filter { !existingIDs.contains($0.id) }
-            AppModel.importLog.log(
-                "importSongs: localized \(localizedSongs.count), new (non-duplicate) \(newSongs.count), list \(self.songs.count) → \(self.songs.count + newSongs.count)"
-            )
-            self.songs.append(contentsOf: newSongs)
-            self.songs.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-            // Auto-select is skipped while a song is already analyzing: `select()` calls
-            // `resetSelectedSongProgressState()`, which cancels whatever's currently in flight
-            // in `analysisCoordinator` (a single shared, one-at-a-time coordinator) — so forcing
-            // selection onto a just-dropped song would interrupt the song already in progress
-            // (Eric: "don't interrupt the song in process"). The new song still gets queued for
-            // analysis below; it just isn't auto-selected until analysis is idle again.
-            if let first = newSongs.first, !self.isSongAnalysisRunning,
-                selectImmediately || self.selectedSongID == nil
-            {
-                self.select(first)
+            // End-of-batch summary on the status line ("Added 11 songs · 1 duplicate skipped"),
+            // held a few seconds so a bulk drop always answers "what actually happened".
+            var summaryParts: [String] = [
+                newSongs.isEmpty
+                    ? "No new songs added"
+                    : "Added \(newSongs.count) song\(newSongs.count == 1 ? "" : "s")"
+            ]
+            if skippedDuplicates > 0 {
+                summaryParts.append(
+                    "\(skippedDuplicates) duplicate\(skippedDuplicates == 1 ? "" : "s") skipped")
             }
+            if unsupportedCount > 0 {
+                summaryParts.append("\(unsupportedCount) unsupported")
+            }
+            let summary = summaryParts.joined(separator: " · ")
+            self.importStatus = summary
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, self.importStatus == summary else { return }
+                self.importStatus = nil
+            }
+            AppModel.importLog.log(
+                "importSongs: new (non-duplicate) \(newSongs.count), skipped \(skippedDuplicates) duplicate(s), list now \(self.songs.count)"
+            )
+            // Auto-select happened per-song above, and is skipped while a song is already
+            // analyzing: `select()` calls `resetSelectedSongProgressState()`, which cancels
+            // whatever's currently in flight in `analysisCoordinator` (a single shared,
+            // one-at-a-time coordinator) — so forcing selection onto a just-dropped song would
+            // interrupt the song already in progress (Eric: "don't interrupt the song in
+            // process"). A new song still gets queued for analysis below; it just isn't
+            // auto-selected until analysis is idle again.
             if let firstFailure { self.projectErrorMessage = firstFailure }
             self.scheduleSave()
             // Newly imported songs go straight into the shared analysis queue (sequentially for
             // bulk imports), so a fresh song is ready to practice without another click — if
             // something else is already analyzing, these just wait their turn instead of being
             // dropped or interrupting it (see `enqueueForAnalysis`).
-            self.enqueueForAnalysis(newSongs)
+            // A re-imported source whose content changed at the SAME original path replaced
+            // its stale local copy in `localizedSource` — its song id is unchanged, so it was
+            // filtered out of `newSongs` above. Re-run its analysis (the content-keyed caches
+            // miss naturally on the new bytes) and reload playback if it's the selected song
+            // (skipped while analyzing — `select` would cancel the in-flight run).
+            let refreshedExisting = refreshedSongs.filter { originalIDs.contains($0.id) }
+            if let selected = self.selectedSong, !self.isSongAnalysisRunning,
+                refreshedExisting.contains(where: { $0.id == selected.id })
+            {
+                self.select(selected)
+            }
+            self.enqueueForAnalysis(newSongs + refreshedExisting)
         }
     }
 
@@ -1582,7 +1865,9 @@ final class AppModel: ObservableObject {
     }
 
     private enum LocalizedSourceOutcome: Sendable {
-        case success(URL)
+        /// `refreshed` is true when an EXISTING local copy was replaced because the source
+        /// at the same original path changed content — the caller must re-analyze.
+        case success(URL, refreshed: Bool)
         case failure(String)
     }
 
@@ -1598,7 +1883,7 @@ final class AppModel: ObservableObject {
         }
         // Already a local copy — nothing to do.
         if url.standardizedFileURL.path.hasPrefix(sourcesDirectory.standardizedFileURL.path) {
-            return .success(url)
+            return .success(url, refreshed: false)
         }
         // Materialize an iCloud item before copying (online-only files can't be read directly).
         if let values = try? url.resourceValues(forKeys: [
@@ -1631,15 +1916,69 @@ final class AppModel: ObservableObject {
             try fileManager.createDirectory(
                 at: destinationDirectory, withIntermediateDirectories: true)
             if fileManager.fileExists(atPath: destination.path) {
-                return .success(destination)
+                // The copy is keyed by the ORIGINAL path, so a changed file at the same path
+                // (e.g. re-exporting a new mix over the old name) must not serve the stale
+                // copy forever. Fast path: identical size + modification date (copyItem
+                // preserves both) means unchanged. Otherwise compare content hashes so a
+                // mere mtime touch doesn't force a spurious re-copy/re-analyze.
+                let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey]
+                let sourceValues = try? url.resourceValues(forKeys: keys)
+                let copyValues = try? destination.resourceValues(forKeys: keys)
+                let sameSize = sourceValues?.fileSize == copyValues?.fileSize
+                if sameSize,
+                    sourceValues?.contentModificationDate == copyValues?.contentModificationDate
+                {
+                    return .success(destination, refreshed: false)
+                }
+                if sameSize, let a = try? fileDigest(of: url),
+                    let b = try? fileDigest(of: destination), a == b
+                {
+                    return .success(destination, refreshed: false)
+                }
+                try fileManager.removeItem(at: destination)
+                try fileManager.copyItem(at: url, to: destination)
+                return .success(destination, refreshed: true)
             }
             try fileManager.copyItem(at: url, to: destination)
-            return .success(destination)
+            return .success(destination, refreshed: false)
         } catch {
             return .failure(
                 "“\(name)” couldn’t be copied to local storage: \(error.localizedDescription) "
                     + "If it’s in iCloud or Google Drive, make it available offline and re-import.")
         }
+    }
+
+    /// Digest of a freshly localized import plus, when its BYTES match an existing library
+    /// song, that song's title. Size-prefiltered so a batch only hashes existing files that
+    /// could possibly match. Runs off the main actor (inside the localization task group).
+    nonisolated private static func importDuplicateProbe(
+        localURL: URL, existing: [URL]
+    ) -> (digest: String?, duplicateOfTitle: String?) {
+        guard let digest = try? fileDigest(of: localURL) else { return (nil, nil) }
+        let size = try? localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        for candidate in existing
+        where candidate.standardizedFileURL != localURL.standardizedFileURL {
+            guard let size,
+                (try? candidate.resourceValues(forKeys: [.fileSizeKey]).fileSize) == size,
+                (try? fileDigest(of: candidate)) == digest
+            else { continue }
+            return (digest, Song(url: candidate).title)
+        }
+        return (digest, nil)
+    }
+
+    /// Streaming SHA-256 of a file, used only to disambiguate a same-size source whose
+    /// modification date drifted from the local copy (see `localizedSource`).
+    nonisolated private static func fileDigest(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1 << 20) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Loads the Music library on first open of the picker. Reads happen off the
@@ -1700,6 +2039,54 @@ final class AppModel: ObservableObject {
         case .failure(let error):
             projectErrorMessage = "Could not import songs: \(error.localizedDescription)"
         }
+    }
+
+    /// Applies model-package statuses observed during a run and RAISES anything broken.
+    ///
+    /// A model that fails to verify, or an engine whose package is missing, previously changed
+    /// only a small "Invalid" chip inside the Models sheet — a screen the user has no reason to
+    /// open — and the `reason` was discarded entirely. Analysis then failed later for what looked
+    /// like an unrelated cause. Surfacing it here puts it on the same visible error channel as
+    /// every other failure the user is expected to act on.
+    private func noteModelStatuses(_ statuses: [String: ModelPackageStatus]) {
+        var problems: [String] = []
+        for (id, status) in statuses.sorted(by: { $0.key < $1.key }) {
+            modelPackageStatuses[id] = status
+            guard case .invalid(let reason) = status else { continue }
+            let name = ModelCatalog.all.first { $0.id == id }?.displayName ?? id
+            problems.append("\(name): \(reason)")
+        }
+        guard !problems.isEmpty else { return }
+        projectErrorMessage =
+            "Model problem — "
+            + problems.joined(separator: "; ")
+            + ". Open Models to verify or reinstall."
+    }
+
+    /// A user-facing summary of any stage that FAILED inside an otherwise-successful run, or
+    /// `nil` when every stage succeeded.
+    static func failedStageMessage(in document: SongAnalysisDocument) -> String? {
+        let failures = document.stageRecords
+            .filter { $0.value.state == .failed }
+            .sorted { $0.key.rawValue < $1.key.rawValue }
+        guard !failures.isEmpty else { return nil }
+        let parts = failures.map { stage, record -> String in
+            let reason = record.errorMessage ?? "failed"
+            return "\(stage.rawValue): \(reason)"
+        }
+        return "Analysis finished with problems — " + parts.joined(separator: "; ")
+    }
+
+    /// Moves songs within the library to a user-chosen position (drag-to-reorder in the Songs
+    /// card).
+    ///
+    /// The order IS the array order — `SplitProjectStore` writes `library.json` as an ordered
+    /// manifest and reads it back in that order, so persistence needs no schema change. What did
+    /// need changing is that two `.sort` calls used to re-alphabetize the list behind the user's
+    /// back (on every import and on every restore); both are gone.
+    func moveSongs(fromOffsets source: IndexSet, toOffset destination: Int) {
+        songs.move(fromOffsets: source, toOffset: destination)
+        scheduleSave()
     }
 
     func removeSong(_ song: Song) {
@@ -1771,6 +2158,7 @@ final class AppModel: ObservableObject {
         analysisCoordinator.cancel()
         activeAnalysisRunID = nil
         isSongAnalysisRunning = false
+        currentAnalyzedSongID = nil
         songAnalysisProgress = nil
 
         analysisControlTask?.cancel()
@@ -2242,6 +2630,33 @@ final class AppModel: ObservableObject {
             generated: chordProSource, reference: referenceChordProSource)
     }
 
+    /// Judges the uploaded reference chart against the RECORDING rather than against the
+    /// generated chart, so "which of these is right?" becomes a measurement.
+    ///
+    /// The reference is untimed, so it is first placed on the timeline from our own word timings
+    /// (`ReferenceChartTiming`), then both charts are scored by `ChordEvidenceAudit` against the
+    /// onsets and harmonic change-points the harmony stage kept. `nil` when no reference has been
+    /// uploaded or the reference cannot be parsed.
+    ///
+    /// ponytail: placement only. Chord QUALITY of the reference is not audited because the
+    /// per-frame observations are not persisted — see `SongAnalysisDocument.harmonicChangePoints`.
+    func referenceChartAudioValidation() -> ReferenceChartAudioValidation.Result? {
+        guard !referenceChordProSource.isEmpty else { return nil }
+        guard
+            let timed = try? ReferenceChartTiming.timedEvents(
+                reference: referenceChordProSource,
+                lyricSegments: lyricSegments)
+        else { return nil }
+        return ReferenceChartAudioValidation.validate(
+            referenceEvents: timed.events,
+            untimedChordCount: timed.untimedChordCount,
+            generatedEvents: chordEvents,
+            frameObservations: frameChordObservations ?? [],
+            attackOnsets: instrumentAttackOnsets ?? [],
+            changePoints: harmonicChangePoints
+        )
+    }
+
     /// Replaces the generated chart with the uploaded reference (explicit user action from the
     /// comparison report). Review state resets via `chordProSource.didSet`.
     func adoptReferenceChordPro() {
@@ -2303,10 +2718,10 @@ final class AppModel: ObservableObject {
             }
             let currentSongs = songs
             let currentIDs = Set(currentSongs.map(\.id))
-            songs = (currentSongs + restored.map(\.0).filter { !currentIDs.contains($0.id) }).sorted
-            {
-                $0.title.localizedStandardCompare($1.title) == .orderedAscending
-            }
+            // Persisted order IS the user's order — `SplitProjectStore` round-trips `library.json`'s
+            // ordered manifest faithfully. Re-sorting here used to throw that away on every launch,
+            // which is why a manual order could never have survived a restart.
+            songs = currentSongs + restored.map(\.0).filter { !currentIDs.contains($0.id) }
             var restoredSettings = Dictionary(
                 restored.map { ($0.0.id, $0.1) },
                 uniquingKeysWith: { _, latest in latest }
@@ -2378,66 +2793,34 @@ final class AppModel: ObservableObject {
 
     private func applyAnalysis(_ analysis: SongAnalysisDocument) {
         isApplyingAnalysis = true
-        // Migrate older analyses to the current line-grouping rules from each segment's
-        // stored word timings (no re-transcription). Idempotent for already-current lyrics.
-        let regroupedLyrics = TimedLyricSegmentGrouper.regroup(analysis.lyrics)
-        // Reconcile the metrical LEVEL before anything reads the beat grid. `BeatTracker` keeps a
-        // single ACF winner weighted by a 105 BPM prior and never compares it against its own ×3/2
-        // or ×5/4 relatives, so a song can sit a simple ratio away from the pulse a player counts —
-        // and bars, the measure grid and the whole chart inherit that. The evidence is lyric line
-        // periodicity, which is why this runs HERE and not in the beat tracker: transcription and
-        // harmony run concurrently, so no tempo is chosen at a point where lyrics exist. Same
-        // unconditional post-pass pattern as the regroup above and the phrase grouper below.
-        //
-        // Chords are deliberately left alone: their event times are ABSOLUTE, so a retune changes
-        // which bar a chord falls in without changing when it sounds. A re-analysis will decode on
-        // the corrected grid and can only improve on this; nothing here needs it to.
-        let verdict = MetricalLevelReconciler.reconcile(
-            bpm: analysis.estimatedBPM ?? 0,
-            beatTimes: analysis.beatTimes,
-            lineOnsets: regroupedLyrics.map(\.start))
-        unreconciledEstimatedBPM = analysis.estimatedBPM
-        unreconciledBeatTimes = analysis.beatTimes
-        let reconciledBPM: Double? =
-            verdict?.isRetune == true ? verdict?.bpm : analysis.estimatedBPM
-        let reconciledBeatTimes: [TimeInterval] =
-            verdict?.isRetune == true
-            ? MetricalLevelReconciler.reconciledBeatTimes(
-                beatTimes: analysis.beatTimes, ratio: verdict!.ratio)
-            : analysis.beatTimes
-        // `LyricPhraseGrouper` was removed 2026-08-07. It attempted this same bar-period
-        // re-segmentation from chord-label autocorrelation and was MEASURED to fire on zero real
-        // songs (confidence 0.09-0.29 against its own 0.75 gate) - it ran on every load and
-        // returned its input unchanged, every time. `PhrasePeriodLineRecutter` below does the job
-        // it was meant to do, from line periodicity rather than chord labels, and actually fires.
-        // Phrase-period re-cut (task #8) — the last of the three unconditional, pure, load-time
-        // lyric post-passes, and deliberately last because it needs the lines in their final
-        // grouped form and the beat grid in its final reconciled form. Splits a row spanning
-        // materially more than one period at a REAL inter-word gap near `that row's own onset +
-        // k · P`, and folds a too-short row into its neighbour; declines outright (returns its
-        // input verbatim) on any song it cannot measurably improve. Nothing here is persisted —
-        // this reads the STORED lyrics every load and never writes back into them, because a
-        // load-time pass that feeds its own input is the loop that walked one song's tempo
-        // 101.3 -> 152.0 -> 81.1 (tasks/lessons.md, 2026-08-05).
-        let recutLyrics = PhrasePeriodLineRecutter.recut(
-            regroupedLyrics, beatTimes: reconciledBeatTimes, tempo: reconciledBPM)
-        let lyricsRegrouped = recutLyrics != analysis.lyrics
-        // All three passes above rebuild plain `TimedLyricSegment`s straight from words, with
-        // no way to carry a per-line ANNOTATION through (`confidence` is deliberately allowed to
-        // be lost this way — see its doc comment — but `overrideText`/`accepted` are user-authored
-        // corrections from the Review chart and must survive every load, not just a fresh
-        // analysis, since this pipeline runs unconditionally even when nothing changed). Carry
-        // them forward from the STORED document's own lyrics (not the live in-memory
-        // `lyricSegments`, which may belong to whatever song was previously selected).
-        lyricSegments = TimedLyricSegment.reconciled(
-            newSegments: recutLyrics, against: analysis.lyrics)
+        var analysis = analysis
+        // The regroup/reconcile/recut trio lives in the PIPELINE now (`AnalysisTimingPostPasses`)
+        // — the document stores what the app displays. Loading runs it exactly once, as a
+        // MIGRATION, for documents from before that move (or before a tag bump), and persists
+        // the result below. The compounding loop the old always-on load pass guarded against
+        // (101.3 -> 152.0 -> 81.1) is closed structurally instead: the tracker's raw answer is
+        // preserved in `preReconciliationTiming` and every re-run reconciles from it.
+        let timingMigrated = !AnalysisTimingPostPasses.isCurrent(analysis)
+        if timingMigrated {
+            AnalysisTimingPostPasses.apply(to: &analysis)
+        }
+        lyricSegments = analysis.lyrics
         lyricBlendRows = analysis.lyricBlendRows
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
         chordProSource = analysis.chordProSource
         referenceChordProSource = analysis.referenceChordProSource
-        estimatedBPM = reconciledBPM
-        beatTimes = reconciledBeatTimes
+        instrumentAttackOnsets = analysis.instrumentAttackOnsets
+        // The document's grid is canonical: `AnalysisTimingPostPasses` already retuned it with
+        // the beats and derived one for pre-`SongBarGrid` documents, so it is non-nil and
+        // indexes the published beat grid.
+        barGrid = analysis.barGrid
+        preReconciliationTiming = analysis.preReconciliationTiming
+        timingPostPassTag = analysis.timingPostPassTag
+        harmonicChangePoints = analysis.harmonicChangePoints
+        frameChordObservations = analysis.frameChordObservations
+        estimatedBPM = analysis.estimatedBPM
+        beatTimes = analysis.beatTimes
         sourceDuration = analysis.sourceDuration
         untranscribedVocalRegions = analysis.untranscribedVocalRegions
         bassNotes = analysis.bassNotes
@@ -2480,17 +2863,9 @@ final class AppModel: ObservableObject {
             }
         }
         isApplyingAnalysis = false
-        // Persist once when the load migrated the lyrics or refreshed the generated chart.
-        //
-        // The metrical retune is deliberately NOT a reason to persist, and must never become one.
-        // Writing the reconciled tempo back over `estimatedBPM`/`beatTimes` destroys the beat
-        // tracker's ORIGINAL answer, and the reconciler's input is exactly that answer — so the
-        // next load reconciles from an already-reconciled value and the two compound. Observed
-        // 2026-08-05: one song walked 101.3 -> 152.0 -> 81.1 across reloads. It also makes the
-        // decision unrecoverable, so correcting the ALGORITHM cannot correct songs already
-        // written. Keeping the document pristine and re-deriving on every load is idempotent by
-        // construction, and matches how the phrase grouper above already works.
-        if lyricsRegrouped || chordProRebuilt { persistSelectedAnalysis() }
+        // Persist once when the load ran the timing migration or refreshed the generated chart.
+        // A stamped document loads without either, so routine loads write nothing.
+        if timingMigrated || chordProRebuilt { persistSelectedAnalysis() }
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {
@@ -2520,12 +2895,17 @@ final class AppModel: ObservableObject {
             chords: chordEvents,
             chordProSource: chordProSource,
             referenceChordProSource: referenceChordProSource,
-            // ALWAYS the beat tracker's original answer, never the reconciled one. The published
-            // `estimatedBPM`/`beatTimes` carry the reconciled grid so the chart and playback use
-            // it, but persisting that would overwrite the reconciler's own input and make each
-            // load compound on the last (see the note in `applyAnalysis`).
-            estimatedBPM: unreconciledEstimatedBPM ?? estimatedBPM,
-            beatTimes: unreconciledBeatTimes ?? beatTimes,
+            barGrid: barGrid,
+            instrumentAttackOnsets: instrumentAttackOnsets,
+            harmonicChangePoints: harmonicChangePoints,
+            frameChordObservations: frameChordObservations,
+            // The published (reconciled) values ARE the document now; the tracker's raw answer
+            // rides beside them in `preReconciliationTiming`, which is what keeps repeated
+            // loads from compounding (see `AnalysisTimingPostPasses`).
+            estimatedBPM: estimatedBPM,
+            beatTimes: beatTimes,
+            preReconciliationTiming: preReconciliationTiming,
+            timingPostPassTag: timingPostPassTag,
             bassNotes: bassNotes,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
@@ -2583,7 +2963,9 @@ final class AppModel: ObservableObject {
             beatTimes: beatTimes,
             sourceDuration: sourceDuration,
             untranscribedVocalRegions: untranscribedVocalRegions,
-            estimatedKey: estimatedKey
+            estimatedKey: estimatedKey,
+            barGrid: barGrid,
+            bassNotes: bassNotes
         )
         if let cached = timelineCache,
             cached.source == chordProSource,
@@ -2617,7 +2999,9 @@ final class AppModel: ObservableObject {
             beatTimes: beatTimes,
             sourceDuration: sourceDuration,
             untranscribedVocalRegions: untranscribedVocalRegions,
-            estimatedKey: estimatedKey
+            estimatedKey: estimatedKey,
+            barGrid: barGrid,
+            bassNotes: bassNotes
         )
         if let cached = structureOverviewCache, cached.input == input {
             return cached.overview
@@ -2655,7 +3039,9 @@ final class AppModel: ObservableObject {
                 beatTimes: beatTimes,
                 sourceDuration: sourceDuration,
                 untranscribedVocalRegions: untranscribedVocalRegions,
-                estimatedKey: estimatedKey
+                estimatedKey: estimatedKey,
+                barGrid: barGrid,
+                bassNotes: bassNotes
             ))
         if var record = analysisStageRecords[.chordPro], var provenance = record.provenance {
             provenance.configurationIdentifier = chordProConfigurationIdentifier

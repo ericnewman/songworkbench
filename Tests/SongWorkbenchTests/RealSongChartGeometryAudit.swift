@@ -254,4 +254,90 @@ final class RealSongChartGeometryAudit: XCTestCase {
             failures.isEmpty,
             "\(failures.count) rows do not fit:\n\(failures.joined(separator: "\n"))")
     }
+
+    /// The PICKUP GUTTER on the real library: how many rows per song actually reserve 0, 1 or 2
+    /// beats, and does the page's beat-column alignment survive rows disagreeing about it.
+    ///
+    /// This is the acceptance check for the per-row gutter, and it is deliberately an OUTCOME
+    /// measurement rather than a mechanism one. A song-level gutter was specced first and dropped
+    /// only because this number was taken before it was built: every song here has some row with
+    /// a 1.6–2.1 beat pickup, so a song-level maximum pins to the cap and changes nothing. A
+    /// printed mix of all-2 means the same thing has happened again — most likely the circular
+    /// leading-melody term has found its way back into the gutter's inputs.
+    func testPickupGutterDistributionAcrossTheLibrary() async throws {
+        guard ProcessInfo.processInfo.environment["CCS_REAL_SONG_AUDIT"] == "1" else {
+            throw XCTSkip("Set CCS_REAL_SONG_AUDIT=1 to audit the local song library.")
+        }
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("SongWorkbench", isDirectory: true)
+        let document = try await SplitProjectStore(directoryURL: base).load()
+        let pixelsPerSecond = ChordProPreviewLineLayout.pixelsPerSecond
+
+        var audited = 0
+        var failures: [String] = []
+        print("=== PICKUP GUTTER AUDIT (rows at 0 / 1 / 2 beats) ===")
+
+        for song in document.songs {
+            guard let analysis = song.analysis,
+                analysis.beatTimes.count >= 8,
+                let bpm = analysis.estimatedBPM, bpm > 0,
+                analysis.lyrics.count >= 2
+            else { continue }
+            audited += 1
+            let title = URL(fileURLWithPath: song.sourcePath).deletingPathExtension()
+                .lastPathComponent
+            let beatLength = 60.0 / bpm
+            let pixelsPerBeat = CGFloat(beatLength) * pixelsPerSecond
+            let grid = MeasureGrid(beatTimes: analysis.beatTimes, bpm: bpm)
+            let chordTimes = analysis.chords.map(\.time).sorted()
+            let lines = analysis.lyrics.sorted { $0.start < $1.start }.filter { !$0.words.isEmpty }
+
+            var mix = [0, 0, 0]
+            var phases: Set<Int> = []
+            for (index, line) in lines.enumerated() {
+                let firstWord = line.words[0].start
+                let downbeat = grid.nearestDownbeatTime(toTime: firstWord)
+                // Chords belonging to this row: from its own first word up to the next row's.
+                let rowEnd = index + 1 < lines.count ? lines[index + 1].words[0].start : line.end
+                let rowChords = chordTimes.filter { $0 >= line.start && $0 < rowEnd }
+                let earliest = [firstWord, rowChords.min()].compactMap { $0 }.min()
+                let gutterBeats = ChartPickupGutter.beats(
+                    downbeat: downbeat, earliestContent: earliest,
+                    beatLengthSeconds: beatLength)
+                mix[min(gutterBeats, 2)] += 1
+
+                let ruler = ChordRowRuler(
+                    grid: grid, originTime: downbeat,
+                    gutterPx: CGFloat(gutterBeats) * pixelsPerBeat,
+                    pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
+                for x in ruler.beatXs(from: line.start, to: max(line.end, rowEnd)) {
+                    phases.insert(
+                        Int((x.truncatingRemainder(dividingBy: pixelsPerBeat)).rounded())
+                            % Int(pixelsPerBeat.rounded()))
+                }
+                // A pickup inside the cap must not be clamped onto the left edge: its content
+                // has to render strictly left of the downbeat, or it reads as being ON the beat.
+                if let earliest, earliest < downbeat, gutterBeats > 0,
+                    (downbeat - earliest) / beatLength <= Double(ChartPickupGutter.maximumBeats),
+                    ruler.x(atTime: earliest) <= 0
+                {
+                    failures.append(
+                        "\(title): row \(index + 1) pickup clamped onto the left edge")
+                }
+            }
+            if phases != [0] {
+                failures.append("\(title): beat columns drifted; phases \(phases.sorted())")
+            }
+            let flush = mix[0] * 100 / max(lines.count, 1)
+            print(
+                "• \(title) — \(lines.count) rows | \(mix[0]) / \(mix[1]) / \(mix[2]) "
+                    + "at 0/1/2 beats | \(flush)% open flush left")
+        }
+
+        XCTAssertGreaterThan(audited, 0, "no songs with lyrics found — audit ran on nothing")
+        XCTAssertTrue(
+            failures.isEmpty,
+            "\(failures.count) gutter violations:\n\(failures.joined(separator: "\n"))")
+    }
 }

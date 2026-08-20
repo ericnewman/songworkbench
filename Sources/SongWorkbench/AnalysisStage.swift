@@ -449,8 +449,9 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // `lyricBlendRows` forever, since re-clicking "Analyze Song" only
                     // re-groups when the stage record's version actually changes.
                     version: result.engine.engineVersion
-                        + "|grouping-49-confidence-on-words"
+                        + "|grouping-50-torn-continuation-rejoin"
                         + "|blend-row-overlap-merge"
+                        + "|untranscribed-2-pitch-salience"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
                 modelIdentifier: result.engine.modelName,
@@ -554,11 +555,17 @@ struct TranscriptionStage: AnalysisStageRunning {
                     // instrumental) forward to the line's main body when the gap is unvoiced.
                     let repaired = StrandedLeadingWordRepairer.repaired(
                         gated, voicedIntervals: voicedForGating)
+                    // Rejoin a phrase torn across two lines by ASR timestamp drift over
+                    // untranscribed intro vocals ("I used" | "to stay out late at night"),
+                    // vacating the sung-but-wordless region so the untranscribed-vocals
+                    // detector below can flag it (Settle Down doo-doo intro, 2026-08-10).
+                    let rejoined = TornContinuationLineRejoiner.rejoined(
+                        repaired, voicedIntervals: voicedForGating)
                     // Split double-phrase ASR lines at long UNVOICED internal pauses so a
                     // chorus line pair doesn't render as one double-length line. ASR path
                     // only — reference lyrics carry authoritative line breaks.
                     lyrics = IntraLinePauseSplitter.split(
-                        repaired, voicedIntervals: voicedForGating)
+                        rejoined, voicedIntervals: voicedForGating)
                 } else {
                     lyrics = StrandedLeadingWordRepairer.repaired(
                         distributed, voicedIntervals: voicedForGating)
@@ -588,11 +595,23 @@ struct TranscriptionStage: AnalysisStageRunning {
             // `referenceLyrics`, the authoritative alignment target for every later analysis —
             // and reference-aligned words carry no confidence, so it could never be undone.
             // Sung spans with no words (audit RC-4): persist so structure decisions and the
-            // chart can flag them instead of mislabeling them Instrumental.
+            // chart can flag them instead of mislabeling them Instrumental. On the vocals stem
+            // the evidence is PITCH salience, not energy — the energy-only strict VAD both
+            // flagged loud-section bleed as unsung vocals (phantom "vocals — not transcribed"
+            // on true instrumentals) and missed soft melodic vocals entirely (Settle Down's
+            // doo-doo intro, below the peak-relative gate). Full-mix fallback keeps strict
+            // VAD: on a mix, everything is pitched.
+            let sungEvidence =
+                hasStems
+                ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
+                : strictVoiced
             let untranscribed = UntranscribedVocalRegionDetector.regions(
-                voicedIntervals: strictVoiced, lyrics: normalizedLyrics)
+                voicedIntervals: sungEvidence, lyrics: normalizedLyrics)
             return AnalysisStageOutcome { document in
                 document.lyrics = normalizedLyrics
+                // Fresh lyrics change the reconciler's line-onset evidence; drop the stamp so
+                // `AnalysisTimingPostPasses` re-derives (from the raw beats it restores itself).
+                document.timingPostPassTag = nil
                 document.untranscribedVocalRegions = untranscribed
                 document.sourceDuration = sourceDuration > 0 ? sourceDuration : nil
                 document.lyricReviewState = .draft
@@ -721,7 +740,12 @@ struct HarmonyStage: AnalysisStageRunning {
                 result = cached
                 loadedFromCache = true
             } else {
-                result = try await harmonyEngine.analyze(url: source.url)
+                // Weighted stem mix, not a single file: guitar leads, piano supports, and the
+                // leakage gate drops a phantom stem before it can double-count the guitar. The
+                // mix is reflected in `source.configurationIdentifier`, which is part of the
+                // cache key above — so a weighting change re-analyses instead of reusing a chord
+                // analysis derived from different audio.
+                result = try await harmonyEngine.analyze(weighted: source.weightedURLs)
                 try await cache?.store(result, forSourceHash: sourceHash, engine: cacheEngine)
                 loadedFromCache = false
             }
@@ -741,6 +765,31 @@ struct HarmonyStage: AnalysisStageRunning {
                         // Rendered times are unchanged; existing songs re-reduce to gain the
                         // candidates, which is why this needs a version bump at all.
                         + "|reduce-17-placement-candidates"
+                        // reduce-18: one-to-one evidence audit (ChordEvidenceAudit) drops chord
+                        // markers with no instrument attack and no stable harmonic change under
+                        // them. This CHANGES rendered output, so existing songs must re-reduce.
+                        + "|reduce-18-evidence-audit"
+                        // reduce-19: the audit's harmonic evidence now comes from chroma
+                        // change-points rather than frame-label flips. Old cached analyses have
+                        // no change-points and keep the label fallback until re-analysed.
+                        + "|reduce-19-changepoint-evidence"
+                        // reduce-20: quality audit reverts key-prior major/minor overrides from
+                        // the frame classifier's own reading of the third, and the repeated-
+                        // section vote can no longer flip a confirmed third back.
+                        + "|reduce-20-quality-audit"
+                        // reduce-21: attack onsets now merge EVERY chordal stem (guitar, piano,
+                        // other) instead of just the first one present, so a piano- or
+                        // organ-struck chord can license a change and survive the evidence audit.
+                        + "|reduce-21-merged-onsets"
+                        // reduce-22: duration filter floor 0.8 -> 0.25 of a beat, so a genuine
+                        // beat-length change is no longer merged into its predecessor.
+                        + "|reduce-22-minbeat-025"
+                        // reduce-23: decode on a subdivided grid so a chord change inside a beat
+                        // is representable at all.
+                        + "|reduce-23-subbeat-decode"
+                        // reduce-24: decode grid extended back over a pre-drums intro; per-frame
+                        // window evidence so the no-chord floor stops being tempo-dependent.
+                        + "|reduce-24-intro-and-nochord"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -775,12 +824,25 @@ struct HarmonyStage: AnalysisStageRunning {
             // computed BEFORE decoding so the Viterbi can discount its switch penalty for beat
             // windows that start on an attack, then reused to snap event times. Best-effort —
             // any failure or missing stem yields [] and both uses degrade gracefully.
-            let instrumentURL: URL? =
-                context.document.stems?.resolved().guitar
-                ?? context.document.stems?.resolved().other
-                ?? context.document.stems?.resolved().accompaniment
-            let instrumentOnsets: [TimeInterval] =
-                instrumentURL.flatMap { try? InstrumentOnsetDetector.onsets(url: $0) } ?? []
+            // Attacks from EVERY chordal stem, not just the loudest one. This used to read
+            // `guitar ?? other ?? accompaniment` — first match wins — so a chord struck on piano
+            // or on an organ living in `other` produced no attack evidence at all, even though
+            // the chroma mix already listens to guitar AND piano. A piano-led change then had
+            // nothing to license it: the decoder charged full switch penalty, and
+            // `ChordEvidenceAudit` saw an unsupported marker.
+            //
+            // Vocals, drums, and bass stay out by design — a sung third flips a power chord to
+            // major, drums are broadband noise, and bass moves under held chords.
+            // Loaded one stem at a time (each is released before the next) so this costs no
+            // extra peak memory over the single-stem version.
+            let onsetStems: [URL] = {
+                guard let stems = context.document.stems?.resolved() else { return [] }
+                let candidates = [stems.guitar, stems.piano, stems.other]
+                let present = candidates.compactMap { $0 }
+                return present.isEmpty ? [stems.accompaniment].compactMap { $0 } : present
+            }()
+            let instrumentOnsets: [TimeInterval] = InstrumentOnsetDetector.mergedOnsets(
+                urls: onsetStems)
             // Key-aware Viterbi decoding over beat windows: a diatonic prior scales frame
             // evidence and a switch penalty smooths window-to-window flicker, with a no-chord
             // state absorbing weak-evidence windows (quiet intros/fades). Replaces independent
@@ -801,20 +863,65 @@ struct HarmonyStage: AnalysisStageRunning {
             // the same 0.08 confidence gate. Best-effort — an absent drums stem, degenerate
             // strengths, or a flat/ambiguous accent profile yields `nil` and the decoder keeps
             // its flat-metric behavior. 4/4 assumed, matching the rest of the pipeline.
-            var meter: ChordTimelineDecoder.BarMeter?
-            if let drumsURL = context.document.stems?.resolved().drums,
-                let bpm = estimatedBPM, bpm > 0,
-                let strengths = try? DrumAccentProfile.beatStrengths(
-                    url: drumsURL, beatTimes: resolvedBeatTimes, bpm: bpm),
-                DownbeatEstimator.downbeatConfidence(beatStrengths: strengths) >= 0.08
-            {
-                meter = ChordTimelineDecoder.BarMeter(
-                    beatsPerBar: 4,
-                    barPhase: DownbeatEstimator.barPhase(beatStrengths: strengths)
+            // The song's ONE bar grid, estimated here and stored on the document so the decoder,
+            // the ChordPro builder, and the chart all read the same answer. Previously each
+            // derived its own from a different signal — and the decoder additionally hard-coded
+            // `beatsPerBar: 4`, so a non-4/4 song decoded on a different meter than it rendered
+            // on.
+            let drumStrengths: [Double] = {
+                guard let drumsURL = context.document.stems?.resolved().drums,
+                    let bpm = estimatedBPM, bpm > 0
+                else { return [] }
+                return
+                    (try? DrumAccentProfile.beatStrengths(
+                        url: drumsURL, beatTimes: resolvedBeatTimes, bpm: bpm)) ?? []
+            }()
+            let barGrid = SongBarGridEstimator.estimate(
+                beatTimes: resolvedBeatTimes,
+                beatStrengths: drumStrengths,
+                lyricLineOnsets: context.document.lyrics.map { $0.words.first?.start ?? $0.start }
+            )
+            // A phase the accents did not actually measure must not drive the decoder's metric
+            // prior — anchoring to beat 0 is the right DISPLAY convention but it is not evidence
+            // about where the downbeats are.
+            let meter: ChordTimelineDecoder.BarMeter? =
+                barGrid.phaseSource == .drumAccents
+                ? ChordTimelineDecoder.BarMeter(
+                    beatsPerBar: barGrid.beatsPerBar, barPhase: barGrid.barPhase)
+                : nil
+            // Decode at sub-beat resolution. The decoder emits at most one chord per window, so
+            // on the raw beat grid a change landing inside a beat cannot be expressed at all —
+            // which is why relaxing the duration filter alone could not recover eighth-note
+            // changes. Only the decode grid is subdivided; `resolvedBeatTimes` still governs
+            // snapping, the duration filter, and everything the chart draws.
+            // Cover audio before the first drum hit: the drum-locked grid starts at the first
+            // hit, so a solo-guitar intro had no decode windows and produced no chords at all.
+            let decodeSubdivision = HarmonyDecodeResolution.subdivision(
+                beatLength: MetricalLevelReconciler.medianBeatLength(
+                    beatTimes: resolvedBeatTimes, bpm: estimatedBPM ?? 0) ?? 0)
+            let decodeBeatTimes = ChordTimelineDecoder.subdivided(
+                ChordTimelineDecoder.extendedBackward(
+                    resolvedBeatTimes,
+                    toCover: result.chords.first?.timestamp ?? 0),
+                by: decodeSubdivision)
+            // The meter is expressed in windows, so it has to be restated on the finer grid or
+            // "beat 1 of the bar" would point at the wrong window.
+            let decodeMeter = meter.map {
+                ChordTimelineDecoder.BarMeter(
+                    beatsPerBar: $0.beatsPerBar * decodeSubdivision,
+                    barPhase: $0.barPhase * decodeSubdivision
                 )
             }
+            // The switch penalty is per state-change; windows are now `decodeSubdivision`
+            // times shorter, so an unscaled penalty would make flicker `decodeSubdivision`
+            // times cheaper per beat — one noisy frame alone in a thin window could buy a
+            // chord. Scaling by the subdivision keeps per-beat flicker economics identical to
+            // the beat-window contract, while a GENUINE sub-beat change still gets in through
+            // the onset/downbeat discounts (real changes attack; stray frames don't).
+            var decoder = ChordTimelineDecoder()
+            decoder.switchPenalty *= Float(decodeSubdivision)
             var chords = BassInformedChordRefiner().refine(
-                ChordTimelineDecoder().events(
+                decoder.events(
                     from: result,
                     key: estimatedKey,
                     bassNotes: detectedBassNotes ?? context.document.bassNotes,
@@ -822,8 +929,8 @@ struct HarmonyStage: AnalysisStageRunning {
                     // Decode on the SAME drum-locked grid every downstream consumer (snap,
                     // duration filter, consensus, ChordPro, playback) uses — not the harmony
                     // engine's own pre-lock estimate embedded in `result`.
-                    beatTimes: resolvedBeatTimes,
-                    meter: meter
+                    beatTimes: decodeBeatTimes,
+                    meter: decodeMeter
                 ),
                 bassNotes: detectedBassNotes ?? []
             )
@@ -862,7 +969,39 @@ struct HarmonyStage: AnalysisStageRunning {
                 beatTimes: resolvedBeatTimes,
                 sourceDuration: context.document.sourceDuration
             )
+            // One-to-one evidence audit: a marker is a claim that a chordal instrument ATTACKED
+            // here, so every surviving event must map to either an instrument attack or a stable
+            // harmonic change in the frame-level observations. Events nothing supports are the
+            // decoder reporting active harmony rather than a played change — the main source of
+            // over-segmentation — and are dropped before they can reach the chart. Self-guarding:
+            // when MOST events look unsupported the stem is the suspect (bleed, a quiet
+            // fingerpicked part with no discrete attacks), so the audit reports and drops nothing.
+            let evidence = ChordEvidenceAudit.filtered(
+                events: chords,
+                frameObservations: result.chords,
+                attackOnsets: instrumentOnsets,
+                changePoints: result.harmonicChangePoints
+            )
+            chords = evidence.events
+            // Quality audit: the frame-level classifier read the third straight from chroma with
+            // no key prior, so where it decisively disagrees with the decoded major/minor it wins.
+            // This is the counterweight to `KeyPriorChordRescorer` discounting a parallel-minor
+            // tonic — the `Dm`-corrected-to-`D` failure.
+            let quality = ChordQualityAudit.corrected(
+                events: chords,
+                frameObservations: result.chords,
+                sourceDuration: context.document.sourceDuration
+            )
+            chords = quality.events
+            // Events whose third the audio positively confirmed. The repeated-section vote below
+            // may not flip these back on the strength of the other choruses.
+            let qualityProtectedIDs = Set(
+                quality.audit.confirmedEventIndices.compactMap { index in
+                    chords.indices.contains(index) ? chords[index].id : nil
+                })
             let alignedChords = chords
+            let evidenceAudit = evidence.audit
+            let qualityAudit = quality.audit
             // With the chord timeline final, re-arbitrate BORDERLINE bass-note roundings
             // against it — ambiguous fractional pitches snap to the concurrent chord's
             // tone; decisive ones stay (see `BassChordReconciler`).
@@ -872,6 +1011,10 @@ struct HarmonyStage: AnalysisStageRunning {
             return AnalysisStageOutcome { document in
                 document.estimatedBPM = estimatedBPM
                 document.beatTimes = resolvedBeatTimes
+                // These ARE the tracker's raw answer now — any prior retune's set-aside copy is
+                // stale, and the stamp must drop so `AnalysisTimingPostPasses` re-derives.
+                document.preReconciliationTiming = nil
+                document.timingPostPassTag = nil
                 document.estimatedKey = estimatedKey
                 // A3: identically-sung lines vote on one shared progression (label rewrite
                 // only), so repeated choruses can't decode to different chords. No-op when
@@ -879,12 +1022,26 @@ struct HarmonyStage: AnalysisStageRunning {
                 document.chords = ChorusChordConsensus.applied(
                     chords: alignedChords,
                     lyrics: document.lyrics,
-                    beatTimes: resolvedBeatTimes)
+                    beatTimes: resolvedBeatTimes,
+                    protectedIDs: qualityProtectedIDs)
                 if let reconciledBassNotes {
                     document.bassNotes = reconciledBassNotes
                 }
                 document.chordReviewState = .draft
-                document.stageRecords[.harmony] = record
+                // Keep the placement evidence so an uploaded reference chart can be judged
+                // against the same recording later without re-analysing.
+                document.barGrid = barGrid
+                document.instrumentAttackOnsets = instrumentOnsets
+                document.harmonicChangePoints = result.harmonicChangePoints
+                document.frameChordObservations = result.chords
+                var harmonyRecord = record
+                let warnings = [
+                    ChordEvidenceAudit.warning(for: evidenceAudit),
+                    ChordQualityAudit.warning(for: qualityAudit),
+                ].compactMap { $0 }
+                harmonyRecord.qualityWarning =
+                    warnings.isEmpty ? nil : warnings.joined(separator: " ")
+                document.stageRecords[.harmony] = harmonyRecord
             }
         } catch is CancellationError {
             return AnalysisStageOutcome(wasCancelled: true) { document in
@@ -933,7 +1090,9 @@ struct ChordProStage: AnalysisStageRunning {
                     beatTimes: document.beatTimes,
                     sourceDuration: document.sourceDuration,
                     untranscribedVocalRegions: document.untranscribedVocalRegions,
-                    estimatedKey: document.estimatedKey
+                    estimatedKey: document.estimatedKey,
+                    barGrid: document.barGrid,
+                    bassNotes: document.bassNotes
                 ))
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,

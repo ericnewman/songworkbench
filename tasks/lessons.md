@@ -808,3 +808,32 @@ weak evidence for the PIPELINE. It only tests the round-trip you modelled. Here 
 original grid each pass while the app re-fed the persisted one — the single line of difference that
 was the entire bug. When simulating a persistence loop, read the state back from the same place the
 app will.
+
+## 2026-08-08 — A NEW source file is invisible to Xcode until `tuist generate` runs
+
+**Symptom:** `swift build` and `swift test` both green; Xcode "not compiling" — unresolved
+identifiers for a type that plainly exists on disk (`ChartPickupGutter`).
+
+**Cause:** `Package.swift` globs `Sources/SongWorkbench/`, so SwiftPM picks a new file up for
+free. `SongWorkbench.xcodeproj/project.pbxproj` is a GENERATED artifact — Tuist expands the
+`sources: ["Sources/SongWorkbench/**"]` glob at generate time and bakes an explicit file list into
+the pbxproj. Until it is regenerated, the Xcode target does not contain the file, so every
+reference to it fails to resolve. `grep -c ChartPickupGutter project.pbxproj` returned 0.
+
+**Rule:** after ADDING or DELETING (not editing) any file under `Sources/**` or `Tests/**`, run
+`tuist generate --no-open` before claiming a change builds. Verifying only with `swift build`
+proves the package compiles, which is a strictly weaker claim than "Eric can build it" — he builds
+in Xcode. Cheap check: `grep -c <NewTypeName> SongWorkbench.xcodeproj/project.pbxproj` must be > 0.
+
+**Verification that actually closes it:** `xcodebuild -workspace SongWorkbench.xcworkspace -scheme
+SongWorkbench -destination 'platform=macOS' build`, not `swift build`.
+
+## 2026-08-10 — Chart geometry invariants must include reserved presentation width
+
+**Mistake:** the pickup-gutter fix passed the ruler and fit invariants, but the live Review chart
+still looked wrong: short lyric rows rendered as tiny islands because the SwiftUI row frame was sized
+to the last word, while the phrase frame only overflow-drew past that layout width.
+
+**Rule:** for chart presentation work, test both semantic geometry and visible occupancy. A row can
+have a short lyric span for verdict purposes, but its SwiftUI layout width must still reserve the
+reference frame promised by the window-fit contract.

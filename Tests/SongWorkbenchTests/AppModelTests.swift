@@ -86,6 +86,27 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.recentSongs.first?.id, second.id)
     }
 
+    func testDroppingTheSameAudioContentFromTwoPathsImportsOnce() async throws {
+        let firstURL = try makeSilentWAV()
+        // The same BYTES at a different original path: path-keyed identity sees two songs,
+        // only the content digest gives the twin away.
+        let copyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        try FileManager.default.copyItem(at: firstURL, to: copyURL)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: copyURL)
+        }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [firstURL, copyURL])
+        try await waitUntil(timeout: .seconds(15)) {
+            model.importStatus?.contains("duplicate") == true
+        }
+        XCTAssertEqual(model.songs.count, 1)
+        XCTAssertEqual(model.importStatus, "Added 1 song · 1 duplicate skipped")
+    }
+
     func testSelectingDifferentSongResetsSelectedSongProgress() async throws {
         let firstURL = try makeSilentWAV()
         let secondURL = try makeSilentWAV()
@@ -146,6 +167,14 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(secondStatus.index, 1)
         XCTAssertEqual(secondStatus.total, 2)
         XCTAssertEqual(secondStatus.title, firstStatus.title)
+
+        // Cancel the drain (select() cancels the in-flight run, whose queue-completion clears
+        // the rest of the queue) — REAL analysis engines are installed on dev machines, so a
+        // leaked 2-song queue saturates the CPU and starves later tests' 3 s waitUntil polls
+        // (measured 2026-08-10: testReimportOfChangedSourceRefreshesStaleLocalCopy's import
+        // wait and MusicLibrary's 150 ms provider-error sleep both timed out downstream).
+        model.select(try XCTUnwrap(model.songs.first))
+        XCTAssertFalse(model.isSongAnalysisRunning)
     }
 
     func testRemovingSelectedSongPreservesSourceFileSelectsNeighborAndPersists() async throws {
@@ -617,6 +646,67 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    /// Starting a user-initiated analysis during playback must stop playback (Eric,
+    /// 2026-08-10). Deterministic: `stopPlaybackForAnalysis()` runs synchronously inside
+    /// `analyzeSelectedSong()` before any async pipeline work.
+    func testAnalyzeSelectedSongStopsPlayback() async throws {
+        let songURL = try makeSilentWAV(frameCount: 16_000)
+        defer { try? FileManager.default.removeItem(at: songURL) }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [songURL])
+        try await waitUntil { !model.songs.isEmpty }
+        let song = try XCTUnwrap(model.songs.first)
+        model.select(song)
+        model.playback.play()
+        XCTAssertTrue(model.playback.isPlaying)
+
+        model.analyzeSelectedSong()
+
+        XCTAssertFalse(model.playback.isPlaying)
+        XCTAssertFalse(model.stemPlayback.isPlaying)
+        XCTAssertTrue(model.isSongAnalysisRunning)
+        // Cancel the in-flight run (select() resets progress state) so this test's analysis
+        // doesn't bleed CPU into later tests' short waitUntil timeouts.
+        model.select(song)
+        XCTAssertFalse(model.isSongAnalysisRunning)
+    }
+
+    /// Re-importing a source whose CONTENT changed at the same original path must replace the
+    /// stale local copy (localizedSource keys the copy by original path) instead of silently
+    /// serving the old audio forever, and must keep a single library entry (same song id).
+    func testReimportOfChangedSourceRefreshesStaleLocalCopy() async throws {
+        let sourceURL = try makeSilentWAV(frameCount: 8_000)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.importSongs(from: [sourceURL])
+        // Generous timeouts: imports copy files off-main and dev machines may still be
+        // finishing another test's cancelled analysis teardown.
+        try await waitUntil(timeout: .seconds(15)) { !model.songs.isEmpty }
+        let song = try XCTUnwrap(model.songs.first)
+        let localURL = song.url
+        let originalSize = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? Int)
+
+        // Replace the source at the SAME path with different content (different length).
+        try FileManager.default.removeItem(at: sourceURL)
+        _ = try writeSilentWAV(to: sourceURL, frameCount: 24_000)
+
+        model.importSongs(from: [sourceURL])
+        try await waitUntil(timeout: .seconds(15)) {
+            let size =
+                (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size])
+                as? Int
+            return size != nil && size != originalSize
+        }
+
+        XCTAssertEqual(model.songs.count, 1)
+        XCTAssertEqual(model.songs.first?.id, song.id)
+        // Cancel the auto-analysis the refresh enqueued (select() cancels and clears the
+        // queue) so it doesn't bleed CPU into later tests.
+        model.select(song)
+        XCTAssertFalse(model.isSongAnalysisRunning)
+    }
+
     private func makeSilentWAV(frameCount: AVAudioFrameCount = 800) throws -> URL {
         try writeSilentWAV(
             to: FileManager.default.temporaryDirectory
@@ -651,6 +741,11 @@ final class AppModelTests: XCTestCase {
         )
     }
 
+    /// Monotonic fingerprint so no two generated WAVs are byte-identical: `importSongs` now
+    /// skips content duplicates (the feature under test elsewhere), so two literally silent
+    /// fixtures would import as one song and hang every multi-song test.
+    private static var wavFingerprint: Float = 0
+
     private func writeSilentWAV(
         to url: URL,
         frameCount: AVAudioFrameCount
@@ -659,6 +754,9 @@ final class AppModelTests: XCTestCase {
         var file: AVAudioFile? = try AVAudioFile(forWriting: url, settings: format.settings)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
         buffer.frameLength = frameCount
+        // One inaudible unique sample (LSB scale) as the fingerprint.
+        Self.wavFingerprint += 1e-6
+        buffer.floatChannelData?[0][0] = Self.wavFingerprint
         try file?.write(from: buffer)
         file = nil
         return url
@@ -829,6 +927,109 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(
             AppModel.analysisStatusLine(batch: nil, progress: nil),
             "Analyzing"
+        )
+    }
+
+    func testWaveformStemProgressMapsEnginePhasesToUserFacingMessages() {
+        let selectedID = URL(fileURLWithPath: "/tmp/selected.wav")
+        func status(_ message: String, fraction: Double = 0.5) -> AppModel.WaveformStemProgress? {
+            AppModel.waveformStemProgress(
+                selectedSongID: selectedID,
+                currentAnalyzedSongID: selectedID,
+                isRunning: true,
+                progress: SongAnalysisPipelineProgress(
+                    stage: .separation,
+                    completedStages: 0,
+                    totalStages: 4,
+                    stageFraction: fraction,
+                    message: message
+                )
+            )
+        }
+
+        XCTAssertEqual(
+            status(StemSeparationProgress.Phase.preparingAudio.rawValue)?.message,
+            "Preparing stems"
+        )
+        XCTAssertEqual(
+            status(StemSeparationProgress.Phase.loadingModel.rawValue)?.message,
+            "Preparing stems"
+        )
+        XCTAssertEqual(
+            status(StemSeparationProgress.Phase.separating.rawValue)?.message,
+            "Generating stems"
+        )
+        XCTAssertEqual(
+            status(StemSeparationProgress.Phase.refining.rawValue)?.message,
+            "Refining stems"
+        )
+        XCTAssertEqual(
+            status(StemSeparationProgress.Phase.writingOutputs.rawValue)?.message,
+            "Finalizing stems"
+        )
+        XCTAssertEqual(status("loadedFromCache")?.message, "Loading saved stems")
+        XCTAssertEqual(status("unexpected")?.message, "Preparing stems")
+        XCTAssertEqual(
+            status(StemSeparationProgress.Phase.separating.rawValue, fraction: 1.4)?
+                .fractionCompleted,
+            1
+        )
+        XCTAssertEqual(
+            status(StemSeparationProgress.Phase.separating.rawValue, fraction: -0.2)?
+                .fractionCompleted,
+            0
+        )
+    }
+
+    func testWaveformStemProgressOnlyShowsForSelectedSongSeparationStage() {
+        let selectedID = URL(fileURLWithPath: "/tmp/selected.wav")
+        let otherID = URL(fileURLWithPath: "/tmp/other.wav")
+        let separation = SongAnalysisPipelineProgress(
+            stage: .separation,
+            completedStages: 0,
+            totalStages: 4,
+            stageFraction: 0.25,
+            message: StemSeparationProgress.Phase.separating.rawValue
+        )
+        let lyrics = SongAnalysisPipelineProgress(
+            stage: .transcription,
+            completedStages: 1,
+            totalStages: 4,
+            stageFraction: 0.25,
+            message: "transcribing"
+        )
+
+        XCTAssertNotNil(
+            AppModel.waveformStemProgress(
+                selectedSongID: selectedID,
+                currentAnalyzedSongID: selectedID,
+                isRunning: true,
+                progress: separation
+            )
+        )
+        XCTAssertNil(
+            AppModel.waveformStemProgress(
+                selectedSongID: selectedID,
+                currentAnalyzedSongID: otherID,
+                isRunning: true,
+                progress: separation
+            )
+        )
+        XCTAssertNil(
+            AppModel.waveformStemProgress(
+                selectedSongID: selectedID,
+                currentAnalyzedSongID: selectedID,
+                isRunning: false,
+                progress: separation
+            )
+        )
+        XCTAssertNil(
+            AppModel.waveformStemProgress(
+                selectedSongID: selectedID,
+                currentAnalyzedSongID: selectedID,
+                isRunning: true,
+                progress: lyrics
+            )
         )
     }
 

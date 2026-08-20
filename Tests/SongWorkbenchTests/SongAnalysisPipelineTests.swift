@@ -72,14 +72,19 @@ final class SongAnalysisPipelineTests: XCTestCase {
             try? FileManager.default.removeItem(at: sourceURL)
             try? FileManager.default.removeItem(at: outputDirectory)
         }
-        let alternating = (0..<16).map { index in
-            ChordObservation(
-                timestamp: Double(index) * 0.25,
-                chord: Chord(
-                    root: index.isMultiple(of: 2) ? .c : .g,
-                    quality: .major
-                ),
-                confidence: index.isMultiple(of: 2) ? 0.9 : 0.6
+        // Frames at the real chroma hop (~93 ms), all C except stray dissenting G frames — the
+        // noise this contract exists to smooth. Sub-beat decoding (windows are a third of a
+        // beat here) must still refuse to turn isolated frames into chords: a stray frame's
+        // one-window gain can never repay the subdivision-scaled switch penalty both ways.
+        // Strays stay clear of the final beat: a terminal window pays the entry penalty only
+        // (there is no return), so tail flicker is the evidence audit's job, not the decoder's.
+        let hop = HarmonyDecodeResolution.nominalChromaHopSeconds
+        let alternating = (0..<43).map { index in
+            let stray = index.isMultiple(of: 7) && index > 0 && index < 39
+            return ChordObservation(
+                timestamp: Double(index) * hop,
+                chord: Chord(root: stray ? .g : .c, quality: .major),
+                confidence: stray ? 0.6 : 0.9
             )
         }
         let harmony = RecordingHarmonyEngine(

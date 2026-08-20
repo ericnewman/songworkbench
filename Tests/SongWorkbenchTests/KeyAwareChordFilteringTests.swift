@@ -124,12 +124,13 @@ final class KeyAwareChordFilteringTests: XCTestCase {
     private let uniformBeats: [TimeInterval] = (0...16).map { TimeInterval($0) * 0.5 }
 
     func testMergesSubBeatSliverIntoPreviousChord() {
-        // C# at 0, sliver E at 2.0 lasting 0.15s (0.3 beats), F# at 2.15.
-        let events = [event(0, "C#"), event(2.0, "E"), event(2.15, "F#")]
+        // C# at 0, sliver E at 2.0 lasting 0.10s (0.2 beats), F# at 2.10. Beats are 0.5s, and
+        // the floor is 0.25 of a beat, so this sliver is still below it.
+        let events = [event(0, "C#"), event(2.0, "E"), event(2.10, "F#")]
         let merged = ChordEventDurationFilter.merge(
             events, beatTimes: uniformBeats, sourceDuration: 8)
         XCTAssertEqual(merged.map(\.chord), ["C#", "F#"])
-        XCTAssertEqual(merged.map(\.time), [0, 2.15])
+        XCTAssertEqual(merged.map(\.time), [0, 2.10])
     }
 
     func testFlickerSandwichCollapsesToSurroundingChord() {
@@ -164,12 +165,23 @@ final class KeyAwareChordFilteringTests: XCTestCase {
 
     func testFirstEventIsNeverDropped() {
         // First event spans 0.1s but must survive (defines harmony start); the SECOND sliver
-        // is the drop candidate.
-        let events = [event(0, "C#", conf: 0.9), event(0.1, "E", conf: 0.5), event(0.25, "F#")]
+        // is the drop candidate. At a 0.25-beat floor with 0.5s beats, that sliver has to be
+        // under 0.125s to still be one.
+        let events = [event(0, "C#", conf: 0.9), event(0.1, "E", conf: 0.5), event(0.2, "F#")]
         let merged = ChordEventDurationFilter.merge(
             events, beatTimes: uniformBeats, sourceDuration: 8)
         XCTAssertEqual(merged.first?.chord, "C#")
         XCTAssertEqual(merged.map(\.chord), ["C#", "F#"])
+    }
+
+    func testKeepsAChangeShorterThanABeatButAboveTheFloor() {
+        // The reason the floor moved from 0.8 to 0.25: a real change lasting well under a beat
+        // (0.15s = 0.3 beats here) used to be merged into its predecessor, which is what made
+        // rapid sequences lose audible chords.
+        let events = [event(0, "C#"), event(2.0, "E"), event(2.15, "F#")]
+        let merged = ChordEventDurationFilter.merge(
+            events, beatTimes: uniformBeats, sourceDuration: 8)
+        XCTAssertEqual(merged.map(\.chord), ["C#", "E", "F#"])
     }
 
     func testEmptyBeatGridOnlyCollapsesDuplicates() {

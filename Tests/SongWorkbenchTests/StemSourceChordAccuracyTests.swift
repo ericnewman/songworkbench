@@ -522,7 +522,20 @@ final class StemSourceChordAccuracyTests: XCTestCase {
     }
 
     static var tunedMinimumBeatFraction: Double {
-        envDouble("SW_CHORD_MIN_BEAT_FRACTION") ?? 0.8
+        envDouble("SW_CHORD_MIN_BEAT_FRACTION")
+            ?? ChordEventDurationFilter.defaultMinimumBeatFraction
+    }
+
+    /// Windows per beat for the decode grid. Unset = the shipping derivation for this grid.
+    static func tunedSubdivision(beatLength: TimeInterval) -> Int {
+        ProcessInfo.processInfo.environment["SW_CHORD_BEAT_SUBDIVISION"].flatMap(Int.init)
+            ?? HarmonyDecodeResolution.subdivision(beatLength: beatLength)
+    }
+
+    /// Whether the evidence + quality audits run. Off by default so the pre-audit baseline stays
+    /// reproducible; `SW_CHORD_AUDITS=1` turns them on for the after run.
+    static var auditsEnabled: Bool {
+        ProcessInfo.processInfo.environment["SW_CHORD_AUDITS"] == "1"
     }
 
     /// One line describing the active knobs, so a sweep's output rows are self-identifying.
@@ -530,7 +543,9 @@ final class StemSourceChordAccuracyTests: XCTestCase {
         let decoder = tunedDecoder()
         return "switch=\(decoder.switchPenalty) weak=\(decoder.weakBeatFactor) "
             + "onset=\(decoder.onsetPenaltyFactor) minfrac=\(decoder.minimumPenaltyFraction) "
-            + "minbeat=\(tunedMinimumBeatFraction)"
+            + "minbeat=\(tunedMinimumBeatFraction) "
+            + "subdiv=\(ProcessInfo.processInfo.environment["SW_CHORD_BEAT_SUBDIVISION"] ?? "derived") "
+            + "audits=\(auditsEnabled ? 1 : 0)"
     }
 
     private static func envFloat(_ key: String) -> Float? {
@@ -592,6 +607,9 @@ final class StemSourceChordAccuracyTests: XCTestCase {
         }
 
         // Steps 4-6: per arm, vary only the chroma source.
+        let subdivision = Self.tunedSubdivision(
+            beatLength: MetricalLevelReconciler.medianBeatLength(
+                beatTimes: resolvedBeatTimes, bpm: referenceBPM) ?? 0)
         var armReports: [ArmReport] = []
         for (index, arm) in arms.enumerated() {
             let analysis = analyses[index]
@@ -599,14 +617,26 @@ final class StemSourceChordAccuracyTests: XCTestCase {
             let instrumentOnsets = (try? InstrumentOnsetDetector.onsets(url: arm.url)) ?? []
             let sourceDuration = Self.duration(of: arm.url)
 
+            let decodeBeatTimes = ChordTimelineDecoder.subdivided(
+                resolvedBeatTimes, by: subdivision)
+            let decodeMeter = sharedMeter.map {
+                ChordTimelineDecoder.BarMeter(
+                    beatsPerBar: $0.beatsPerBar * subdivision,
+                    barPhase: $0.barPhase * subdivision
+                )
+            }
+            // Mirror production: the per-change penalty scales with the subdivision so
+            // per-beat flicker economics stay constant across decode resolutions.
+            var tunedDecoder = Self.tunedDecoder()
+            tunedDecoder.switchPenalty *= Float(subdivision)
             var events = BassInformedChordRefiner().refine(
-                Self.tunedDecoder().events(
+                tunedDecoder.events(
                     from: analysis,
                     key: key,
                     bassNotes: sharedBassNotes,
                     instrumentOnsets: instrumentOnsets + bassCues,
-                    beatTimes: resolvedBeatTimes,
-                    meter: sharedMeter
+                    beatTimes: decodeBeatTimes,
+                    meter: decodeMeter
                 ),
                 bassNotes: sharedBassNotes
             )
@@ -619,6 +649,24 @@ final class StemSourceChordAccuracyTests: XCTestCase {
                 beatTimes: resolvedBeatTimes,
                 minimumBeatFraction: Self.tunedMinimumBeatFraction,
                 sourceDuration: sourceDuration)
+            // The evidence + quality audits, mirroring `HarmonyStage.run`. Gated so an unset
+            // environment reproduces the recorded pre-audit baseline byte-for-byte — otherwise a
+            // before/after comparison would be measuring two different harnesses.
+            if Self.auditsEnabled {
+                events =
+                    ChordEvidenceAudit.filtered(
+                        events: events,
+                        frameObservations: analysis.chords,
+                        attackOnsets: instrumentOnsets,
+                        changePoints: analysis.harmonicChangePoints
+                    ).events
+                events =
+                    ChordQualityAudit.corrected(
+                        events: events,
+                        frameObservations: analysis.chords,
+                        sourceDuration: sourceDuration
+                    ).events
+            }
             // ChorusChordConsensus is skipped on purpose: it rewrites labels using lyric sections
             // and is a no-op without lyrics, so including it would add a dependency this harness
             // cannot feed.
@@ -1242,6 +1290,28 @@ final class StemSourceChordAccuracyTests: XCTestCase {
         return directiveValue(provenance, name: "subtitle") ?? "unknown"
     }
 
+    /// Prints the raw detected spans for one song/arm so a specific BAR can be inspected, not just
+    /// the whole-song aggregates. Aggregates answer "is the decoder better on average"; they cannot
+    /// answer "why is the chord I hear at 0:73 missing", which is the question a listener actually
+    /// asks. Gated so the default run stays byte-reproducible.
+    ///
+    ///     SW_CHORD_DUMP_SPANS=<songID prefix> [SW_CHORD_DUMP_FROM=72 SW_CHORD_DUMP_TO=86]
+    static func dumpSpansIfRequested(songID: String, arm: String, spans: [Span]) {
+        let environment = ProcessInfo.processInfo.environment
+        guard let wanted = environment["SW_CHORD_DUMP_SPANS"], songID.hasPrefix(wanted) else {
+            return
+        }
+        let from = environment["SW_CHORD_DUMP_FROM"].flatMap(Double.init) ?? 0
+        let to = environment["SW_CHORD_DUMP_TO"].flatMap(Double.init) ?? .greatestFiniteMagnitude
+        print("=== spans song=\(songID) arm=\(arm) window=\(from)...\(to) ===")
+        for span in spans where span.end > from && span.start < to {
+            print(
+                String(
+                    format: "  %7.3f -> %7.3f  (%5.3fs)  %@",
+                    span.start, span.end, span.end - span.start, span.label))
+        }
+    }
+
     static func sequenceResult(
         id: String,
         chart: GroundTruthChart,
@@ -1253,6 +1323,7 @@ final class StemSourceChordAccuracyTests: XCTestCase {
 
         var arms: [SequenceArmResult] = []
         for arm in report.arms {
+            dumpSpansIfRequested(songID: id, arm: arm.name, spans: arm.spans)
             let detected = sequenceTokens(arm.spans.map(\.label))
             let detectedRoots = rootSequence(detected)
             let detectedFull = fullSequence(detected)

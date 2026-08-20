@@ -56,6 +56,48 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertEqual(sections.map(\.kind), [.verse, .chorus, .verse, .chorus])
     }
 
+    /// A chorus almost always has ONE line that does not recur verbatim — a variant last line, or
+    /// a mis-transcribed word. Classified per line, that line reads as a verse and used to split
+    /// the chorus into Chorus / Verse(1 line) / Chorus. Measured on the real library, 40 of 130
+    /// sections held one line or fewer before this smoothing pass.
+    func testNonRepeatingLineInsideAChorusDoesNotSplitItIntoAOneLineVerse() {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
+            TimedLyricSegment(start: 2, end: 4, text: "With little jeans in my hand"),
+            // Chorus 1
+            TimedLyricSegment(start: 4, end: 6, text: "It's a party going on"),
+            TimedLyricSegment(start: 6, end: 8, text: "Nobody here sings this twice"),
+            TimedLyricSegment(start: 8, end: 10, text: "Shout it loud till the dawn"),
+            // Verse 2
+            TimedLyricSegment(start: 20, end: 22, text: "Drinks start a flowing now"),
+            TimedLyricSegment(start: 22, end: 24, text: "Strangers turn into friends"),
+            // Chorus 2 — the middle line differs, so only its neighbours recur.
+            TimedLyricSegment(start: 24, end: 26, text: "It's a party going on"),
+            TimedLyricSegment(start: 26, end: 28, text: "Something else entirely here"),
+            TimedLyricSegment(start: 28, end: 30, text: "Shout it loud till the dawn"),
+        ]
+        let sections = SongStructureAnalyzer().vocalSections(for: lyrics)
+        XCTAssertEqual(sections.map(\.label), ["Verse 1", "Chorus", "Verse 2", "Chorus"])
+        XCTAssertFalse(
+            sections.map(\.kind).contains { _ in sections.count > 4 },
+            "the odd line out must not open its own section")
+    }
+
+    /// The smoothing is for CLASSIFIER noise, not for real structure: a lone line fenced by
+    /// genuine pauses (a tag, a stinger) is a section of its own and must survive.
+    func testGapFencedSingleLineSectionSurvivesSmoothing() {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "It's a party going on"),
+            TimedLyricSegment(start: 2, end: 4, text: "Shout it loud till the dawn"),
+            // Fenced by >= 4s of silence either side: real structure.
+            TimedLyricSegment(start: 12, end: 14, text: "One lonely spoken aside"),
+            TimedLyricSegment(start: 24, end: 26, text: "It's a party going on"),
+            TimedLyricSegment(start: 26, end: 28, text: "Shout it loud till the dawn"),
+        ]
+        let sections = SongStructureAnalyzer().vocalSections(for: lyrics)
+        XCTAssertEqual(sections.map(\.kind), [.chorus, .verse, .chorus])
+    }
+
     func testChordProLabelsVersesAndChoruses() {
         let input = ChordProDraftInput(
             title: "Party",
@@ -1144,5 +1186,33 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertTrue(document.contains("{x_chord_times: 0.000:C}"), document)
         let parsed = try ChordProDocument(parsing: document)
         XCTAssertEqual(parsed.export(), document)
+    }
+
+    func testChordLateInTheRowsLastBeatIsNotDroppedFromTheChart() {
+        // Chords are assigned to their NEAREST beat, so one landing late in the final beat rounds
+        // UP past the row's end index. The bar loop is exclusive, so its bar was never rendered
+        // and the chord vanished from the chart text — while its time stayed in `chordTimes`,
+        // which then also broke the 1:1 pairing the renderer needs. Onset snapping routinely
+        // pulls a chord just ahead of a barline, which is exactly this shape.
+        //
+        // 120 BPM, 0.5s beats. The outro runs from 16s; G at 23.8s sits 0.4 of a beat before
+        // beat 48 (24.0s) and rounds onto it.
+        let beats = stride(from: 0.0, through: 30.0, by: 0.5).map { $0 }
+        let input = ChordProDraftInput(
+            title: "Late Chord",
+            tempo: 120,
+            lyrics: [TimedLyricSegment(start: 0, end: 16, text: "One long line across eight bars")],
+            chords: [
+                EditableChordEvent(time: 16, chord: "C", confidence: 0.9),
+                EditableChordEvent(time: 18, chord: "F", confidence: 0.9),
+                EditableChordEvent(time: 23.8, chord: "G", confidence: 0.9),
+            ],
+            beatTimes: beats,
+            sourceDuration: 24
+        )
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertTrue(
+            document.contains("[G]"),
+            "the late chord must reach the chart text, not just chordTimes:\n\(document)")
     }
 }

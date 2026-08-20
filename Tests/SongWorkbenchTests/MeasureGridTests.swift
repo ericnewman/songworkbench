@@ -53,49 +53,9 @@ final class MeasureGridTests: XCTestCase {
         XCTAssertFalse(grid.isDownbeat(beatIndex: 0))
     }
 
-    // MARK: DownbeatEstimator
-
-    func testBarPhaseDetectsAllOnDownbeatTwo() {
-        // Grid at 0.5s spacing; onsets land exactly on beat indices 2, 6, 10 (residue 2).
-        let beats = Array(stride(from: 0.0, through: 12.0, by: 0.5))
-        let onsets = [1.0, 3.0, 5.0, 7.0]  // times of beat indices 2, 6, 10, 14
-        XCTAssertEqual(DownbeatEstimator.barPhase(beatTimes: beats, onsets: onsets), 2)
-    }
-
-    func testBarPhasePrefersDownbeatOverPickup() {
-        // Half the onsets on residue 0 (downbeat), half on residue 3 (pickup before it).
-        // The estimator must choose phase 0 (downbeat), not phase 3.
-        let beats = Array(stride(from: 0.0, through: 20.0, by: 0.5))
-        var onsets: [TimeInterval] = []
-        for bar in 0..<5 {
-            let base = Double(bar) * 4 * 0.5  // downbeat time of this bar
-            onsets.append(base)  // residue 0
-            onsets.append(base + 3 * 0.5)  // residue 3 (pickup into next downbeat)
-        }
-        XCTAssertEqual(DownbeatEstimator.barPhase(beatTimes: beats, onsets: onsets), 0)
-    }
-
-    func testBarPhaseOnRealisticAnacrusisCadence() {
-        // "She thinks I'm a millionaire": bpm 105.46875, first beat ~0.325.
-        // Vocal-line first-word onsets cluster on downbeat (residue 0) and pickup (residue 3).
-        let bpm = 105.46875
-        let beatLen = 60.0 / bpm
-        let first = 0.3250793
-        let beats = (0..<343).map { first + Double($0) * beatLen }
-        let onsets: [TimeInterval] = [
-            22.54, 27.58, 31.66, 36.40, 40.58, 45.58, 49.08, 55.16, 59.24, 63.32,
-            68.84, 77.00, 82.08, 86.52, 91.08, 95.56, 100.28, 104.36, 109.88,
-        ]
-        // Downbeat is residue 0 under this phase, so the detected bar phase is 0.
-        XCTAssertEqual(DownbeatEstimator.barPhase(beatTimes: beats, onsets: onsets), 0)
-    }
-
-    func testDegenerateInputReturnsZeroPhase() {
-        XCTAssertEqual(DownbeatEstimator.barPhase(beatTimes: [], onsets: [1, 2]), 0)
-        XCTAssertEqual(DownbeatEstimator.barPhase(beatTimes: [0, 0.5], onsets: []), 0)
-    }
-
     // MARK: DownbeatEstimator — accent-strength (drums/bass) phase
+    // (The onset-histogram phase overload and its tests were deleted with it: chord/vocal onsets
+    // were measured at near-chance for phase, and `SongBarGridEstimator` is the one entry point.)
 
     func testBarPhaseFromBeatStrengthsPicksAccentedDownbeat() {
         // Strong accent on every 4th beat starting at index 1 (phase 1), weak elsewhere.

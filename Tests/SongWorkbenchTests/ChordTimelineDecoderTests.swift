@@ -323,7 +323,8 @@ final class ChordTimelineDecoderTests: XCTestCase {
     private func dummyWindows(_ count: Int) -> [ChordTimelineDecoder.WindowEvidence] {
         (0..<count).map {
             ChordTimelineDecoder.WindowEvidence(
-                start: TimeInterval($0) * 0.5, scores: [:], meanRawConfidence: [:])
+                start: TimeInterval($0) * 0.5, scores: [:], meanRawConfidence: [:],
+                frameCount: 0)
         }
     }
 
@@ -426,5 +427,115 @@ final class ChordTimelineDecoderTests: XCTestCase {
             downbeatWithMeter.map(\.chord), ["C#", "F#", "C#"],
             "the same excursion starting on the downbeat must survive")
         XCTAssertEqual(downbeatWithMeter[1].time, 2.0, accuracy: 1e-9)
+    }
+
+    // MARK: - Sub-beat decode grid
+
+    func testSubdivisionSplitsEachBeatIntervalEvenly() {
+        let beats = [0.0, 1.0, 2.0]
+        XCTAssertEqual(
+            ChordTimelineDecoder.subdivided(beats, by: 2), [0.0, 0.5, 1.0, 1.5, 2.0])
+        XCTAssertEqual(
+            ChordTimelineDecoder.subdivided(beats, by: 4),
+            [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    }
+
+    func testSubdivisionFollowsUNEVENBeatSpacing() {
+        // The measured grid is drum-locked, so intervals are not uniform — each one has to be
+        // split on its OWN length or the sub-beats drift against the music.
+        let beats = [0.0, 1.0, 4.0]
+        XCTAssertEqual(ChordTimelineDecoder.subdivided(beats, by: 2), [0.0, 0.5, 1.0, 2.5, 4.0])
+    }
+
+    func testSubdivisionOfOneOrLessIsIdentity() {
+        let beats = [0.0, 1.0, 2.0]
+        XCTAssertEqual(ChordTimelineDecoder.subdivided(beats, by: 1), beats)
+        XCTAssertEqual(ChordTimelineDecoder.subdivided(beats, by: 0), beats)
+        XCTAssertEqual(ChordTimelineDecoder.subdivided([0.5], by: 4), [0.5])
+        XCTAssertTrue(ChordTimelineDecoder.subdivided([], by: 4).isEmpty)
+    }
+
+    func testSubdivisionDerivesFromFrameDensity() {
+        // Sub-beat decoding is ON, derived per song: the finest level (max 4 — accommodates
+        // up-to-three-chords-per-beat charting, and the corpus-best configuration) whose
+        // windows still hold ≥ 1.6 chroma frames. Fast songs step DOWN rather than
+        // degenerating into per-frame decoding.
+        // 94 BPM (0.638 s beat, ~6.9 frames): the corpus's measured-best setting → 4.
+        XCTAssertEqual(HarmonyDecodeResolution.subdivision(beatLength: 0.638), 4)
+        // 140 BPM (0.429 s, ~4.6 frames): quarter- and third-beat windows are too thin → 2.
+        XCTAssertEqual(HarmonyDecodeResolution.subdivision(beatLength: 0.429), 2)
+        // 290 BPM tactus (0.207 s, ~2.2 frames): even halves are too thin → 1.
+        XCTAssertEqual(HarmonyDecodeResolution.subdivision(beatLength: 0.207), 1)
+        // Degenerate input never subdivides.
+        XCTAssertEqual(HarmonyDecodeResolution.subdivision(beatLength: 0), 1)
+    }
+
+    /// The capability the derived subdivision buys: a genuine chord change INSIDE a beat —
+    /// sustained, multi-frame evidence, not a stray frame — is representable and decodes at
+    /// its sub-beat onset instead of being absorbed into the beat.
+    func testSubBeatWindowsResolveAChordChangeInsideABeat() {
+        let hop = HarmonyDecodeResolution.nominalChromaHopSeconds
+        // C solidly for 3.5 beats (0.5 s beats), then G from mid-beat 1.75 s onward.
+        let observations = (0..<43).map { index -> ChordObservation in
+            let time = Double(index) * hop
+            return ChordObservation(
+                timestamp: time,
+                chord: Chord(root: time < 1.75 ? .c : .g, quality: .major),
+                confidence: 0.9
+            )
+        }
+        let beats = stride(from: 0.0, through: 4.0, by: 0.5).map { $0 }
+        let subdivision = HarmonyDecodeResolution.subdivision(beatLength: 0.5)
+        XCTAssertGreaterThan(subdivision, 1)
+        let analysis = SongAudioAnalysis(
+            beat: BeatEstimate(bpm: 120, beatTimes: beats, confidence: 1),
+            chords: observations)
+        let events = ChordTimelineDecoder().events(
+            from: analysis,
+            key: nil,
+            beatTimes: ChordTimelineDecoder.subdivided(beats, by: subdivision))
+        XCTAssertEqual(events.map(\.chord), ["C", "G"])
+        let gOnset = try! XCTUnwrap(events.last?.time)
+        // On the raw beat grid the G could only land on 1.5 or 2.0; the subdivided grid puts
+        // it within one sub-beat window of the real 1.75 s change.
+        XCTAssertEqual(gOnset, 1.75, accuracy: 0.5 / Double(subdivision) + 0.01)
+    }
+
+    // MARK: - Pre-drums intro coverage
+
+    func testDecodeGridExtendsBackOverAPreDrumsIntro() {
+        // The drum-locked grid starts at the first hit. A solo-guitar intro before the band comes
+        // in therefore had no decode windows at all and produced no chords.
+        let afterDrums = [16.0, 16.5, 17.0, 17.5]
+        let extended = ChordTimelineDecoder.extendedBackward(afterDrums, toCover: 14.0)
+        XCTAssertEqual(extended.first ?? 0, 14.0, accuracy: 0.5)
+        XCTAssertTrue(extended.contains(16.0), "the measured beats are preserved")
+        XCTAssertEqual(extended, extended.sorted())
+        // Added beats stay in phase with the measured ones.
+        for index in 0..<(extended.count - 1) {
+            XCTAssertEqual(extended[index + 1] - extended[index], 0.5, accuracy: 1e-9)
+        }
+    }
+
+    func testExtensionIsANoOpWhenTheGridAlreadyCoversTheAudio() {
+        let beats = [0.0, 0.5, 1.0]
+        XCTAssertEqual(ChordTimelineDecoder.extendedBackward(beats, toCover: 0.0), beats)
+        XCTAssertEqual(ChordTimelineDecoder.extendedBackward(beats, toCover: 5.0), beats)
+    }
+
+    func testExtensionHandlesDegenerateGrids() {
+        XCTAssertEqual(ChordTimelineDecoder.extendedBackward([], toCover: 0), [])
+        XCTAssertEqual(ChordTimelineDecoder.extendedBackward([3.0], toCover: 0), [3.0])
+        // A zero-length interval must not spin the loop.
+        XCTAssertEqual(
+            ChordTimelineDecoder.extendedBackward([2.0, 2.0], toCover: 0), [2.0, 2.0])
+    }
+
+    func testExtensionUsesTheMedianIntervalNotTheFirst() {
+        // One anomalous first gap must not set the extrapolation step.
+        let beats = [10.0, 12.0, 12.5, 13.0, 13.5]
+        let extended = ChordTimelineDecoder.extendedBackward(beats, toCover: 9.0)
+        let step = extended[1] - extended[0]
+        XCTAssertEqual(step, 0.5, accuracy: 1e-9)
     }
 }

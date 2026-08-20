@@ -120,7 +120,26 @@ struct ChromaVector: Equatable, Sendable {
 struct ChromaAnalyzer: Sendable {
     let minimumFrequency: Double
 
-    init(minimumFrequency: Double = 32.7) {
+    /// Lowest frequency folded into the chroma.
+    ///
+    /// 95 Hz, not the 32.7 Hz (C1) this used to accept. Below ~90 Hz an FFT bin is WIDER than a
+    /// semitone — at 44.1 kHz with a 8192-point frame the bin spacing is 5.383 Hz, and a semitone
+    /// is 5.383 Hz at 90.5 Hz. Round-to-nearest-MIDI below that crossover hands some pitch
+    /// classes two bins and others none:
+    ///
+    ///     bin 14   75.37 Hz -> MIDI 38 (D2)
+    ///     bin 15   80.75 Hz -> MIDI 40 (E2)     <- Eb2 (MIDI 39) gets NO bin at all
+    ///     bin 20  107.67 Hz -> MIDI 45 (A2)
+    ///     bin 21  113.05 Hz -> MIDI 45 (A2)     <- A2 gets two, G#2 gets one
+    ///
+    /// So an Eb bass fundamental at 77.8 Hz deposited its energy into D and E, and the low open E
+    /// at 41.2 Hz landed where nothing rounds to E. That is a fixed per-pitch-class gain table
+    /// baked in by `sampleRate / frameLength`, and it lands exactly on the root, which
+    /// `ChordClassifier.rootWeight` (1.6) then amplifies.
+    ///
+    /// Excluding octaves 1-2 loses real fundamentals, but those octaves were contributing
+    /// MISATTRIBUTED energy; the harmonics of those same notes remain, correctly binned.
+    init(minimumFrequency: Double = 95) {
         self.minimumFrequency = minimumFrequency
     }
 

@@ -15,6 +15,18 @@ struct ChordProDraftInput: Equatable, Sendable {
     var untranscribedVocalRegions: [ClosedRange<TimeInterval>] = []
     /// Detected key, emitted as a `{key: …}` directive (reconstruction plan B1).
     var estimatedKey: MusicalKey? = nil
+    /// The song's ONE bar grid. Supplied rather than re-derived: this builder used to estimate
+    /// its own `barPhase` from CHORD onsets — a signal the chart view had already measured as
+    /// only 1.15x-1.37x above chance and therefore rejected — so the text could claim "bar 2,
+    /// beat 1" for a chord the chart drew two beats from that barline. Every production caller
+    /// supplies it; `nil` (tests, untimed drafts) falls back to `SongBarGridEstimator` with no
+    /// accent evidence, i.e. beat-0 anchoring — never chord onsets.
+    var barGrid: SongBarGrid? = nil
+    /// The detected bass line, used ONLY to annotate stepwise walks into a chord change as
+    /// slash chords in the rendered text (`C/B` into Am — see `BassRunDetector`). The editable
+    /// chord timeline is never modified. Empty (the default) renders no walk annotations —
+    /// the bass-note draft variant deliberately passes none.
+    var bassNotes: [BassNoteObservation] = []
 }
 
 enum UntranscribedVocalRegionResolver {
@@ -70,8 +82,12 @@ struct ChordProDraftBuilder: Sendable {
     /// History: 1 = equal-time instrumental slicing (implicit — charts stamped before
     /// versioning carry no tag at all); 2 = uniform whole-bar instrumental rows; 3 = sliver
     /// remainders merge into the final row and a degenerate outro gets a nominal bar;
-    /// 4 = anticipated-chord attachment capped at the 2-beat gutter.
-    static let algorithmVersion = 4
+    /// 4 = anticipated-chord attachment capped at the 2-beat gutter; 5 = the shared
+    /// `SongBarGrid` reaches every rebuild path (load-side rebuilds previously fell back to
+    /// chord-onset bar phase, so a chart could persist with bars the drum-measured grid
+    /// contradicts); 6 = bass walk-up/walk-down steps annotated as slash chords
+    /// (`BassRunDetector`).
+    static let algorithmVersion = 6
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -183,7 +199,7 @@ struct ChordProDraftBuilder: Sendable {
         // genuine new `sectionByStart` entry may close/open a section — never the generic gap
         // comment, or a same-section instrumental breath would wrongly fragment the section.
         var openSection: SongStructureAnalyzer.SectionKind?
-        let chords = input.chords.compactMap { event -> RenderableChordEvent? in
+        let includedChords = input.chords.compactMap { event -> RenderableChordEvent? in
             guard event.confidence.map({ $0 >= input.confidenceThreshold }) ?? true else {
                 return nil
             }
@@ -200,6 +216,7 @@ struct ChordProDraftBuilder: Sendable {
             if $0.time == $1.time { return $0.label < $1.label }
             return $0.time < $1.time
         }
+        let chords = withBassWalkAnnotations(includedChords, input: input)
 
         if lyrics.isEmpty, !chords.isEmpty {
             lines.append("{start_of_grid}")
@@ -697,13 +714,42 @@ struct ChordProDraftBuilder: Sendable {
     /// verse phrasing, say) no longer renders/persists chord-only rows and barlines on a
     /// DIFFERENT bar grid than what the preview shows for the same song. Conservative by
     /// construction (`estimateBeatsPerBar` only deviates from 4 with a clear margin), so a normal
-    /// 4/4 song is unaffected. Chord-change timing is still too irregular a proxy for phrase-period
-    /// detection, so `barPhase` continues to use the chord onsets: chord changes cluster near
-    /// downbeats in most pop/rock harmony, giving `DownbeatEstimator.barPhase` a legitimate (if
-    /// weaker than vocal-onset) signal for which beat is beat 1. Falls back to synthesized uniform
+    /// 4/4 song is unaffected. Falls back to synthesized uniform
     /// beats from `tempo` when no beat grid was detected, matching the
     /// `BouncingBall.beats(in:_:beatTimes:bpm:)` precedent elsewhere in this codebase. `nil` when
     /// neither beats nor a tempo are available (untimed songs keep the old proportional spacing).
+    /// Splices detected bass WALK steps into the renderable chord list as slash-chord
+    /// annotations — `G/A G/B` walking into C, `C/B` into Am — so the chart shows the runs a
+    /// player actually hears (the decoder's vocabulary cannot represent them; see
+    /// `BassRunDetector`). Text-level only: the editable chord timeline is never touched, and
+    /// each annotation carries the walk note's own confidence so the review shading is honest.
+    private func withBassWalkAnnotations(
+        _ chords: [RenderableChordEvent], input: ChordProDraftInput
+    ) -> [RenderableChordEvent] {
+        guard !input.bassNotes.isEmpty, chords.count > 1 else { return chords }
+        let runNotes = BassRunDetector.runNotes(
+            bassNotes: input.bassNotes,
+            chordOnsets: chords.map { ($0.time, ChordQualityAudit.parse($0.label)?.root.rawValue) },
+            beatTimes: input.beatTimes)
+        guard !runNotes.isEmpty else { return chords }
+        var merged = chords
+        for note in runNotes {
+            guard let sounding = chords.last(where: { $0.time <= note.time }),
+                !sounding.label.contains("/")
+            else { continue }
+            merged.append(
+                RenderableChordEvent(
+                    time: note.time,
+                    label: "\(sounding.label)/\(BassNoteNaming.name(forMidiNote: note.midiNote))",
+                    confidence: note.confidence
+                ))
+        }
+        return merged.sorted {
+            if $0.time == $1.time { return $0.label < $1.label }
+            return $0.time < $1.time
+        }
+    }
+
     private func measureGrid(
         for input: ChordProDraftInput, chords: [RenderableChordEvent], lyrics: [TimedLyricSegment]
     ) -> MeasureGrid? {
@@ -721,13 +767,19 @@ struct ChordProDraftBuilder: Sendable {
             beatTimes = stride(from: 0.0, through: end, by: beatLength).map { $0 }
         }
         guard !beatTimes.isEmpty else { return nil }
-        let lyricLineOnsets = lyrics.map { $0.words.first?.start ?? $0.start }
-        let beatsPerBar = DownbeatEstimator.estimateBeatsPerBar(
-            beatTimes: beatTimes, onsets: lyricLineOnsets)
-        let barPhase = DownbeatEstimator.barPhase(
-            beatTimes: beatTimes, onsets: onsets, beatsPerBar: beatsPerBar)
+        // The song's shared grid, or — for a caller with none — the SAME estimator the pipeline
+        // uses, with no accent evidence (anchored to beat 0). The old fallback estimated phase
+        // from chord onsets, the signal measured at 1.15x-1.37x above chance and rejected; there
+        // is deliberately no second opinion left here.
+        let shared =
+            input.barGrid
+            ?? SongBarGridEstimator.estimate(
+                beatTimes: beatTimes,
+                beatStrengths: [],
+                lyricLineOnsets: lyrics.map { $0.words.first?.start ?? $0.start })
         let grid = MeasureGrid(
-            beatTimes: beatTimes, bpm: bpm, beatsPerBar: beatsPerBar, barPhase: barPhase)
+            beatTimes: beatTimes, bpm: bpm, beatsPerBar: shared.beatsPerBar,
+            barPhase: shared.barPhase)
         return grid.isUsable ? grid : nil
     }
 
@@ -770,6 +822,17 @@ struct ChordProDraftBuilder: Sendable {
         var endDownbeat = floorDownbeatIndex(grid: grid, beatIndex: endBeatIndex)
         if Double(endDownbeat) < endBeatIndex { endDownbeat += beatsPerBar }
         if endDownbeat <= startDownbeat { endDownbeat = startDownbeat + beatsPerBar }
+        // Chords are assigned to their NEAREST beat below, so a chord late in the row's last beat
+        // rounds UP past `endBeatIndex` — e.g. beat 11.55 becomes 12 while `endDownbeat` is 12 and
+        // the loop is exclusive, so its bar is never rendered and the chord vanishes from the
+        // chart text (its time stays in `row.chordTimes`, which then also breaks the 1:1 pairing
+        // the renderer needs). Extend the loop to cover the highest beat any chord rounds to.
+        // Onset snapping routinely pulls a chord just ahead of a barline, which is exactly this.
+        let lastAssignedBeat =
+            sorted.map { Int(grid.beatIndex(atTime: $0.time).rounded()) }.max() ?? startDownbeat
+        while endDownbeat <= lastAssignedBeat, endDownbeat < startDownbeat + 4096 {
+            endDownbeat += beatsPerBar
+        }
 
         // Assign each chord to its nearest beat index (an off-grid onset still snaps onto the
         // bar/beat it musically belongs to rather than desyncing the columns). A fast passing run
@@ -967,15 +1030,18 @@ struct SongStructureAnalyzer: Sendable {
         guard !lines.isEmpty else { return [] }
 
         let words = lines.map { wordSet($0.text) }
-        var isChorus = [Bool](repeating: false, count: lines.count)
-        for i in lines.indices {
-            for j in lines.indices where i != j {
-                if jaccard(words[i], words[j]) >= chorusSimilarity {
-                    isChorus[i] = true
-                    break
-                }
-            }
-        }
+        // The song's ONE repetition matcher — the same groups `ChorusChordConsensus` votes on,
+        // so a line the chart labels Chorus is definitionally a line whose chords vote together.
+        // `minimumNormalizedLength: 1` keeps this analyzer's historical inclusiveness (short
+        // repeated lines still classify as chorus material; the consensus applies its own
+        // stricter floor before letting them vote).
+        let repeatedIDs = Set(
+            RepeatedLyricLineGroups.groups(
+                in: lines, similarity: chorusSimilarity, minimumNormalizedLength: 1
+            ).flatMap { $0 }.map(\.id))
+        var isChorus = lines.map { repeatedIDs.contains($0.id) }
+
+        smoothIsolatedClassifications(&isChorus, lines: lines)
 
         // Each block tracks its line RANGE (not just its start line) so the merge pass below can
         // measure line count — `boundaryWasGapOnly[k]` records whether the split BEFORE block
@@ -1058,6 +1124,38 @@ struct SongStructureAnalyzer: Sendable {
     /// baseline to call either one an anomaly against, and merging them would be exactly the
     /// wrong call (regression guard: `testTwoOrdinaryEqualLengthVersesSeparatedByAGapStaySplit`-
     /// style two-line/one-line verse pairs must stay split).
+    /// Flips a line whose chorus/verse classification disagrees with BOTH its neighbours, when no
+    /// real pause separates it from them.
+    ///
+    /// `isChorus` is decided per line, independently, by word-set Jaccard against every other line.
+    /// That is a fine per-line signal and a terrible segmentation signal: a chorus almost always
+    /// contains one line that does NOT recur verbatim (a variant last line, a mis-transcribed
+    /// word), and that single line scores as a verse. The block loop below starts a new section on
+    /// every classification change, so one such line splits a four-line chorus into
+    /// Chorus / Verse(1 line) / Chorus — which is exactly the "verses with one line" and the
+    /// "extra long choruses" either side of them. Measured on the real library before this pass:
+    /// 40 of 130 sections held one line or fewer, and Flip Flops — a three-verse song — reported
+    /// THIRTEEN sections.
+    ///
+    /// A singleton is only flipped when neither neighbouring gap reaches `sectionGap`. A one-line
+    /// section that IS separated by real pauses is genuine structure (a tag, a stinger), and
+    /// deleting those would trade one wrong answer for another. `mergedGapFragmentedVerseBlocks`
+    /// cannot do this job: it only rejoins verse-to-verse blocks split by a bare gap, so a
+    /// classification-mismatch split is out of its reach by construction.
+    private func smoothIsolatedClassifications(
+        _ isChorus: inout [Bool], lines: [TimedLyricSegment]
+    ) {
+        guard isChorus.count >= 3 else { return }
+        let original = isChorus
+        for i in 1..<(original.count - 1) where original[i - 1] == original[i + 1] {
+            guard original[i] != original[i - 1] else { continue }
+            let gapBefore = lines[i].start - lines[i - 1].end
+            let gapAfter = lines[i + 1].start - lines[i].end
+            guard gapBefore < sectionGap, gapAfter < sectionGap else { continue }
+            isChorus[i] = original[i - 1]
+        }
+    }
+
     private func mergedGapFragmentedVerseBlocks(
         blockBoundaries: [Int], boundaryWasGapOnly: [Bool], isChorus: [Bool],
         minimumBaselineLineCount: Int = 4
@@ -1097,7 +1195,7 @@ struct SongStructureAnalyzer: Sendable {
     }
 
     private func wordSet(_ text: String) -> Set<String> {
-        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        RepeatedLyricLineGroups.wordSet(text)
     }
 
     /// The number of spoken words in a line — whitespace-separated tokens, NOT `wordSet`'s
@@ -1137,9 +1235,7 @@ struct SongStructureAnalyzer: Sendable {
     }
 
     private func jaccard(_ a: Set<String>, _ b: Set<String>) -> Double {
-        let union = a.union(b).count
-        guard union > 0 else { return 0 }
-        return Double(a.intersection(b).count) / Double(union)
+        RepeatedLyricLineGroups.jaccard(a, b)
     }
 }
 

@@ -1,3 +1,71 @@
+# Stem Separation Speed + Richer Stems (2026-08-13)
+
+Eric observed stem separation feeling slower than comparable products, suspected parallel stem
+execution, and asked whether more isolated parts can be added.
+
+Acceptance criteria:
+
+- [x] Confirm the actual execution shape: base stem chunks vs per-stem parallelism vs refiner
+      cascade.
+- [x] Add a conservative performance control if the current runtime oversubscribes CPU.
+- [x] Keep richer-stem support behind optional, explicit refiners so base separation remains the
+      predictable default.
+- [x] Make refiner time visible in the separation result/progress so the UI does not under-report
+      work after the base pass.
+- [x] Add focused tests for sequencing, metadata/cache identity, and processing-duration accounting.
+- [x] Run focused tests and a build-compatible verification command.
+
+Notes so far:
+
+- The base ONNX HTDemucs engine emits six stems in one model pass per chunk. The Swift loop
+  processes chunks sequentially; it does not launch one job per stem.
+- Optional refiners are sequential follow-up passes. DrumSep splits drums into pieces; karaoke
+  vocals splits vocals into lead/backing when installed.
+- macOS currently gives ONNX Runtime `activeProcessorCount - 1` intra-op threads for the base
+  model. On a large Apple Silicon machine this may look like parallel stem work because one model
+  inference can occupy many CPU cores.
+
+Review:
+
+- Changed macOS ONNX intra-op threading from "all active cores minus one" to a default cap of 6,
+  still leaving explicit overrides through `SW_STEM_SEPARATION_THREADS` or the
+  `SongWorkbench.stemSeparationIntraOpThreads` user default.
+- Fixed `StemRefinementPipelineEngine` to report whole-cascade duration when optional richer-stem
+  refiners run.
+- Richer stems remain opt-in through Advanced Desktop optional refiners: DrumSep can expose
+  kick/snare/cymbals/toms, and the karaoke refiner can expose lead/backing vocals when its verified
+  local artifact is installed. No unvalidated guitar lead/rhythm model was added.
+- Verification: `swift test --filter StemSeparationTests` passed 16 tests; `swift test --filter
+  SongAnalysisPipelineFactoryTests` passed 3 tests; strict Swift format lint passed for changed
+  Swift files; `git diff --check` passed for changed files.
+
+## Follow-up — Waveform Area Background Progress (2026-08-13)
+
+Eric observed that stem generation is invisible in the Waveform area until stem waveform lanes
+appear at the end.
+
+Acceptance criteria:
+
+- [x] Show in-progress stem generation inside the Waveform panel while the selected song is running
+      the separation stage.
+- [x] Use user-facing phase labels for loading/preparing/separating/refining/writing, not raw engine
+      phase identifiers.
+- [x] Keep the indicator visible even before stem waveform lanes exist.
+- [x] Add focused tests for the status text and phase mapping.
+- [x] Run focused tests and format/diff checks.
+
+Review:
+
+- `AppModel` now tracks the currently analyzed song ID and exposes `waveformStemProgress` only when
+  the selected song is in the separation stage.
+- The Waveform panel renders an inline progress row before stem lanes exist, mapping engine phases
+  to "Preparing stems", "Generating stems", "Refining stems", "Finalizing stems", or
+  "Loading saved stems".
+- Verification: `swift test --jobs 1 --filter AppModelTests/testWaveformStemProgress` passed 2
+  tests; strict Swift format lint passed for `AppModel.swift` and `ContentView.swift`;
+  `git diff --check` passed for touched paths. Full test-file lint was not clean because an
+  unrelated existing dirty line in `AppModelTests.swift` exceeds line length.
+
 # Track B — Richer Stems as a Playback Feature (2026-07-29, NOT STARTED)
 
 Captured on Eric's request so it is not lost. **Do not start** — recorded only.
@@ -2667,3 +2735,145 @@ regen cached stems; rebuild+device test peak (uninstall wipes container -> re-on
 - Verification: focused tests passed 11 tests; full `swift test` passed 667 tests with 7 skipped
   and 0 failures; strict Swift format lint and `git diff --check` passed; macOS Debug
   `SongWorkbench` and generic iOS Debug `SongWorkbenchiPad` builds succeeded.
+
+---
+
+## 2026-08-09 — Beat This! pretrained-tracker spike: NO-GO
+
+Eric reported "fundamental architecture issues" in timeline/chord/lyric accuracy. Ran an offline
+feasibility spike (CPJKU Beat This!, uv venv, torch, CPU) against the 5 songs currently in the
+library, scored non-circularly (lyric-line IOI period, chord-loop autocorrelation period) against
+the app's stored tempo, per `feedback-anchor-to-measured-onsets` rules.
+
+**Verdict: do not replace the beat/downbeat tracker with a pretrained model.** It does not beat
+what's already shipped: `MetricalLevelReconciler` (2026-08-05, `AppModel.swift:2395-2440`) already
+fixes the octave/dyadic tempo errors this spike was meant to justify solving, and bar-phase
+anchoring (`8508f43`, 2026-08-07) already gives a sensible downbeat-phase fallback. On the one
+song where Beat This! and the app cleanly disagree (Key West), the app is right and Beat This! is
+wrong (1.88x tempo error, no clean-ratio excuse). On Doc Holiday they agree up to the
+already-documented unresolvable 2:1 tactus ambiguity. No case favors the pretrained model.
+
+Full writeup + per-song table in project memory: `beatthis-pretrained-tracker-nogo-2026-08.md`.
+
+**Still open** (unaffected by this spike): chord decoder F1 ceiling (~50-53,
+`chord-over-segmentation-nogo.md` — needs more Reviewed-tier chart data, not more tuning or a
+model swap without the same non-circular validation this spike used); downbeat phase is mitigated
+by a prior, not solved (only 1/6 songs have real accent evidence); SongTimeline RC-4 /
+legacy-heuristic-deletion status not re-checked this pass.
+
+Spike artifacts: `~/spikes/beatthis/` (venv, wav conversions, `results.json`, `analyze.py`,
+`phase_check.py`) — safe to delete, nothing shipped, no app code touched.
+
+---
+
+## 2026-08-10 — UVR5 stem-separator review
+
+Read-only review of `Anjok07/ultimatevocalremovergui` at `5517e0c` against the current
+SongWorkbench separator/refiner architecture.
+
+- [x] Inspect current SongWorkbench separator seams: base HTDemucs 6-source ONNX, optional
+      DrumSep and karaoke refiners, cache identity, model catalog, and downstream consumers.
+- [x] Inspect UVR5 architecture: Python/PyTorch desktop GUI wrapping Demucs, VR, MDX, MDX23C,
+      secondary models, vocal-split chains, TTA, post-process masks, and ensembles.
+- [x] Compare integration fit: model-candidate discovery is useful; wholesale UVR runtime
+      integration is not a fit for native Swift/iPad or the existing waveform-in/out contract.
+- [x] Recommendation: do not integrate UVR5 code as a separator backend. Reuse its model zoo and
+      validation ideas only after each candidate clears license, ONNX/Core ML waveform contract,
+      memory, reconstruction/source-mapping, and downstream chord/ASR gates.
+
+Review evidence: UVR5 bundles Python/PyTorch and desktop dependencies; its MDX/VR paths require
+spectrogram/ISTFT and mask post-processing that this app deliberately avoids in native code.
+SongWorkbench already has the right extension point (`StemChunkPredicting` plus
+`NativeStemRefinementEngine`) and prior UVR-MDX karaoke testing showed that spectrogram-only ONNX
+exports are not directly consumable.
+
+---
+
+## 2026-08-10 — Resume best-outcome todo: quantized per-row pickup gutter
+
+Closed the active chart-geometry WIP before starting a new architecture branch. The visible issue
+was the flat two-beat pickup gutter: rows whose first sound lands on the downbeat, including Doc
+Holiday's opening chord, rendered with two beats of blank space before the first sound.
+
+- Added `ChartPickupGutter`: per-row gutter measured from the earliest real word/chord before the
+  row downbeat, deadbanded for jitter, rounded up to a whole number of beats, capped at two beats.
+- Kept end-of-line melody tails independent from the pickup gutter so zero-pickup rows do not lose
+  their trailing waveform.
+- Updated `ChordProAppPreview` / `ChordProPreviewLineView` to pass each row's quantized gutter
+  into the existing `ChordRowRuler`.
+- Added unit and geometry tests for zero-pickup rows, mixed 0/1/2-beat gutters, and beat-column
+  alignment.
+- The real-library audit initially failed on pickups just over one beat; fixed the rule so the
+  deadband only suppresses jitter and real pickups round up by their actual length.
+
+Verification:
+
+- `swift test --filter ChartPickupGutterTests --filter ChartGeometryInvariantTests`: 13 tests,
+  0 failures.
+- `CCS_REAL_SONG_AUDIT=1 swift test --filter RealSongChartGeometryAudit/testPickupGutterDistributionAcrossTheLibrary`:
+  5 songs audited, 0 failures; rows distribute across 0/1/2-beat gutters while beat columns keep
+  phase.
+- `swift format lint --strict --recursive Sources Tests`: passed.
+- `git diff --check`: passed.
+- `tuist generate --no-open`: succeeded; `project.pbxproj` includes `ChartPickupGutter` and
+  `ChartPickupGutterTests`.
+- `swift test`: 841 tests, 22 skipped, 0 failures.
+- `xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench -destination 'platform=macOS' build`:
+  build succeeded.
+
+Follow-up after live presentation review, 2026-08-10 09:04 EDT:
+
+- The gutter fix was geometrically correct but the visible chart still collapsed short lyric rows to
+  word-sized islands because `rhythmicContent` reserved layout width only through the last word.
+- Added an explicit rhythmic-frame width path: row content verdicts still measure the real lyric span,
+  while presentation width reserves the fit contract's maximum pickup column plus one phrase period.
+- Added a regression for short lyric rows reserving the phrase frame width.
+
+Follow-up verification so far:
+
+- `swift test --filter ChartGeometryInvariantTests --filter ChartPickupGutterTests`: 14 tests,
+  0 failures.
+- `swift format lint --strict --recursive Sources Tests`: passed.
+- `CCS_REAL_SONG_AUDIT=1 swift test --filter RealSongChartGeometryAudit/testFittedChartRowWidthsAgainstTheViewport`:
+  5 songs audited, 0 failures.
+- `git diff --check`: passed.
+- `xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench -destination 'platform=macOS' build`:
+  build succeeded.
+- `swift test`: first run hit one transient AppModel timeout; isolated rerun passed; second full run
+  passed with 842 tests, 22 skipped, 0 failures.
+- Live screenshot verification is still pending because the Mac was at the lock screen after launch.
+
+---
+
+## 2026-08-10 — ChordPro playback balls without Review affordances
+
+Eric wants the ChordPro screen to show the same bouncing balls during playback, even though the
+plain ChordPro presentation is not standard notation.
+
+- [x] Split the ChordPro tab config so playback rendering and Review affordances are independent.
+- [x] Reuse `ChordProAppPreview` for ChordPro playback rows so ball/timeline mapping stays identical
+  to Review.
+- [x] Keep ChordPro free of Review-only controls: accept/edit, confidence shading controls, waveform,
+  bass row, chord time labels, and placement A/B.
+- [x] Update tests for the new contract and verify the build/test suite.
+
+Implementation notes:
+
+- `ChordProTabConfig` now separates `rendersPlaybackChart`, `showsPlaybackControls`, and
+  `showsReviewAffordances`.
+- `ChordProTrueView` uses the timeline-aware chart renderer so the white word ball and amber chord
+  ball are the same code path as Review.
+- `ChordProPreviewBlockView` / `ChordProPreviewLineView` gate Review affordances so the ChordPro
+  surface cannot accept/edit/drag/tint review items while reusing the playback renderer.
+
+Verification:
+
+- `swift test --filter ChordProTabConfigTests`: 4 tests, 0 failures.
+- `swift test --filter ChartGeometryInvariantTests --filter ChordProTabConfigTests --filter ChartPickupGutterTests`:
+  18 tests, 0 failures.
+- `swift format lint --strict --recursive Sources Tests`: passed.
+- `git diff --check`: passed.
+- `xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench -destination 'platform=macOS' build`:
+  build succeeded; Xcode also printed passcode-protected device warnings unrelated to the macOS
+  destination.
+- `swift test`: 842 tests, 22 skipped, 0 failures.

@@ -425,10 +425,16 @@ private struct AnalysisProgressSheet: View {
 
     /// The queue backs both first-time imports and "Re-analyze All", so title by count rather
     /// than assuming any batch is a re-analyze — a first import was reading "Re-analyzing
-    /// Library".
+    /// Library". A single-song run names the song itself (the "Song i of N: Title" line below
+    /// only renders for real batches, so without this a lone run showed no title at all).
     private var analysisSheetTitle: String {
         if let bulk = model.reanalyzeAllStatus, bulk.total > 1 {
             return "Analyzing \(bulk.total) Songs"
+        }
+        if let title = model.reanalyzeAllStatus?.title ?? model.selectedSong?.title,
+            !title.isEmpty
+        {
+            return "Analyzing “\(title)”"
         }
         return "Analyzing Song"
     }
@@ -469,6 +475,17 @@ private struct ModelPackagesView: View {
                     .font(.swDisplay(12))
                     .help(
                         "When enabled and DrumSep is installed, Analyze refines drums into kick, snare, cymbals, and toms. Mixer and waveforms follow those children."
+                    )
+                    Toggle(
+                        "Low-memory separation",
+                        isOn: Binding(
+                            get: { model.lowMemorySeparationEnabled },
+                            set: { model.lowMemorySeparationEnabled = $0 }
+                        )
+                    )
+                    .font(.swDisplay(12))
+                    .help(
+                        "Separates in 2.5s segments instead of 7.8s: about 2.1GB peak instead of 3.9GB. Use it if analysis crawls or the Mac starts swapping. Stems are weaker — guitar most of all, which is what chord detection listens to — and these separations are cached separately from full-quality ones."
                     )
                 #endif
                 // Hide packages outside the active product tier instead of offering installs
@@ -520,9 +537,27 @@ private struct ModelPackagesView: View {
         }
     }
 
+    /// Verification re-hashes the entire package, so the row shows it working rather than
+    /// appearing to ignore the click. The outcome itself lands in the error banner.
+    @ViewBuilder
+    private func verifyButton(_ descriptor: ModelPackageDescriptor) -> some View {
+        if model.modelVerifyInProgress.contains(descriptor.id) {
+            ProgressView().controlSize(.small)
+        } else {
+            Button("Verify") { model.verifyModelPackage(descriptor) }
+        }
+    }
+
     @ViewBuilder
     private func modelActions(_ descriptor: ModelPackageDescriptor) -> some View {
         switch model.modelPackageStatuses[descriptor.id] ?? .available {
+        case .available where !descriptor.isHosted:
+            // The artifact is not published yet, so Install can only ever fail on an unresolvable
+            // placeholder URL and leave an error the user has to hunt for a way to clear. Say so
+            // instead of offering a button that cannot work.
+            Text("Manual install required — artifact not hosted yet")
+                .font(.swDisplay(11))
+                .foregroundStyle(Color.swTextSecondary)
         case .available:
             Button("Install") { model.installModelPackage(descriptor) }
                 .disabled(model.modelInstallProgress[descriptor.id] != nil)
@@ -530,12 +565,19 @@ private struct ModelPackagesView: View {
             Text(package.sizeBytes, format: .byteCount(style: .file))
                 .font(.swMono(12))
                 .foregroundStyle(Color.swTextSecondary)
-            Button("Verify") { model.verifyModelPackage(descriptor) }
+            verifyButton(descriptor)
             Button("Remove", role: .destructive) { model.removeModelPackage(descriptor) }
-        case .invalid:
+        case .invalid(let reason):
+            // Show WHY. The reason was previously discarded, leaving a bare "Invalid" chip that
+            // said nothing about whether to verify, reinstall, or free disk space.
             Label("Invalid", systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(Color.swCoral)
-            Button("Verify") { model.verifyModelPackage(descriptor) }
+                .help(reason)
+            Text(reason)
+                .font(.swDisplay(11))
+                .foregroundStyle(Color.swCoral)
+                .lineLimit(2)
+            verifyButton(descriptor)
             Button("Remove", role: .destructive) { model.removeModelPackage(descriptor) }
         }
     }

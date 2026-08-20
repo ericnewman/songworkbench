@@ -91,6 +91,25 @@ struct KeyPriorChordRescorer: Sendable {
 /// A dropped event's span is absorbed by the PREVIOUS chord (the previous event simply
 /// sustains longer). Adjacent duplicates left behind by a merge are collapsed.
 enum ChordEventDurationFilter {
+    /// Shortest chord, as a fraction of the local beat, that survives the merge.
+    ///
+    /// 0.25 of a beat. Was 0.8, which merged away every change shorter than a beat — the "rapid
+    /// sequence lost an obvious chord" report. Measured on the six-song ground-truth corpus with
+    /// the evidence audits on: guitar arm root F1 49.5 -> 50.9, median 45.7 -> 51.7, and
+    /// over-segmentation FELL 2.57 -> 2.34; the accompaniment arm gave back about a point.
+    ///
+    /// Over-segmentation falling while the filter got more permissive is not a paradox: short
+    /// spurious events now survive this filter and are removed by `ChordEvidenceAudit` instead,
+    /// on whether the audio attacks there rather than on duration alone.
+    ///
+    /// Note this cannot buy sub-beat resolution on its own — see `HarmonyDecodeResolution`. It
+    /// only stops genuine beat-or-longer changes from being merged after snapping moves them.
+    ///
+    /// Named rather than inlined as a parameter default so the offline accuracy harness reads the
+    /// SAME value the app ships — it previously hardcoded 0.8 and silently measured a
+    /// configuration that no longer existed.
+    static let defaultMinimumBeatFraction = 0.25
+
     /// - Parameters:
     ///   - events: chord events ordered by time.
     ///   - beatTimes: the resolved beat grid; used to measure the local beat length.
@@ -101,7 +120,21 @@ enum ChordEventDurationFilter {
     static func merge(
         _ events: [EditableChordEvent],
         beatTimes: [TimeInterval],
-        minimumBeatFraction: Double = 0.8,
+        // 0.25 of a beat: a sixteenth at 4/4. Was 0.8, which merged away every change shorter
+        // than a beat — the "rapid sequence lost an obvious chord" report. Measured on the
+        // six-song ground-truth corpus with the evidence audits on: guitar arm root F1 49.5 ->
+        // 50.9, median 45.7 -> 51.7, and over-segmentation actually FELL 2.57 -> 2.34; the
+        // accompaniment arm gave back about a point (55.1 -> 54.0).
+        //
+        // Over-segmentation falling while the filter got more permissive is not a paradox: short
+        // spurious events now survive this filter and are removed by `ChordEvidenceAudit`
+        // instead, on whether the audio attacks there rather than on duration alone.
+        //
+        // NOTE: this does not buy sub-beat resolution. `ChordTimelineDecoder` decodes one window
+        // per BEAT interval and emits at most one chord per window, so the shortest chord the
+        // pipeline can represent is one beat regardless of this value. This only stops genuine
+        // beat-or-longer changes from being merged after onset snapping moves them.
+        minimumBeatFraction: Double = defaultMinimumBeatFraction,
         sourceDuration: TimeInterval? = nil
     ) -> [EditableChordEvent] {
         guard events.count > 1 else { return events }

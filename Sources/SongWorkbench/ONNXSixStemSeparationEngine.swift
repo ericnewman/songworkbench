@@ -38,9 +38,25 @@ struct ONNXSixStemSeparationEngine: StemSeparationEngine, Sendable {
     /// key on this so iPad's short-segment stems and macOS's 7.8s stems never alias.
     static var currentPlatformMetadata: StemSeparationEngineMetadata {
         #if os(macOS)
-            return cpuMetadata
+            // Must track the SAME segment choice `SongAnalysisPipelineFactory` builds the engine
+            // with. When it did not, enabling low-memory separation made every song permanently
+            // report "stems are stale": the factory produced `3-seg…` records, this returned
+            // plain `3`, so no freshly-separated record could ever match and re-analysing never
+            // cleared the warning.
+            return metadata(usesCoreML: false, segmentFrames: currentSegmentFrames)
         #else
             return metadata(usesCoreML: false, segmentFrames: iPadSegmentFrames)
+        #endif
+    }
+
+    /// Segment length this build will actually separate with — the one place both the engine
+    /// factory and the staleness check read, so they cannot drift apart.
+    static var currentSegmentFrames: Int {
+        #if os(macOS)
+            AnalysisCapabilityProfile.prefersLowMemorySeparation
+                ? iPadSegmentFrames : defaultSegmentFrames
+        #else
+            iPadSegmentFrames
         #endif
     }
 
@@ -78,6 +94,8 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
     private static let modelOutputOrder: [StemKind] = [
         .drums, .bass, .other, .vocals, .guitar, .piano,
     ]
+    static let threadCountDefaultsKey = "SongWorkbench.stemSeparationIntraOpThreads"
+    static let threadCountEnvironmentKey = "SW_STEM_SEPARATION_THREADS"
 
     let supportedStems = StemKind.allCases
 
@@ -98,16 +116,7 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
         let environment = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setGraphOptimizationLevel(.all)
-        #if os(macOS)
-            let threadCount = Int32(max(ProcessInfo.processInfo.activeProcessorCount - 1, 1))
-        #else
-            // iPad: cap intra-op threads so the long stem-separation run doesn't peg every core.
-            // At a 2.5s segment there are many chunks; pinning all 8 cores at 100% thermally
-            // throttles the device (net slower) and trips iOS's sustained-CPU diagnostics. 4
-            // threads balances throughput and heat; thread count barely affects peak memory.
-            let threadCount = Int32(
-                min(max(ProcessInfo.processInfo.activeProcessorCount - 1, 1), 4))
-        #endif
+        let threadCount = Self.resolvedIntraOpThreadCount()
         try options.setIntraOpNumThreads(threadCount)
         if usesCoreMLExecutionProvider, ORTIsCoreMLExecutionProviderAvailable() {
             let coreMLOptions = ORTCoreMLExecutionProviderOptions()
@@ -119,6 +128,30 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
             modelPath: modelURL.path,
             sessionOptions: options
         )
+    }
+
+    static func resolvedIntraOpThreadCount(
+        activeProcessorCount: Int = ProcessInfo.processInfo.activeProcessorCount,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        userDefaultValue: Int? = UserDefaults.standard.object(forKey: threadCountDefaultsKey)
+            as? Int
+    ) -> Int32 {
+        let available = max(activeProcessorCount - 1, 1)
+        if let value = environment[threadCountEnvironmentKey].flatMap(Int.init), value > 0 {
+            return Int32(min(value, available))
+        }
+        if let userDefaultValue, userDefaultValue > 0 {
+            return Int32(min(userDefaultValue, available))
+        }
+        #if os(macOS)
+            // Keep sustained ONNX inference from occupying every core on desktop-class Macs.
+            // High core counts can increase scheduler overhead and make the app feel stalled.
+            return Int32(min(available, 6))
+        #else
+            // iPad: pinning all cores thermally throttles long songs and can trip sustained-CPU
+            // diagnostics. Four threads balances throughput and heat for the 2.5s export.
+            return Int32(min(available, 4))
+        #endif
     }
 
     func predict(_ chunk: StereoAudioChunk) throws -> StemChunkPrediction {

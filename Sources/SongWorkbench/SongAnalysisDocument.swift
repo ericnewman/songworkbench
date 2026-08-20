@@ -451,6 +451,12 @@ struct AnalysisStageRecord: Codable, Equatable, Sendable {
     var provenance: AnalysisProvenance?
     var confidence: AnalysisConfidenceSummary?
     var errorMessage: String?
+    /// Non-fatal data-quality finding from a stage that SUCCEEDED. Distinct from `errorMessage`,
+    /// which means the stage produced nothing: a warning means it produced output the pipeline
+    /// itself does not fully trust (e.g. the harmony stage found most chord markers unsupported by
+    /// any instrument attack, so it declined to filter them). Optional, so records written before
+    /// this existed decode as `nil` — no schema migration.
+    var qualityWarning: String?
 }
 
 struct SongAnalysisDocument: Codable, Equatable, Sendable {
@@ -461,7 +467,11 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     //     (Review tab, backlog #15). All optional/defaulted, so no migration is required.
     // 11: added LyricBlendRow.overrideText (manual per-line correction, takes precedence over
     //     every ASR candidate and survives re-analysis). Optional, no migration required.
-    static let currentSchemaVersion = 11
+    // 12: added preReconciliationTiming + timingPostPassTag (AnalysisTimingPostPasses moved the
+    //     regroup/reconcile/recut trio from every load into the pipeline; the document now
+    //     stores the DISPLAYED values, with the beat tracker's raw answer preserved beside
+    //     them). Optional, no migration required — an unstamped document is migrated on load.
+    static let currentSchemaVersion = 12
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
@@ -487,8 +497,46 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// SEPARATE from the generated `chordProSource`: it validates the generated chart via
     /// `ReferenceChartComparator` and is never overwritten by re-analysis.
     var referenceChordProSource = ""
+    /// Audio evidence kept from the harmony stage so an UPLOADED chart can be judged against the
+    /// recording later, without re-analysing. Both are small (a few hundred doubles); the frame
+    /// chroma they came from is not persisted.
+    ///
+    /// `nil` on documents analysed before this existed — treat as "unavailable", never as "this
+    /// song has no attacks".
+    /// ponytail: placement evidence only. Persisting the per-frame `ChordObservation`s would also
+    /// let the reference's chord QUALITY be audited (`ChordQualityAudit`), at ~2.5k rows a song.
+    /// The song's ONE bar grid — which beat is beat 1, and beats per bar. Estimated once by the
+    /// harmony stage and read by the decoder, the ChordPro builder, and the chart, so those three
+    /// can no longer disagree about where a barline goes. `nil` on documents analysed before this
+    /// existed; consumers fall back to `SongBarGrid.unknown`.
+    var barGrid: SongBarGrid?
+    var instrumentAttackOnsets: [TimeInterval]?
+    var harmonicChangePoints: [TimeInterval]?
+    /// Per-frame chord labels straight from `ChordClassifier` (no key prior applied), kept so an
+    /// uploaded chart's chord QUALITY can be audited against the recording — the frames are the
+    /// only evidence about the third, and a reference chord's span never matches a generated
+    /// one's, so a per-event summary could not be reused.
+    ///
+    /// **Deliberately NOT persisted** — see the omission from `CodingKeys`. Measured: keeping
+    /// ~1.8k rows per song grew the projects file from 16 KB to 3 MB and cost 75 ms per encode,
+    /// and that file is rewritten on every debounced save, including throughout an analysis run.
+    /// That is a bad trade for a comparison the user opens occasionally.
+    ///
+    /// So it lives only for the session that produced it: present after an analysis run, `nil`
+    /// after a reload. Consumers must degrade honestly when it is `nil` (report "re-analyse to
+    /// compare chord quality"), never treat absence as disagreement.
+    var frameChordObservations: [ChordObservation]?
     var estimatedBPM: Double?
     var beatTimes: [TimeInterval] = []
+    /// The beat tracker's ORIGINAL tempo answer, captured when `AnalysisTimingPostPasses`
+    /// retuned the published `estimatedBPM`/`beatTimes`/`barGrid` onto another metrical level.
+    /// `nil` when no retune fired. This is what makes persisting the reconciled values safe:
+    /// a re-run of the post-passes (tag bump) restores this first, so reconciliation never
+    /// feeds on its own output — the loop that once walked a song 101.3 → 152.0 → 81.1.
+    var preReconciliationTiming: PreReconciliationTiming?
+    /// Version stamp of the `AnalysisTimingPostPasses` that produced the stored lyrics/beats.
+    /// `nil` (older documents, or fresh stage output) means the passes still need to run.
+    var timingPostPassTag: String?
     var bassNotes: [BassNoteObservation] = []
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
@@ -513,8 +561,14 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case chords
         case chordProSource
         case referenceChordProSource
+        case barGrid
+        case instrumentAttackOnsets
+        case harmonicChangePoints
+        // `frameChordObservations` is intentionally absent — it is session-only, see its doc.
         case estimatedBPM
         case beatTimes
+        case preReconciliationTiming
+        case timingPostPassTag
         case bassNotes
         case estimatedKey
         case chordConfidenceThreshold
@@ -538,8 +592,14 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         chords: [EditableChordEvent] = [],
         chordProSource: String = "",
         referenceChordProSource: String = "",
+        barGrid: SongBarGrid? = nil,
+        instrumentAttackOnsets: [TimeInterval]? = nil,
+        harmonicChangePoints: [TimeInterval]? = nil,
+        frameChordObservations: [ChordObservation]? = nil,
         estimatedBPM: Double? = nil,
         beatTimes: [TimeInterval] = [],
+        preReconciliationTiming: PreReconciliationTiming? = nil,
+        timingPostPassTag: String? = nil,
         bassNotes: [BassNoteObservation] = [],
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
@@ -561,8 +621,14 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.chords = chords
         self.chordProSource = chordProSource
         self.referenceChordProSource = referenceChordProSource
+        self.barGrid = barGrid
+        self.instrumentAttackOnsets = instrumentAttackOnsets
+        self.harmonicChangePoints = harmonicChangePoints
+        self.frameChordObservations = frameChordObservations
         self.estimatedBPM = estimatedBPM
         self.beatTimes = beatTimes
+        self.preReconciliationTiming = preReconciliationTiming
+        self.timingPostPassTag = timingPostPassTag
         self.bassNotes = bassNotes
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
@@ -595,8 +661,18 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         chordProSource = try container.decodeIfPresent(String.self, forKey: .chordProSource) ?? ""
         referenceChordProSource =
             try container.decodeIfPresent(String.self, forKey: .referenceChordProSource) ?? ""
+        barGrid = try container.decodeIfPresent(SongBarGrid.self, forKey: .barGrid)
+        instrumentAttackOnsets = try container.decodeIfPresent(
+            [TimeInterval].self, forKey: .instrumentAttackOnsets)
+        harmonicChangePoints = try container.decodeIfPresent(
+            [TimeInterval].self, forKey: .harmonicChangePoints)
+        frameChordObservations = nil
         estimatedBPM = try container.decodeIfPresent(Double.self, forKey: .estimatedBPM)
         beatTimes = try container.decodeIfPresent([TimeInterval].self, forKey: .beatTimes) ?? []
+        preReconciliationTiming = try container.decodeIfPresent(
+            PreReconciliationTiming.self, forKey: .preReconciliationTiming)
+        timingPostPassTag = try container.decodeIfPresent(
+            String.self, forKey: .timingPostPassTag)
         bassNotes =
             try container.decodeIfPresent([BassNoteObservation].self, forKey: .bassNotes) ?? []
         estimatedKey =
@@ -634,6 +710,15 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
                 forKey: .stageRecords
             ) ?? [:]
     }
+}
+
+/// The beat tracker's original answer, set aside by `AnalysisTimingPostPasses` when a metrical
+/// retune replaced the published values. One value, one concept: "what the tracker actually said",
+/// kept so a corrected reconciler can always re-derive from raw instead of compounding.
+struct PreReconciliationTiming: Codable, Equatable, Sendable {
+    var estimatedBPM: Double?
+    var beatTimes: [TimeInterval] = []
+    var barGrid: SongBarGrid?
 }
 
 struct StoredStemFiles: Codable, Equatable, Sendable {

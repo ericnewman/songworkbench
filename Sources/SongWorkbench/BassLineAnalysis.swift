@@ -463,3 +463,115 @@ struct BassLineAnalyzer: Sendable {
         return (samples, format.sampleRate)
     }
 }
+
+/// Detects stepwise bass WALKS into a chord change — the walk-ups and walk-downs the chord
+/// timeline cannot represent (its vocabulary has no slash chords, and `BassInformedChordRefiner`
+/// deliberately discards an inversion bass as "keep the chord"). The walking notes are already
+/// detected in `bassNotes`; this names the ones that step into the next chord's root so the
+/// chart can annotate them (`C/B` into Am, `G/A G/B` into C).
+///
+/// Conservative by construction: a step must be short (a passing note, not a chord-length bass
+/// note), move 1–2 semitones per step in one direction, land 1–2 semitones from the next chord's
+/// root in that same direction, and not be the sounding chord's own root or fifth (alternating
+/// root–fifth bass is accompaniment, not a walk; the THIRD is kept — `G/B` is the classic
+/// walk-up step). Pure and deterministic.
+enum BassRunDetector {
+    struct RunNote: Equatable, Sendable {
+        let time: TimeInterval
+        let midiNote: Int
+        let confidence: Float
+    }
+
+    /// At most this many steps per walk (matches "up to three chords per beat" charting).
+    static let maximumStepsPerRun = 3
+
+    /// - Parameters:
+    ///   - chordOnsets: the RENDERED chord events (time + root pitch class, nil when the label
+    ///     does not parse), sorted by time. Walks are detected per transition, into each onset.
+    static func runNotes(
+        bassNotes: [BassNoteObservation],
+        chordOnsets: [(time: TimeInterval, rootPitchClass: Int?)],
+        beatTimes: [TimeInterval],
+        minimumConfidence: Float = 0.35
+    ) -> [RunNote] {
+        guard chordOnsets.count > 1, !bassNotes.isEmpty else { return [] }
+        let beat = medianSpacing(beatTimes) ?? 0.5
+        let sortedBass = bassNotes.sorted { $0.timestamp < $1.timestamp }
+        var result: [RunNote] = []
+
+        for index in 1..<chordOnsets.count {
+            guard let target = chordOnsets[index].rootPitchClass else { continue }
+            let arrival = chordOnsets[index].time
+            let previousOnset = chordOnsets[index - 1].time
+            let previousRoot = chordOnsets[index - 1].rootPitchClass
+            guard arrival > previousOnset else { continue }
+            let windowStart = max(previousOnset + 0.01, arrival - 2.5 * beat)
+            var window = sortedBass.filter {
+                $0.timestamp >= windowStart && $0.timestamp < arrival - 0.05
+                    && $0.confidence >= minimumConfidence
+            }
+            // Collapse re-onsets of the same sustained pitch.
+            var deduped: [BassNoteObservation] = []
+            for note in window {
+                if let last = deduped.last, last.midiNote == note.midiNote { continue }
+                deduped.append(note)
+            }
+            window = deduped
+            guard let last = window.last,
+                // The final step must be a QUICK passing note into the arrival.
+                arrival - last.timestamp <= 1.5 * beat
+            else { continue }
+            let landing = signedDistance(from: last.midiNote, toPitchClass: target)
+            guard abs(landing) >= 1, abs(landing) <= 2 else { continue }
+            let direction = landing > 0 ? 1 : -1
+
+            // Extend backwards while earlier notes keep stepping the same way, quickly.
+            var chain = [last]
+            var cursor = window.count - 2
+            while cursor >= 0, chain.count < maximumStepsPerRun {
+                let earlier = window[cursor]
+                let step = chain[0].midiNote - earlier.midiNote
+                guard step * direction >= 1, step * direction <= 2,
+                    chain[0].timestamp - earlier.timestamp <= 1.5 * beat
+                else { break }
+                chain.insert(earlier, at: 0)
+                cursor -= 1
+            }
+
+            // Keep only genuine passing steps: never the arrival root itself, and never the
+            // sounding chord's root or fifth (alternating bass).
+            let excluded: Set<Int> = {
+                var set: Set<Int> = [target]
+                if let previousRoot {
+                    set.insert(previousRoot)
+                    set.insert((previousRoot + 7) % 12)
+                }
+                return set
+            }()
+            for note in chain {
+                let pitchClass = ((note.midiNote % 12) + 12) % 12
+                guard !excluded.contains(pitchClass) else { continue }
+                result.append(
+                    RunNote(
+                        time: note.timestamp, midiNote: note.midiNote,
+                        confidence: note.confidence))
+            }
+        }
+        return result.sorted { $0.time < $1.time }
+    }
+
+    /// Signed semitone distance from a MIDI note to the nearest occurrence of a pitch class,
+    /// in -6...5 (so "one below" is -1 regardless of octave).
+    static func signedDistance(from midiNote: Int, toPitchClass target: Int) -> Int {
+        let up = (((target - midiNote) % 12) + 12) % 12
+        return up <= 6 ? up : up - 12
+    }
+
+    private static func medianSpacing(_ beatTimes: [TimeInterval]) -> TimeInterval? {
+        guard beatTimes.count >= 2 else { return nil }
+        let sorted = beatTimes.sorted()
+        let diffs = zip(sorted.dropFirst(), sorted).map(-).filter { $0 > 0.1 && $0 < 2.0 }
+        guard !diffs.isEmpty else { return nil }
+        return diffs.sorted()[diffs.count / 2]
+    }
+}

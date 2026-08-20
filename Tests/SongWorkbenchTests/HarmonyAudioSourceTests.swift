@@ -77,8 +77,15 @@ final class HarmonyAudioSourceTests: XCTestCase {
             allowsRecordingFallback: false
         )
 
+        // Guitar leads and stays the cache-identifying URL, but piano now rides along in the mix
+        // rather than being ignored — see `HarmonyStemMix.defaultWeights`.
         XCTAssertEqual(source.url, guitar)
-        XCTAssertEqual(source.configurationIdentifier, "harmony-guitar-stem")
+        XCTAssertEqual(source.configurationIdentifier, "harmony-mix-guitar+piano")
+        XCTAssertEqual(source.weightedURLs.map(\.label), ["guitar", "piano"])
+        XCTAssertEqual(source.weightedURLs.map(\.weight), [1.0, 0.6])
+        XCTAssertFalse(
+            source.weightedURLs.contains { $0.url == stems.bass },
+            "bass ships at weight 0 and must not enter the chroma")
     }
 
     func testFallsBackToPianoThenAccompanimentThenOther() throws {
@@ -106,7 +113,9 @@ final class HarmonyAudioSourceTests: XCTestCase {
             allowsRecordingFallback: false
         )
 
+        // No guitar stem: piano leads the mix alone.
         XCTAssertEqual(source.url, piano)
-        XCTAssertEqual(source.configurationIdentifier, "harmony-piano-stem")
+        XCTAssertEqual(source.configurationIdentifier, "harmony-mix-piano")
+        XCTAssertEqual(source.weightedURLs.map(\.label), ["piano"])
     }
 }

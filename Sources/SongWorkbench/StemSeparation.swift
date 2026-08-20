@@ -704,6 +704,11 @@ struct ExternalStemRefinementEngine: StemRefinementEngine {
 }
 
 struct StemRefinementPipelineEngine: StemSeparationEngine {
+    /// Appended to the base engine identifier when refiners actually ran. Read by
+    /// `AnalysisProvenance.matchesEngineIdentifier` so a refined separation is still recognised as
+    /// current by callers that cannot know whether a refiner was installed.
+    static let refinedSuffix = "+refiners"
+
     let baseEngine: any StemSeparationEngine
     let refiners: [any StemRefinementEngine]
     let sourceDigest: String
@@ -713,7 +718,7 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
     var metadata: StemSeparationEngineMetadata {
         guard !refiners.isEmpty else { return baseEngine.metadata }
         return StemSeparationEngineMetadata(
-            engineIdentifier: baseEngine.metadata.engineIdentifier + "+refiners",
+            engineIdentifier: baseEngine.metadata.engineIdentifier + Self.refinedSuffix,
             engineVersion: baseEngine.metadata.engineVersion,
             modelIdentifier: baseEngine.metadata.modelIdentifier,
             modelVersion: baseEngine.metadata.modelVersion
@@ -738,6 +743,7 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
         request: StemSeparationRequest,
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
+        let start = ContinuousClock.now
         let baseResult = try await baseEngine.separate(request: request, progress: progress)
         guard !refiners.isEmpty else { return baseResult }
 
@@ -795,7 +801,7 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
         return StemSeparationResult(
             stems: baseResult.stems,
             stemSet: manifest,
-            processingDuration: baseResult.processingDuration
+            processingDuration: start.duration(to: .now)
         )
     }
 

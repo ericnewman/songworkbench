@@ -70,13 +70,19 @@ struct SongAnalysisPipelineFactory: Sendable {
             let stemPackage = await installedPackage(ModelCatalog.htdemucs)
         {
             baseStemPackage = stemPackage
+            // Segment size is the dominant memory lever: the 7.8 s default warms the ONNX arena
+            // to ~3.9 GB, which thrashes on a machine that is already swapping. See
+            // `AnalysisCapabilityProfile.prefersLowMemorySeparation`.
+            let segmentFrames = ONNXSixStemSeparationEngine.currentSegmentFrames
             stemEngine = DeferredStemSeparationEngine(
-                metadata: ONNXSixStemSeparationEngine.cpuMetadata
+                metadata: ONNXSixStemSeparationEngine.metadata(
+                    usesCoreML: false, segmentFrames: segmentFrames)
             ) {
                 try await Task.detached(priority: .userInitiated) {
                     // CPU execution provider (known-good). The CoreML/ANE provider was tried for
                     // speed but reverted until it can be verified not to break separation output.
-                    try ONNXSixStemSeparationEngine(modelURL: stemPackage.entryPointURL)
+                    try ONNXSixStemSeparationEngine(
+                        modelURL: stemPackage.entryPointURL, segmentFrames: segmentFrames)
                 }.value
             }
         } else {

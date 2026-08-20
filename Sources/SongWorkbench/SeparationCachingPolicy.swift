@@ -99,12 +99,34 @@ struct SeparationCachingPolicy: Sendable {
 }
 
 extension AnalysisProvenance {
+    /// Matches the base engine identifier, tolerating the `+refiners` suffix that
+    /// `StemRefinementPipelineEngine` stamps when Advanced stem refinement is on AND a refiner
+    /// package is installed.
+    ///
+    /// Refinement is purely ADDITIVE: it splits an existing stem into children and leaves all six
+    /// base stems byte-identical, produced by the same base engine at the same version. So a
+    /// refined separation is never staler than an unrefined one, and treating it as a different
+    /// engine is what broke things: `AppModel`'s staleness check reads
+    /// `ONNXSixStemSeparationEngine.currentPlatformMetadata`, which has no way to know whether a
+    /// refiner is installed, so it always compared against the bare identifier. Every refined song
+    /// then failed the check on EVERY load, flipped to `.stale`, and re-separated — turning
+    /// Advanced separation into an endless re-separation loop (Eric: "continuously getting a
+    /// message that stems are stale even if I re-analyze the song").
+    ///
+    /// This is the same class of drift the `currentPlatformMetadata` comment already records for
+    /// segment frames. Tolerating the suffix here fixes it for both readers at once, rather than
+    /// teaching a static property to predict which refiners a given run will have.
+    func matchesEngineIdentifier(_ identifier: String) -> Bool {
+        engineIdentifier == identifier
+            || engineIdentifier == identifier + StemRefinementPipelineEngine.refinedSuffix
+    }
+
     /// True when this provenance's engine identity (engineIdentifier /
     /// engineVersion / modelIdentifier / modelVersion) matches `metadata`. Refined
     /// stem recipes depend on exact model weights, so a model-version change must
     /// not reuse older audio products.
     func matchesEngine(_ metadata: StemSeparationEngineMetadata) -> Bool {
-        engineIdentifier == metadata.engineIdentifier
+        matchesEngineIdentifier(metadata.engineIdentifier)
             && engineVersion == metadata.engineVersion
             && modelIdentifier == metadata.modelIdentifier
             && modelVersion == metadata.modelVersion

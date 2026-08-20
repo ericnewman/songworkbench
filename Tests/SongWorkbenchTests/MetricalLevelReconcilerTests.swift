@@ -149,6 +149,74 @@ final class MetricalLevelReconcilerTests: XCTestCase {
         XCTAssertEqual(currentBPM, bpm, accuracy: 1e-9)
     }
 
+    // MARK: AnalysisTimingPostPasses — the trio in the pipeline, provenance-guarded
+
+    private func documentNeedingRetune() -> SongAnalysisDocument {
+        let trueBPM = 152.0
+        let reportedBPM = trueBPM * 2 / 3
+        var document = SongAnalysisDocument()
+        document.estimatedBPM = reportedBPM
+        document.beatTimes = uniformBeats(bpm: reportedBPM, duration: 120)
+        document.lyrics = lineOnsets(
+            bpm: trueBPM, beatsPerLine: 4, lineCount: 30, jitter: 0.05
+        ).map { TimedLyricSegment(start: $0, end: $0 + 1.2, text: "la la la") }
+        return document
+    }
+
+    func testPostPassesRetuneStoreRawAndStamp() {
+        var document = documentNeedingRetune()
+        let rawBPM = document.estimatedBPM
+        let rawBeats = document.beatTimes
+        AnalysisTimingPostPasses.apply(to: &document)
+        XCTAssertEqual(document.estimatedBPM!, 152.0, accuracy: 0.5)
+        XCTAssertEqual(document.preReconciliationTiming?.estimatedBPM, rawBPM)
+        XCTAssertEqual(document.preReconciliationTiming?.beatTimes, rawBeats)
+        XCTAssertTrue(AnalysisTimingPostPasses.isCurrent(document))
+        XCTAssertNotNil(document.barGrid, "every stamped document carries its one bar grid")
+    }
+
+    /// The structural guarantee that replaced "never persist the reconciled values": re-running
+    /// the passes on their own persisted output restores the raw answer first, so the tempo
+    /// cannot walk (the 101.3 -> 152.0 -> 81.1 loop).
+    func testPostPassesNeverCompoundAcrossRepeatedRuns() {
+        var document = documentNeedingRetune()
+        AnalysisTimingPostPasses.apply(to: &document)
+        let firstBPM = document.estimatedBPM
+        let firstBeats = document.beatTimes
+        for _ in 0..<3 {
+            // Simulate a version bump forcing a re-run on the persisted (already-retuned) doc.
+            document.timingPostPassTag = nil
+            AnalysisTimingPostPasses.apply(to: &document)
+        }
+        XCTAssertEqual(document.estimatedBPM!, firstBPM!, accuracy: 1e-6)
+        XCTAssertEqual(document.beatTimes.count, firstBeats.count)
+    }
+
+    func testPostPassesLeaveACorrectTempoAloneAndStoreNoRaw() {
+        let bpm = 96.0
+        var document = SongAnalysisDocument()
+        document.estimatedBPM = bpm
+        document.beatTimes = uniformBeats(bpm: bpm, duration: 160)
+        document.lyrics = lineOnsets(bpm: bpm, beatsPerLine: 8, lineCount: 26, jitter: 0.05)
+            .map { TimedLyricSegment(start: $0, end: $0 + 1.2, text: "la la la") }
+        AnalysisTimingPostPasses.apply(to: &document)
+        XCTAssertEqual(document.estimatedBPM, bpm)
+        XCTAssertNil(document.preReconciliationTiming)
+        XCTAssertTrue(AnalysisTimingPostPasses.isCurrent(document))
+    }
+
+    func testPostPassesRetuneTheBarGridWithTheBeats() {
+        var document = documentNeedingRetune()
+        document.barGrid = SongBarGrid(
+            beatsPerBar: 4, barPhase: 2, confidence: 0.4, phaseSource: .drumAccents)
+        AnalysisTimingPostPasses.apply(to: &document)
+        // x3/2 retune: 4 beats/bar -> 6, phase 2 -> 3 (see SongBarGrid.retuned).
+        XCTAssertEqual(document.barGrid?.beatsPerBar, 6)
+        XCTAssertEqual(document.barGrid?.barPhase, 3)
+        XCTAssertEqual(document.preReconciliationTiming?.barGrid?.beatsPerBar, 4)
+        XCTAssertEqual(document.preReconciliationTiming?.barGrid?.barPhase, 2)
+    }
+
     // MARK: The gates
 
     func testBrokenSegmentationDeclinesToRetune() {

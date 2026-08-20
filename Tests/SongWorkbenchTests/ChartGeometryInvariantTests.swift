@@ -163,6 +163,97 @@ final class ChartGeometryInvariantTests: XCTestCase {
             "beat dots must sit in shared columns; found phases \(distinctPhases)")
     }
 
+    /// THE invariant the per-row gutter has to keep, asserted on rows that genuinely DISAGREE
+    /// about their gutter — 0, 1 and 2 beats in the same page.
+    ///
+    /// A continuous per-row gutter was tried and reverted (`6c025e4`/`816857f`) precisely because
+    /// it broke this: sizing each row to its own fractional pickup put every downbeat at an
+    /// arbitrary sub-beat x, and the beat dots stopped forming columns down the page. Quantising
+    /// to whole beats is what makes per-row safe, so the guard has to be a MIXED-gutter page; a
+    /// uniform-gutter test passes either way and would not have caught the revert.
+    func testMixedPerRowGuttersStillShareDotColumns() throws {
+        let result = ChordProDraftBuilder().buildResult(makeInput())
+        let windows = try resolvedInstrumentalWindows(result: result)
+        let input = makeInput()
+        let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120)
+        let beatLength = 0.5
+        let pixelsPerBeat = CGFloat(beatLength) * pixelsPerSecond
+        // Pickups chosen to land on every gutter size the rule can produce.
+        let pickupBeats = [0.0, 0.02, 0.6, 1.4, 2.9]
+        var gutterBeatsSeen: Set<Int> = []
+        var phases: Set<Int> = []
+
+        for (index, window) in windows.enumerated() {
+            let downbeat = grid.nearestDownbeatTime(toTime: window.start)
+            let pickup = pickupBeats[index % pickupBeats.count]
+            let gutterBeats = ChartPickupGutter.beats(
+                downbeat: downbeat, earliestContent: downbeat - pickup * beatLength,
+                beatLengthSeconds: beatLength)
+            gutterBeatsSeen.insert(gutterBeats)
+            let ruler = ChordRowRuler(
+                grid: grid, originTime: downbeat,
+                gutterPx: CGFloat(gutterBeats) * pixelsPerBeat,
+                pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
+            let xs = ruler.beatXs(from: window.start, to: window.end)
+            XCTAssertGreaterThan(xs.count, 1, "row \(window.number) must show beats")
+            for x in xs {
+                // Every beat dot sits an exact whole number of beats from the row's left edge.
+                let columns = x / pixelsPerBeat
+                XCTAssertEqual(
+                    columns, columns.rounded(), accuracy: 0.001,
+                    "row \(window.number) dot at \(x) px is not on a beat column")
+                phases.insert(
+                    Int((x.truncatingRemainder(dividingBy: pixelsPerBeat)).rounded())
+                        % Int(pixelsPerBeat.rounded()))
+            }
+        }
+        XCTAssertGreaterThan(
+            gutterBeatsSeen.count, 1,
+            "this guard is only meaningful when rows disagree about their gutter")
+        XCTAssertEqual(
+            phases, [0],
+            "beat dots must share one column phase across rows; found \(phases)")
+    }
+
+    /// The bug this change exists to fix, at the pixel: a row whose first sound lands ON its
+    /// downbeat reserves nothing, so that sound renders at the row's left edge.
+    ///
+    /// Doc Holiday's opening chord is stored at beat index 0.00 and rendered two beats in, because
+    /// the gutter was a flat two beats on every row whether or not anything preceded the downbeat.
+    func testARowWithNoPickupRendersItsFirstSoundAtTheLeftEdge() throws {
+        let input = makeInput()
+        let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120)
+        let beatLength = 0.5
+        let pixelsPerBeat = CGFloat(beatLength) * pixelsPerSecond
+        let downbeat = grid.nearestDownbeatTime(toTime: 24.0)
+
+        let gutterBeats = ChartPickupGutter.beats(
+            downbeat: downbeat, earliestContent: downbeat, beatLengthSeconds: beatLength)
+        XCTAssertEqual(gutterBeats, 0, "content on the downbeat must reserve no gutter")
+
+        let ruler = ChordRowRuler(
+            grid: grid, originTime: downbeat, gutterPx: CGFloat(gutterBeats) * pixelsPerBeat,
+            pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
+        XCTAssertEqual(
+            ruler.x(atTime: downbeat), 0, accuracy: 0.0001,
+            "a row with no pickup must open flush left, not two beats in")
+
+        // And a row that DOES have a pickup still renders it left of the downbeat, unclipped.
+        let pickupTime = downbeat - 1.4 * beatLength
+        let pickupGutter = ChartPickupGutter.beats(
+            downbeat: downbeat, earliestContent: pickupTime, beatLengthSeconds: beatLength)
+        XCTAssertEqual(pickupGutter, 2)
+        let pickupRuler = ChordRowRuler(
+            grid: grid, originTime: downbeat, gutterPx: CGFloat(pickupGutter) * pixelsPerBeat,
+            pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
+        XCTAssertGreaterThan(
+            pickupRuler.x(atTime: pickupTime), 0,
+            "a real pickup must not be clamped onto the left edge")
+        XCTAssertLessThan(
+            pickupRuler.x(atTime: pickupTime), pickupRuler.x(atTime: downbeat),
+            "a pickup must render LEFT of the downbeat it resolves onto")
+    }
+
     /// The WINDOW FIT, end to end through the real ruler: at 1× zoom a row exactly one phrase
     /// period long ends inside the viewport, on every viewport width. Asserted here rather than
     /// only on the fit arithmetic because the promise is about pixels the `ChordRowRuler`
@@ -212,5 +303,44 @@ final class ChartGeometryInvariantTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testShortLyricRowsStillReserveThePhraseFrameWidth() throws {
+        let beatLength = 0.5
+        let beatsPerLine = 8
+        let scale = ChordProChartScale(
+            fontSize: ChordProChartScale.minimumFontSize,
+            fitFactor: ChordProChartScale.fitFactor(
+                availableWidth: 1200,
+                horizontalInset: ChordProPreviewLineLayout.chartHorizontalInset,
+                rowLeadingWidth: ChordProPreviewLineLayout.rowLeadingWidth,
+                beatsPerLine: beatsPerLine,
+                gutterBeats: ChordProPreviewLineLayout.gutterBeats,
+                beatLengthSeconds: beatLength,
+                basePixelsPerSecond: ChordProPreviewLineLayout.pixelsPerSecond))
+        let pixelsPerBeat =
+            CGFloat(beatLength) * scale.scaled(ChordProPreviewLineLayout.pixelsPerSecond)
+        let shortLyricWidth = pixelsPerBeat * 1.25
+        let referenceEndX = ChordProPreviewLineLayout.referenceFrameEndX(
+            gutterPx: pixelsPerBeat,
+            reservedGutterPx: ChordProPreviewLineLayout.gutterBeats * pixelsPerBeat,
+            phraseWidth: CGFloat(beatsPerLine) * pixelsPerBeat)
+
+        XCTAssertGreaterThan(
+            referenceEndX, shortLyricWidth,
+            "fixture must model the visible failure: a lyric island shorter than its phrase frame")
+        XCTAssertEqual(
+            referenceEndX, pixelsPerBeat * 10, accuracy: 0.001,
+            "the fit-reserved two-beat pickup column plus the 8-beat phrase must be reserved")
+        XCTAssertEqual(
+            ChordProPreviewLineLayout.rhythmicFrameWidth(
+                wordExtent: shortLyricWidth,
+                chordExtent: shortLyricWidth,
+                bassExtent: 0,
+                rowContentEndX: referenceEndX),
+            referenceEndX,
+            accuracy: 0.001,
+            "a short lyric row must reserve the full phrase frame instead of laying out as a tiny island"
+        )
     }
 }

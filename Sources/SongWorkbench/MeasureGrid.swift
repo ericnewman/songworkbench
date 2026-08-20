@@ -98,48 +98,10 @@ struct MeasureGrid: Equatable, Sendable {
 /// phase that puts the most onset mass on the downbeat (with the pickup weighted next) wins.
 /// Pure & deterministic.
 enum DownbeatEstimator {
-    /// Per-beat-in-bar weight when scoring a candidate downbeat phase: the downbeat (0) is strongest,
-    /// then the pickup beat just before the next downbeat, then the mid-bar beats.
-    /// Index = beat position within the bar for a candidate phase.
-    static let beatWeights4: [Double] = [1.0, 0.25, 0.5, 0.75]
-
-    /// Returns the bar phase in `0..<beatsPerBar` best explaining `onsets` on the `beatTimes` grid.
-    /// Returns 0 for degenerate input.
-    static func barPhase(
-        beatTimes: [TimeInterval],
-        onsets: [TimeInterval],
-        beatsPerBar: Int = 4
-    ) -> Int {
-        let beats = beatTimes.sorted()
-        guard beats.count >= beatsPerBar, !onsets.isEmpty, beatsPerBar > 0 else { return 0 }
-        let weights =
-            beatsPerBar == 4
-            ? beatWeights4
-            : (0..<beatsPerBar).map { $0 == 0 ? 1.0 : 0.5 }
-
-        // Residue histogram: for each onset, the index (mod beatsPerBar) of its nearest beat.
-        var residueCounts = [Int](repeating: 0, count: beatsPerBar)
-        for onset in onsets {
-            let idx = nearestBeatIndex(to: onset, in: beats)
-            let residue = ((idx % beatsPerBar) + beatsPerBar) % beatsPerBar
-            residueCounts[residue] += 1
-        }
-
-        var bestPhase = 0
-        var bestScore = -Double.infinity
-        for phase in 0..<beatsPerBar {
-            var score = 0.0
-            for residue in 0..<beatsPerBar {
-                let beatInBar = ((residue - phase) % beatsPerBar + beatsPerBar) % beatsPerBar
-                score += Double(residueCounts[residue]) * weights[beatInBar]
-            }
-            if score > bestScore {
-                bestScore = score
-                bestPhase = phase
-            }
-        }
-        return bestPhase
-    }
+    // The onset-histogram `barPhase(beatTimes:onsets:)` overload was deleted 2026-08-19: chord
+    // onsets were measured at 1.15x-1.37x above chance for phase (see `SongBarGrid`), every
+    // production caller now goes through `SongBarGridEstimator`, and a dead estimator invites the
+    // next consumer to re-derive phase locally — the exact disease the shared grid cures.
 
     /// Returns the bar phase in `0..<beatsPerBar` whose beats carry the most rhythmic accent — the
     /// downbeat. `beatStrengths[i]` is the accent energy (e.g. drums + bass) at beat `i`. This is
@@ -257,19 +219,5 @@ enum DownbeatEstimator {
             return acc + cos(2 * .pi * (index - index.rounded()))
         }
         return total / Double(onsets.count)
-    }
-
-    /// Index of the beat nearest to `time` in a sorted beat array.
-    static func nearestBeatIndex(to time: TimeInterval, in sortedBeats: [TimeInterval]) -> Int {
-        guard !sortedBeats.isEmpty else { return 0 }
-        if time <= sortedBeats[0] { return 0 }
-        if time >= sortedBeats[sortedBeats.count - 1] { return sortedBeats.count - 1 }
-        var lo = 0
-        var hi = sortedBeats.count - 1
-        while lo + 1 < hi {
-            let mid = (lo + hi) / 2
-            if sortedBeats[mid] <= time { lo = mid } else { hi = mid }
-        }
-        return (time - sortedBeats[lo]) <= (sortedBeats[hi] - time) ? lo : hi
     }
 }

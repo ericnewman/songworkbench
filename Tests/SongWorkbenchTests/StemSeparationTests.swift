@@ -11,6 +11,52 @@ final class StemSeparationTests: XCTestCase {
         XCTAssertEqual(progress(completed: 0, total: 0).fractionCompleted, 0)
     }
 
+    func testONNXThreadCountDefaultsLeaveHeadroomAndCanBeOverridden() {
+        #if os(macOS)
+            XCTAssertEqual(
+                ONNXSixStemChunkPredictor.resolvedIntraOpThreadCount(
+                    activeProcessorCount: 12,
+                    environment: [:],
+                    userDefaultValue: nil
+                ),
+                6
+            )
+        #else
+            XCTAssertEqual(
+                ONNXSixStemChunkPredictor.resolvedIntraOpThreadCount(
+                    activeProcessorCount: 8,
+                    environment: [:],
+                    userDefaultValue: nil
+                ),
+                4
+            )
+        #endif
+        XCTAssertEqual(
+            ONNXSixStemChunkPredictor.resolvedIntraOpThreadCount(
+                activeProcessorCount: 12,
+                environment: [ONNXSixStemChunkPredictor.threadCountEnvironmentKey: "3"],
+                userDefaultValue: 5
+            ),
+            3
+        )
+        XCTAssertEqual(
+            ONNXSixStemChunkPredictor.resolvedIntraOpThreadCount(
+                activeProcessorCount: 4,
+                environment: [ONNXSixStemChunkPredictor.threadCountEnvironmentKey: "99"],
+                userDefaultValue: nil
+            ),
+            3
+        )
+        XCTAssertEqual(
+            ONNXSixStemChunkPredictor.resolvedIntraOpThreadCount(
+                activeProcessorCount: 8,
+                environment: [:],
+                userDefaultValue: 2
+            ),
+            2
+        )
+    }
+
     func testLegacyStemFilesRemainValidAndSixSourceFilesExposeNewTracks() {
         let root = URL(fileURLWithPath: "/tmp/stems")
         let files = StemFiles(
@@ -182,6 +228,34 @@ final class StemSeparationTests: XCTestCase {
                 .drumKick,
                 .drumSnare,
             ])
+    }
+
+    func testRefinementPipelineReportsWholeCascadeDuration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let engine = StemRefinementPipelineEngine(
+            baseEngine: DeferredStemEngineStub(processingDuration: .seconds(123)),
+            refiners: [
+                StubStemRefiner(
+                    identifier: "timed-refiner",
+                    outputStemIDs: [.drumKick],
+                    delayNanoseconds: 1_000_000
+                )
+            ],
+            sourceDigest: "source-digest"
+        )
+
+        let result = try await engine.separate(
+            request: StemSeparationRequest(
+                inputURL: root.appendingPathComponent("source.wav"),
+                outputDirectory: root.appendingPathComponent("stems", isDirectory: true)
+            )
+        ) { _ in }
+
+        XCTAssertNotEqual(result.processingDuration, .seconds(123))
+        XCTAssertGreaterThan(result.processingDuration, .zero)
     }
 
     func testRefinementPipelineFailsWhenRefinerOmitsExpectedAsset() async throws {
@@ -564,6 +638,8 @@ private actor DeferredStemEngineFactoryRecorder {
 }
 
 private struct DeferredStemEngineStub: StemSeparationEngine {
+    var processingDuration: Duration = .zero
+
     func separate(
         request: StemSeparationRequest,
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
@@ -578,7 +654,7 @@ private struct DeferredStemEngineStub: StemSeparationEngine {
                 piano: root.appendingPathComponent("piano.wav"),
                 other: root.appendingPathComponent("other.wav")
             ),
-            processingDuration: .zero
+            processingDuration: processingDuration
         )
     }
 }
@@ -587,8 +663,12 @@ private struct StubStemRefiner: StemRefinementEngine {
     let identifier: String
     let outputStemIDs: [StemID]
     var producedStemIDs: [StemID]?
+    var delayNanoseconds: UInt64 = 0
 
     func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+        if delayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+        }
         guard request.manifest.assetsByID[StemKind.drums.id] != nil else {
             throw StemRefinementError.missingParentStem(StemKind.drums.id)
         }

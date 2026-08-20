@@ -6,6 +6,10 @@ import SwiftUI
 /// which an uploaded reference ever replaces the generated chart.
 struct ReferenceComparisonReportView: View {
     let comparison: ReferenceChartComparison
+    /// How well the RECORDING backs each chart. `nil` when the song has no persisted audio
+    /// evidence (analysed before it was recorded) — the section is then omitted rather than
+    /// showing a verdict nothing supports.
+    var audioValidation: ReferenceChartAudioValidation.Result?
     var onAdopt: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
 
@@ -21,6 +25,74 @@ struct ReferenceComparisonReportView: View {
                 )
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
+            }
+
+            if let audioValidation,
+                let summary = ReferenceChartAudioValidation.summary(
+                    for: audioValidation)
+            {
+                // The only section that consults the RECORDING. Everything else on this sheet
+                // compares two charts against each other, which can show that they disagree but
+                // never which one is right.
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(summary, systemImage: "waveform.badge.magnifyingglass")
+                        .font(.swDisplay(12))
+                        .foregroundStyle(
+                            audioValidation.verdict == .referenceBetter
+                                ? Color.swMint : Color.swTextPrimary)
+                    if !audioValidation.unsupportedFindings.isEmpty {
+                        Text(
+                            "\(audioValidation.unsupportedFindings.count) uploaded chord(s) have "
+                                + "no attack or harmonic change in the audio: "
+                                + audioValidation.unsupportedFindings.prefix(6)
+                                .map {
+                                    "\($0.chord) @ \(String(format: "%.1f", $0.time))s"
+                                }
+                                .joined(separator: ", ")
+                        )
+                        .font(.swMono(11))
+                        .foregroundStyle(Color.swAmber)
+                    }
+                    if audioValidation.reference.qualityAgreementShare == nil {
+                        // Frame evidence is session-only (see
+                        // `SongAnalysisDocument.frameChordObservations`), so a song loaded from
+                        // disk can compare placement but not quality. Say so rather than
+                        // silently omitting half the comparison.
+                        Text(
+                            "Chord quality was not compared — re-analyse this song to compare "
+                                + "thirds against the recording."
+                        )
+                        .font(.swDisplay(11))
+                        .foregroundStyle(Color.swTextSecondary)
+                    }
+                    if !audioValidation.wrongQualityFindings.isEmpty {
+                        // Wrong-third findings are listed separately from unsupported ones: a
+                        // chord in the right place with the wrong quality is a different fix
+                        // from a chord that should not be there at all.
+                        Text(
+                            "\(audioValidation.wrongQualityFindings.count) uploaded chord(s) "
+                                + "name the wrong third: "
+                                + audioValidation.wrongQualityFindings.prefix(6)
+                                .map {
+                                    "\($0.chord)→\($0.suggestedChord ?? "?") "
+                                        + "@ \(String(format: "%.1f", $0.time))s"
+                                }
+                                .joined(separator: ", ")
+                        )
+                        .font(.swMono(11))
+                        .foregroundStyle(Color.swCoral)
+                    }
+                    if audioValidation.untimedChordCount > 0 {
+                        Text(
+                            "\(audioValidation.untimedChordCount) uploaded chord(s) sit on lines "
+                                + "we never transcribed, so they could not be judged."
+                        )
+                        .font(.swDisplay(11))
+                        .foregroundStyle(Color.swTextSecondary)
+                    }
+                }
+                .padding(8)
+                .swSurfacePanel(cornerRadius: 8)
             }
 
             if comparison.systemicFindings.isEmpty {

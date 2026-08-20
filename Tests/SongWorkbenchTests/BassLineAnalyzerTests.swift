@@ -134,3 +134,71 @@ final class BassLineAnalyzerTests: XCTestCase {
         XCTAssertEqual(observations.first?.midiNote ?? 0, 45, accuracy: 1)
     }
 }
+
+/// Bass walk-up/walk-down detection (`BassRunDetector`): the notes that step into the next
+/// chord's root, which the chart annotates as slash chords.
+final class BassRunDetectorTests: XCTestCase {
+    // 120 BPM → 0.5 s beats over 20 s.
+    private let beats = stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+
+    private func bass(_ time: TimeInterval, _ midi: Int, confidence: Float = 0.8)
+        -> BassNoteObservation
+    {
+        BassNoteObservation(timestamp: time, midiNote: midi, confidence: confidence)
+    }
+
+    func testClassicWalkUpIntoTheFourIsDetected() {
+        // G (43) sounding, bass walks A (45) B (47) into C (48) — the G/A G/B walk-up.
+        let chords: [(TimeInterval, Int?)] = [(0.0, 7), (4.0, 0)]  // G at 0s, C at 4s
+        let notes = [bass(0.0, 43), bass(3.0, 45), bass(3.5, 47), bass(4.0, 48)]
+        let runs = BassRunDetector.runNotes(
+            bassNotes: notes, chordOnsets: chords, beatTimes: beats)
+        XCTAssertEqual(runs.map(\.midiNote), [45, 47])
+    }
+
+    func testSinglePassingToneWalkDownIsDetected() {
+        // C (48) sounding, bass steps down through B (47) into Am (45) — the C/B walk-down.
+        let chords: [(TimeInterval, Int?)] = [(0.0, 0), (4.0, 9)]
+        let notes = [bass(0.0, 48), bass(3.5, 47), bass(4.0, 45)]
+        let runs = BassRunDetector.runNotes(
+            bassNotes: notes, chordOnsets: chords, beatTimes: beats)
+        XCTAssertEqual(runs.map(\.midiNote), [47])
+    }
+
+    func testAlternatingRootFifthBassIsNotAWalk() {
+        // C chord with plain root–fifth alternation (C G C G) before a change to G: the
+        // sounding chord's own root and fifth never annotate.
+        let chords: [(TimeInterval, Int?)] = [(0.0, 0), (4.0, 7)]
+        let notes = [bass(0.0, 48), bass(1.0, 43), bass(2.0, 48), bass(3.0, 43)]
+        let runs = BassRunDetector.runNotes(
+            bassNotes: notes, chordOnsets: chords, beatTimes: beats)
+        XCTAssertTrue(runs.isEmpty)
+    }
+
+    func testSlowBassNoteIsNotAWalkStep() {
+        // A note 2 st below the arrival but struck two full beats early is a held bass note,
+        // not a passing step.
+        let chords: [(TimeInterval, Int?)] = [(0.0, 7), (4.0, 0)]
+        let notes = [bass(0.0, 43), bass(2.0, 46)]
+        let runs = BassRunDetector.runNotes(
+            bassNotes: notes, chordOnsets: chords, beatTimes: beats)
+        XCTAssertTrue(runs.isEmpty)
+    }
+
+    func testLowConfidenceNotesNeverAnnotate() {
+        let chords: [(TimeInterval, Int?)] = [(0.0, 0), (4.0, 9)]
+        let notes = [bass(0.0, 48), bass(3.5, 47, confidence: 0.1)]
+        let runs = BassRunDetector.runNotes(
+            bassNotes: notes, chordOnsets: chords, beatTimes: beats)
+        XCTAssertTrue(runs.isEmpty)
+    }
+
+    func testLeapIntoTheNextChordIsNotAWalk() {
+        // Bass jumps a fourth into the change (D up to G) — no stepwise approach, no annotation.
+        let chords: [(TimeInterval, Int?)] = [(0.0, 0), (4.0, 7)]
+        let notes = [bass(0.0, 48), bass(3.5, 50)]
+        let runs = BassRunDetector.runNotes(
+            bassNotes: notes, chordOnsets: chords, beatTimes: beats)
+        XCTAssertTrue(runs.isEmpty)
+    }
+}

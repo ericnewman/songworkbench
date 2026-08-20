@@ -68,6 +68,36 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
         }
     }
 
+    private static let lowMemorySeparationDefaultsKey =
+        "SongWorkbench.lowMemorySeparation"
+
+    /// Trade separation quality for a much smaller memory footprint on desktop.
+    ///
+    /// The stock macOS path uses a 7.8 s ONNX segment on the assumption of "ample RAM", and the
+    /// runtime arena grows across the whole song — measured at ~3.9 GB peak. On a machine that is
+    /// already swapping, that working set thrashes: analysis does not merely slow down, it crawls,
+    /// and can exhaust the system. This drops the segment to the same 2.5 s the iPad build uses
+    /// (~2.1 GB warmed).
+    ///
+    /// Off by default because the trade is real, and it lands hardest exactly where chord
+    /// detection listens: the bundled A/B kept vocals/bass/drums at 15-18 dB but GUITAR at only
+    /// ~7 dB. Separations made at this setting get their own cache key, so they never alias with
+    /// full-quality stems and switching back does not silently reuse them.
+    static var prefersLowMemorySeparation: Bool {
+        get {
+            #if os(macOS)
+                UserDefaults.standard.bool(forKey: lowMemorySeparationDefaultsKey)
+            #else
+                false
+            #endif
+        }
+        set {
+            #if os(macOS)
+                UserDefaults.standard.set(newValue, forKey: lowMemorySeparationDefaultsKey)
+            #endif
+        }
+    }
+
     static var current: AnalysisCapabilityProfile {
         #if os(macOS)
             if prefersAdvancedStemRefinement {
@@ -159,6 +189,22 @@ enum ChordProReplacementPolicy: Equatable, Sendable {
 protocol SongHarmonyAnalyzing: Sendable {
     var metadata: AnalysisEngineVersion { get }
     func analyze(url: URL) async throws -> SongAudioAnalysis
+    /// Analyze several isolated stems weighted together (see `HarmonyStemMix`), highest priority
+    /// first. Defaults to analyzing the first URL alone, so an engine that has no concept of a
+    /// stem mix behaves exactly as it did before.
+    func analyze(weighted: [(url: URL, weight: Float, label: String)]) async throws
+        -> SongAudioAnalysis
+}
+
+extension SongHarmonyAnalyzing {
+    func analyze(weighted: [(url: URL, weight: Float, label: String)]) async throws
+        -> SongAudioAnalysis
+    {
+        guard let first = weighted.first else {
+            throw HarmonyAudioSourceError.missingAccompanimentStem
+        }
+        return try await analyze(url: first.url)
+    }
 }
 
 extension AudioFileAnalysisService: SongHarmonyAnalyzing {
@@ -256,6 +302,68 @@ struct TranscriptionEngineFactory: Sendable {
             balanced: profile.allowsTranscriptionMode(.balancedDraft) ? balanced : nil,
             accuracy: profile.allowsTranscriptionMode(.accuracy) ? accuracy : nil
         )
+    }
+}
+
+/// The regroup → metrical-reconcile → phrase-recut trio, run ONCE where the data is made — in the
+/// pipeline after transcription/harmony — instead of on every load. The document then stores what
+/// the app displays, so a chart geometry bug is reproducible from the persisted document alone.
+///
+/// The compounding hazard that kept these load-time (a reconciled tempo re-reconciled on the next
+/// load walked one song 101.3 → 152.0 → 81.1) is closed structurally: when a retune fires, the
+/// tracker's raw answer is set aside in `preReconciliationTiming`, and `apply` always RESTORES it
+/// before reconciling — so reconciliation input is raw by construction, never its own output.
+///
+/// The lyric passes have no raw copy (user edits live in the same array and must survive), so
+/// they must stay idempotent: `regroup` is by contract, and `recut` declines on any song it
+/// cannot measurably improve. Bumping `versionTag` re-runs them on already-processed lyrics.
+enum AnalysisTimingPostPasses {
+    /// Bump when regroup/reconcile/recut semantics change, so stamped documents re-derive.
+    static let versionTag = "timing-1"
+
+    static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
+        document.timingPostPassTag == versionTag
+    }
+
+    static func apply(to document: inout SongAnalysisDocument) {
+        // Reconcile from RAW, always: a prior retune's original answer takes the place of the
+        // published values before anything is measured.
+        if let raw = document.preReconciliationTiming {
+            document.estimatedBPM = raw.estimatedBPM
+            document.beatTimes = raw.beatTimes
+            document.barGrid = raw.barGrid
+            document.preReconciliationTiming = nil
+        }
+        let regrouped = TimedLyricSegmentGrouper.regroup(document.lyrics)
+        let verdict = MetricalLevelReconciler.reconcile(
+            bpm: document.estimatedBPM ?? 0,
+            beatTimes: document.beatTimes,
+            lineOnsets: regrouped.map(\.start))
+        if let verdict, verdict.isRetune {
+            document.preReconciliationTiming = PreReconciliationTiming(
+                estimatedBPM: document.estimatedBPM,
+                beatTimes: document.beatTimes,
+                barGrid: document.barGrid)
+            document.estimatedBPM = verdict.bpm
+            document.beatTimes = MetricalLevelReconciler.reconciledBeatTimes(
+                beatTimes: document.preReconciliationTiming!.beatTimes, ratio: verdict.ratio)
+            document.barGrid = document.barGrid?.retuned(by: verdict.ratio)
+        }
+        // Recut on the FINAL grid, then carry user annotations (overrideText/accepted) forward
+        // from the stored lines — these passes rebuild plain segments straight from words.
+        let recut = PhrasePeriodLineRecutter.recut(
+            regrouped, beatTimes: document.beatTimes, tempo: document.estimatedBPM)
+        document.lyrics = TimedLyricSegment.reconciled(
+            newSegments: recut, against: document.lyrics)
+        // A pre-`SongBarGrid` document gets its one grid here, on the final beat grid — the
+        // single fallback for every consumer.
+        if document.barGrid == nil {
+            document.barGrid = SongBarGridEstimator.estimate(
+                beatTimes: document.beatTimes,
+                beatStrengths: [],
+                lyricLineOnsets: document.lyrics.map { $0.words.first?.start ?? $0.start })
+        }
+        document.timingPostPassTag = versionTag
     }
 }
 
@@ -463,6 +571,9 @@ struct SongAnalysisPipeline: Sendable {
                 // previously persisted result.
                 transcription.apply(&document)
                 harmony.apply(&document)
+                // Timing post-passes run HERE — where the data was made — so the ChordPro
+                // stage and the persisted document see the same lyrics/beats the app displays.
+                AnalysisTimingPostPasses.apply(to: &document)
 
                 completedStages += 1
                 progress(
@@ -540,6 +651,13 @@ struct SongAnalysisPipeline: Sendable {
             if outcome.wasCancelled {
                 wasCancelled = true
                 break stageLoop
+            }
+            // A solo transcription or harmony run refreshed one of the trio's inputs; re-derive
+            // the displayed timing from raw before any later stage (ChordPro) reads it.
+            if stage == .transcription || stage == .harmony,
+                document.stageRecords[stage]?.state == .succeeded
+            {
+                AnalysisTimingPostPasses.apply(to: &document)
             }
 
             completedStages += 1

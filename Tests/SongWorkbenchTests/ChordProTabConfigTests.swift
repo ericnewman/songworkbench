@@ -10,6 +10,8 @@ final class ChordProTabConfigTests: XCTestCase {
         XCTAssertFalse(config.supportsImport)
         XCTAssertFalse(config.supportsMarkReviewed)
         XCTAssertTrue(config.supportsTranspose)
+        XCTAssertTrue(config.rendersPlaybackChart)
+        XCTAssertTrue(config.showsPlaybackControls)
         switch config.highlightStyle {
         case .chord:
             break
@@ -18,16 +20,21 @@ final class ChordProTabConfigTests: XCTestCase {
         }
     }
 
-    /// The ChordPro tab shows what a ChordPro file contains and nothing else: no bouncing ball,
-    /// beat dots, barlines, waveform, bass-note row, chord time labels, confidence shading, or
-    /// per-line accept/edit affordances. Those are the Review tab's job.
-    func testChordProTabDoesNotShowPlaybackOrReviewChrome() {
-        XCTAssertFalse(ChordProTabConfig.chordProPlayback.showsPlaybackChrome)
+    /// The ChordPro playback tab deliberately reuses the timeline-aware chart so its bouncing balls
+    /// match Review mode, but it still omits Review-only editing and diagnostic affordances.
+    func testChordProTabShowsPlaybackWithoutReviewAffordances() {
+        XCTAssertTrue(ChordProTabConfig.chordProPlayback.rendersPlaybackChart)
+        XCTAssertTrue(ChordProTabConfig.chordProPlayback.showsPlaybackControls)
+        XCTAssertFalse(ChordProTabConfig.chordProPlayback.showsReviewAffordances)
     }
 
     func testReviewTabKeepsPlaybackAndReviewChrome() {
-        XCTAssertTrue(ChordProTabConfig.chordPro.showsPlaybackChrome)
-        XCTAssertTrue(ChordProTabConfig.bassNote.showsPlaybackChrome)
+        XCTAssertTrue(ChordProTabConfig.chordPro.rendersPlaybackChart)
+        XCTAssertTrue(ChordProTabConfig.chordPro.showsPlaybackControls)
+        XCTAssertTrue(ChordProTabConfig.chordPro.showsReviewAffordances)
+        XCTAssertTrue(ChordProTabConfig.bassNote.rendersPlaybackChart)
+        XCTAssertTrue(ChordProTabConfig.bassNote.showsPlaybackControls)
+        XCTAssertTrue(ChordProTabConfig.bassNote.showsReviewAffordances)
     }
 
     /// Transpose is chart function, not chrome, and stays on the plain tab — as does export.

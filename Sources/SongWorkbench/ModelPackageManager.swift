@@ -82,6 +82,19 @@ struct ModelPackageDescriptor: Codable, Equatable, Sendable {
         #endif
     }
 
+    /// Whether every component has a real download URL. A package whose artifact is not hosted
+    /// yet carries the reserved `.invalid` TLD (RFC 6761 — guaranteed never to resolve) as its
+    /// placeholder, so offering Install for it can only ever produce a network error the user
+    /// then cannot clear. Such a package must be copied into the model directory by hand.
+    var isHosted: Bool {
+        let urls: [URL]
+        switch source {
+        case .files(let components): urls = components.map(\.downloadURL)
+        case .zip(let archive): urls = [archive.downloadURL]
+        }
+        return urls.allSatisfy { ($0.host() ?? "").hasSuffix(".invalid") == false }
+    }
+
     /// Whether this package must be DOWNLOADED and installed on the running platform — i.e.
     /// installable here and not already shipped in the bundle. The first-run onboarding gate,
     /// the required-set check, and the Models popover all offer exactly these.

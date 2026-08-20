@@ -429,4 +429,81 @@ final class SeparationCachingPolicyTests: XCTestCase {
             accompaniment: nil
         )
     }
+
+    /// The staleness check and the engine factory must agree about segment length, or a
+    /// freshly-separated song reports "stems are stale" forever: the factory writes a
+    /// `3-seg…` record and the policy compares it against plain `3`.
+    func testCurrentPlatformMetadataTracksTheSegmentTheFactoryUses() {
+        let expected = ONNXSixStemSeparationEngine.metadata(
+            usesCoreML: false, segmentFrames: ONNXSixStemSeparationEngine.currentSegmentFrames)
+        XCTAssertEqual(
+            ONNXSixStemSeparationEngine.currentPlatformMetadata.engineVersion,
+            expected.engineVersion)
+        XCTAssertEqual(
+            ONNXSixStemSeparationEngine.currentPlatformMetadata.engineIdentifier,
+            expected.engineIdentifier)
+    }
+
+    /// A record written by the engine this build actually uses must read as current, so nothing
+    /// re-marks it stale on the next launch.
+    func testFreshlySeparatedRecordIsNotStale() {
+        let metadata = ONNXSixStemSeparationEngine.currentPlatformMetadata
+        let record = AnalysisStageRecord(
+            state: .succeeded,
+            provenance: AnalysisProvenance(
+                sourceDigest: "digest",
+                sourceKind: .recording,
+                engineIdentifier: metadata.engineIdentifier,
+                engineVersion: metadata.engineVersion,
+                modelIdentifier: metadata.modelIdentifier,
+                modelVersion: metadata.modelVersion,
+                configurationIdentifier: "six-stem-44.1k-stereo",
+                resultSchemaVersion: SongAnalysisDocument.currentSchemaVersion,
+                completedAt: Date(),
+                loadedFromCache: false
+            ),
+            confidence: nil,
+            errorMessage: nil
+        )
+        let policy = SeparationCachingPolicy(currentEngine: metadata)
+        XCTAssertTrue(policy.isCurrentEngine(record))
+        XCTAssertFalse(policy.shouldMarkStale(record))
+    }
+
+    /// Advanced stem refinement stamps `+refiners` on the engine identifier, but `AppModel`'s
+    /// staleness check reads a static `currentPlatformMetadata` that cannot know whether a refiner
+    /// is installed. Before this, every refined song failed the check on every load, flipped to
+    /// `.stale`, and re-separated — an endless re-separation loop that presented as "Advanced
+    /// separation is slow and unreliable".
+    func testRefinedSeparationCountsAsCurrentAgainstTheBaseEngine() {
+        let policy = SeparationCachingPolicy(currentEngine: engine)
+        let refined = AnalysisStageRecord(
+            state: .succeeded,
+            provenance: provenance(
+                engineIdentifier: engine.engineIdentifier
+                    + StemRefinementPipelineEngine.refinedSuffix)
+        )
+        XCTAssertTrue(policy.isCurrentEngine(refined))
+        XCTAssertFalse(policy.shouldMarkStale(refined))
+    }
+
+    /// The tolerance is for the refiner suffix ONLY — a different engine, a different segment
+    /// length, or a newer model version must still invalidate.
+    func testUnrelatedEngineDifferencesStillInvalidate() {
+        let policy = SeparationCachingPolicy(currentEngine: engine)
+        func record(engineIdentifier: String? = nil, engineVersion: String? = nil)
+            -> AnalysisStageRecord
+        {
+            AnalysisStageRecord(
+                state: .succeeded,
+                provenance: provenance(
+                    engineIdentifier: engineIdentifier, engineVersion: engineVersion))
+        }
+        // A short-segment separation is genuinely lower quality — it must NOT alias.
+        XCTAssertFalse(policy.isCurrentEngine(record(engineVersion: "3-seg110250")))
+        XCTAssertFalse(policy.isCurrentEngine(record(engineIdentifier: "coreml-htdemucs-6s")))
+        // The suffix must attach to OUR identifier, not merely appear somewhere.
+        XCTAssertFalse(
+            policy.isCurrentEngine(record(engineIdentifier: "something-else+refiners")))
+    }
 }

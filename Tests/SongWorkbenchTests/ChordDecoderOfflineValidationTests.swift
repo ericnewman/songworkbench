@@ -122,4 +122,67 @@ final class ChordDecoderOfflineValidationTests: XCTestCase {
         print("═══ validated \(analyzed) cached analyses, \(withMeter) with a usable meter ═══")
         XCTAssertGreaterThan(analyzed, 0, "no harmony caches found — container path changed?")
     }
+
+    /// Sub-beat decode (derived subdivision + subdivision-scaled switch penalty, 2026-08-20)
+    /// vs the old beat-window configuration, across every cached real-song analysis. Reports
+    /// the event-density shift so a runaway (flicker explosion, or chords collapsing away)
+    /// shows up here before it shows up in a chart. Flat meter, like the harness above — the
+    /// drum-locked grid and bar phase are not in these caches.
+    func testSubBeatDecodeOfflineComparison() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["SW_OFFLINE_VALIDATION"] == "1",
+            "manual harness; set SW_OFFLINE_VALIDATION=1 to run against the local container")
+
+        let fm = FileManager.default
+        let jsons = try fm.contentsOfDirectory(at: containerCaches, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        var analyzed = 0
+        var totalOld = 0
+        var totalNew = 0
+        var subdivisionCounts: [Int: Int] = [:]
+        for url in jsons {
+            guard let data = try? Data(contentsOf: url),
+                let envelope = try? JSONDecoder().decode(RawEnvelope.self, from: data),
+                !envelope.value.chords.isEmpty,
+                let beat = envelope.value.beat, beat.beatTimes.count >= 8, beat.bpm > 0,
+                envelope.key.engine.identifier.contains("harmony")
+            else { continue }
+            analyzed += 1
+            let analysis = envelope.value
+            let beats = beat.beatTimes
+            let key = analysis.estimatedKey ?? MusicalKeyEstimator().estimate(from: analysis.chords)
+            let beatLength = 60.0 / beat.bpm
+            let subdivision = HarmonyDecodeResolution.subdivision(beatLength: beatLength)
+            subdivisionCounts[subdivision, default: 0] += 1
+
+            let old = ChordTimelineDecoder().events(from: analysis, key: key)
+            var scaled = ChordTimelineDecoder()
+            scaled.switchPenalty *= Float(subdivision)
+            let new = scaled.events(
+                from: analysis, key: key,
+                beatTimes: ChordTimelineDecoder.subdivided(beats, by: subdivision))
+
+            func stats(_ events: [EditableChordEvent]) -> String {
+                let bars = max(1.0, Double(beats.count) / 4.0)
+                var subBeat = 0
+                for i in 1..<max(events.count, 1) where i < events.count {
+                    if events[i].time - events[i - 1].time < beatLength * 0.9 { subBeat += 1 }
+                }
+                return String(
+                    format: "%3d events  %.2f/bar  %d sub-beat",
+                    events.count, Double(events.count) / bars, subBeat)
+            }
+            totalOld += old.count
+            totalNew += new.count
+            let name = url.deletingPathExtension().lastPathComponent.prefix(8)
+            print("── \(name)  bpm \(Int(beat.bpm))  subdivision \(subdivision)")
+            print("   beat-window: \(stats(old))")
+            print("   sub-beat:    \(stats(new))")
+        }
+        let ratio = totalOld > 0 ? Double(totalNew) / Double(totalOld) : 0
+        print(
+            "═══ \(analyzed) songs · subdivisions \(subdivisionCounts.sorted { $0.key < $1.key }) "
+                + "· events \(totalOld) → \(totalNew) (×\(String(format: "%.2f", ratio))) ═══")
+        XCTAssertGreaterThan(analyzed, 0, "no harmony caches found — container path changed?")
+    }
 }

@@ -1536,6 +1536,112 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(out2[0].words[0].start, 10.0, accuracy: 1e-9)
     }
 
+    // MARK: - TornContinuationLineRejoiner
+
+    /// The real Settle Down defect (2026-08-10): ASR emitted no words for the sung intro
+    /// doo-doos but timestamped "I used" into that region; the grouper split the phrase.
+    private func settleDownTornPair() -> [TimedLyricSegment] {
+        [
+            TimedLyricSegment(
+                start: 2.20, end: 4.82, text: "I used",
+                words: [
+                    TimedLyricWord(text: "I", start: 2.20, end: 2.46, characterRange: 0..<1),
+                    TimedLyricWord(text: "used", start: 3.56, end: 4.82, characterRange: 2..<6),
+                ]),
+            TimedLyricSegment(
+                start: 22.71, end: 25.24, text: "to stay out late at night",
+                words: [
+                    TimedLyricWord(text: "to", start: 22.71, end: 22.95, characterRange: 0..<2),
+                    TimedLyricWord(text: "stay", start: 22.84, end: 23.46, characterRange: 3..<7),
+                    TimedLyricWord(text: "out", start: 23.40, end: 23.84, characterRange: 8..<11),
+                    TimedLyricWord(text: "late", start: 23.77, end: 24.35, characterRange: 12..<16),
+                    TimedLyricWord(text: "at", start: 24.41, end: 24.60, characterRange: 17..<19),
+                    TimedLyricWord(
+                        text: "night", start: 24.63, end: 25.24, characterRange: 20..<25),
+                ]),
+        ]
+    }
+
+    private let settleDownVoiced: [ClosedRange<TimeInterval>] = [
+        1.90...5.00, 8.26...10.46, 22.60...25.30,
+    ]
+
+    func testTornContinuationFragmentRejoinsItsBodyLine() {
+        let out = TornContinuationLineRejoiner.rejoined(
+            settleDownTornPair(), voicedIntervals: settleDownVoiced)
+        XCTAssertEqual(out.count, 1)
+        let line = out[0]
+        XCTAssertEqual(line.text, "I used to stay out late at night")
+        // Fragment words translated forward (durations preserved) to abut the body at 22.71.
+        XCTAssertEqual(line.words[1].end, 22.63, accuracy: 0.01)
+        XCTAssertEqual(line.words[0].end - line.words[0].start, 0.26, accuracy: 1e-6)
+        XCTAssertEqual(line.start, line.words[0].start, accuracy: 1e-9)
+        // Body words untouched; their character ranges re-based into the merged text.
+        XCTAssertEqual(line.words[2].start, 22.71, accuracy: 1e-9)
+        XCTAssertEqual(line.words[2].characterRange, 7..<9)
+        XCTAssertEqual(line.words.last?.characterRange, 27..<32)
+        XCTAssertNil(line.confidence)
+    }
+
+    func testTornRejoinVacatesIntroVocalsForUntranscribedDetection() {
+        // End-to-end with the detector: once "I used" moves to its phrase, the doo-doo
+        // region it was covering is flagged as sung-but-untranscribed.
+        let out = TornContinuationLineRejoiner.rejoined(
+            settleDownTornPair(), voicedIntervals: settleDownVoiced)
+        let regions = UntranscribedVocalRegionDetector.regions(
+            voicedIntervals: settleDownVoiced, lyrics: out)
+        XCTAssertTrue(
+            regions.contains { $0.lowerBound <= 2.0 && $0.upperBound >= 4.9 },
+            "intro doo-doos should surface: \(regions)")
+    }
+
+    func testCapitalizedNextLineIsNotRejoined() {
+        var pair = settleDownTornPair()
+        pair[1].text = "To stay out late at night"
+        let out = TornContinuationLineRejoiner.rejoined(
+            pair, voicedIntervals: settleDownVoiced)
+        XCTAssertEqual(out.count, 2)
+    }
+
+    func testShortGapOrVoicedGapIsNotRejoined() {
+        // Gap under the minimum: a real pair of nearby lines stays split.
+        var pair = settleDownTornPair()
+        pair[0].words[0].start = 20.0
+        pair[0].words[0].end = 20.26
+        pair[0].words[1].start = 20.4
+        pair[0].words[1].end = 21.0
+        pair[0].start = 20.0
+        pair[0].end = 21.0
+        XCTAssertEqual(
+            TornContinuationLineRejoiner.rejoined(
+                pair, voicedIntervals: settleDownVoiced
+            ).count, 2)
+        // A mostly-VOICED gap (the singer sounds through it) is never crossed.
+        XCTAssertEqual(
+            TornContinuationLineRejoiner.rejoined(
+                settleDownTornPair(), voicedIntervals: [1.90...25.30]
+            ).count, 2)
+    }
+
+    func testInterjectionAndUserStateAreNotRejoined() {
+        // "Oh yeah" is a real standalone line even before a lowercase continuation.
+        var pair = settleDownTornPair()
+        pair[0].text = "Oh yeah"
+        pair[0].words[0].text = "Oh"
+        pair[0].words[1].text = "yeah"
+        XCTAssertEqual(
+            TornContinuationLineRejoiner.rejoined(
+                pair, voicedIntervals: settleDownVoiced
+            ).count, 2)
+        // An accepted line is user-reviewed state — never restructured.
+        var accepted = settleDownTornPair()
+        accepted[0].accepted = true
+        XCTAssertEqual(
+            TornContinuationLineRejoiner.rejoined(
+                accepted, voicedIntervals: settleDownVoiced
+            ).count, 2)
+    }
+
     // MARK: - VocalWordSpanNormalizer (audit RC-3: melisma phantom pauses)
 
     private func summertimesSegment() -> TimedLyricSegment {
@@ -1789,5 +1895,182 @@ final class AudioAnalysisTests: XCTestCase {
         let regions = UntranscribedVocalRegionDetector.regions(
             voicedIntervals: [10.0...12.0, 20.0...23.0], lyrics: [segment])
         XCTAssertEqual(regions, [20.0...23.0])
+    }
+
+    // MARK: - Merged onsets across chordal stems
+
+    func testMergedOnsetsCombinesEveryStemAndDeduplicates() throws {
+        // Two stems that attack at the SAME moment plus one that attacks alone. The shared
+        // attack must count once; the solo attack must not be lost — which is exactly what the
+        // old first-stem-wins selection did to a piano-only chord change.
+        let sampleRate = 8_000.0
+        let shared = try writeBurstWAV(atSeconds: [0.1], sampleRate: sampleRate)
+        let sharedPlusSolo = try writeBurstWAV(atSeconds: [0.1, 1.2], sampleRate: sampleRate)
+        defer {
+            for url in [shared, sharedPlusSolo] {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        let single = try InstrumentOnsetDetector.onsets(url: shared)
+        let merged = InstrumentOnsetDetector.mergedOnsets(urls: [shared, sharedPlusSolo])
+
+        XCTAssertEqual(single.count, 1, "one stem hears one attack")
+        XCTAssertEqual(merged.count, 2, "the second stem's solo attack is picked up, once")
+        XCTAssertEqual(merged, merged.sorted(), "merged onsets are in time order")
+    }
+
+    func testMergedOnsetsIsEmptyForNoStems() {
+        XCTAssertTrue(InstrumentOnsetDetector.mergedOnsets(urls: []).isEmpty)
+    }
+
+    /// A WAV of silence with a short loud burst at each of `seconds`.
+    private func writeBurstWAV(
+        atSeconds seconds: [Double],
+        sampleRate: Double,
+        duration: Double = 2
+    ) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let frameCount = AVAudioFrameCount(sampleRate * duration)
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+        buffer.frameLength = frameCount
+        let channel = buffer.floatChannelData![0]
+        for frame in 0..<Int(frameCount) { channel[frame] = 0 }
+        for second in seconds {
+            let start = Int(second * sampleRate)
+            for offset in 0..<Int(sampleRate * 0.05) where start + offset < Int(frameCount) {
+                channel[start + offset] = offset.isMultiple(of: 2) ? 0.9 : -0.9
+            }
+        }
+        try file.write(from: buffer)
+        return url
+    }
+
+    // MARK: - Onset threshold adapts to local dynamics
+
+    func testQuietPassageAttacksAreFoundAlongsideALoudChorus() throws {
+        // The failure this fixes: one global gate at 10% of the loudest frame in the FILE meant a
+        // verse well below the chorus cleared no threshold at all — zero onsets across the whole
+        // quiet passage, and `ChordEvidenceAudit` then deleted those chords as unsupported.
+        let sampleRate = 8_000.0
+        let url = try writeTwoLevelBurstWAV(
+            loudSeconds: [0.2, 0.7], quietSeconds: [2.2, 2.7],
+            quietGain: 0.06, sampleRate: sampleRate)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let onsets = try InstrumentOnsetDetector.onsets(url: url)
+        let quiet = onsets.filter { $0 > 1.8 }
+        let loud = onsets.filter { $0 < 1.8 }
+        XCTAssertGreaterThanOrEqual(loud.count, 2, "loud attacks must still be found")
+        XCTAssertGreaterThanOrEqual(
+            quiet.count, 2,
+            "attacks 24 dB down must be found too — got \(onsets)")
+    }
+
+    func testAdaptiveThresholdsTrackEachBlockSeparately() {
+        // A loud block then a quiet one: the quiet block's threshold must fall with it.
+        let loud = [Float](repeating: 0, count: 20) + [Float](repeating: 1.0, count: 20)
+        let quiet = [Float](repeating: 0, count: 20) + [Float](repeating: 0.01, count: 20)
+        let thresholds = InstrumentOnsetDetector.adaptiveThresholds(
+            flux: loud + quiet, blockHops: 40, multiplier: 2.5, absoluteFloor: 0.0001)
+        XCTAssertGreaterThan(thresholds[30], thresholds[70], "quiet block gets a lower bar")
+        XCTAssertGreaterThan(thresholds[70], 0, "but never zero")
+    }
+
+    func testAdaptiveThresholdsNeverFallBelowTheSilenceFloor() {
+        let silence = [Float](repeating: 0, count: 100)
+        let thresholds = InstrumentOnsetDetector.adaptiveThresholds(
+            flux: silence, blockHops: 50, multiplier: 2.5, absoluteFloor: 0.25)
+        XCTAssertTrue(thresholds.allSatisfy { $0 >= 0.25 })
+    }
+
+    /// Silence with loud bursts at `loudSeconds` and `quietGain`-scaled bursts at `quietSeconds`.
+    private func writeTwoLevelBurstWAV(
+        loudSeconds: [Double],
+        quietSeconds: [Double],
+        quietGain: Float,
+        sampleRate: Double,
+        duration: Double = 3.5
+    ) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let frameCount = AVAudioFrameCount(sampleRate * duration)
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+        buffer.frameLength = frameCount
+        let channel = buffer.floatChannelData![0]
+        for frame in 0..<Int(frameCount) { channel[frame] = 0 }
+        for (seconds, gain) in [(loudSeconds, Float(0.9)), (quietSeconds, 0.9 * quietGain)] {
+            for second in seconds {
+                let start = Int(second * sampleRate)
+                for offset in 0..<Int(sampleRate * 0.08) where start + offset < Int(frameCount) {
+                    channel[start + offset] = offset.isMultiple(of: 2) ? gain : -gain
+                }
+            }
+        }
+        try file.write(from: buffer)
+        return url
+    }
+}
+
+/// Pitch-salience singing detection (`VocalPitchSalience`) — the RC-4 evidence signal.
+/// The contract that matters: QUIET pitched singing is detected (the doo-doo intro the
+/// energy VAD missed) and loud UNPITCHED residue is not (the bleed the energy VAD flagged).
+final class VocalPitchSalienceTests: XCTestCase {
+    private let sampleRate = 44_100.0
+
+    /// Voice-like tone: fundamental plus a few harmonics, with slight vibrato so it is not
+    /// suspiciously pure.
+    private func voiceSamples(
+        seconds: Double, amplitude: Float, fundamental: Double = 220
+    ) -> [Float] {
+        (0..<Int(seconds * sampleRate)).map { i in
+            let t = Double(i) / sampleRate
+            let f = fundamental * (1 + 0.01 * sin(2 * .pi * 5 * t))
+            let v =
+                sin(2 * .pi * f * t) + 0.5 * sin(2 * .pi * 2 * f * t)
+                + 0.25 * sin(2 * .pi * 3 * f * t)
+            return amplitude * Float(v / 1.75)
+        }
+    }
+
+    /// Deterministic broadband noise (linear congruential), the shape of separation residue.
+    private func noiseSamples(seconds: Double, amplitude: Float) -> [Float] {
+        var state: UInt64 = 0x2545_F491_4F6C_DD1D
+        return (0..<Int(seconds * sampleRate)).map { _ in
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            let unit = Float(state >> 40) / Float(1 << 24)
+            return amplitude * (unit * 2 - 1)
+        }
+    }
+
+    func testQuietSingingIsDetectedAndLoudResidueIsNot() {
+        // 1s silence · 1.5s QUIET voice · 1.5s LOUD noise: exactly the two failure modes.
+        let samples =
+            noiseSamples(seconds: 1.0, amplitude: 0.0005)
+            + voiceSamples(seconds: 1.5, amplitude: 0.05)
+            + noiseSamples(seconds: 1.5, amplitude: 0.5)
+        let sung = VocalPitchSalience.sungIntervals(samples: samples, sampleRate: sampleRate)
+        XCTAssertFalse(sung.isEmpty, "quiet pitched singing must be detected")
+        // Everything detected lies in the voice span; nothing in the loud noise span.
+        for interval in sung {
+            XCTAssertGreaterThan(interval.upperBound, 0.9)
+            XCTAssertLessThan(interval.lowerBound, 2.6)
+        }
+        XCTAssertFalse(
+            sung.contains { $0.lowerBound > 2.6 },
+            "loud unpitched residue must not read as singing")
+    }
+
+    func testSilenceProducesNothing() {
+        let sung = VocalPitchSalience.sungIntervals(
+            samples: [Float](repeating: 0, count: 44_100 * 3), sampleRate: sampleRate)
+        XCTAssertTrue(sung.isEmpty)
     }
 }

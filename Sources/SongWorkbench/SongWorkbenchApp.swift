@@ -1,6 +1,7 @@
 import SwiftUI
 
-@main
+// @main lives on `SongWorkbenchMain`, which dispatches to the headless CLI for known
+// subcommands and to this App otherwise.
 struct SongWorkbenchApp: App {
     @StateObject private var model = AppModel()
 

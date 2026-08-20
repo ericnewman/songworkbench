@@ -5,11 +5,26 @@ struct SongAudioAnalysis: Codable, Equatable, Sendable {
     let beat: BeatEstimate?
     let chords: [ChordObservation]
     let estimatedKey: MusicalKey?
+    /// Times where the chroma itself genuinely changes, from `ChromaChangePointDetector` — the
+    /// direct answer to "did the harmony change here?", as opposed to `chords`, whose labels
+    /// change wherever the classifier's winner flips (including on a single noisy frame).
+    ///
+    /// Only the TIMES are persisted, not the chroma frames they came from: a few hundred doubles
+    /// per song instead of tens of thousands of vectors, and nothing downstream needs the frames.
+    /// `nil` on analyses cached before this existed — consumers must treat that as "unavailable"
+    /// and fall back, never as "no harmonic changes in this song".
+    let harmonicChangePoints: [TimeInterval]?
 
-    init(beat: BeatEstimate?, chords: [ChordObservation], estimatedKey: MusicalKey? = nil) {
+    init(
+        beat: BeatEstimate?,
+        chords: [ChordObservation],
+        estimatedKey: MusicalKey? = nil,
+        harmonicChangePoints: [TimeInterval]? = nil
+    ) {
         self.beat = beat
         self.chords = chords
         self.estimatedKey = estimatedKey
+        self.harmonicChangePoints = harmonicChangePoints
     }
 }
 
@@ -27,12 +42,92 @@ actor AudioFileAnalysisService {
             frameLength: 8_192,
             hopLength: 4_096
         )
-        let chords = try ChordAnalysisPipeline(configuration: configuration).analyze(
+        let frames = try ChordAnalysisPipeline(configuration: configuration).analyzeFrames(
             samples: samples)
+        let chords = frames.observations
         return SongAudioAnalysis(
             beat: BeatTracker().analyze(samples: samples, sampleRate: sampleRate),
             chords: chords,
-            estimatedKey: MusicalKeyEstimator().estimate(from: chords)
+            estimatedKey: MusicalKeyEstimator().estimate(from: chords),
+            harmonicChangePoints: ChromaChangePointDetector.changePoints(frames: frames.chroma)
+        )
+    }
+
+    /// Chord/beat analysis over several isolated stems weighted together, so chord detection is
+    /// not restricted to whichever single stem happened to come first. Stems are mixed by
+    /// `HarmonyStemMix` (unit-RMS normalized, leakage-gated) and the result runs through the same
+    /// pipeline as a single file.
+    ///
+    /// Falls back to analyzing the first URL alone when the mix comes back empty — every
+    /// contributor silent, or all but one gated out as leakage — so a degenerate mix can never
+    /// produce a worse result than the previous single-stem behaviour.
+    func analyze(weighted: [(url: URL, weight: Float, label: String)]) throws
+        -> SongAudioAnalysis
+    {
+        guard let primary = weighted.first else {
+            throw HarmonyAudioSourceError.missingAccompanimentStem
+        }
+        guard weighted.count > 1 else { return try analyze(url: primary.url) }
+
+        // Two passes so only ONE stem is ever resident alongside the accumulator, instead of
+        // every stem at once. Separation already peaks in the gigabytes, so the harmony stage
+        // must not add a full-length Float buffer per contributor on top of it — a stem is ~64 MB
+        // per six minutes of 44.1 kHz audio, and they were all held simultaneously.
+        //
+        // The cost is decoding each stem twice (once to measure, once to accumulate). That is a
+        // few seconds against a stage already dominated by onset detection, and it converts a
+        // per-contributor peak into a constant one.
+        var sampleRate: Double = 0
+        var levels: [(entry: (url: URL, weight: Float, label: String), rms: Float)] = []
+        for entry in weighted {
+            guard let (samples, rate) = try? loadMonoSamples(url: entry.url), !samples.isEmpty
+            else { continue }
+            // Stems come from one separation of one recording, so their rates match. A mismatch
+            // means something unexpected produced this set; skip rather than resample silently.
+            if sampleRate == 0 {
+                sampleRate = rate
+            } else if rate != sampleRate {
+                continue
+            }
+            levels.append((entry, HarmonyStemMix.rootMeanSquare(samples)))
+        }
+        try Task.checkCancellation()
+
+        let kept = HarmonyStemMix.keptAfterLeakageGate(levels.map(\.rms))
+        var mixSamples: [Float] = []
+        var included: [String] = []
+        for (index, level) in levels.enumerated() where kept.contains(index) {
+            guard let (samples, _) = try? loadMonoSamples(url: level.entry.url), !samples.isEmpty
+            else { continue }
+            try Task.checkCancellation()
+            // Unit-RMS normalization, so `weight` expresses priority rather than mix level.
+            let scale = level.entry.weight / level.rms
+            if mixSamples.isEmpty {
+                mixSamples = samples.map { $0 * scale }
+            } else {
+                let length = min(mixSamples.count, samples.count)
+                mixSamples.removeLast(mixSamples.count - length)
+                for i in 0..<length { mixSamples[i] += samples[i] * scale }
+            }
+            included.append(level.entry.label)
+        }
+        let mix = HarmonyStemMix.normalizedToUnitPeak(mixSamples, included: included)
+        mixSamples = []
+        guard !mix.samples.isEmpty, sampleRate > 0 else { return try analyze(url: primary.url) }
+
+        let configuration = try AudioAnalysisConfiguration(
+            sampleRate: sampleRate,
+            frameLength: 8_192,
+            hopLength: 4_096
+        )
+        let frames = try ChordAnalysisPipeline(configuration: configuration).analyzeFrames(
+            samples: mix.samples)
+        let chords = frames.observations
+        return SongAudioAnalysis(
+            beat: BeatTracker().analyze(samples: mix.samples, sampleRate: sampleRate),
+            chords: chords,
+            estimatedKey: MusicalKeyEstimator().estimate(from: chords),
+            harmonicChangePoints: ChromaChangePointDetector.changePoints(frames: frames.chroma)
         )
     }
 
@@ -541,10 +636,17 @@ enum InstrumentOnsetDetector {
     struct Configuration: Sendable {
         var windowSeconds: Double = 0.02
         var hopSeconds: Double = 0.01
-        /// Fraction of the peak flux used for the threshold (combined with the noise floor).
-        var peakFraction: Float = 0.1
-        /// Multiple of the noise-floor flux the signal must exceed to count as an onset.
-        var noiseFloorMultiple: Float = 3
+        /// Seconds of flux each local threshold is computed over. Long enough to hold several
+        /// attacks (so a threshold is not set by one of them), short enough to track a song's
+        /// dynamics from verse to chorus.
+        var thresholdWindowSeconds: Double = 2.0
+        /// Multiple of the (scaled) MAD added to the local median. Same robust-statistics shape
+        /// as `ChromaChangePointDetector`, but a much lower multiple: this runs on an energy
+        /// envelope where real attacks are large outliers, not on a chroma distance curve.
+        var thresholdMultiplier: Float = 2.5
+        /// Absolute floor as a fraction of the whole-file peak flux, so digital silence cannot
+        /// produce onsets from floating-point noise.
+        var silenceFloorFraction: Float = 0.001
         /// Minimum spacing between successive onsets (de-bounces a single attack into one onset).
         var minSpacingSeconds: Double = 0.12
     }
@@ -582,18 +684,32 @@ enum InstrumentOnsetDetector {
         }
         guard let peak = flux.max(), peak > 0 else { return [] }
 
-        // Noise floor: a low percentile of the flux (steady regions and silence).
-        let sorted = flux.sorted()
-        let floorIndex = max(0, min(sorted.count - 1, Int(Double(sorted.count) * 0.05)))
-        let noiseFloor = sorted[floorIndex]
-        let threshold = max(
-            noiseFloor * configuration.noiseFloorMultiple, peak * configuration.peakFraction)
+        // LOCAL adaptive threshold: median + k*MAD of the flux within a rolling block, the same
+        // robust shape `ChromaChangePointDetector` uses.
+        //
+        // This was a single global gate at `peak * 0.1` over the whole file. Two things were
+        // wrong with that. The noise-floor term was dead: `flux` is
+        // `max(0, rms[k] - rms[k-1])`, which is exactly 0 across every sustain, decay and
+        // silence, so its 5th percentile is 0 and `noiseFloor * 3` was always 0 — the `max` only
+        // ever resolved to the peak term. And a global gate keyed to the loudest frame in the
+        // song means a verse 20 dB below the chorus clears no threshold at all: ZERO onsets
+        // across the whole quiet passage. Downstream that is severe, because the chord decoder
+        // loses its switch discount there and `ChordEvidenceAudit` then deletes those markers as
+        // unsupported — chords vanish, systematically, exactly where the music is quiet.
+        let thresholds = Self.adaptiveThresholds(
+            flux: flux,
+            blockHops: max(1, Int(configuration.thresholdWindowSeconds / configuration.hopSeconds)),
+            multiplier: configuration.thresholdMultiplier,
+            // An absolute floor so pure digital silence cannot manufacture onsets from float
+            // noise. Two orders of magnitude below the old gate, so it binds only on silence.
+            absoluteFloor: peak * configuration.silenceFloorFraction
+        )
 
         // Peak-pick: local maxima above threshold, spaced at least `minSpacingSeconds` apart.
         let minSpacingHops = max(1, Int(configuration.minSpacingSeconds / configuration.hopSeconds))
         var onsets: [TimeInterval] = []
         var lastOnsetHop = -minSpacingHops - 1
-        for k in flux.indices where flux[k] >= threshold {
+        for k in flux.indices where flux[k] >= thresholds[k] {
             let prev = k > 0 ? flux[k - 1] : -Float.infinity
             let next = k + 1 < flux.count ? flux[k + 1] : -Float.infinity
             guard flux[k] >= prev, flux[k] >= next else { continue }  // local maximum
@@ -602,6 +718,79 @@ enum InstrumentOnsetDetector {
             lastOnsetHop = k
         }
         return onsets
+    }
+
+    /// Onsets from several stems merged onto one timeline, de-duplicated so two stems hitting
+    /// the same beat count once.
+    ///
+    /// Stems are loaded and released one at a time: peak memory is one stem, not one per stem,
+    /// which matters because separation has already taken gigabytes by this point.
+    ///
+    /// `minimumSpacingSeconds` matches the per-stem de-bounce — two attacks closer than one
+    /// de-bounce window apart are the same musical event heard through two separations, and
+    /// counting it twice would overstate how densely the song is attacked.
+    static func mergedOnsets(
+        urls: [URL],
+        configuration: Configuration = .init()
+    ) -> [TimeInterval] {
+        var all: [TimeInterval] = []
+        for url in urls {
+            guard let onsets = try? onsets(url: url, configuration: configuration) else { continue }
+            all.append(contentsOf: onsets)
+        }
+        guard !all.isEmpty else { return [] }
+        all.sort()
+        var merged: [TimeInterval] = [all[0]]
+        for time in all.dropFirst()
+        where time - (merged.last ?? -.infinity) >= configuration.minSpacingSeconds {
+            merged.append(time)
+        }
+        return merged
+    }
+
+    /// Per-frame thresholds from a block-local median + `multiplier` x (scaled) MAD.
+    ///
+    /// Blockwise rather than a true sliding window: a rolling median over every frame costs
+    /// O(n * w) sorts for no benefit here, since the statistic only needs to track dynamics over
+    /// seconds. Each block's threshold is computed from its own flux, so a quiet verse is judged
+    /// against the quiet verse.
+    static func adaptiveThresholds(
+        flux: [Float],
+        blockHops: Int,
+        multiplier: Float,
+        absoluteFloor: Float,
+        // 0.5 of the block peak, not the 0.1 the global gate used. A block's peak is far smaller
+        // than the whole file's, so the same fraction would be far more permissive; measured on
+        // the ground-truth corpus, 0.25 flooded the decoder with onsets (guitar root F1 50.9 ->
+        // 46.4, over-segmentation 2.34 -> 2.84) because every extra onset discounts the Viterbi's
+        // switch penalty. 0.5 lands at 51.1 / 2.25 on the guitar arm — a wash against the global
+        // gate on this corpus, while fixing a defect the corpus cannot see: quiet-passage attacks
+        // that the global gate missed entirely (see the unit test).
+        localPeakFraction: Float = 0.5
+    ) -> [Float] {
+        guard !flux.isEmpty else { return [] }
+        var thresholds = [Float](repeating: absoluteFloor, count: flux.count)
+        var start = 0
+        while start < flux.count {
+            let end = min(start + blockHops, flux.count)
+            let block = Array(flux[start..<end]).sorted()
+            let median = block[block.count / 2]
+            let deviations = flux[start..<end].map { abs($0 - median) }.sorted()
+            // 1.4826 scales MAD to approximate a normal standard deviation — the same
+            // consistency constant `ChromaChangePointDetector` documents.
+            let mad = deviations[deviations.count / 2] * 1.4826
+            // A block that is mostly silence has median AND MAD of exactly 0 — flux is zero
+            // across every sustain and rest — so `median + k*MAD` collapses to 0 and the bar
+            // falls to the silence floor, firing on every ripple inside a burst. Hold a fraction
+            // of the block's OWN peak as well. That keeps the original peak-relative idea but
+            // makes it local, which was the whole point: a quiet verse is judged against the
+            // quiet verse's peak, not the chorus's.
+            let blockPeak = block[block.count - 1]
+            let local = max(median + multiplier * mad, blockPeak * localPeakFraction)
+            for index in start..<end { thresholds[index] = max(local, absoluteFloor) }
+            start = end
+        }
+        return thresholds
     }
 
     /// Loads `url` as mono and returns its instrumental onset times, or [] on failure.
@@ -837,6 +1026,153 @@ enum StrandedLeadingWordRepairer {
             result[index].end = max(result[index].end, words.last!.end)
         }
         return result
+    }
+
+    private static func voicedCoverage(
+        from start: TimeInterval,
+        to end: TimeInterval,
+        in intervals: [ClosedRange<TimeInterval>]
+    ) -> TimeInterval {
+        intervals.reduce(0) { total, interval in
+            let lo = max(start, interval.lowerBound)
+            let hi = min(end, interval.upperBound)
+            return total + max(0, hi - lo)
+        }
+    }
+}
+
+/// Rejoins a phrase TORN ACROSS TWO LINES by ASR timestamp drift over untranscribed vocals.
+/// Measured on Settle Down (2026-08-10): the song opens with sung "doo doo doo"s the ASR emits
+/// no words for; it timestamped the real first words "I used" into that intro region (2.2-4.8 s)
+/// while their continuation "to stay out late at night" carries correct times (22.7 s). The
+/// grouper's gap cap then split them into two lines, so the chart showed "I used" in bar 1 —
+/// words not actually sung until bar 9 — and, because those words COVERED the intro vocals,
+/// `UntranscribedVocalRegionDetector` couldn't flag the doo-doos either.
+///
+/// Evidence required before merging (all of it — re-time, never drop, and never touch
+/// plausible real short lines):
+/// - the leading line is a SHORT fragment (<= `maximumLeadingWords` words) that doesn't end a
+///   sentence, and isn't a standalone interjection ("Oh yeah" stays its own line);
+/// - the next line begins LOWERCASE (engines capitalize genuine line starts, and a grouper
+///   cap-split mid-sentence leaves the continuation lowercase) with a real phrase body
+///   (>= `minimumBodyWords` words);
+/// - the gap between them is far longer than any real mid-phrase pause (>= `minimumGap`) and
+///   mostly UNVOICED (a gap the singer sounds through is never crossed);
+/// - neither line carries user state (`accepted` / `overrideText`).
+///
+/// The fragment's words translate forward (durations preserved) to abut the continuation, and
+/// the two lines merge into one. The vacated vocal region is then naturally flagged by
+/// `UntranscribedVocalRegionDetector`, which runs later in the stage.
+enum TornContinuationLineRejoiner {
+    static func rejoined(
+        _ segments: [TimedLyricSegment],
+        voicedIntervals: [ClosedRange<TimeInterval>],
+        maximumLeadingWords: Int = 2,
+        minimumBodyWords: Int = 3,
+        minimumGap: TimeInterval = 4.0,
+        maximumVoicedFraction: Double = 0.5,
+        abutGap: TimeInterval = 0.08
+    ) -> [TimedLyricSegment] {
+        guard segments.count > 1 else { return segments }
+        var result: [TimedLyricSegment] = []
+        var index = 0
+        while index < segments.count {
+            if index + 1 < segments.count,
+                let merged = mergedIfTorn(
+                    segments[index], into: segments[index + 1],
+                    voicedIntervals: voicedIntervals,
+                    maximumLeadingWords: maximumLeadingWords,
+                    minimumBodyWords: minimumBodyWords,
+                    minimumGap: minimumGap,
+                    maximumVoicedFraction: maximumVoicedFraction,
+                    abutGap: abutGap)
+            {
+                result.append(merged)
+                index += 2
+            } else {
+                result.append(segments[index])
+                index += 1
+            }
+        }
+        return result
+    }
+
+    private static func mergedIfTorn(
+        _ fragment: TimedLyricSegment,
+        into body: TimedLyricSegment,
+        voicedIntervals: [ClosedRange<TimeInterval>],
+        maximumLeadingWords: Int,
+        minimumBodyWords: Int,
+        minimumGap: TimeInterval,
+        maximumVoicedFraction: Double,
+        abutGap: TimeInterval
+    ) -> TimedLyricSegment? {
+        guard
+            !fragment.words.isEmpty,
+            fragment.words.count <= maximumLeadingWords,
+            body.words.count >= minimumBodyWords,
+            !fragment.accepted, !body.accepted,
+            fragment.overrideText?.isEmpty != false,
+            body.overrideText?.isEmpty != false
+        else { return nil }
+        // A standalone interjection line ("Oh yeah") is a real lyric, not a torn fragment.
+        guard !fragment.words.allSatisfy({ isInterjection($0.text) }) else { return nil }
+        // Sentence-ending punctuation means the fragment legitimately ends a phrase.
+        let trimmedFragment = fragment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lastCharacter = trimmedFragment.last,
+            !".!?".contains(lastCharacter)
+        else { return nil }
+        // The continuation must read as mid-sentence: a lowercase first letter.
+        guard
+            let firstScalar = body.text.unicodeScalars.first(where: {
+                CharacterSet.letters.contains($0)
+            }), CharacterSet.lowercaseLetters.contains(firstScalar)
+        else { return nil }
+        // The tear: a gap no sung phrase pauses through, mostly unvoiced.
+        guard let fragmentEnd = fragment.words.last?.end,
+            let bodyStart = body.words.first?.start
+        else { return nil }
+        let gap = bodyStart - fragmentEnd
+        guard gap >= minimumGap else { return nil }
+        let voiced = voicedCoverage(from: fragmentEnd, to: bodyStart, in: voicedIntervals)
+        guard voiced / gap <= maximumVoicedFraction else { return nil }
+
+        // Translate the fragment forward (durations preserved) to abut the body.
+        let shift = bodyStart - abutGap - fragmentEnd
+        guard shift > 0 else { return nil }
+        var mergedWords: [TimedLyricWord] = fragment.words.map { word in
+            var moved = word
+            moved.start += shift
+            moved.end += shift
+            return moved
+        }
+        // Re-base the body words' character ranges into the merged text.
+        let offset = fragment.text.count + 1
+        mergedWords.append(
+            contentsOf: body.words.map { word in
+                var rebased = word
+                let lower = word.characterRange.lowerBound + offset
+                let upper = word.characterRange.upperBound + offset
+                rebased.characterRange = lower..<upper
+                return rebased
+            })
+        var merged = body
+        merged.text = fragment.text + " " + body.text
+        merged.words = mergedWords
+        merged.start = mergedWords.first?.start ?? body.start
+        merged.end = max(body.end, mergedWords.last?.end ?? body.end)
+        // A merged cut spans two ASR lines; per convention a re-segmentation pass that cannot
+        // attribute a single confidence leaves it nil (word confidences are preserved above).
+        merged.confidence = nil
+        return merged
+    }
+
+    private static func isInterjection(_ text: String) -> Bool {
+        let core = String(text.lowercased().unicodeScalars.filter(CharacterSet.letters.contains))
+        return [
+            "oh", "yeah", "yea", "ya", "hey", "no", "woah", "whoa", "ah", "ooh", "oo", "na",
+            "la", "mm", "hmm", "uh", "ohh", "doo", "do", "da", "dum",
+        ].contains(core)
     }
 
     private static func voicedCoverage(
@@ -1553,6 +1889,162 @@ enum VocalActivityEnvelope {
             }
         }
         return voicedIntervals(
+            samples: samples, sampleRate: format.sampleRate, configuration: configuration)
+    }
+}
+
+/// Pitch-salience singing detector, used ONLY by the untranscribed-vocals path (audit RC-4) and
+/// therefore by the review panel's "vocals — not transcribed" flags. The energy-only strict VAD
+/// fails that consumer in BOTH directions: separation bleed during loud full-band passages
+/// clears an energy gate (phantom flags on true instrumentals), while soft melodic vocals —
+/// Settle Down's doo-doo intro — sit far below the peak-relative gate and are never flagged at
+/// all. Singing is strongly PERIODIC where stem residue is not, so each window's evidence here
+/// is its maximum normalized autocorrelation over vocal-range lags, with an energy floor set
+/// deliberately far below strict VAD's — quiet singing is the point.
+///
+/// Meaningful only on an isolated vocals stem; on a full mix everything is pitched, so callers
+/// without stems must keep using the strict VAD.
+enum VocalPitchSalience {
+    struct Configuration: Sendable {
+        var windowSeconds: Double = 0.04
+        var hopSeconds: Double = 0.02
+        /// Autocorrelation runs on a boxcar-decimated copy near this rate — pitch in the vocal
+        /// range survives, and the lag scan cost drops by the square of the factor.
+        var decimatedRate: Double = 8_000
+        var minimumFrequency: Double = 80
+        var maximumFrequency: Double = 800
+        /// Normalized autocorrelation at/above this counts as pitched: sung voice measures
+        /// ~0.6–0.9, broadband separation residue well under 0.4 (white-noise NAC at this
+        /// window size is ~10 sigma below the bar).
+        var minimumSalience: Float = 0.55
+        /// The ONLY energy gate: reject near-digital silence, nothing more. Pitch does the
+        /// rejecting here — `VocalEnergyThreshold`-style relative floors were tried and gated
+        /// out exactly the quiet singing this detector exists to catch (its quiet-frame
+        /// median IS the soft vocal on a mostly-instrumental stem).
+        var silenceFloorPeakFraction: Float = 0.005
+        /// Sung phrases are sustained; isolated pitched blips (a string ringing through) drop.
+        var minVoicedSeconds: Double = 0.30
+        var minGapSeconds: Double = 0.25
+    }
+
+    static func sungIntervals(
+        samples: [Float],
+        sampleRate: Double,
+        configuration: Configuration = .init()
+    ) -> [ClosedRange<TimeInterval>] {
+        guard sampleRate > 0, !samples.isEmpty else { return [] }
+        // Boxcar decimation.
+        let factor = max(1, Int(sampleRate / configuration.decimatedRate))
+        var decimated: [Float] = []
+        decimated.reserveCapacity(samples.count / factor + 1)
+        var index = 0
+        while index + factor <= samples.count {
+            var sum: Float = 0
+            for offset in 0..<factor { sum += samples[index + offset] }
+            decimated.append(sum / Float(factor))
+            index += factor
+        }
+        let rate = sampleRate / Double(factor)
+        let window = max(32, Int(rate * configuration.windowSeconds))
+        let hop = max(1, Int(rate * configuration.hopSeconds))
+        let minLag = max(2, Int(rate / configuration.maximumFrequency))
+        let maxLag = max(minLag + 1, Int(rate / configuration.minimumFrequency))
+        guard decimated.count > window + maxLag else { return [] }
+
+        // Silence-only energy floor (see `silenceFloorPeakFraction`).
+        let rms = VocalRMSEnvelope.compute(
+            samples: decimated, sampleRate: rate,
+            windowSeconds: configuration.windowSeconds,
+            hopSeconds: configuration.hopSeconds)
+        guard let peak = rms.max(), peak > 0 else { return [] }
+        let enter = peak * configuration.silenceFloorPeakFraction
+
+        let windowCount = min(rms.count, (decimated.count - window - maxLag) / hop + 1)
+        var sung = [Bool](repeating: false, count: windowCount)
+        for k in 0..<windowCount {
+            guard rms[k] >= enter else { continue }
+            let start = k * hop
+            // Mean-removed normalized autocorrelation, best peak over the vocal lag range.
+            var mean: Float = 0
+            for i in start..<(start + window + maxLag) { mean += decimated[i] }
+            mean /= Float(window + maxLag)
+            var best: Float = 0
+            var e1: Float = 0
+            for i in 0..<window {
+                let v = decimated[start + i] - mean
+                e1 += v * v
+            }
+            guard e1 > 0 else { continue }
+            for lag in minLag...maxLag {
+                var cross: Float = 0
+                var e2: Float = 0
+                for i in 0..<window {
+                    let a = decimated[start + i] - mean
+                    let b = decimated[start + i + lag] - mean
+                    cross += a * b
+                    e2 += b * b
+                }
+                guard e2 > 0 else { continue }
+                let nac = cross / (e1 * e2).squareRoot()
+                if nac > best { best = nac }
+            }
+            sung[k] = best >= configuration.minimumSalience
+        }
+
+        // Windows → merged intervals (same shape as VocalActivityEnvelope's tail).
+        func time(_ windowIndex: Int) -> TimeInterval { Double(windowIndex * hop) / rate }
+        var intervals: [ClosedRange<TimeInterval>] = []
+        var runStart: Int?
+        for k in sung.indices {
+            if sung[k] {
+                if runStart == nil { runStart = k }
+            } else if let start = runStart {
+                intervals.append(time(start)...time(k))
+                runStart = nil
+            }
+        }
+        if let start = runStart { intervals.append(time(start)...time(sung.count)) }
+        var merged: [ClosedRange<TimeInterval>] = []
+        for interval in intervals {
+            if let last = merged.last,
+                interval.lowerBound - last.upperBound < configuration.minGapSeconds
+            {
+                merged[merged.count - 1] = last.lowerBound...interval.upperBound
+            } else {
+                merged.append(interval)
+            }
+        }
+        return merged.filter {
+            $0.upperBound - $0.lowerBound >= configuration.minVoicedSeconds
+        }
+    }
+
+    /// Loads `url` as mono and returns its sung intervals, or [] on failure.
+    static func sungIntervals(
+        url: URL, configuration: Configuration = .init()
+    ) throws -> [ClosedRange<TimeInterval>] {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let capacity: AVAudioFrameCount = 16_384
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            return []
+        }
+        var samples: [Float] = []
+        samples.reserveCapacity(Int(file.length))
+        let channelCount = Int(format.channelCount)
+        while file.framePosition < file.length {
+            let remaining = file.length - file.framePosition
+            try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
+            guard let channels = buffer.floatChannelData else { return [] }
+            for frame in 0..<Int(buffer.frameLength) {
+                var sum: Float = 0
+                for channel in 0..<channelCount { sum += channels[channel][frame] }
+                samples.append(sum / Float(channelCount))
+            }
+        }
+        return sungIntervals(
             samples: samples, sampleRate: format.sampleRate, configuration: configuration)
     }
 }

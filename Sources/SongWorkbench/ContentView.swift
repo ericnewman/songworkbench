@@ -230,11 +230,23 @@ private struct SongSidebar: View {
                 collapsedRow
             }
         }
-        .dropDestination(for: URL.self) { urls, _ in
-            model.importSongs(from: urls)
+        // NSItemProvider-based drop rather than `.dropDestination(for: URL.self)`: the
+        // Transferable payload delivered only the FIRST item of a multi-file Finder drag
+        // (field case: 12 files dragged, 1 imported). Loading each provider explicitly
+        // receives every dropped file and folder.
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard !providers.isEmpty else { return false }
+            Task {
+                // Sequential (NSItemProvider is not Sendable): each load is a fast in-memory
+                // bookmark resolve, and order preserved is the user's drag order.
+                var dropped: [URL] = []
+                for provider in providers {
+                    if let url = await Self.fileURL(from: provider) { dropped.append(url) }
+                }
+                guard !dropped.isEmpty else { return }
+                model.importSongs(from: dropped)
+            }
             return true
-        } isTargeted: {
-            isDropTargeted = $0
         }
         .overlay {
             if isDropTargeted {
@@ -317,6 +329,10 @@ private struct SongSidebar: View {
         List(selection: selection) {
             ForEach(model.songs) { song in
                 HStack(spacing: 8) {
+                    // Per-song analysis state at a glance: dotted = nothing yet, half = some
+                    // artifacts, check = stems+lyrics+chords+chart all present, arrows =
+                    // analyzing or queued. Details on hover.
+                    songStatusIcon(for: song)
                     // File format (MP3/M4A) used to show as a caption under the title —
                     // dropped (2026-07-06) to tighten row height in the iPad song list,
                     // where the extra line made titles feel far apart. Title-only rows
@@ -337,6 +353,16 @@ private struct SongSidebar: View {
                     }
                 }
                 .tag(song.id)
+            }
+            // Drag a title to reorder. The library's array order IS its persisted order, so a
+            // move is saved as-is; nothing re-sorts it afterwards.
+            //
+            // `.onMove` rather than `.draggable`/`.dropDestination` on the row: the Songs card
+            // already has a card-wide `.dropDestination(for: URL.self)` for importing dropped
+            // audio, and a row-level URL drop target would compete with it. List's own move
+            // mechanism is a separate channel, so the two do not fight.
+            .onMove { source, destination in
+                model.moveSongs(fromOffsets: source, toOffset: destination)
             }
         }
     }
@@ -376,6 +402,29 @@ private struct SongSidebar: View {
                 model.select(song)
             }
         )
+    }
+
+    private func songStatusIcon(for song: Song) -> some View {
+        let status = model.libraryStatus(for: song.id)
+        let color: Color =
+            status.isActive
+            ? .swAccent
+            : status.isComplete ? .swMint : status.hasAny ? .swAmber : .swTextSecondary.opacity(0.5)
+        return Image(systemName: status.iconSystemName)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 14)
+            .help(status.helpText)
+            .accessibilityLabel(status.helpText)
+    }
+
+    /// One dropped item's file URL, or nil for a non-file payload.
+    private static func fileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                continuation.resume(returning: url)
+            }
+        }
     }
 }
 
@@ -743,6 +792,10 @@ private struct PlayerView: View {
                         .frame(width: 32, alignment: .trailing)
                 }
 
+                if let progress = model.waveformStemProgress {
+                    waveformStemProgressRow(progress)
+                }
+
                 GeometryReader { geo in
                     let laneWidth = max(geo.size.width, geo.size.width * waveformZoom)
                     ScrollView(.horizontal) {
@@ -800,10 +853,42 @@ private struct PlayerView: View {
         } else if model.isLoadingWaveform {
             ProgressView("Generating waveform...")
                 .frame(height: 120)
+        } else if let progress = model.waveformStemProgress {
+            waveformStemProgressRow(progress)
+                .padding(10)
+                .frame(height: 120)
+                .frame(maxWidth: .infinity)
+                .swSurfacePanel(cornerRadius: 12)
         } else {
             ContentUnavailableView("Waveform Unavailable", systemImage: "waveform")
                 .frame(height: 120)
         }
+    }
+
+    private func waveformStemProgressRow(_ progress: AppModel.WaveformStemProgress) -> some View {
+        HStack(spacing: 10) {
+            ProgressView(value: progress.fractionCompleted)
+                .progressViewStyle(.linear)
+                .frame(width: 88)
+            Text(progress.message)
+                .font(.swDisplay(11, weight: .medium))
+                .foregroundStyle(Color.swTextPrimary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(progress.fractionCompleted, format: .percent.precision(.fractionLength(0)))
+                .font(.swMono(11))
+                .foregroundStyle(Color.swTextSecondary)
+                .monospacedDigit()
+                .frame(width: 34, alignment: .trailing)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.swSurfaceRaised.opacity(0.8), in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Stem generation progress")
+        .accessibilityValue(
+            "\(progress.message) \(Int((progress.fractionCompleted * 100).rounded())) percent"
+        )
     }
 
     /// Total height of the waveform + stacked-stem-lane area. The main mix lane is 64pt; each stem

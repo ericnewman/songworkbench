@@ -15,8 +15,15 @@ enum ChordProChartTypography {
     /// Lyric text on both surfaces, at the chart's MINIMUM (1×) size.
     static let lyricSize: CGFloat = 15
     /// Chord labels on the Review chart, which positions each label ABSOLUTELY and so is free to
-    /// use a smaller size than the lyric line under it. Also the 1× size.
-    static let chordSize: CGFloat = 13
+    /// size them independently of the lyric line under it. Also the 1× size.
+    ///
+    /// 13 → 16.25 (+25 %) on Eric's request. This deliberately overtakes `lyricSize`: chords are
+    /// now the LARGER glyph on the chart, matching "chords should take precedence everywhere".
+    /// Safe to change alone because nothing aligns against it — the column-aligned chord row on
+    /// the plain ChordPro tab uses `columnAlignedChord`/`lyricSize` instead, precisely so that
+    /// character advances stay in register. Bass-note labels intentionally ride this same value
+    /// ("bass note names should be the same size as chords"), so they grow with it.
+    static let chordSize: CGFloat = 16.25
 
     static let lyric = Font.system(size: lyricSize, design: .monospaced)
 
@@ -257,11 +264,13 @@ struct ChordProReadOnlyView: View {
     private func lyricLineView(_ line: ChordProPreviewLine) -> some View {
         let rows = ChordProReadOnlyLineRenderer.rows(for: line)
         return VStack(alignment: .leading, spacing: 0) {
-            if let chordRow = rows.chordRow {
-                Text(chordRow)
-                    .font(ChordProChartTypography.columnAlignedChord(size: scale.lyricSize))
-                    .foregroundStyle(Color.swAccent)
-            }
+            // Always reserve the chord row, blank when the line has no chords. Rendering it
+            // conditionally made every chorded line two text rows tall and every chordless line
+            // one, so the chart looked arbitrarily double-spaced in some places and cramped in
+            // others. A reserved blank row is also the printed chord-sheet convention.
+            Text(rows.chordRow ?? " ")
+                .font(ChordProChartTypography.columnAlignedChord(size: scale.lyricSize))
+                .foregroundStyle(Color.swAccent)
             Text(rows.lyricRow)
                 .font(ChordProChartTypography.lyric(size: scale.lyricSize))
                 .foregroundStyle(Color.swTextPrimary)
@@ -399,10 +408,9 @@ enum BassNoteRowFormatter {
     }
 }
 
-/// The ChordPro tab: the shared toolbar (transpose, export, JustChords) over a plain
-/// `ChordProReadOnlyView` body. `ChordProTabConfig.chordProPlayback` sets
-/// `showsPlaybackChrome = false`, which both selects that body and hides the toolbar controls
-/// that only act on chrome this tab does not draw.
+/// The ChordPro tab: the shared toolbar (transpose, export, JustChords) over the playback chart.
+/// It reuses Review's timeline-aware renderer for bouncing balls, while
+/// `ChordProTabConfig.chordProPlayback` disables Review-only affordances.
 struct ChordProTrueView: View {
     @ObservedObject var model: AppModel
 
