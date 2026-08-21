@@ -374,6 +374,51 @@ The taxonomy's `harmonyHigh` / `harmonyLow` parts are therefore the favourable c
 awkward cases are the octave doubling and the unison double, both already handled by folding
 them into the lead.
 
+## Follow-up 7 — interval-aware gain estimation, predicted to work, measured to fail
+
+Follow-up 6 named this the most promising open idea, on a clear argument: the NNLS fit failed
+because it read every voice's level off ALL its partials, collided ones included, and the
+interval ratio says exactly which partials are exclusive. Estimate the level from evidence
+nothing else is standing on, then divide only the contested bins. Implemented as
+`interval_masks`; `compare_masks.py` reproduces the table.
+
+**It is worse than the naive comb on every cast.**
+
+| cast | `comb` | `nnls` | `interval` (per-frame) | `interval` (per-track) |
+| --- | --- | --- | --- | --- |
+| `distinct` mean SI-SDR | **9.86** | 9.44 | 5.07 | 4.75 |
+| `quartet_no_octave` | −5.74 | **−4.04** | −6.33 | −6.47 |
+| `quartet` | −6.64 | −6.58 | −6.86 | −6.83 |
+| `hard` | **−4.35** | −5.64 | −10.62 | −10.69 |
+
+The obvious rescue was tried and also refuted. Per-frame level estimates had sunk two earlier
+attempts, and pooling a decision across a whole track had already fixed the octave vote, so
+the same fix was applied here — estimate each track's gain once from all its frames' exclusive
+partials. It moved `distinct` from 5.07 to 4.75, i.e. **not at all**. Noise in the estimate is
+not the explanation.
+
+**The pattern across four attempts is the actual finding.** Every per-voice level estimate
+tried — a per-frame loudness ratio, a measured partial profile, an NNLS fit over all partials,
+and now an exclusive-partial estimate at both per-frame and per-track granularity — performs
+worse than assuming all voices are equally loud. The comb's equal-weight assumption is not a
+placeholder waiting to be improved; it is a strong prior that has now beaten four estimators
+built to replace it.
+
+One consistent signal points at why: `interval` produces the LOWEST cross-part correlation in
+the table (0.044 on `distinct`, 0.050 on `hard`) while producing the worst SI-SDR. It is
+making the parts more mutually independent and less faithful at the same time — the signature
+of a systematically biased level, not a noisy one, over-attenuating whichever voice the
+estimate underrates. Where that bias comes from is unknown and is the open question.
+
+**This does not retract follow-up 6.** The interval/collision structure still predicts
+separability with the clean gradient measured there, and it still tells the UI which splits
+are hopeless before attempting them. What is refuted is the specific idea that knowing which
+partials are exclusive lets you estimate levels better. Prediction and estimation turn out to
+be different problems.
+
+Default remains `comb`. `selftest.py` passes 9/9 and every previously recorded number is
+unchanged.
+
 ## Recommended next steps
 
 0. **Split the work into two tracks with separate gates and separate shipping order.**
@@ -385,10 +430,10 @@ them into the lead.
    double rides with the lead. For Track A it is not even a distinct note.
 2. **Target three parts as the shipping goal** (lead + two harmonies), with four as a
    stretch that depends on (3) and (4).
-3a. **Interval-aware gain estimation** (new, follow-up 6): estimate each voice's level from
-   its EXCLUSIVE partials, which the interval ratio identifies, then split only the shared
-   bins. This is the well-conditioned version of the NNLS attempt that failed, and it is now
-   the most promising open idea for the four-part case.
+3a. ~~**Interval-aware gain estimation**~~ — **tried and refuted** (follow-up 7). Worse than
+   the naive comb on all four casts, at both per-frame and per-track granularity. Four
+   per-voice level estimators have now lost to assuming equal loudness; stop building a
+   fifth without first explaining why the equal-weight prior is so hard to beat.
 3. ~~**Improve mask synthesis before anything else**~~ — **done and closed**, see the
    follow-up section above. Per-voice profiles, per-frame gains, and a per-frame NNLS fit
    were all measured; together they buy 1.7 dB at four parts and change nothing at three.

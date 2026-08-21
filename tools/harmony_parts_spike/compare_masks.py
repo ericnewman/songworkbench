@@ -36,7 +36,7 @@ for name, (maker, part_count) in CASTS.items():
     config = part_lib.STFTConfig(sample_rate=fixture.SAMPLE_RATE)
     baseline = float(np.mean([scale_invariant_sdr(s, signal) for s in sources.values()]))
 
-    for mode in ("comb", "measured_gain", "nnls"):
+    for mode in ("comb", "measured_gain", "nnls", "interval"):
         result = part_lib.separate(signal, part_count, config=config, mask_mode=mode)
         estimates = result["parts"]
         recon = signal_to_distortion(signal, np.sum(estimates, axis=0))

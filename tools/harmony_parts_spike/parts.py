@@ -596,6 +596,100 @@ def nnls_masks(
     return masks
 
 
+def interval_masks(
+    tracks: list[Track],
+    labels: np.ndarray,
+    part_count: int,
+    magnitude: np.ndarray,
+    config: STFTConfig,
+    partials: int = 12,
+    width_bins: float = 2.0,
+) -> np.ndarray:
+    """Set each voice's level from the partials nothing else is standing on.
+
+    This is the well-conditioned version of the estimator that failed. The NNLS fit
+    (`nnls_masks`) read every voice's level off ALL of its partials, collided ones included,
+    so at exactly the frequencies where the answer matters most the evidence was a mixture of
+    the voices being told apart — and it bought 1.7 dB for 8x the cost.
+
+    The interval sweep says which partials those are, in advance and exactly. Two voices at
+    ratio p:q collide wherever the partial index is a multiple of q, so every voice except one
+    in a unison or octave pair has partials that are exclusively its own. Estimate the level
+    there, then divide the contested bins in proportion to levels that were never contested.
+
+    A voice with NO exclusive partial — the q=1 case — keeps the comb's assumption, because
+    there is nothing else to use. That is not a gap in the method; the interval sweep measured
+    it as the point where spectral evidence runs out entirely.
+    """
+    frequencies = config.frequencies
+    bin_width = frequencies[1] - frequencies[0]
+    tolerance = 2.0 * bin_width
+    masks = np.zeros((part_count, *magnitude.shape))
+
+    by_frame: dict[int, list[tuple[int, float]]] = {}
+    for index, track in enumerate(tracks):
+        for frame, f0 in zip(track.frames, track.f0):
+            by_frame.setdefault(frame, []).append((index, f0))
+
+    centers_by_frame: dict[int, dict[int, list[float]]] = {}
+    evidence: dict[int, list[float]] = {index: [] for index in range(len(tracks))}
+
+    for frame, entries in by_frame.items():
+        spectrum = magnitude[frame]
+        centers = {
+            index: [f0 * k for k in range(1, partials + 1) if f0 * k < frequencies[-1]]
+            for index, f0 in entries
+        }
+        centers_by_frame[frame] = centers
+
+        for index, _ in entries:
+            for k, center in enumerate(centers[index], start=1):
+                collides = any(
+                    other != index
+                    and any(abs(center - theirs) < tolerance for theirs in centers[other])
+                    for other, _ in entries
+                )
+                if collides:
+                    continue
+                # Expected amplitude of partial k under the comb shape is g/k, so the level
+                # this partial implies is its measured magnitude times k.
+                evidence[index].append(float(np.interp(center, frequencies, spectrum)) * k)
+
+    # A voice's level is a property of the voice, not of one 12 ms frame. Estimating it per
+    # frame is what sank the two previous attempts: thin evidence makes a noisy gain, and a
+    # noisy gain amplifies whichever voice is already winning the bin. Pool each track's
+    # exclusive-partial evidence across all of its frames and decide once.
+    track_gains: dict[int, float] = {}
+    for index in range(len(tracks)):
+        track_gains[index] = float(np.median(evidence[index])) if evidence[index] else float("nan")
+    known = [value for value in track_gains.values() if np.isfinite(value)]
+    fallback = float(np.mean(known)) if known else 1.0
+    for index in track_gains:
+        if not np.isfinite(track_gains[index]):
+            track_gains[index] = fallback
+
+    for frame, entries in by_frame.items():
+        centers = centers_by_frame[frame]
+        for index, _ in entries:
+            for k, center in enumerate(centers[index], start=1):
+                low = int(max(0, np.floor((center - 3.0 * width_bins * bin_width) / bin_width)))
+                high = int(
+                    min(len(frequencies) - 1, np.ceil((center + 3.0 * width_bins * bin_width) / bin_width))
+                )
+                if high <= low:
+                    continue
+                span = frequencies[low : high + 1]
+                bump = np.exp(-0.5 * ((span - center) / (width_bins * bin_width)) ** 2)
+                masks[labels[index], frame, low : high + 1] += bump * track_gains[index] / k
+
+    total = masks.sum(axis=0)
+    unclaimed = total <= 1e-8
+    with np.errstate(invalid="ignore", divide="ignore"):
+        masks = np.where(unclaimed[None, :, :], 0.0, masks / np.maximum(total, 1e-12)[None, :, :])
+    masks[:, unclaimed] = 1.0 / part_count
+    return masks
+
+
 def harmonic_masks(
     tracks: list[Track],
     labels: np.ndarray,
@@ -707,7 +801,9 @@ def separate(
     tracks = form_tracks(peaks_per_frame)
     fingerprints = [fingerprint(track, magnitude, config) for track in tracks]
     labels = assign_parts(tracks, fingerprints, part_count)
-    if mask_mode == "nnls":
+    if mask_mode == "interval":
+        masks = interval_masks(tracks, labels, part_count, magnitude, config)
+    elif mask_mode == "nnls":
         masks = nnls_masks(tracks, labels, part_count, magnitude, config)
     else:
         masks = harmonic_masks(tracks, labels, part_count, magnitude, config, mode=mask_mode)
