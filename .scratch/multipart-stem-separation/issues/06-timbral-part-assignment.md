@@ -40,10 +40,13 @@ Measured in `tools/harmony_parts_spike/` (`FINDINGS-timbral-spike.md`):
 - Separation quality on that cast: **+12.9 / +13.1 / +3.6 dB SI-SDR** against a −3.6 dB
   baseline, cross-part correlation **0.085**.
 - At four voices the assignment still holds (4/4 singers, 0.818) but the split degrades:
-  correlation **0.342**, two parts below baseline. **Mask synthesis is the binding
-  constraint**, not clustering — four voices in one octave share most partials, so a 1/h
-  comb mask has too little exclusive evidence. Improve this before porting: per-voice partial
-  amplitude estimation instead of a fixed comb, and a complex/phase-aware mask.
+  correlation **0.342**, two parts below baseline.
+- **Mask synthesis was then attacked directly and is now closed as a dead end.** Per-voice
+  measured profiles, per-frame gains, and a per-frame NNLS fit of all voices at once were
+  each measured against all four casts: together they buy **1.7 dB** at four parts
+  (correlation 0.342 -> 0.264, still short of the 0.2 gate) and nothing at three parts. The
+  per-frame gain alone is harmful. Magnitude-domain masking is at its limit — the constraint
+  is evidence, not estimation. **Port the simple 1/h comb**; the complexity does not pay.
 - **`vocals.double` is removed from the taxonomy**: a unison double shares every partial with
   the lead and never forms its own track. It rides with the lead.
 

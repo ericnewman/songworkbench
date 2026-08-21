@@ -76,15 +76,61 @@ a narrower problem than the one we started with.
   loudest, so it labelled every note `lead` and reported 0.53 accuracy for a chain that was
   actually at 0.95. Ground truth now comes from the score.
 
+## Follow-up — mask synthesis attacked directly (same day)
+
+The findings above named mask synthesis as the binding constraint at four parts, so it was
+attacked next. Four variants, identical part assignment in every case, so all differences
+are attributable to the mask alone. `compare_masks.py` reproduces the table.
+
+| cast | metric | `comb` | `comb_gain` | `measured` | `measured_gain` | `nnls` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `distinct` (3 parts) | mean SI-SDR | **9.86** | 3.34 | 8.12 | 9.82 | 9.44 |
+| | max correlation | 0.085 | **0.030** | 0.095 | 0.061 | 0.076 |
+| `quartet_no_octave` | mean SI-SDR | −5.74 | −6.61 | −4.73 | −4.38 | **−4.04** |
+| | max correlation | 0.342 | 0.313 | 0.303 | 0.276 | **0.264** |
+| `quartet` (octave) | mean SI-SDR | −6.64 | −7.51 | −6.72 | **−6.36** | −6.58 |
+| `hard` (unison) | mean SI-SDR | **−4.35** | −11.86 | −5.00 | −4.67 | −5.64 |
+
+- `comb` — fixed 1/h harmonic comb, all tracks weighted equally (the original).
+- `comb_gain` — that comb scaled by a per-frame loudness estimate (25th-percentile ratio
+  across the track's partials).
+- `measured` — each track's own measured partial profile, no per-frame gain.
+- `measured_gain` — that profile plus the per-frame gain.
+- `nnls` — per frame, model the spectrum as a sum of per-track harmonic templates and solve
+  the per-voice amplitudes by non-negative least squares. The principled version: a
+  collision is resolved by what each voice's OTHER partials imply about its level.
+
+**Conclusion: mask sophistication is not the lever.** Going from the naive comb to a
+per-frame NNLS fit — a substantially more complex estimator, and 8× slower — buys **1.7 dB**
+on the four-part target (−5.74 → −4.04 mean SI-SDR) and moves cross-part correlation from
+0.342 to 0.264, still short of the 0.2 gate and still below the unseparated baseline. On the
+three-part case every variant lands within 0.4 dB of the others, i.e. within noise.
+
+The per-frame gain alone is actively harmful (9.86 → 3.34 on `distinct`, −4.35 → −11.86 on
+`hard`): a loudness estimate taken from a voice's own partials is inflated by exactly the
+collisions it is meant to arbitrate, so it amplifies whichever voice is already winning.
+
+What this says about the four-part goal: the limit is **evidence, not estimation**. Four
+voices inside one octave collide on most partials, and no amount of cleverness recovers a
+voice's share of a bin from magnitude alone. Getting past it needs a different kind of
+evidence — stereo/phase differences between voices, or a learned model — not a better mask.
+
+**Default left at `comb`.** It is statistically tied at three parts, it is by far the
+simplest thing to port to Swift, and the alternatives only pay on a four-part case that is
+not shippable anyway. Do not port the complexity; the measurements are here if the four-part
+case is ever revisited.
+
 ## Recommended next steps
 
 1. **Amend the PRD taxonomy**: drop `vocals.double` as a separable part; state that a
    double rides with the lead.
 2. **Target three parts as the shipping goal** (lead + two harmonies), with four as a
    stretch that depends on (3) and (4).
-3. **Improve mask synthesis before anything else** — it is now the binding constraint at
-   four parts. Options: partial-level amplitude estimation per voice instead of a fixed
-   1/h comb, and a phase-aware or complex mask instead of a magnitude mask.
+3. ~~**Improve mask synthesis before anything else**~~ — **done and closed**, see the
+   follow-up section above. Per-voice profiles, per-frame gains, and a per-frame NNLS fit
+   were all measured; together they buy 1.7 dB at four parts and change nothing at three.
+   Magnitude-domain masking is at its limit. A phase-aware/complex mask remains untried and
+   is the only remaining idea in this direction worth spending on.
 4. **Treat octave separation as its own research item.** It is a known-hard multi-f0
    problem; the spike has the harness to measure any attempt in seconds.
 5. **Re-run on real audio** before committing to the Swift port: the fixture has no

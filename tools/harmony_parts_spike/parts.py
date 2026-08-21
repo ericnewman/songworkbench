@@ -495,7 +495,34 @@ def assign_parts(
 # ---------------------------------------------------------------------------
 
 
-def harmonic_masks(
+def track_partial_profile(
+    track: Track, magnitude: np.ndarray, frequencies: np.ndarray, partials: int
+) -> np.ndarray:
+    """This voice's own partial-amplitude profile, robust to partials it shares.
+
+    Sampling the mixture at h·f0 overstates any partial another voice is also sitting on.
+    A singer's spectral envelope is smooth, so cap each partial at what its neighbours
+    imply: the inflated ones come back down, the voice's real formant structure survives.
+    """
+    profile = np.zeros(partials)
+    for frame, f0 in zip(track.frames, track.f0):
+        for harmonic in range(1, partials + 1):
+            center = f0 * harmonic
+            if center >= frequencies[-1]:
+                break
+            profile[harmonic - 1] += float(np.interp(center, frequencies, magnitude[frame]))
+    if profile.max() <= 0:
+        return np.array([1.0 / h for h in range(1, partials + 1)])
+
+    capped = profile.copy()
+    for index in range(len(profile)):
+        low = profile[max(index - 1, 0)]
+        high = profile[min(index + 1, len(profile) - 1)]
+        capped[index] = min(profile[index], max(min(low, high) * 1.6, 0.4 * profile[index]))
+    return capped / capped.max()
+
+
+def nnls_masks(
     tracks: list[Track],
     labels: np.ndarray,
     part_count: int,
@@ -504,18 +531,128 @@ def harmonic_masks(
     partials: int = 12,
     width_bins: float = 2.0,
 ) -> np.ndarray:
+    """Fit every voice's amplitude at once, per frame, instead of guessing each in turn.
+
+    The heuristic masks decide a voice's weight from its own partials, so at a collision
+    both voices claim the same energy and the split falls back on their assumed shapes.
+    Here the frame is modelled as a sum of harmonic templates — one per sounding track,
+    each carrying that track's measured partial profile — and the per-voice amplitudes come
+    from a non-negative least-squares fit of that model to the observed spectrum. A
+    collision is then resolved by what the OTHER partials imply about each voice's level,
+    which is evidence the per-voice heuristics cannot see.
+    """
+    from scipy.optimize import nnls
+
+    frequencies = config.frequencies
+    bin_width = frequencies[1] - frequencies[0]
+    masks = np.zeros((part_count, *magnitude.shape))
+
+    profiles = [track_partial_profile(track, magnitude, frequencies, partials) for track in tracks]
+
+    # Which tracks sound in each frame, so each frame solves only its own small system.
+    by_frame: dict[int, list[tuple[int, float]]] = {}
+    for index, track in enumerate(tracks):
+        for frame, f0 in zip(track.frames, track.f0):
+            by_frame.setdefault(frame, []).append((index, f0))
+
+    for frame, entries in by_frame.items():
+        templates = np.zeros((len(frequencies), len(entries)))
+        for column, (track_index, f0) in enumerate(entries):
+            profile = profiles[track_index]
+            for harmonic in range(1, partials + 1):
+                center = f0 * harmonic
+                if center >= frequencies[-1]:
+                    break
+                low = int(max(0, np.floor((center - 3.0 * width_bins * bin_width) / bin_width)))
+                high = int(min(len(frequencies) - 1, np.ceil((center + 3.0 * width_bins * bin_width) / bin_width)))
+                if high <= low:
+                    continue
+                span = frequencies[low : high + 1]
+                templates[low : high + 1, column] += (
+                    np.exp(-0.5 * ((span - center) / (width_bins * bin_width)) ** 2)
+                    * profile[harmonic - 1]
+                )
+
+        active = templates.max(axis=0) > 0
+        if not np.any(active):
+            continue
+        try:
+            amplitudes, _ = nnls(templates[:, active], magnitude[frame])
+        except RuntimeError:
+            amplitudes = np.ones(int(active.sum()))
+
+        column = 0
+        for index, (track_index, _) in enumerate(entries):
+            if not active[index]:
+                continue
+            masks[labels[track_index], frame] += amplitudes[column] * templates[:, index]
+            column += 1
+
+    total = masks.sum(axis=0)
+    unclaimed = total <= 1e-8
+    with np.errstate(invalid="ignore", divide="ignore"):
+        masks = np.where(unclaimed[None, :, :], 0.0, masks / np.maximum(total, 1e-12)[None, :, :])
+    masks[:, unclaimed] = 1.0 / part_count
+    return masks
+
+
+def harmonic_masks(
+    tracks: list[Track],
+    labels: np.ndarray,
+    part_count: int,
+    magnitude: np.ndarray,
+    config: STFTConfig,
+    partials: int = 12,
+    width_bins: float = 2.0,
+    mode: str = "comb",
+) -> np.ndarray:
     """One soft mask per part, normalised so the masks partition unity.
 
     Where two parts share a partial the energy is split in proportion to each part's
     modelled amplitude there, which is the standard Wiener-style compromise: neither
     part gets a hole, and the sum is preserved exactly.
+
+    `mode` decides what "each part's modelled amplitude" means, and the three values
+    separate two independent changes so each can be measured on its own:
+
+    * `comb` — a fixed 1/h harmonic comb, every track weighted equally. The original.
+    * `comb_gain` — the same comb, scaled by a per-frame estimate of how loud this voice
+      is right now.
+    * `measured` — each track's own measured partial profile, no per-frame gain.
+    * `measured_gain` — that profile, scaled by the per-frame gain as well.
+
+    A fixed comb assumes every voice has the same spectral shape, which is the assumption
+    the timbral layer spends its effort disproving: two singers on one note get identical
+    masks and the split between them becomes arbitrary.
     """
+    if mode not in {"comb", "comb_gain", "measured", "measured_gain"}:
+        raise ValueError(f"unknown mask mode: {mode}")
     frequencies = config.frequencies
     bin_width = frequencies[1] - frequencies[0]
     masks = np.zeros((part_count, *magnitude.shape))
 
     for track, label in zip(tracks, labels):
+        profile = (
+            track_partial_profile(track, magnitude, frequencies, partials)
+            if mode.startswith("measured")
+            else np.array([1.0 / h for h in range(1, partials + 1)])
+        )
+        # Per-frame gain: how loud this voice is right now, read from the partials it is
+        # least likely to be sharing. A low quantile is the robust choice — collisions can
+        # only push a ratio up, never down.
         for frame, f0 in zip(track.frames, track.f0):
+            observed = []
+            for harmonic in range(1, partials + 1):
+                center = f0 * harmonic
+                if center >= frequencies[-1]:
+                    break
+                if profile[harmonic - 1] > 0.05:
+                    observed.append(
+                        float(np.interp(center, frequencies, magnitude[frame])) / profile[harmonic - 1]
+                    )
+            uses_gain = mode in {"comb_gain", "measured_gain"}
+            gain = float(np.quantile(observed, 0.25)) if (observed and uses_gain) else 1.0
+
             for harmonic in range(1, partials + 1):
                 center = f0 * harmonic
                 if center >= frequencies[-1]:
@@ -526,7 +663,7 @@ def harmonic_masks(
                     continue
                 span = frequencies[low : high + 1]
                 bump = np.exp(-0.5 * ((span - center) / (width_bins * bin_width)) ** 2)
-                masks[label, frame, low : high + 1] += bump / harmonic
+                masks[label, frame, low : high + 1] += bump * gain * profile[harmonic - 1]
 
     total = masks.sum(axis=0)
     unclaimed = total <= 1e-8
@@ -547,6 +684,7 @@ def separate(
     salience_config: SalienceConfig | None = None,
     maximum_peaks: int | None = None,
     relative_floor: float = 0.10,
+    mask_mode: str = "comb",
 ) -> dict[str, object]:
     """Full chain. Returns the part signals plus the intermediate evidence."""
     config = config or STFTConfig()
@@ -569,7 +707,10 @@ def separate(
     tracks = form_tracks(peaks_per_frame)
     fingerprints = [fingerprint(track, magnitude, config) for track in tracks]
     labels = assign_parts(tracks, fingerprints, part_count)
-    masks = harmonic_masks(tracks, labels, part_count, magnitude, config)
+    if mask_mode == "nnls":
+        masks = nnls_masks(tracks, labels, part_count, magnitude, config)
+    else:
+        masks = harmonic_masks(tracks, labels, part_count, magnitude, config, mode=mask_mode)
 
     parts = [istft(spectrogram * masks[index], config, len(signal)) for index in range(part_count)]
     return {
