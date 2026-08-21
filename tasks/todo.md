@@ -2877,3 +2877,29 @@ Verification:
   build succeeded; Xcode also printed passcode-protected device warnings unrelated to the macOS
   destination.
 - `swift test`: 842 tests, 22 skipped, 0 failures.
+
+## Waveform pane: disclosure triangles for refined stem families
+
+Eric wants the vocal and drum sections of the waveform pane to collapse behind disclosure
+triangles so their child stem lanes can be hidden.
+
+- [x] Group waveform lanes by root category (`vocals.lead` + `vocals.backing` → Vocals) in a pure,
+  testable projector next to `StemWaveformLaneProjector`.
+- [x] Draw a disclosure header per collapsible family; base stems with no children stay flat.
+- [x] Make the pane height follow the collapsed/expanded state so no gap is left behind.
+- [x] Cover grouping order, collapsibility, and the unrefined case with unit tests.
+
+Implementation notes:
+
+- `StemWaveformLaneGrouper.groups(for:)` keys on the `StemID` prefix before the first `.` and
+  preserves the projector's lane order between and within groups. A group is collapsible only when
+  it holds two or more lanes, so an unrefined Vocals/Drums stem renders exactly as before.
+- `PlayerView` keeps the collapsed category keys in `collapsedStemGroups` (`@State`, default
+  expanded) and `waveformPanelHeight` counts an 18pt header per family plus 26pt per visible lane.
+- Child lanes are indented 16pt so the family they belong to reads at a glance.
+
+Verification:
+
+- Not run in this environment: no Swift toolchain is installed in the remote container
+  (`swift`/`xcrun` are absent), so `swift test`, `swift format lint`, and `xcodebuild` could not be
+  executed here. The new grouping tests in `StemMixerTests` need a local run.

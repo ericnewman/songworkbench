@@ -528,6 +528,9 @@ private struct PlayerView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var playback: AudioPlaybackService
     @State private var waveformZoom = 1.0
+    /// Category keys (`vocals`, `drums`, …) whose refined stem lanes are hidden behind their
+    /// disclosure triangle. Empty = every family expanded, which is the pane's previous behavior.
+    @State private var collapsedStemGroups: Set<String> = []
     @State private var selectedEditor: EditorTab = .lyrics
     /// Mirrors the stem-mix rail's own expansion state so the rail's WIDTH shrinks too.
     @AppStorage(StemMixSidebar.expansionDefaultsKey) private var stemRailExpanded = true
@@ -813,27 +816,30 @@ private struct PlayerView: View {
 
                             // One waveform lane per available stem, sharing the mix's time axis so
                             // each instrument's energy lines up vertically with the mix above.
+                            // Refined families (Vocals, Drums, …) sit under a disclosure triangle
+                            // so their child lanes can be hidden when the stack gets tall.
                             if !model.stemWaveforms.isEmpty {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    ForEach(model.stemWaveforms) { entry in
-                                        ZStack(alignment: .leading) {
-                                            StemWaveformLane(
-                                                envelope: entry.envelope,
-                                                color: entry.id.laneColor,
-                                                totalDuration: waveform.duration
-                                            )
-                                            .frame(width: laneWidth)
-                                            Text(entry.displayName)
-                                                .font(.swDisplay(11))
-                                                .foregroundStyle(entry.id.laneColor)
-                                                .padding(.horizontal, 4)
-                                                .padding(.vertical, 1)
-                                                .background(
-                                                    Color.swCanvas.opacity(0.55),
-                                                    in: RoundedRectangle(
-                                                        cornerRadius: 4, style: .continuous)
-                                                )
-                                                .padding(.leading, 4)
+                                    ForEach(stemWaveformGroups) { group in
+                                        if group.isCollapsible {
+                                            stemGroupHeader(group)
+                                            if !collapsedStemGroups.contains(group.id) {
+                                                ForEach(group.lanes) { entry in
+                                                    stemLane(
+                                                        entry,
+                                                        laneWidth: laneWidth,
+                                                        totalDuration: waveform.duration,
+                                                        indented: true)
+                                                }
+                                            }
+                                        } else {
+                                            ForEach(group.lanes) { entry in
+                                                stemLane(
+                                                    entry,
+                                                    laneWidth: laneWidth,
+                                                    totalDuration: waveform.duration,
+                                                    indented: false)
+                                            }
                                         }
                                     }
                                 }
@@ -891,18 +897,98 @@ private struct PlayerView: View {
         )
     }
 
+    private static let stemLaneHeight: CGFloat = 26
+    private static let stemLaneSpacing: CGFloat = 2
+    private static let stemGroupHeaderHeight: CGFloat = 18
+
+    /// Lanes gathered into their categories, so a refined family (Vocals, Drums, …) can be hidden
+    /// or shown as a unit.
+    private var stemWaveformGroups: [StemWaveformLaneGroup] {
+        StemWaveformLaneGrouper.groups(for: model.stemWaveforms)
+    }
+
+    /// The disclosure triangle for one refined family. Tapping it hides or shows that family's
+    /// lanes; the pane's height follows so the stack never leaves a gap behind.
+    private func stemGroupHeader(_ group: StemWaveformLaneGroup) -> some View {
+        let isCollapsed = collapsedStemGroups.contains(group.id)
+        return Button {
+            if isCollapsed {
+                collapsedStemGroups.remove(group.id)
+            } else {
+                collapsedStemGroups.insert(group.id)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .font(.swDisplay(9, weight: .semibold))
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                Text(group.displayName)
+                    .font(.swDisplay(11, weight: .semibold))
+                Text("\(group.lanes.count)")
+                    .font(.swMono(10))
+                    .foregroundStyle(Color.swTextSecondary)
+            }
+            .foregroundStyle(group.lanes.first?.id.laneColor ?? Color.swTextSecondary)
+            .padding(.leading, 4)
+            .frame(height: Self.stemGroupHeaderHeight, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(
+            isCollapsed
+                ? "Show the \(group.displayName) stem lanes"
+                : "Hide the \(group.displayName) stem lanes")
+        .accessibilityLabel("\(group.displayName) stem lanes")
+        .accessibilityValue(isCollapsed ? "Hidden" : "Shown")
+    }
+
+    private func stemLane(
+        _ entry: StemWaveformLaneModel,
+        laneWidth: CGFloat,
+        totalDuration: TimeInterval,
+        indented: Bool
+    ) -> some View {
+        ZStack(alignment: .leading) {
+            StemWaveformLane(
+                envelope: entry.envelope,
+                color: entry.id.laneColor,
+                totalDuration: totalDuration
+            )
+            .frame(width: laneWidth)
+            Text(entry.displayName)
+                .font(.swDisplay(11))
+                .foregroundStyle(entry.id.laneColor)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(
+                    Color.swCanvas.opacity(0.55),
+                    in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+                )
+                .padding(.leading, indented ? 16 : 4)
+        }
+    }
+
     /// Total height of the waveform + stacked-stem-lane area. The main mix lane is 64pt; each stem
-    /// lane is 26pt with 2pt spacing, plus 4pt between the mix and the stem stack.
+    /// lane is 26pt with 2pt spacing, plus 4pt between the mix and the stem stack. Collapsed
+    /// families contribute only their 18pt disclosure header.
     private var waveformPanelHeight: CGFloat {
         let topPadding: CGFloat = 6
         let mixHeight: CGFloat = 64
-        let laneCount = model.stemWaveforms.count
-        guard laneCount > 0 else { return topPadding + mixHeight }
-        let laneHeight: CGFloat = 26
-        let laneSpacing: CGFloat = 2
+        guard !model.stemWaveforms.isEmpty else { return topPadding + mixHeight }
+        let groups = stemWaveformGroups
+        var rowCount = 0
+        var stackHeight: CGFloat = 0
+        for group in groups {
+            if group.isCollapsible {
+                rowCount += 1
+                stackHeight += Self.stemGroupHeaderHeight
+                if collapsedStemGroups.contains(group.id) { continue }
+            }
+            rowCount += group.lanes.count
+            stackHeight += CGFloat(group.lanes.count) * Self.stemLaneHeight
+        }
+        stackHeight += CGFloat(max(rowCount - 1, 0)) * Self.stemLaneSpacing
         let mixToStackGap: CGFloat = 14
-        let stackHeight =
-            CGFloat(laneCount) * laneHeight + CGFloat(max(laneCount - 1, 0)) * laneSpacing
         return topPadding + mixHeight + mixToStackGap + stackHeight
     }
 

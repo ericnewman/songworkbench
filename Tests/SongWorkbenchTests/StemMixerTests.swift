@@ -5,6 +5,54 @@ import XCTest
 @testable import SongWorkbench
 
 final class StemMixerTests: XCTestCase {
+    private func lane(_ id: StemID, _ displayName: String) -> StemWaveformLaneModel {
+        StemWaveformLaneModel(
+            id: id,
+            displayName: displayName,
+            envelope: WaveformEnvelope(peaks: [0.1, 0.2], duration: 10)
+        )
+    }
+
+    func testWaveformLaneGroupsGatherRefinedFamiliesUnderTheirCategory() {
+        let groups = StemWaveformLaneGrouper.groups(for: [
+            lane(.vocalLead, "Lead Vocal"),
+            lane(.vocalBacking, "Backing Vocal"),
+            lane(.drumKick, "Kick"),
+            lane(.drumSnare, "Snare"),
+            lane(StemKind.bass.id, "Bass"),
+        ])
+
+        XCTAssertEqual(groups.map(\.id), ["vocals", "drums", "bass"])
+        XCTAssertEqual(groups.map(\.displayName), ["Vocals", "Drums", "Bass"])
+        XCTAssertEqual(groups.map(\.isCollapsible), [true, true, false])
+        XCTAssertEqual(
+            groups[0].lanes.map(\.id), [.vocalLead, .vocalBacking])
+        XCTAssertEqual(groups[1].lanes.map(\.id), [.drumKick, .drumSnare])
+        XCTAssertEqual(groups[2].lanes.map(\.id), [StemKind.bass.id])
+    }
+
+    func testWaveformLaneGroupsLeaveUnrefinedStemsFlat() {
+        let groups = StemWaveformLaneGrouper.groups(for: [
+            lane(StemKind.vocals.id, "Vocals"),
+            lane(StemKind.drums.id, "Drums"),
+        ])
+
+        XCTAssertEqual(groups.map(\.id), ["vocals", "drums"])
+        XCTAssertTrue(groups.allSatisfy { !$0.isCollapsible })
+    }
+
+    func testWaveformLaneGroupsPreserveProjectorOrder() {
+        let groups = StemWaveformLaneGrouper.groups(for: [
+            lane(StemKind.other.id, "Other"),
+            lane(.drumKick, "Kick"),
+            lane(StemKind.bass.id, "Bass"),
+            lane(.drumSnare, "Snare"),
+        ])
+
+        XCTAssertEqual(groups.map(\.id), ["other", "drums", "bass"])
+        XCTAssertEqual(groups[1].lanes.map(\.displayName), ["Kick", "Snare"])
+    }
+
     func testMixerChannelsExposeRefinedChildrenInsteadOfTheirParent() {
         let root = URL(fileURLWithPath: "/tmp/refined-stems")
         let manifest = StemSetManifest(

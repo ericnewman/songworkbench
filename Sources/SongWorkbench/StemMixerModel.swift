@@ -191,3 +191,44 @@ enum StemWaveformLaneProjector {
         }
     }
 }
+
+/// One collapsible category of waveform lanes: a base stem stands alone, while a refined family
+/// (`vocals.lead` + `vocals.backing`, `drums.kick` + `drums.snare` + …) is gathered under its
+/// parent category so the pane can hide or show the whole family with one disclosure triangle.
+struct StemWaveformLaneGroup: Identifiable, Equatable, Sendable {
+    /// The root category key (`vocals`, `drums`, …); also the disclosure state's identity.
+    let id: String
+    let displayName: String
+    let lanes: [StemWaveformLaneModel]
+
+    /// Only a family of two or more lanes earns a disclosure triangle; a lone lane is drawn
+    /// flat, exactly as before, so unrefined stems don't grow a header row.
+    var isCollapsible: Bool { lanes.count > 1 }
+}
+
+enum StemWaveformLaneGrouper {
+    /// Groups lanes by their root category, preserving the projector's lane order both between
+    /// groups (first appearance wins) and inside each group.
+    static func groups(for lanes: [StemWaveformLaneModel]) -> [StemWaveformLaneGroup] {
+        var order: [String] = []
+        var lanesByRoot: [String: [StemWaveformLaneModel]] = [:]
+        for lane in lanes {
+            let root = Self.rootKey(for: lane.id)
+            if lanesByRoot[root] == nil { order.append(root) }
+            lanesByRoot[root, default: []].append(lane)
+        }
+        return order.map { root in
+            let members = lanesByRoot[root] ?? []
+            return StemWaveformLaneGroup(
+                id: root,
+                displayName: StemKind(rawValue: root)?.displayName
+                    ?? members.first?.displayName ?? root.capitalized,
+                lanes: members
+            )
+        }
+    }
+
+    static func rootKey(for id: StemID) -> String {
+        id.rawValue.split(separator: ".").first.map(String.init) ?? id.rawValue
+    }
+}
