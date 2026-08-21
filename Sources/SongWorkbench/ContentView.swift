@@ -528,6 +528,9 @@ private struct PlayerView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var playback: AudioPlaybackService
     @State private var waveformZoom = 1.0
+    /// Category keys (`vocals`, `drums`, …) whose refined stem lanes are hidden behind their
+    /// disclosure triangle. Empty = every family expanded, which is the pane's previous behavior.
+    @State private var collapsedStemGroups: Set<String> = []
     @State private var selectedEditor: EditorTab = .lyrics
     /// Mirrors the stem-mix rail's own expansion state so the rail's WIDTH shrinks too.
     @AppStorage(StemMixSidebar.expansionDefaultsKey) private var stemRailExpanded = true
@@ -799,7 +802,10 @@ private struct PlayerView: View {
                 GeometryReader { geo in
                     let laneWidth = max(geo.size.width, geo.size.width * waveformZoom)
                     ScrollView(.horizontal) {
-                        VStack(alignment: .leading, spacing: 14) {
+                        VStack(
+                            alignment: .leading,
+                            spacing: CGFloat(StemWaveformLaneLayout.mixToStackGap)
+                        ) {
                             WaveformView(
                                 envelope: waveform,
                                 currentTime: model.activePlaybackTime,
@@ -809,37 +815,45 @@ private struct PlayerView: View {
                                 onSeek: { model.seekActivePlayback(to: $0) }
                             )
                             // Fill the card at 1x; widen (and scroll) as zoom increases.
-                            .frame(width: laneWidth, height: 64)
+                            .frame(
+                                width: laneWidth,
+                                height: CGFloat(StemWaveformLaneLayout.mixHeight))
 
                             // One waveform lane per available stem, sharing the mix's time axis so
                             // each instrument's energy lines up vertically with the mix above.
+                            // Refined families (Vocals, Drums, …) sit under a disclosure triangle
+                            // so their child lanes can be hidden when the stack gets tall.
                             if !model.stemWaveforms.isEmpty {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    ForEach(model.stemWaveforms) { entry in
-                                        ZStack(alignment: .leading) {
-                                            StemWaveformLane(
-                                                envelope: entry.envelope,
-                                                color: entry.id.laneColor,
-                                                totalDuration: waveform.duration
-                                            )
-                                            .frame(width: laneWidth)
-                                            Text(entry.displayName)
-                                                .font(.swDisplay(11))
-                                                .foregroundStyle(entry.id.laneColor)
-                                                .padding(.horizontal, 4)
-                                                .padding(.vertical, 1)
-                                                .background(
-                                                    Color.swCanvas.opacity(0.55),
-                                                    in: RoundedRectangle(
-                                                        cornerRadius: 4, style: .continuous)
-                                                )
-                                                .padding(.leading, 4)
+                                VStack(
+                                    alignment: .leading,
+                                    spacing: CGFloat(StemWaveformLaneLayout.laneSpacing)
+                                ) {
+                                    ForEach(stemWaveformGroups) { group in
+                                        if group.isCollapsible {
+                                            stemGroupHeader(group)
+                                            if !collapsedStemGroups.contains(group.id) {
+                                                ForEach(group.lanes) { entry in
+                                                    stemLane(
+                                                        entry,
+                                                        laneWidth: laneWidth,
+                                                        totalDuration: waveform.duration,
+                                                        indented: true)
+                                                }
+                                            }
+                                        } else {
+                                            ForEach(group.lanes) { entry in
+                                                stemLane(
+                                                    entry,
+                                                    laneWidth: laneWidth,
+                                                    totalDuration: waveform.duration,
+                                                    indented: false)
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                        .padding(.top, 6)
+                        .padding(.top, CGFloat(StemWaveformLaneLayout.topPadding))
                     }
                     .scrollIndicators(.visible)
                 }
@@ -891,19 +905,84 @@ private struct PlayerView: View {
         )
     }
 
-    /// Total height of the waveform + stacked-stem-lane area. The main mix lane is 64pt; each stem
-    /// lane is 26pt with 2pt spacing, plus 4pt between the mix and the stem stack.
+    /// Lanes gathered into their categories, so a refined family (Vocals, Drums, …) can be hidden
+    /// or shown as a unit.
+    private var stemWaveformGroups: [StemWaveformLaneGroup] {
+        StemWaveformLaneGrouper.groups(for: model.stemWaveforms)
+    }
+
+    /// The disclosure triangle for one refined family. Tapping it hides or shows that family's
+    /// lanes; the pane's height follows so the stack never leaves a gap behind.
+    private func stemGroupHeader(_ group: StemWaveformLaneGroup) -> some View {
+        let isCollapsed = collapsedStemGroups.contains(group.id)
+        return Button {
+            if isCollapsed {
+                collapsedStemGroups.remove(group.id)
+            } else {
+                collapsedStemGroups.insert(group.id)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .font(.swDisplay(9, weight: .semibold))
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                Text(group.displayName)
+                    .font(.swDisplay(11, weight: .semibold))
+                Text("\(group.lanes.count)")
+                    .font(.swMono(10))
+                    .foregroundStyle(Color.swTextSecondary)
+            }
+            .foregroundStyle(group.lanes.first?.id.laneColor ?? Color.swTextSecondary)
+            .padding(.leading, 4)
+            .frame(
+                height: CGFloat(StemWaveformLaneLayout.groupHeaderHeight),
+                alignment: .leading
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(
+            isCollapsed
+                ? "Show the \(group.displayName) stem lanes"
+                : "Hide the \(group.displayName) stem lanes"
+        )
+        .accessibilityLabel("\(group.displayName) stem lanes")
+        .accessibilityValue(isCollapsed ? "Hidden" : "Shown")
+    }
+
+    private func stemLane(
+        _ entry: StemWaveformLaneModel,
+        laneWidth: CGFloat,
+        totalDuration: TimeInterval,
+        indented: Bool
+    ) -> some View {
+        ZStack(alignment: .leading) {
+            StemWaveformLane(
+                envelope: entry.envelope,
+                color: entry.id.laneColor,
+                totalDuration: totalDuration
+            )
+            .frame(width: laneWidth)
+            Text(entry.displayName)
+                .font(.swDisplay(11))
+                .foregroundStyle(entry.id.laneColor)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(
+                    Color.swCanvas.opacity(0.55),
+                    in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+                )
+                .padding(.leading, indented ? 16 : 4)
+        }
+    }
+
+    /// Total height of the waveform + stacked-stem-lane area. The arithmetic lives in
+    /// `StemWaveformLaneLayout` so it can be tested against the same constants the stack
+    /// draws with.
     private var waveformPanelHeight: CGFloat {
-        let topPadding: CGFloat = 6
-        let mixHeight: CGFloat = 64
-        let laneCount = model.stemWaveforms.count
-        guard laneCount > 0 else { return topPadding + mixHeight }
-        let laneHeight: CGFloat = 26
-        let laneSpacing: CGFloat = 2
-        let mixToStackGap: CGFloat = 14
-        let stackHeight =
-            CGFloat(laneCount) * laneHeight + CGFloat(max(laneCount - 1, 0)) * laneSpacing
-        return topPadding + mixHeight + mixToStackGap + stackHeight
+        CGFloat(
+            StemWaveformLaneLayout.panelHeight(
+                groups: stemWaveformGroups, collapsed: collapsedStemGroups))
     }
 
 }

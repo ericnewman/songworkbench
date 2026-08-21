@@ -137,10 +137,20 @@ final class AppModelTests: XCTestCase {
     /// `analysisQueue` (see the comment on that property) so a drag-drop import landing mid-run
     /// gets queued instead of silently dropped or interrupting the song in progress. This
     /// verifies the queue's dedup: calling `reanalyzeAllSongs()` again while it's already
-    /// draining must NOT restart from song 1 or double the total — both `isSongAnalysisRunning`
-    /// and `reanalyzeAllStatus` flip synchronously (before any yield), same as
-    /// `testSelectingDifferentSongResetsSelectedSongProgress` above, so this is deterministic:
-    /// no real analysis pipeline work has had a chance to run yet.
+    /// draining must NOT restart from song 1 or double the total.
+    ///
+    /// This used to assert `index == 1` on the claim that "no real analysis pipeline work has
+    /// had a chance to run yet". That claim was false and the test was flaky for it — measured
+    /// 2026-08-21, the same tree passed and failed across nine CI runs, failing with
+    /// `("2") is not equal to ("1")`. The synchronous-flip reasoning is sound for the CALL
+    /// itself, but `importSongs` auto-analyses on import and shares this very queue, so the
+    /// `try await waitUntil` above yields long enough for song 1 to finish on a fast machine.
+    /// The queue is then legitimately at index 2 before `reanalyzeAllSongs()` is even called.
+    ///
+    /// So the assertions below are the invariants that actually define "does not duplicate or
+    /// restart", none of which depend on how far the drain has got: the total never changes,
+    /// the index never goes BACKWARDS, and a re-entrant call that leaves the index alone must
+    /// leave the song alone too.
     func testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart() async throws {
         let firstURL = try makeSilentWAV()
         let secondURL = try makeSilentWAV()
@@ -156,17 +166,24 @@ final class AppModelTests: XCTestCase {
 
         XCTAssertTrue(model.isSongAnalysisRunning)
         let firstStatus = try XCTUnwrap(model.reanalyzeAllStatus)
-        XCTAssertEqual(firstStatus.index, 1)
-        XCTAssertEqual(firstStatus.total, 2)
+        XCTAssertEqual(firstStatus.total, 2, "the queue should hold both songs")
 
         // A second call (e.g. the user clicking "Re-analyze All" again, or an import landing)
-        // must not re-seed the queue from scratch — same song, same index/total.
+        // must not re-seed the queue from scratch.
         model.reanalyzeAllSongs()
 
         let secondStatus = try XCTUnwrap(model.reanalyzeAllStatus)
-        XCTAssertEqual(secondStatus.index, 1)
-        XCTAssertEqual(secondStatus.total, 2)
-        XCTAssertEqual(secondStatus.title, firstStatus.title)
+        XCTAssertEqual(secondStatus.total, 2, "a re-entrant call doubled the queue")
+        XCTAssertGreaterThanOrEqual(
+            secondStatus.index,
+            firstStatus.index,
+            "a re-entrant call restarted the queue: the index went backwards"
+        )
+        if secondStatus.index == firstStatus.index {
+            // Nothing drained between the two calls, so the strong original check applies:
+            // the re-entrant call must not have swapped the song being worked on.
+            XCTAssertEqual(secondStatus.title, firstStatus.title)
+        }
 
         // Cancel the drain (select() cancels the in-flight run, whose queue-completion clears
         // the rest of the queue) — REAL analysis engines are installed on dev machines, so a

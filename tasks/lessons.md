@@ -837,3 +837,51 @@ to the last word, while the phrase frame only overflow-drew past that layout wid
 **Rule:** for chart presentation work, test both semantic geometry and visible occupancy. A row can
 have a short lyric span for verdict purposes, but its SwiftUI layout width must still reserve the
 reference frame promised by the window-fit contract.
+
+## 2026-08-21 — A wrapped call's closing paren goes on its own line (`swift format` [AddLines])
+
+**Mistake:** burned two CI cycles on the same lint rule in the same file. First
+`ContentView.swift:940:61` on a multi-line `.help(...)` ternary, then — after fixing that one
+and reading the rule as "the closing paren needs its own line" — I wrote a fresh
+`.frame(height:alignment:)` split across two lines with the paren attached again, and
+`ContentView.swift:938:95` failed identically. The column in an `[AddLines]` message is the
+character the break belongs BEFORE; both times it was the `)`.
+
+The distinguishing detail, checked against the sites lint did NOT flag in the same run: the
+offending call would have fit on ONE line (98 characters) and was split anyway. Calls that
+genuinely cannot fit are allowed to keep a trailing paren — two of them a few lines away pass
+untouched. So the rule is not "always expand"; it is that an unnecessary split gets rejected,
+and the diagnostic points at the paren because that is where the missing break belongs.
+
+Two shapes are safe: all on one line when it fits in 100 characters, or fully expanded with
+one argument per line and the closing paren alone. The half-way form is what fails.
+
+**Rule:** there is no Swift toolchain in the remote container (`swift`, `xcrun`, and
+download.swift.org are all unavailable), so lint cannot be checked before pushing and every
+mistake costs a ~7-minute CI round trip. When editing Swift there, match the bracket shape of
+neighbouring code in the same file rather than inventing a wrapping, and after any multi-line
+call re-read it against a known-good example nearby. `git diff --check` and
+`python3 -m compileall scripts Benchmarks/Tools` are the only two `verify_repo.sh` steps
+reproducible locally; both passing means nothing about lint.
+
+## 2026-08-21 — "It flips synchronously" is not the same as "nothing else has run"
+
+**Mistake (pre-existing, diagnosed today):**
+`AppModelTests.testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart` asserted
+`reanalyzeAllStatus.index == 1` and documented itself as deterministic because
+`isSongAnalysisRunning` and `reanalyzeAllStatus` "flip synchronously (before any yield) … no
+real analysis pipeline work has had a chance to run yet."
+
+The synchronous-flip reasoning was correct about the CALL and irrelevant to the ASSERTION.
+`importSongs` auto-analyses on import and shares the same `analysisQueue`, so the
+`try await waitUntil { model.songs.count >= 2 }` on the line before yields long enough for
+song 1 to finish on a fast runner. The queue is then at index 2 before `reanalyzeAllSongs()`
+is called at all. Measured across nine CI runs of identical trees: 1/3/1/1/2/0/0/2/0
+failures — a coin flip that reddened unrelated PRs.
+
+**Rule:** when a test's determinism argument rests on "no suspension point between A and B",
+check what ran BEFORE A as well. A shared queue plus an earlier `await` is enough to
+invalidate it. Prefer assertions that state the invariant the test is named for — here "does
+not duplicate or restart" is total-unchanged plus index-never-decreasing — over absolute
+values that only hold if nothing has progressed. An absolute value is a timing assumption
+wearing a constant's clothes.

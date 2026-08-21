@@ -2877,3 +2877,95 @@ Verification:
   build succeeded; Xcode also printed passcode-protected device warnings unrelated to the macOS
   destination.
 - `swift test`: 842 tests, 22 skipped, 0 failures.
+
+## Waveform pane: disclosure triangles for refined stem families
+
+Eric wants the vocal and drum sections of the waveform pane to collapse behind disclosure
+triangles so their child stem lanes can be hidden.
+
+- [x] Group waveform lanes by root category (`vocals.lead` + `vocals.backing` → Vocals) in a pure,
+  testable projector next to `StemWaveformLaneProjector`.
+- [x] Draw a disclosure header per collapsible family; base stems with no children stay flat.
+- [x] Make the pane height follow the collapsed/expanded state so no gap is left behind.
+- [x] Cover grouping order, collapsibility, and the unrefined case with unit tests.
+
+Implementation notes:
+
+- `StemWaveformLaneGrouper.groups(for:)` keys on the `StemID` prefix before the first `.` and
+  preserves the projector's lane order between and within groups. A group is collapsible only when
+  it holds two or more lanes, so an unrefined Vocals/Drums stem renders exactly as before.
+- `PlayerView` keeps the collapsed category keys in `collapsedStemGroups` (`@State`, default
+  expanded) and `waveformPanelHeight` counts an 18pt header per family plus 26pt per visible lane.
+- Child lanes are indented 16pt so the family they belong to reads at a glance.
+
+Verification:
+
+- Not run in this environment: no Swift toolchain is installed in the remote container
+  (`swift`/`xcrun` are absent), so `swift test`, `swift format lint`, and `xcodebuild` could not be
+  executed here. The new grouping tests in `StemMixerTests` need a local run.
+
+### CI follow-up 2026-08-21
+
+`verify` failed on every commit of the branch with one lint error:
+`ContentView.swift:940:61: error: [AddLines] add 1 line break` — the closing paren of the
+disclosure header's multi-line `.help(...)` ternary needed its own line, matching the
+convention the rest of the file already uses. Fixed.
+
+Note `scripts/verify_repo.sh` runs under `set -e` with lint BEFORE `swift test` and
+`swift build`, so the lint failure meant the test and release-build steps never ran on this
+branch at all. Their result is still unknown, and no Swift toolchain exists in the remote
+container to check locally (`swift`, `xcrun`, and download.swift.org are all unavailable) —
+`git diff --check` and `python3 -m compileall scripts Benchmarks/Tools` are the only two
+verify steps reproducible there, and both pass.
+
+Result of the lint fix (run 32480023809, head a0c25eb): **lint passed, the Swift compiled,
+and all three new `StemMixerTests` cases passed.** The branch executes 986 tests where main
+executes 983 — the +3 are the new grouping tests, and the delta in failures is zero.
+
+The one remaining failure is inherited from the base branch, not introduced here:
+
+| branch | head | tests | failures |
+| --- | --- | --- | --- |
+| main | c8b4b6f | 983 | 1 — `LyricGroupingDiagnosticTests.testOverlappingSegmentBoundarySurvivesGrouping` |
+| this branch | a0c25eb | 986 | 1 — the same test |
+
+`LyricGroupingDiagnosticTests.swift:76` does `XCTUnwrap` on Doc Holiday's cached Whisper
+transcription, which cannot exist on a CI runner. The test's own doc comment states it
+"Skips (does not fail) when the cache is absent, so this is inert on a machine without the
+app's container" — so the implementation contradicts its documented contract; `XCTUnwrap`
+fails where `XCTSkipUnless`/`XCTSkip` was intended. The same file already uses
+`XCTSkipUnless` for its env-gated test at line 99. Left alone deliberately: it is a
+pre-existing main failure and outside this branch's scope. Proposed patch is recorded for
+Eric to accept or decline.
+
+Second CI observation, same commit a0c25eb: the two runs of the SAME TREE disagree. The
+push-event run (32480023809) reported 1 failure; the pull_request-event run (32480027747)
+reported 3 — the extra two being both assertions inside
+`AppModelTests.testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart`
+(`AppModelTests.swift:159` and `:167`, each `XCTAssertEqual failed: ("2") is not equal to
+("1")`).
+
+That test asserts the re-analyze queue sits at index 1 of 2 right after `reanalyzeAllSongs()`.
+Getting index 2 means the first song's analysis finished before the assertion ran — a timing
+race, not a logic error. Identical tree, different outcome, so it is flaky by direct
+evidence rather than by inference; no re-run needed to establish it.
+
+`git diff c8b4b6f..HEAD -- Sources/SongWorkbench/AppModel.swift
+Tests/SongWorkbenchTests/AppModelTests.swift` is EMPTY: this branch does not touch either
+file. Not fixed here — a concurrency race in an unrelated test is neither small nor in
+scope, and quarantining it is not on the table.
+
+Net: the branch's own contribution is green (986 tests, +3 new, all passing). The two
+failures seen are a permanently-red base test and a pre-existing flake.
+
+Follow-up: the pane's height math was duplicated. The view spaced its lanes with literal
+`2`, its mix lane with `64`, its stack gap with `14`, and its top padding with `6`, while
+`waveformPanelHeight` carried its own copies of all four plus the lane and header heights.
+Changing one and not the other clips the stack or leaves a gap behind it, and nothing would
+catch it — a SwiftUI frame height is not observable from a test.
+
+`StemWaveformLaneLayout` now owns the six constants; the view reads them and
+`panelHeight(groups:collapsed:)` is pure and tested. Four new cases cover the empty pane,
+flat lanes, a collapsed family (header kept, lanes reclaimed), and collapsing a group that
+has no triangle. Expected values were re-derived independently rather than read off the
+implementation.

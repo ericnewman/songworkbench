@@ -191,3 +191,91 @@ enum StemWaveformLaneProjector {
         }
     }
 }
+
+/// One collapsible category of waveform lanes: a base stem stands alone, while a refined family
+/// (`vocals.lead` + `vocals.backing`, `drums.kick` + `drums.snare` + …) is gathered under its
+/// parent category so the pane can hide or show the whole family with one disclosure triangle.
+struct StemWaveformLaneGroup: Identifiable, Equatable, Sendable {
+    /// The root category key (`vocals`, `drums`, …); also the disclosure state's identity.
+    let id: String
+    let displayName: String
+    let lanes: [StemWaveformLaneModel]
+
+    /// Only a family of two or more lanes earns a disclosure triangle; a lone lane is drawn
+    /// flat, exactly as before, so unrefined stems don't grow a header row.
+    var isCollapsible: Bool { lanes.count > 1 }
+}
+
+enum StemWaveformLaneGrouper {
+    /// Groups lanes by their root category, preserving the projector's lane order both between
+    /// groups (first appearance wins) and inside each group.
+    static func groups(for lanes: [StemWaveformLaneModel]) -> [StemWaveformLaneGroup] {
+        var order: [String] = []
+        var lanesByRoot: [String: [StemWaveformLaneModel]] = [:]
+        for lane in lanes {
+            let root = Self.rootKey(for: lane.id)
+            if lanesByRoot[root] == nil { order.append(root) }
+            lanesByRoot[root, default: []].append(lane)
+        }
+        return order.map { root in
+            let members = lanesByRoot[root] ?? []
+            return StemWaveformLaneGroup(
+                id: root,
+                displayName: StemKind(rawValue: root)?.displayName
+                    ?? members.first?.displayName ?? root.capitalized,
+                lanes: members
+            )
+        }
+    }
+
+    static func rootKey(for id: StemID) -> String {
+        id.rawValue.split(separator: ".").first.map(String.init) ?? id.rawValue
+    }
+}
+
+/// Vertical layout of the waveform pane's stem-lane stack.
+///
+/// Pure arithmetic, deliberately outside the view. The pane's height has to agree with what
+/// the stack actually draws, and before this the two were separate sets of literals — the
+/// view spaced its lanes with `2` and its mix lane with `64` while the height calculation
+/// carried its own copies. Changing one and not the other clips the stack or leaves a gap
+/// behind it, with nothing to catch it: a SwiftUI frame height is not observable from a
+/// test, and the collapse behaviour has no other evidence.
+///
+/// So the numbers live here once, the view reads them, and `panelHeight` is testable.
+enum StemWaveformLaneLayout {
+    /// One stem waveform lane.
+    static let laneHeight: Double = 26
+    /// Between rows, whether those rows are lanes or disclosure headers.
+    static let laneSpacing: Double = 2
+    /// One collapsible family's disclosure header.
+    static let groupHeaderHeight: Double = 18
+    /// The full-mix lane above the stack.
+    static let mixHeight: Double = 64
+    static let topPadding: Double = 6
+    /// Between the mix lane and the top of the stem stack.
+    static let mixToStackGap: Double = 14
+
+    /// Height of the whole pane for `groups`, given which families are collapsed.
+    ///
+    /// A collapsed family contributes only its header, which is what lets collapsing
+    /// reclaim the space rather than leave a hole. Spacing is counted per ROW — headers and
+    /// lanes alike — because that is what the VStack does.
+    static func panelHeight(groups: [StemWaveformLaneGroup], collapsed: Set<String>) -> Double {
+        guard !groups.isEmpty else { return topPadding + mixHeight }
+
+        var rowCount = 0
+        var stackHeight = 0.0
+        for group in groups {
+            if group.isCollapsible {
+                rowCount += 1
+                stackHeight += groupHeaderHeight
+                if collapsed.contains(group.id) { continue }
+            }
+            rowCount += group.lanes.count
+            stackHeight += Double(group.lanes.count) * laneHeight
+        }
+        stackHeight += Double(max(rowCount - 1, 0)) * laneSpacing
+        return topPadding + mixHeight + mixToStackGap + stackHeight
+    }
+}
