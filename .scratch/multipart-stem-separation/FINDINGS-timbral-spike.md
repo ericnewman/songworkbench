@@ -419,6 +419,45 @@ be different problems.
 Default remains `comb`. `selftest.py` passes 9/9 and every previously recorded number is
 unchanged.
 
+## Follow-up 8 — the same switch is right for Track A and wrong for Track B
+
+The two-track split (PRD §2b) was argued from how the paths fail. This is the first case where
+one concrete switch has to be set **differently** for each, measured rather than reasoned.
+
+Follow-up 5 rejected the octave-partner estimator. Every number in that judgement was a Track
+B metric — SI-SDR and cross-part leakage, i.e. how good the separated audio is. Track A does
+not need separated audio, and for notation an octave partner is not a nuisance: it is a real
+note currently being missed, since the octave-voiced quartet sings four distinct pitches and
+the mono chain writes down three. `run_notes_octave.py` scores the same switch on note terms,
+four seeds, with `distinct` as a regression guard.
+
+| gate | cast | config | P | R | F1 |
+| --- | --- | --- | --- | --- | --- |
+| 0.00 | octave quartet | off | 0.705 | 0.635 | 0.667 |
+| 0.00 | octave quartet | **partners** | 0.636 | **0.938** | **0.757** |
+| 0.20 | octave quartet | off | 0.617 | 0.396 | 0.481 |
+| 0.20 | octave quartet | **partners** | 0.663 | **0.604** | **0.631** |
+| 0.20 | `distinct` (guard) | off | **0.953** | 0.722 | **0.820** |
+| 0.20 | `distinct` (guard) | partners | 0.888 | 0.722 | 0.795 |
+
+**For Track A the switch is worth having.** Recall on octave content goes 0.635 → 0.938 at an
+open gate and 0.396 → 0.604 at the strict one, for a precision cost of 0.065 on the guard
+cast. For Track B the identical switch cost **−10 dB SI-SDR** on that same guard cast. Same
+code, same evidence, opposite verdicts — because a stem has to be listenable and a note only
+has to be right.
+
+**Inferred notes carry half confidence.** An octave partner is never observed as a peak of
+its own — the notch destroyed it before peak-picking ran — so its track is created at half the
+parent's strength, which flows into note confidence. That is not a fudge factor; it is the
+difference between a note that was measured and one that was deduced, and the caller's gate
+should be able to tell them apart. Measured effect at the strict gate: precision 0.579 →
+**0.663** and F1 0.609 → **0.631**, because the deduced notes now drop out exactly where the
+user is asking for certainty.
+
+The remaining guard cost (0.953 → 0.888 at gate 0.20) is false positives from the partner
+vote on a cast with no octave pair. That is the same unexplained specificity problem recorded
+in follow-up 5, now bounded in Track A's units: it costs precision, not a stem.
+
 ## Recommended next steps
 
 0. **Split the work into two tracks with separate gates and separate shipping order.**

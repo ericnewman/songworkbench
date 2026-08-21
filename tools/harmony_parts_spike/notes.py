@@ -98,6 +98,23 @@ def segment_track(
     return events
 
 
+def notes_from_tracks(
+    tracks: list[part_lib.Track], labels, config: part_lib.STFTConfig
+) -> list[NoteEvent]:
+    """Note events from an already-computed track set.
+
+    Split out from `detect_notes` so the stereo chain — which finds tracks differently — can
+    produce notes through exactly the same segmentation and confidence path. Track A and
+    Track B share their front half; this is where Track A's half ends.
+    """
+    frame_rate = config.sample_rate / config.hop
+    ceiling = max((max(track.strength) for track in tracks if track.strength), default=1.0)
+    events: list[NoteEvent] = []
+    for track, label in zip(tracks, labels):
+        events.extend(segment_track(track, int(label), frame_rate, ceiling))
+    return sorted(events, key=lambda event: (event.onset, event.pitch))
+
+
 def detect_notes(
     signal: np.ndarray,
     part_count: int,
@@ -106,15 +123,7 @@ def detect_notes(
     """Path A end to end: audio in, note events out. No masks, no ISTFT."""
     config = config or part_lib.STFTConfig()
     result = part_lib.separate(signal, part_count, config=config)
-    tracks: list[part_lib.Track] = result["tracks"]
-    labels = result["labels"]
-    frame_rate = config.sample_rate / config.hop
-
-    ceiling = max((max(track.strength) for track in tracks if track.strength), default=1.0)
-    events: list[NoteEvent] = []
-    for track, label in zip(tracks, labels):
-        events.extend(segment_track(track, int(label), frame_rate, ceiling))
-    return sorted(events, key=lambda event: (event.onset, event.pitch))
+    return notes_from_tracks(result["tracks"], result["labels"], config)
 
 
 def match_notes(

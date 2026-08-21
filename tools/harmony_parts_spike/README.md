@@ -23,6 +23,7 @@ python3 tools/harmony_parts_spike/run_octave_seeds.py           # ...across seed
 python3 tools/harmony_parts_spike/interval_sweep.py             # separability vs interval
 python3 tools/harmony_parts_spike/run_notes.py                  # Track A: note metrics
 python3 tools/harmony_parts_spike/run_notes.py --sweep           # confidence gate
+python3 tools/harmony_parts_spike/run_notes_octave.py           # octave switch, Track A terms
 ```
 
 On a real vocal stem (16-bit PCM WAV, mono or stereo):
@@ -53,6 +54,7 @@ quickest way to hear what a given failure mode actually sounds like.
 | `interval_sweep.py` | separability at every interval from unison to the octave |
 | `notes.py` | Track A: f0 tracks → note events (no ISTFT, no masks) |
 | `run_notes.py` | note-level metrics; `--sweep` for the confidence gate |
+| `run_notes_octave.py` | the octave switch scored on Track A terms, with a guard cast |
 | `selftest.py` | asserts the working configuration stays working |
 
 ## Casts

@@ -315,11 +315,16 @@ def octave_partner_tracks(
                 votes += 1
         if counted == 0 or votes / counted < agreement:
             continue
+        # An octave partner is INFERRED from the parent's pan balance, never observed as a
+        # peak of its own — the notch destroyed it before peak-picking ran. So it carries
+        # half the parent's strength, which flows into note confidence and lets the caller's
+        # gate decide: a high gate keeps only observed notes, a low one admits inferred ones
+        # too. Adding them at full strength would claim evidence that does not exist.
         partners.append(
             part_lib.Track(
                 frames=list(track.frames),
                 f0=[hz * 2.0 for hz in track.f0],
-                strength=list(track.strength),
+                strength=[value * 0.5 for value in track.strength],
             )
         )
     return partners
