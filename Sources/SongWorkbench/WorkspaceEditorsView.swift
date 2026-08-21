@@ -1291,6 +1291,9 @@ struct ChordProTabEditor: View {
     /// Review-tab bottom panel's bass toggle. Off by default: most songs won't have bass
     /// detected yet, and the extra row adds visual noise once they do.
     @AppStorage("reviewShowBassNotes") private var showBassNotes = false
+    @AppStorage("reviewShowHarmonies") private var showHarmonies = false
+    @AppStorage(VocalHarmonyPreferences.maximumVoicesUserDefaultsKey)
+    private var harmonyMaxVoices = VocalHarmonyPreferences.defaultMaximumVoices
     /// Shows the raw `{x_chord_times: ...}` round-trip directive `ChordProDraftBuilder` emits
     /// before every chord-only row (backlog B5) — a debug/inspection aid, not something most
     /// people reading the chart want to see. Off by default (Eric: make these labels optional,
@@ -1438,6 +1441,9 @@ struct ChordProTabEditor: View {
                                     }),
                             bassNotes: model.bassNotes,
                             showBassNotes: config.showsReviewAffordances && showBassNotes,
+                            vocalHarmonyNotes: model.vocalHarmonyNotes,
+                            showHarmonies: config.showsReviewAffordances && showHarmonies,
+                            harmonyMaxVoices: harmonyMaxVoices,
                             showChordTimeLabels: config.showsReviewAffordances
                                 && showChordTimeLabels,
                             songChordTimes: model.placedChordTimes,
@@ -1565,6 +1571,14 @@ struct ChordProTabEditor: View {
                         Toggle("Waveform", isOn: $showWaveform)
                         Toggle("Show Bass Notes", isOn: $showBassNotes)
                             .disabled(model.bassNotes.isEmpty)
+                        Toggle("Harmonies", isOn: $showHarmonies)
+                            .disabled(model.vocalHarmonyNotes.isEmpty)
+                        Picker("Max Voices", selection: $harmonyMaxVoices) {
+                            Text("2").tag(2)
+                            Text("3").tag(3)
+                            Text("4").tag(4)
+                        }
+                        .disabled(model.vocalHarmonyNotes.isEmpty)
                         Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
                     }
                     Picker("Beats per Row", selection: $beatsPerRow) {
@@ -2360,6 +2374,10 @@ struct ChordProAppPreview: View {
     /// above each lyric line when `showBassNotes` is on, replacing the standalone Bass Notes tab.
     var bassNotes: [BassNoteObservation] = []
     var showBassNotes = false
+    /// Detected vocal harmony notes, shown as an optional Review-only row above the chart.
+    var vocalHarmonyNotes: [VocalHarmonyObservation] = []
+    var showHarmonies = false
+    var harmonyMaxVoices = VocalHarmonyPreferences.defaultMaximumVoices
     /// Shows the raw `{x_chord_times: ...}` directive text (View menu's "Chord Time Labels"
     /// toggle) instead of hiding it — off by default.
     var showChordTimeLabels = false
@@ -2440,6 +2458,28 @@ struct ChordProAppPreview: View {
         else { return [] }
         return BassNoteRowFormatter.timedLabels(
             for: bassNotes, inWindow: lyricLineWindows[ordinal], transposedBy: transpose)
+    }
+
+    private func harmonyLabels(forLyricOrdinal ordinal: Int?) -> [String] {
+        guard showHarmonies, !vocalHarmonyNotes.isEmpty, let ordinal,
+            lyricLineWindows.indices.contains(ordinal)
+        else { return [] }
+        return VocalHarmonyRowFormatter.partLabels(
+            for: vocalHarmonyNotes,
+            inWindow: lyricLineWindows[ordinal],
+            transposedBy: transpose,
+            maximumVoices: harmonyMaxVoices)
+    }
+
+    private func timedHarmonyParts(forLyricOrdinal ordinal: Int?) -> [TimedVocalHarmonyPart] {
+        guard showHarmonies, !vocalHarmonyNotes.isEmpty, let ordinal,
+            lyricLineWindows.indices.contains(ordinal)
+        else { return [] }
+        return VocalHarmonyRowFormatter.timedParts(
+            for: vocalHarmonyNotes,
+            inWindow: lyricLineWindows[ordinal],
+            transposedBy: transpose,
+            maximumVoices: harmonyMaxVoices)
     }
 
     /// Beats per bar: the song's shared `SongBarGrid` when supplied (it always is from the app
@@ -2917,6 +2957,10 @@ struct ChordProAppPreview: View {
             forLyricOrdinal: item.lyricOrdinal)
         let itemRowBassNotes = timedBassNotes(
             forLyricOrdinal: item.lyricOrdinal)
+        let itemHarmonyLabels = harmonyLabels(
+            forLyricOrdinal: item.lyricOrdinal)
+        let itemRowHarmonyParts = timedHarmonyParts(
+            forLyricOrdinal: item.lyricOrdinal)
         ChordProPreviewBlockView(
             block: item.block,
             scale: rowScale,
@@ -2949,6 +2993,8 @@ struct ChordProAppPreview: View {
             rowChordTimes: chordRow.effectiveTimes,
             bassLabel: itemBassLabel,
             rowBassNotes: itemRowBassNotes,
+            harmonyLabels: itemHarmonyLabels,
+            rowHarmonyParts: itemRowHarmonyParts,
             showChordTimeLabels: showChordTimeLabels,
             songChordTimes: songChordTimes,
             lyricSegment: itemLyricSegment,
@@ -3665,6 +3711,10 @@ private struct ChordProPreviewBlockView: View {
     var bassLabel: String?
     /// The same bass notes with onset times, for rhythmic mode's positioned per-note row.
     var rowBassNotes: [TimedBassNoteLabel] = []
+    /// Detected vocal harmony parts in this row's window, as flush-left fallback labels.
+    var harmonyLabels: [String] = []
+    /// The same harmony parts with onset times, for rhythmic mode's positioned per-part rows.
+    var rowHarmonyParts: [TimedVocalHarmonyPart] = []
     /// Shows raw `{...}` directive lines (e.g. the `x_chord_times` round-trip carrier) instead
     /// of hiding them — View menu's "Chord Time Labels" toggle, off by default.
     var showChordTimeLabels = false
@@ -3701,6 +3751,18 @@ private struct ChordProPreviewBlockView: View {
         return !overrideActive
     }
 
+    private var rendersPositionedHarmonyNotes: Bool {
+        guard case .lyric(let line) = block else { return false }
+        guard rhythmicSpacing, !rhythmicWordTimings.isEmpty, !rowHarmonyParts.isEmpty else {
+            return false
+        }
+        let overrideActive =
+            line.hasSungText
+            && lyricSegment?.overrideText?
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        return !overrideActive
+    }
+
     var body: some View {
         // Bottom-aligned so the number sits on the words/waveform row of the line, not up on
         // the beat-dot / ball reserve at the top of the block.
@@ -3711,6 +3773,13 @@ private struct ChordProPreviewBlockView: View {
                 .frame(width: scale.scaled(22), alignment: .trailing)
                 .padding(.bottom, 3)
             VStack(alignment: .leading, spacing: 2) {
+                if !harmonyLabels.isEmpty, !rendersPositionedHarmonyNotes {
+                    ForEach(Array(harmonyLabels.enumerated()), id: \.offset) { _, label in
+                        Text(label)
+                            .font(ChordProChartTypography.chord(size: scale.chordSize))
+                            .foregroundStyle(Color.swAmber)
+                    }
+                }
                 if let bassLabel, !rendersPositionedBassNotes {
                     // Flush-left fallback (monospace mode / overridden lines). Same size as the
                     // chord glyphs (13pt monospaced) and a bright green — Eric: "Bass note names
@@ -3789,7 +3858,8 @@ private struct ChordProPreviewBlockView: View {
                         onToggleChordAccepted: onToggleChordAccepted,
                         onSetChordManualTime: onSetChordManualTime,
                         overrideText: lyricSegment?.overrideText,
-                        rowBassNotes: rowBassNotes)
+                        rowBassNotes: rowBassNotes,
+                        rowHarmonyParts: rowHarmonyParts)
                 }
                 if showsReviewAffordances, line.hasSungText, let lyricSegment {
                     lyricControls(for: lyricSegment)
@@ -4079,9 +4149,11 @@ private struct ChordProPreviewLineView: View {
     /// renders at its onset's x on the SAME time axis as the chords — previously the names were
     /// a single flush-left label, which read as "clustered against the start of the line".
     var rowBassNotes: [TimedBassNoteLabel] = []
+    var rowHarmonyParts: [TimedVocalHarmonyPart] = []
 
     /// Extra row height reserved above the chords for the positioned bass notes.
     private static let baseBassRowReserve: CGFloat = 18
+    private static let baseHarmonyRowReserve: CGFloat = 18
 
     // MARK: - Scaled geometry
     //
@@ -4106,6 +4178,7 @@ private struct ChordProPreviewLineView: View {
         scale.scaled(Self.baseRhythmicDotTopReserve)
     }
     private var bassRowReserve: CGFloat { scale.scaled(Self.baseBassRowReserve) }
+    private var harmonyRowReserve: CGFloat { scale.scaled(Self.baseHarmonyRowReserve) }
 
     /// Vertical drop from the top of a row's content to its lyric band — zero when the row has no
     /// chords above the words.
@@ -4126,6 +4199,33 @@ private struct ChordProPreviewLineView: View {
         var result: [CGFloat] = []
         var cursor = -CGFloat.greatestFiniteMagnitude
         for note in rowBassNotes {
+            let x = max(rhythmicX(forTime: note.time), cursor)
+            result.append(x)
+            cursor = x + CGFloat(note.name.count + 1) * characterWidth
+        }
+        return result
+    }
+
+    private var rhythmicHarmonyRows:
+        [(part: TimedVocalHarmonyPart, labels: [(label: TimedVocalHarmonyLabel, x: CGFloat)])]
+    {
+        guard !rowHarmonyParts.isEmpty, !rhythmicWords.isEmpty else { return [] }
+        return rowHarmonyParts.map { part in
+            var row: [(label: TimedVocalHarmonyLabel, x: CGFloat)] = []
+            var cursor = scale.scaled(52)
+            for label in part.labels {
+                let x = max(rhythmicX(forTime: label.time), cursor)
+                row.append((label: label, x: x))
+                cursor = x + CGFloat(label.name.count + 1) * characterWidth
+            }
+            return (part: part, labels: row)
+        }
+    }
+
+    private var rhythmicHarmonyXs: [CGFloat] {
+        var result: [CGFloat] = []
+        var cursor = -CGFloat.greatestFiniteMagnitude
+        for note in rowHarmonyParts.flatMap(\.labels) {
             let x = max(rhythmicX(forTime: note.time), cursor)
             result.append(x)
             cursor = x + CGFloat(note.name.count + 1) * characterWidth
@@ -4629,6 +4729,7 @@ private struct ChordProPreviewLineView: View {
         let dots = rhythmicBeatDotPositions
         let chordXs = rhythmicChordXs
         let bassXs = rhythmicBassXs
+        let harmonyRows = rhythmicHarmonyRows
         let ball = rhythmicBallPosition
         let chordBall = rhythmicChordBallPosition
         // Reserve space above the content: the full ball reserve when either ball is shown,
@@ -4638,9 +4739,11 @@ private struct ChordProPreviewLineView: View {
             ? ballTopReserve : (dots.isEmpty ? 0 : rhythmicDotTopReserve)
         // Positioned bass-note row (when present) sits between the reserve and the chords;
         // chords/words shift down by this amount so nothing overlaps.
+        let harmonyReserve: CGFloat =
+            harmonyRows.isEmpty ? 0 : harmonyRowReserve * CGFloat(harmonyRows.count)
         let bassReserve: CGFloat = bassXs.isEmpty ? 0 : bassRowReserve
         let totalWidth = rhythmicFrameWidth
-        let contentHeight = contentBandHeight + topReserve + bassReserve
+        let contentHeight = contentBandHeight + topReserve + harmonyReserve + bassReserve
         let dotSize = scale.scaled(3.5)
         return ZStack(alignment: .topLeading) {
             // The phrase frame: one phrase period wide, anchored at this row's own downbeat.
@@ -4685,7 +4788,23 @@ private struct ChordProPreviewLineView: View {
                 Text(rowBassNotes[index].name)
                     .font(ChordProChartTypography.chord(size: scale.chordSize))
                     .foregroundStyle(Color.swMint)
-                    .offset(x: x, y: topReserve)
+                    .offset(x: x, y: topReserve + harmonyReserve)
+            }
+            ForEach(Array(harmonyRows.enumerated()), id: \.offset) { rowIndex, row in
+                Text(row.part.displayName)
+                    .font(.swDisplay(scale.scaled(9), weight: .semibold))
+                    .foregroundStyle(Color.swAmber.opacity(0.85))
+                    .offset(
+                        x: 0,
+                        y: topReserve + harmonyRowReserve * CGFloat(rowIndex))
+                ForEach(Array(row.labels.enumerated()), id: \.offset) { _, item in
+                    Text(item.label.name)
+                        .font(ChordProChartTypography.chord(size: scale.chordSize))
+                        .foregroundStyle(Color.swAmber)
+                        .offset(
+                            x: item.x,
+                            y: topReserve + harmonyRowReserve * CGFloat(rowIndex))
+                }
             }
             ForEach(Array(words.enumerated()), id: \.offset) { index, word in
                 let isHighlighted =
@@ -4702,7 +4821,7 @@ private struct ChordProPreviewLineView: View {
                     .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
                     .offset(
                         x: xs[index],
-                        y: lyricBandOffset + topReserve + bassReserve)
+                        y: lyricBandOffset + topReserve + harmonyReserve + bassReserve)
             }
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
@@ -4716,7 +4835,7 @@ private struct ChordProPreviewLineView: View {
                     .scaleEffect(chordOnsetScale(at: index), anchor: .bottomLeading)
                     .overlay(chordOnsetGlow(at: index))
                     .overlay(chordConfidenceOutline(at: index))
-                    .offset(x: chordXs[index], y: topReserve + bassReserve)
+                    .offset(x: chordXs[index], y: topReserve + harmonyReserve + bassReserve)
                     // Free-timestamp drag (no snapping) + tap-to-accept — rhythmic mode has a
                     // true, uniform time axis (`pixelsPerSecond`), so dragging here is exact.
                     .gesture(chordDragGesture(at: index))
@@ -4736,7 +4855,7 @@ private struct ChordProPreviewLineView: View {
                     .foregroundStyle(Color.swTextSecondary.opacity(0.75))
                     .offset(
                         x: lastX + rhythmicWordWidth(at: words.count - 1) + scale.scaled(10),
-                        y: lyricBandOffset + topReserve + bassReserve
+                        y: lyricBandOffset + topReserve + harmonyReserve + bassReserve
                     )
                     .help(
                         "\(restBeats)-beat rest: the voice stops here before the next line")
@@ -5022,10 +5141,14 @@ private struct ChordProPreviewLineView: View {
             zip(rhythmicBassXs, rowBassNotes)
             .map { pair in pair.0 + CGFloat(pair.1.name.count) * characterWidth }
             .max() ?? 0
+        let harmonyExtent =
+            zip(rhythmicHarmonyXs, rowHarmonyParts.flatMap(\.labels))
+            .map { pair in pair.0 + CGFloat(pair.1.name.count) * characterWidth }
+            .max() ?? 0
         return ChordProPreviewLineLayout.rhythmicFrameWidth(
             wordExtent: wordExtent,
             chordExtent: chordExtent + characterWidth,
-            bassExtent: bassExtent + characterWidth,
+            bassExtent: max(bassExtent, harmonyExtent) + characterWidth,
             rowContentEndX: rowContentEndX)
     }
 

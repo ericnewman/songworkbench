@@ -63,6 +63,28 @@
 - After moving or renaming an Xcode/Tuist workspace, validate both the
   `.xcodeproj` and `.xcworkspace` entry points. Workspace SwiftPM lockfiles may
   be symlinks with absolute paths back to the previous location.
+- When Analyze stops during source preflight, inspect both the saved source path
+  and the app-local source cache. Debug and sandboxed app launches can resolve
+  different Application Support roots; recovery must check the exact import-cache
+  hash path plus unambiguous cached filename matches before reporting the source
+  as missing.
+- Do not add full-song note detectors with per-frame direct trig scoring across
+  every candidate pitch. Use one reusable spectrum/autocorrelation pass per
+  frame, and never emit 100% stage progress before expensive post-processing
+  steps such as bass detection, harmony-note detection, or chord alignment finish.
+- Keep Review display thresholds calibrated to the detector's actual confidence
+  scale. A 2/3/4 voice control only sets a maximum; an over-strict threshold can
+  make valid multi-voice harmony detections look like a single voice or nothing.
+- For optional stem refiners, verify model package status through the app's install contract, not
+  only by checking that the large model file exists. `ModelPackageManager` requires
+  `.installation-manifest.json` with matching size/hash before `SongAnalysisPipelineFactory`
+  registers the refiner; without that, re-analysis still produces only base stems.
+- When launching SongWorkbench with `swift run`, model packages and songs live under
+  `~/Library/Application Support/SongWorkbench`, not the sandbox container path. Repairing
+  `~/Library/Containers/com.local.SongWorkbench/...` does not affect the non-sandbox debug app.
+- Do not enable an optional heavyweight stem refiner without proving progress and resource behavior
+  on a live full-song run. Native refiners must forward inner separator progress, and karaoke-style
+  models need their own conservative thread cap rather than inheriting base-stem CPU settings.
 
 ## 2026-06-25 — Don't delete low-confidence transcribed words as "hallucinations"
 **Mistake:** Treated "Grass" (conf 0.045, span 0.0–20.0) as a Whisper hallucination and made the
@@ -837,3 +859,51 @@ to the last word, while the phrase frame only overflow-drew past that layout wid
 **Rule:** for chart presentation work, test both semantic geometry and visible occupancy. A row can
 have a short lyric span for verdict purposes, but its SwiftUI layout width must still reserve the
 reference frame promised by the window-fit contract.
+
+## 2026-08-20 — Harmony defaults must include choir use cases
+
+**Mistake:** I framed the harmony voice-count default around pop lead-plus-backing vocals, which
+would under-detect and under-display choir material.
+
+**Rule:** SongWorkbench harmony features must treat choir music as a first-class use case. When a
+control supports 2–4 vocal parts, default to the richer choir-capable setting unless clutter or
+performance evidence says otherwise.
+
+## 2026-08-20 — Stale stem metadata must not hide usable saved audio
+
+**Mistake:** Treating an older separation engine version as fully unusable made valid saved stem
+files disappear from the current app until a full rerun.
+
+**Rule:** Engine-version staleness should warn and recommend regeneration, but if all saved stem
+audio files still exist, keep stem playback and waveform/mixer access available. Only missing or
+unreadable files should suppress the stem source.
+
+## 2026-08-20 — Harmony rows need explicit part labels
+
+**Mistake:** Detected harmony-note rows were drawn as unlabeled amber note text, so multiple inferred
+parts could still read as one vocal line in Review even when the stored analysis contained overlapping
+notes.
+
+**Rule:** Any multi-part harmony visualization must label inferred rows as Voice 1-N and keep that
+separate from audio stem isolation. A 4-voice detector setting does not imply 4 independently
+auditionable vocal audio stems unless a separator actually produced those files.
+
+- A synthetic test can confirm a metric and still tell you nothing. The first timbre feature was
+  "validated" with tones built from fixed partial RATIOS, which a harmonic-indexed feature
+  satisfies by construction — it scored a 14,600x separation while measuring the vowel rather than
+  the singer. When testing a feature that is supposed to isolate one factor, synthesize with the
+  factors as independent knobs (here: a source-filter model with singer, vowel and F0 varying
+  separately) and report the number that would falsify the claim, not the one that confirms it.
+
+- Changing a model's chunking (segment size, overlap, normalization) changes its OUTPUT, so it must
+  bump whatever metadata feeds the separation cache identity. The karaoke overlap change was
+  invisible to `StemRecipeIdentity` until `engineVersion` was bumped, which would have served stale
+  stems forever and let two variants overwrite each other in one recipe directory.
+
+- Before optimizing a slow pipeline, timestamp the artifacts it writes. Stem file mtimes localized
+  two-thirds of a 705 s analysis to a single refiner in one command, with no instrumentation and no
+  profiler.
+
+- Read UserDefaults at the composition root, not inside a factory. Gating optional refiners on a
+  static preference read inside `StemRefinementEngineFactory.production` broke its existing tests
+  immediately; passing the choice through `Context` made the dependency visible and testable.

@@ -153,11 +153,16 @@ struct StemMixerChannel: Identifiable, Equatable, Sendable {
 enum StemMixerChannelProjector {
     static func channels(for manifest: StemSetManifest) -> [StemMixerChannel] {
         let descriptors = manifest.descriptorsByID
-        return StemMixGraph(manifest: manifest).activeNodes.compactMap { node in
+        let activeNodes = StemMixGraph(manifest: manifest).activeNodes
+        let numberedVocalNames = StemVoiceDisplayNames.numberedVocalNames(
+            for: activeNodes,
+            descriptorsByID: descriptors
+        )
+        return activeNodes.compactMap { node in
             guard let descriptor = descriptors[node.id] else { return nil }
             return StemMixerChannel(
                 id: node.id,
-                displayName: descriptor.displayName,
+                displayName: numberedVocalNames[node.id] ?? descriptor.displayName,
                 order: descriptor.order
             )
         }
@@ -181,13 +186,36 @@ enum StemWaveformLaneProjector {
     /// Same active parent/child frontier as the mixer: children replace their parent.
     static func targets(for manifest: StemSetManifest) -> [Target] {
         let descriptors = manifest.descriptorsByID
-        return StemMixGraph(manifest: manifest).activeNodes.compactMap { node in
+        let activeNodes = StemMixGraph(manifest: manifest).activeNodes
+        let numberedVocalNames = StemVoiceDisplayNames.numberedVocalNames(
+            for: activeNodes,
+            descriptorsByID: descriptors
+        )
+        return activeNodes.compactMap { node in
             guard let descriptor = descriptors[node.id] else { return nil }
             return Target(
                 id: node.id,
-                displayName: descriptor.displayName,
+                displayName: numberedVocalNames[node.id] ?? descriptor.displayName,
                 audioURL: node.audioURL
             )
         }
+    }
+}
+
+enum StemVoiceDisplayNames {
+    static func numberedVocalNames(
+        for activeNodes: [StemMixGraph.Node],
+        descriptorsByID: [StemID: StemDescriptor]
+    ) -> [StemID: String] {
+        let vocalChildren = activeNodes.filter { node in
+            descriptorsByID[node.id]?.parentID == StemKind.vocals.id
+        }
+        guard !vocalChildren.isEmpty else { return [:] }
+
+        return Dictionary(
+            uniqueKeysWithValues: vocalChildren.enumerated().map { offset, node in
+                (node.id, "Voice \(offset + 1)")
+            }
+        )
     }
 }

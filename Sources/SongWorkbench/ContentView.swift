@@ -867,27 +867,37 @@ private struct PlayerView: View {
 
     private func waveformStemProgressRow(_ progress: AppModel.WaveformStemProgress) -> some View {
         HStack(spacing: 10) {
-            ProgressView(value: progress.fractionCompleted)
-                .progressViewStyle(.linear)
-                .frame(width: 88)
+            if progress.isIndeterminate {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 88)
+            } else {
+                ProgressView(value: progress.fractionCompleted)
+                    .progressViewStyle(.linear)
+                    .frame(width: 88)
+            }
             Text(progress.message)
                 .font(.swDisplay(11, weight: .medium))
                 .foregroundStyle(Color.swTextPrimary)
                 .lineLimit(1)
             Spacer(minLength: 8)
-            Text(progress.fractionCompleted, format: .percent.precision(.fractionLength(0)))
-                .font(.swMono(11))
-                .foregroundStyle(Color.swTextSecondary)
-                .monospacedDigit()
-                .frame(width: 34, alignment: .trailing)
+            if !progress.isIndeterminate {
+                Text(progress.fractionCompleted, format: .percent.precision(.fractionLength(0)))
+                    .font(.swMono(11))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .monospacedDigit()
+                    .frame(width: 34, alignment: .trailing)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color.swSurfaceRaised.opacity(0.8), in: RoundedRectangle(cornerRadius: 6))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Stem generation progress")
+        .accessibilityLabel("Background analysis progress")
         .accessibilityValue(
-            "\(progress.message) \(Int((progress.fractionCompleted * 100).rounded())) percent"
+            progress.isIndeterminate
+                ? progress.message
+                : "\(progress.message) \(Int((progress.fractionCompleted * 100).rounded())) percent"
         )
     }
 

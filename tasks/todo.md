@@ -66,6 +66,138 @@ Review:
   `git diff --check` passed for touched paths. Full test-file lint was not clean because an
   unrelated existing dirty line in `AppModelTests.swift` exceeds line length.
 
+## Optional Harmonies Mode for Review (2026-08-20)
+
+Eric wants an optional "Harmonies" mode around stem separation that detects multiple vocal
+harmonies and visualizes actual sung vocal notes / intervals in the Review pane.
+
+Acceptance criteria:
+
+- [x] Add a persisted vocal-harmony observation model that can survive re-analysis and decode older
+      documents safely.
+- [x] Add a native first-pass detector that can emit timed vocal note labels from isolated vocal
+      audio without requiring a new unvalidated separator artifact.
+- [x] Gate display behind an optional Review toggle named "Harmonies".
+- [x] Add a 2/3/4 max-voices control, defaulting to 4 so choir use cases are represented.
+- [x] Render detected harmony note labels and intervals on timed lyric rows.
+- [x] Keep the path compatible with future harmony-stem refiners: observations should not assume
+      only one backing voice forever.
+- [x] Add focused tests for note naming, interval naming, row projection, persistence, and the
+      detector's basic multi-note behavior.
+- [x] Run focused tests and format/diff checks.
+
+Design notes:
+
+- First slice is analysis/visualization, not a new multi-harmony separator model. A true
+  lead/alto/tenor/etc. stem split still needs a validated waveform-in/waveform-out model artifact
+  and license review before joining the refiner cascade.
+- Use the existing vocals/lead/backing stem assets when present. The data model should also accept
+  future IDs such as `vocals.harmony.1`.
+- Review UI should mirror the Bass Notes row shape: time-positioned symbols above the lyric line,
+  opt-in from the View menu, and disabled when no harmony observations exist.
+
+Review:
+
+- Added `VocalHarmonyObservation` persistence with older-document empty defaults and round-trip
+  coverage.
+- Added a native harmonic-energy detector over available vocal assets. It prefers refined vocal
+  children such as lead/backing/harmony IDs when present, otherwise falls back to the legacy vocals
+  stem.
+- The Harmony stage now re-reduces at `reduce-25-vocal-harmonies`, preserving raw harmony/chroma
+  cache reuse while populating the new observations.
+- Review's View menu has a disabled-when-empty "Harmonies" toggle and a 2/3/4 "Max Voices"
+  picker. The default is 4 for choir material; reducing the value limits visual clutter and the
+  next detection pass.
+- When enabled, timed note labels such as `C#4 +M3` render on their own amber row above
+  lyric/chord content.
+- Verification: `make format-check`; `swift test --filter VocalHarmonyAnalyzerTests --filter
+  AnalysisDocumentTests`; `swift test --filter XcodeProjectRegistrationTests`; `git diff --check`.
+
+## Follow-up — Analyze Stuck at 50% (2026-08-20)
+
+Eric observed Analyze staying at 50% after the source-cache repair.
+
+Acceptance criteria:
+
+- [x] Confirm whether the app is idle, crashed, or working inside a stage.
+- [x] Remove the harmony-note detector hot spot that makes full songs appear stuck.
+- [x] Keep Harmony progress below complete until vocal-harmony note detection is actually done.
+- [x] Add or update focused tests around the optimized harmony detector/progress behavior.
+- [x] Run focused tests and repo checks, then relaunch the latest app.
+
+Review:
+
+- Sampling the live process showed the app was active at ~100% CPU inside
+  `VocalHarmonyAnalyzer.harmonicEnergy`, not idle or crashed.
+- Replaced per-note/per-harmonic sine scanning with one reusable FFT per frame plus direct spectral
+  lookup for candidate notes.
+- Harmony progress now reports intermediate post-processing phases and only reaches complete after
+  vocal-harmony note detection and chord alignment finish.
+- Verification: `swift test --filter VocalHarmonyAnalyzerTests`; `swift test --filter
+  AppModelTests/testWaveformStemProgress`; `make format-check`; `git diff --check`.
+
+## Follow-up — Separate Harmony Part Rows (2026-08-20)
+
+Eric wants each detected harmony part on its own line in the Review pane instead of all notes
+sharing one visual row.
+
+Acceptance criteria:
+
+- [x] Split simultaneous harmony notes into stable part rows.
+- [x] Respect the 2/3/4 maximum voices setting as the maximum number of displayed part rows.
+- [x] Render separate rows in both positioned rhythmic mode and flush-left fallback mode.
+- [x] Reserve enough vertical space so harmony rows do not overlap bass, chords, or lyrics.
+- [x] Add focused formatter coverage for simultaneous-note row splitting.
+- [x] Run focused tests and repo checks, then relaunch the latest app.
+
+Review:
+
+- Added `TimedVocalHarmonyPart` and `VocalHarmonyRowFormatter.timedParts` /
+  `partLabels`, assigning overlapping notes to separate rows and reusing rows only when notes no
+  longer overlap.
+- `ChordProPreviewBlockView` and `ChordProPreviewLineView` now pass/render harmony parts rather
+  than one flat note list; rhythmic rows reserve one amber lane per visible part.
+- Verification: `swift test --filter VocalHarmonyAnalyzerTests`; `swift test --filter
+  AppModelTests/testWaveformStemProgress`; `make format-check`; `git diff --check`.
+
+## Follow-up — Numbered Playable Harmony Voices (2026-08-20)
+
+Eric wants harmony voices numbered 1-N and individually switchable in the stem mix.
+
+Acceptance criteria:
+
+- [x] Number separated vocal child stems as `Voice 1`, `Voice 2`, etc. in stem playback controls.
+- [x] Preserve existing mute/solo/gain/pan behavior per voice.
+- [x] Show matching voice labels in waveform lanes when vocal child audio exists.
+- [x] Keep visual harmony detections separate from audio stems so the UI does not imply playable
+      voices before a refiner has produced those audio files.
+- [x] Add focused projector tests for current lead/backing outputs and future N-voice outputs.
+- [x] Run focused tests and repo checks, then relaunch the app.
+
+Review:
+
+- Added shared voice-display projection so active vocal child stems render as `Voice 1`, `Voice 2`,
+  etc. in both the stem mixer and waveform lanes.
+- Existing per-stem mixer state continues to drive mute/solo/gain/pan by the underlying stem ID, so
+  numbered voices are independently controllable when their audio files exist.
+- The app still distinguishes visual harmony detections from playable stems: no numbered voice
+  audio channel is shown unless the manifest contains a separated vocal-child asset.
+- Verification: `swift test --filter StemMixerTests` passed 18 tests; `make format-check`
+  passed; `git diff --check` passed; relaunched with `swift run SongWorkbench`.
+
+Follow-up diagnosis:
+
+- The app still showed only one vocal track because `SongWorkbench.advancedStemRefinement` was off,
+  so optional refiners were not requested even after the karaoke model package was repaired.
+- Enabled Advanced stem refinement in app preferences, corrected its help text to mention vocal
+  voice stems, and added focused coverage for karaoke vocal-refiner registration.
+- A fresh run then appeared stuck at 25% because the karaoke vocal refiner is legitimately heavy
+  and the native refiner wrapper discarded inner progress. The app reported the stem stage as done
+  while vocal refinement continued.
+- Capped karaoke ONNX intra-op threads to 4 by default, added
+  `SW_KARAOKE_STEM_THREADS` / `SongWorkbench.karaokeStemRefinementIntraOpThreads` overrides, and
+  forwarded native refiner chunk progress through the stem cascade.
+
 # Track B — Richer Stems as a Playback Feature (2026-07-29, NOT STARTED)
 
 Captured on Eric's request so it is not lost. **Do not start** — recorded only.
@@ -2877,3 +3009,114 @@ Verification:
   build succeeded; Xcode also printed passcode-protected device warnings unrelated to the macOS
   destination.
 - `swift test`: 842 tests, 22 skipped, 0 failures.
+
+---
+
+## 2026-08-20 — Make harmony parts visibly distinct in Review
+
+User correction: after re-analysis with Harmonies enabled and 4 voices selected, Review still read
+as one voice.
+
+- [x] Verify the persisted analysis contains vocal harmony observations and overlapping intervals.
+- [x] Label Review harmony rows as `Voice 1`, `Voice 2`, etc. in both positioned and fallback
+  render paths.
+- [x] Add a focused regression for single-track mixed-harmony rows showing explicit voice labels.
+
+Verification:
+
+- `swift test --filter VocalHarmonyAnalyzerTests`: 5 tests, 0 failures.
+- `swift format lint --strict --recursive Sources Tests`: passed.
+- `git diff --check`: passed.
+
+---
+
+## 2026-08-20 — Show Waveform artifact for background analysis
+
+User correction: background processing needs a visible artifact in the Waveform area, even before
+stems appear or when the selected song is waiting behind another analysis run.
+
+- [x] Extend Waveform analysis status beyond active selected-song stem separation.
+- [x] Show an indeterminate row when the selected song is queued.
+- [x] Show a background-analysis row when another song is running.
+- [x] Keep selected-song non-stem stages visible in the same Waveform status row.
+
+Verification:
+
+- `swift test --filter AppModelTests/testWaveformStemProgress`: 2 tests, 0 failures.
+- `swift test --filter VocalHarmonyAnalyzerTests`: 5 tests, 0 failures.
+- `swift format lint --strict --recursive Sources Tests`: passed.
+- `git diff --check`: passed.
+
+---
+
+## 2026-08-21 — Voice-per-row identity, and cutting analysis time in half
+
+User report: "two separate vocal tracks but it seems to alternate which voice is on each track."
+
+Row assignment (three passes, each fixing the last):
+
+- [x] Onset-order assignment kept a row only while the next note stayed within 3 semitones and
+  otherwise took the first free row, so one singer alternated rows on every melodic leap.
+  Replaced with pitch rank.
+- [x] Pitch rank still swapped the singers at every voice crossing. Added a per-note timbre
+  fingerprint and `VocalTimbreClustering` (greedy cosine clustering, clusters ordered by median
+  pitch, collision resolution so overlapping notes never share a row).
+- [x] A 25-agent adversarial review found the result was still wrong in two ways, both fixed:
+  clustering ran inside each lyric-line window, so a singer could be Voice 1 on one line and
+  Voice 2 on the next; and `sourceID` — produced by the lead/backing refiner we pay minutes for —
+  was written on every observation and never read. Voice identity is now decided ONCE per song in
+  `HarmonyStage` (`VocalHarmonyAnalyzer.assigningVoices`), partitioned by vocal stem first and
+  subdivided by timbre, and persisted on the observation. The display only reads it.
+- [x] Replaced the harmonic-indexed timbre vector with a fixed-frequency one (`MelTimbreExtractor`:
+  mel filterbank 200 Hz–5 kHz, log, DCT-II, coefficients 1...N, L2-normalized).
+
+What the timbre feature actually does, measured with a source-filter synthesis test where singer,
+vowel and pitch are independent knobs (`testTimbreTracksTheSingerAcrossPitchAndVowel`):
+
+| comparison                          | cosine distance |
+| ----------------------------------- | --------------- |
+| same singer, different pitch        | 0.001 – 0.010   |
+| different singer, same vowel        | 0.011 – 0.035   |
+| same singer, different vowel        | 0.054 – 0.056   |
+
+It is pitch-invariant, and a vowel change stays far inside the clustering threshold so it can never
+fork one singer onto two rows. It does NOT separate singers: two singers sit closer together than
+one singer changing vowel, so no threshold splits them without also splitting a soloist. Singer
+separation comes from the stem partition, not the fingerprint. Doing better needs a distribution
+over many frames (a real speaker embedding), not a better per-note vector.
+
+Analysis speed — profiled a 3:36 song end to end (release build, 8P+4E Mac):
+
+| phase                          | before | after |
+| ------------------------------ | ------ | ----- |
+| base six-stem separation       | 58 s   | 58 s  |
+| DrumSep refiner                | 73 s   | optional |
+| karaoke lead/backing refiner   | 473 s  | 172 s |
+| transcription + harmony        | 100 s  | 100 s |
+| **total**                      | 705 s  | ~330 s |
+
+- [x] Karaoke intra-op thread cap 4 → 8 on macOS (473 s → 310 s measured; iOS stays at 4 for
+  thermals and memory).
+- [x] Skip inference on near-silent chunks (-50 dBFS peak). 16–20% of the karaoke refiner's chunks
+  on the test track were silence. Only applied when the engine does not normalize, because a
+  mean-shifted silent chunk is not zero on the model's input scale.
+- [x] Karaoke overlap 1/4 → 1/8 of the segment; every overlapped frame is predicted twice and the
+  base engine only crossfades 10%. Bumped the karaoke `engineVersion` to "2" — that metadata IS the
+  refiner's cache identity, so without it every previously separated song keeps serving its
+  quarter-overlap stems and the two variants overwrite each other.
+- [x] Split the single "advanced stem refinement" switch into per-refiner preferences, so you can
+  have lead/backing without paying for drum pieces. The choice is passed through
+  `StemRefinementEngineFactory.Context` rather than read from `UserDefaults` inside the factory.
+- [x] Surfaced both switches plus low-memory separation on the Song Analysis card with a live
+  estimated-time readout, instead of a pre-analysis option sheet.
+- [x] Tried the ONNX CoreML execution provider on the karaoke model and REVERTED it: CoreML rejects
+  the exported STFT's zero-length dimension, shattering the graph into 179 partitions of 3341 nodes,
+  ~59 s of compile per session, and the process was SIGKILLed on both attempts.
+
+Verification:
+
+- `swift test`: 1015 tests, 24 skipped, 1 failure — `LyricGroupingDiagnosticTests` needs a cached
+  Whisper fixture that is not in the repo (pre-existing).
+- `swift format lint --strict --recursive Sources Tests`: passed.
+- Harmony stage tags bumped to `reduce-27-vocal-timbre` and `reduce-28-song-level-voices`, so
+  cached analyses re-run.

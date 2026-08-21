@@ -31,6 +31,36 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.songs.contains { $0.id == Song(url: restoredURL).id })
     }
 
+    func testRestoreUsesReadableLocalSourceCacheWhenSavedSourceIsMissing() async throws {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("Legacy Choir Song.wav")
+        let cacheRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cachedDirectory = cacheRoot.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
+        let cachedURL = cachedDirectory.appendingPathComponent(missingURL.lastPathComponent)
+        try FileManager.default.createDirectory(
+            at: cachedDirectory,
+            withIntermediateDirectories: true
+        )
+        _ = try writeSilentWAV(to: cachedURL, frameCount: 800)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+
+        let store = DelayedProjectStore(
+            document: ProjectLibraryDocument(songs: [
+                StoredSongProject(url: missingURL, settings: PracticeSettings())
+            ]))
+        let model = AppModel(store: store, sourceRecoveryDirectories: [cacheRoot])
+
+        await model.restoreProjects()
+
+        XCTAssertEqual(model.songs.first?.url.standardizedFileURL, cachedURL.standardizedFileURL)
+        XCTAssertEqual(model.selectedSong?.url.standardizedFileURL, cachedURL.standardizedFileURL)
+    }
+
     func testBassNoteSourcePrefersDetectedBassNotes() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -599,7 +629,7 @@ final class AppModelTests: XCTestCase {
             "a lyric edit must un-review a previously-reviewed chart, not silently no-op")
     }
 
-    func testStaleSixStemAnalysisDoesNotLoadStemPlayback() async throws {
+    func testStaleSixStemAnalysisStillLoadsPresentStemPlaybackWithWarning() async throws {
         let songURL = try makeSilentWAV(frameCount: 16_000)
         let stemDirectory = try makeStemDirectory()
         defer {
@@ -637,13 +667,56 @@ final class AppModelTests: XCTestCase {
         await model.restoreProjects()
 
         XCTAssertNotNil(model.stemFiles)
-        XCTAssertFalse(model.stemPlayback.isLoaded)
+        XCTAssertTrue(model.stemPlayback.isLoaded)
         XCTAssertTrue(model.hasStaleStemPlayback)
         XCTAssertEqual(model.analysisStageRecords[.separation]?.state, .stale)
         XCTAssertEqual(
             model.analysisStageRecords[.separation]?.errorMessage,
             "Saved stems were created by an older separator. Rerun Stems."
         )
+    }
+
+    func testStaleSixStemAnalysisWithMissingFilesDoesNotLoadStemPlayback() async throws {
+        let songURL = try makeSilentWAV(frameCount: 16_000)
+        let stemDirectory = try makeStemDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: songURL)
+            try? FileManager.default.removeItem(at: stemDirectory)
+        }
+        let stems = sixStemFiles(in: stemDirectory)
+        try FileManager.default.removeItem(at: stems.vocals)
+        let staleRecord = AnalysisStageRecord(
+            state: .succeeded,
+            provenance: AnalysisProvenance(
+                sourceDigest: "source",
+                sourceKind: .recording,
+                engineIdentifier: "onnxruntime-coreml-htdemucs-6s",
+                engineVersion: "1",
+                modelIdentifier: ONNXSixStemSeparationEngine.cpuMetadata.modelIdentifier,
+                modelVersion: ONNXSixStemSeparationEngine.cpuMetadata.modelVersion,
+                configurationIdentifier: "six-stem-44.1k-stereo",
+                resultSchemaVersion: SongAnalysisDocument.currentSchemaVersion,
+                completedAt: Date(timeIntervalSince1970: 1),
+                loadedFromCache: false
+            ),
+            confidence: nil,
+            errorMessage: nil
+        )
+        let analysis = SongAnalysisDocument(
+            stems: StoredStemFiles(files: stems),
+            stageRecords: [.separation: staleRecord]
+        )
+        let store = DelayedProjectStore(
+            document: ProjectLibraryDocument(songs: [
+                StoredSongProject(url: songURL, settings: PracticeSettings(), analysis: analysis)
+            ]))
+
+        let model = AppModel(store: store)
+        await model.restoreProjects()
+
+        XCTAssertNotNil(model.stemFiles)
+        XCTAssertFalse(model.stemPlayback.isLoaded)
+        XCTAssertTrue(model.hasStaleStemPlayback)
     }
 
     /// Starting a user-initiated analysis during playback must stop playback (Eric,
@@ -981,7 +1054,7 @@ final class AppModelTests: XCTestCase {
         )
     }
 
-    func testWaveformStemProgressOnlyShowsForSelectedSongSeparationStage() {
+    func testWaveformStemProgressShowsSelectedQueuedAndBackgroundAnalysis() {
         let selectedID = URL(fileURLWithPath: "/tmp/selected.wav")
         let otherID = URL(fileURLWithPath: "/tmp/other.wav")
         let separation = SongAnalysisPipelineProgress(
@@ -1007,12 +1080,19 @@ final class AppModelTests: XCTestCase {
                 progress: separation
             )
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             AppModel.waveformStemProgress(
                 selectedSongID: selectedID,
                 currentAnalyzedSongID: otherID,
+                selectedSongIsQueued: true,
                 isRunning: true,
-                progress: separation
+                progress: separation,
+                batch: AppModel.ReanalyzeAllStatus(index: 2, total: 4, title: "Other Song")
+            ),
+            AppModel.WaveformStemProgress(
+                message: "Waiting to analyze this song",
+                fractionCompleted: 0,
+                isIndeterminate: true
             )
         )
         XCTAssertNil(
@@ -1023,12 +1103,29 @@ final class AppModelTests: XCTestCase {
                 progress: separation
             )
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             AppModel.waveformStemProgress(
                 selectedSongID: selectedID,
                 currentAnalyzedSongID: selectedID,
                 isRunning: true,
                 progress: lyrics
+            ),
+            AppModel.WaveformStemProgress(
+                message: "Analyzing Lyrics",
+                fractionCompleted: 0.3125
+            )
+        )
+        XCTAssertEqual(
+            AppModel.waveformStemProgress(
+                selectedSongID: selectedID,
+                currentAnalyzedSongID: otherID,
+                isRunning: true,
+                progress: lyrics,
+                batch: AppModel.ReanalyzeAllStatus(index: 2, total: 4, title: "Other Song")
+            ),
+            AppModel.WaveformStemProgress(
+                message: "Analyzing in background · Other Song",
+                fractionCompleted: 0.3125
             )
         )
     }
@@ -1038,6 +1135,41 @@ final class AppModelTests: XCTestCase {
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         await model.restoreProjects()
         XCTAssertNil(model.backgroundActivityStatus)
+    }
+
+    /// The estimate is what makes the analysis options' cost visible before you press Analyze,
+    /// so each switch must move it the way the measurements say — and it must scale with the
+    /// song, not quote one 3:36 measurement forever.
+    func testAnalysisEstimateReflectsTheOptionsAndTheSongLength() {
+        func estimate(
+            _ duration: TimeInterval,
+            vocals: Bool = true,
+            drums: Bool = true,
+            lowMemory: Bool = false
+        ) -> TimeInterval {
+            AppModel.estimatedAnalysisSeconds(
+                forDuration: duration,
+                vocalVoiceSeparation: vocals,
+                drumPieceSeparation: drums,
+                lowMemorySeparation: lowMemory)
+        }
+
+        // The song it was measured on: 58 + 73 + 172 + 100 s of work.
+        XCTAssertEqual(estimate(216), 403, accuracy: 1)
+        // Dropping the vocal refiner is the big lever — it must remove its whole 172 s.
+        XCTAssertEqual(estimate(216, vocals: false), 231, accuracy: 1)
+        XCTAssertLessThan(estimate(216, vocals: false), estimate(216) * 0.7)
+        // Drum pieces add on top of whatever else is on.
+        XCTAssertGreaterThan(
+            estimate(216, vocals: false), estimate(216, vocals: false, drums: false))
+        // Low-memory separation only slows the base pass, so it is the smallest of the three.
+        let lowMemoryDelta = estimate(216, lowMemory: true) - estimate(216)
+        XCTAssertEqual(lowMemoryDelta, 58 * 0.6, accuracy: 1)
+        // Everything scales linearly with the song.
+        XCTAssertEqual(estimate(432), estimate(216) * 2, accuracy: 0.001)
+
+        XCTAssertEqual(AppModel.formattedAnalysisDuration(45), "45 s")
+        XCTAssertEqual(AppModel.formattedAnalysisDuration(403), "7 min")
     }
 }
 

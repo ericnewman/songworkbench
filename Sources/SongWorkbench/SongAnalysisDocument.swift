@@ -538,6 +538,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// `nil` (older documents, or fresh stage output) means the passes still need to run.
     var timingPostPassTag: String?
     var bassNotes: [BassNoteObservation] = []
+    var vocalHarmonyNotes: [VocalHarmonyObservation] = []
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
     /// Listener verdicts from the chord-placement A/B, newest last. A later pick overlapping an
@@ -570,6 +571,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case preReconciliationTiming
         case timingPostPassTag
         case bassNotes
+        case vocalHarmonyNotes
         case estimatedKey
         case chordConfidenceThreshold
         case chordPlacementPicks
@@ -601,6 +603,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         preReconciliationTiming: PreReconciliationTiming? = nil,
         timingPostPassTag: String? = nil,
         bassNotes: [BassNoteObservation] = [],
+        vocalHarmonyNotes: [VocalHarmonyObservation] = [],
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
         chordPlacementPicks: [ChordPlacementPick] = [],
@@ -630,6 +633,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.preReconciliationTiming = preReconciliationTiming
         self.timingPostPassTag = timingPostPassTag
         self.bassNotes = bassNotes
+        self.vocalHarmonyNotes = vocalHarmonyNotes
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
         self.chordPlacementPicks = chordPlacementPicks
@@ -675,6 +679,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             String.self, forKey: .timingPostPassTag)
         bassNotes =
             try container.decodeIfPresent([BassNoteObservation].self, forKey: .bassNotes) ?? []
+        vocalHarmonyNotes =
+            try container.decodeIfPresent(
+                [VocalHarmonyObservation].self, forKey: .vocalHarmonyNotes)
+            ?? []
         estimatedKey =
             try container.decodeIfPresent(MusicalKey.self, forKey: .estimatedKey)
             ?? MusicalKeyEstimator().estimate(from: chords)
