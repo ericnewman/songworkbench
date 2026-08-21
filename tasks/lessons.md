@@ -837,3 +837,29 @@ to the last word, while the phrase frame only overflow-drew past that layout wid
 **Rule:** for chart presentation work, test both semantic geometry and visible occupancy. A row can
 have a short lyric span for verdict purposes, but its SwiftUI layout width must still reserve the
 reference frame promised by the window-fit contract.
+
+## 2026-08-21 — A wrapped call's closing paren goes on its own line (`swift format` [AddLines])
+
+**Mistake:** burned two CI cycles on the same lint rule in the same file. First
+`ContentView.swift:940:61` on a multi-line `.help(...)` ternary, then — after fixing that one
+and reading the rule as "the closing paren needs its own line" — I wrote a fresh
+`.frame(height:alignment:)` split across two lines with the paren attached again, and
+`ContentView.swift:938:95` failed identically. The column in an `[AddLines]` message is the
+character the break belongs BEFORE; both times it was the `)`.
+
+The distinguishing detail, checked against the sites lint did NOT flag in the same run: the
+offending call would have fit on ONE line (98 characters) and was split anyway. Calls that
+genuinely cannot fit are allowed to keep a trailing paren — two of them a few lines away pass
+untouched. So the rule is not "always expand"; it is that an unnecessary split gets rejected,
+and the diagnostic points at the paren because that is where the missing break belongs.
+
+Two shapes are safe: all on one line when it fits in 100 characters, or fully expanded with
+one argument per line and the closing paren alone. The half-way form is what fails.
+
+**Rule:** there is no Swift toolchain in the remote container (`swift`, `xcrun`, and
+download.swift.org are all unavailable), so lint cannot be checked before pushing and every
+mistake costs a ~7-minute CI round trip. When editing Swift there, match the bracket shape of
+neighbouring code in the same file rather than inventing a wrapping, and after any multi-line
+call re-read it against a known-good example nearby. `git diff --check` and
+`python3 -m compileall scripts Benchmarks/Tools` are the only two `verify_repo.sh` steps
+reproducible locally; both passing means nothing about lint.

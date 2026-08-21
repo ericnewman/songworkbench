@@ -935,7 +935,9 @@ private struct PlayerView: View {
             .foregroundStyle(group.lanes.first?.id.laneColor ?? Color.swTextSecondary)
             .padding(.leading, 4)
             .frame(
-                height: CGFloat(StemWaveformLaneLayout.groupHeaderHeight), alignment: .leading)
+                height: CGFloat(StemWaveformLaneLayout.groupHeaderHeight),
+                alignment: .leading
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
