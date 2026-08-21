@@ -863,3 +863,25 @@ neighbouring code in the same file rather than inventing a wrapping, and after a
 call re-read it against a known-good example nearby. `git diff --check` and
 `python3 -m compileall scripts Benchmarks/Tools` are the only two `verify_repo.sh` steps
 reproducible locally; both passing means nothing about lint.
+
+## 2026-08-21 — "It flips synchronously" is not the same as "nothing else has run"
+
+**Mistake (pre-existing, diagnosed today):**
+`AppModelTests.testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart` asserted
+`reanalyzeAllStatus.index == 1` and documented itself as deterministic because
+`isSongAnalysisRunning` and `reanalyzeAllStatus` "flip synchronously (before any yield) … no
+real analysis pipeline work has had a chance to run yet."
+
+The synchronous-flip reasoning was correct about the CALL and irrelevant to the ASSERTION.
+`importSongs` auto-analyses on import and shares the same `analysisQueue`, so the
+`try await waitUntil { model.songs.count >= 2 }` on the line before yields long enough for
+song 1 to finish on a fast runner. The queue is then at index 2 before `reanalyzeAllSongs()`
+is called at all. Measured across nine CI runs of identical trees: 1/3/1/1/2/0/0/2/0
+failures — a coin flip that reddened unrelated PRs.
+
+**Rule:** when a test's determinism argument rests on "no suspension point between A and B",
+check what ran BEFORE A as well. A shared queue plus an earlier `await` is enough to
+invalidate it. Prefer assertions that state the invariant the test is named for — here "does
+not duplicate or restart" is total-unchanged plus index-never-decreasing — over absolute
+values that only hold if nothing has progressed. An absolute value is a timing assumption
+wearing a constant's clothes.
