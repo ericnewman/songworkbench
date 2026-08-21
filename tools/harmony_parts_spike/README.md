@@ -1,6 +1,6 @@
 # Harmony part spike
 
-Offline proof of PRD Layer 3 (`.scratch/multipart-stem-separation/PRD.md`): multi-f0
+Offline proof of PRD Layer 3 and of the Track A / Track B split (PRD §2b) (`.scratch/multipart-stem-separation/PRD.md`): multi-f0
 estimation, timbral fingerprinting, part assignment, and harmonic-mask synthesis. Python,
 because the question is "does this approach work at all", and answering it in Swift first
 would mean building the native STFT/ISTFT core before knowing whether it is worth building.
@@ -18,6 +18,8 @@ python3 tools/harmony_parts_spike/run_spike.py --cast quartet_no_octave --parts 
 python3 tools/harmony_parts_spike/debug_tracks.py distinct 3    # per-note diagnosis
 python3 tools/harmony_parts_spike/compare_masks.py              # mask variants, all casts
 python3 tools/harmony_parts_spike/run_stereo.py                 # stereo evidence
+python3 tools/harmony_parts_spike/run_notes.py                  # Track A: note metrics
+python3 tools/harmony_parts_spike/run_notes.py --sweep           # confidence gate
 ```
 
 On a real vocal stem (16-bit PCM WAV, mono or stereo):
@@ -43,6 +45,8 @@ quickest way to hear what a given failure mode actually sounds like.
 | `compare_masks.py` | A/B/C/D the mask-synthesis variants across every cast |
 | `stereo.py` | pan estimation and spatial masking (the four-part lever) |
 | `run_stereo.py` | measures the spatial term, with a near-mono control |
+| `notes.py` | Track A: f0 tracks → note events (no ISTFT, no masks) |
+| `run_notes.py` | note-level metrics; `--sweep` for the confidence gate |
 | `selftest.py` | asserts the working configuration stays working |
 
 ## Casts

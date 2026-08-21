@@ -158,10 +158,68 @@ away the single strongest piece of evidence available for telling those voices a
 Four parts are still not *clean* (+2.2 dB over baseline is a long way from the three-part
 case's +13 dB). But the direction is now established and cheap to exploit.
 
+## Follow-up 3 — the two paths separate, and the data says so
+
+Eric's read (2026-08-21): note detection for documenting the progression, and playable
+single-voice stems, are two goals that may want different solutions. Measured, they do —
+they share the front half of the chain and then diverge completely, and they fail in
+different places for different reasons.
+
+`run_notes.py` scores note events (onset/offset/MIDI/confidence, the shape
+`BassNoteObservation` already uses) instead of separated audio.
+
+| cast | reference | notes | P | R | F1 | pitch err | onset err |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `distinct` (3 voices) | distinct notes | 18 | 0.810 | 0.944 | **0.872** | 8.5¢ | 27.5 ms |
+| `quartet_no_octave` | distinct notes | 24 | 0.636 | 0.583 | 0.609 | 4.6¢ | 27.8 ms |
+| `quartet` (octave) | distinct notes | 24 | 0.552 | 0.667 | 0.604 | 5.9¢ | 25.1 ms |
+| `hard` (unison double) | **distinct notes** | 18 | 0.750 | 0.833 | **0.789** | 7.3¢ | 26.7 ms |
+| `hard` | per-singer notes | 24 | 0.750 | 0.625 | 0.682 | 7.3¢ | 26.7 ms |
+
+**The unison double is free for Path A and fatal for Path B.** Same audio, same chain: as a
+stem it is unrecoverable (−35 dB, never even forms a track), and as notation it costs
+nothing, because two singers in unison are *one note on the page*. The last two rows are the
+same detection scored against the two different references — F1 0.789 vs 0.682 — and at a
+0.10 confidence gate the `hard` cast scores **identically to `distinct`** (P 0.882 / R 0.833).
+A whole failure mode of Path B simply does not exist for Path A.
+
+**Pitch is not the problem; spurious notes are.** Pitch error is 4.6-8.5 cents everywhere,
+well inside a semitone, and onset error is ~27 ms — about one hop plus the attack. Where the
+F1 falls, it falls on precision and recall of *which notes exist*, never on what pitch they
+were.
+
+**Confidence gating converts that into a shippable posture.** The app's stated position is
+that generated analysis is a draft until the user reviews it, so the question is not the F1
+but whether a threshold exists where everything written down is correct:
+
+| cast | gate | kept | P | R | F1 |
+| --- | --- | --- | --- | --- | --- |
+| `distinct` | 0.10 | 17 | 0.882 | 0.833 | **0.857** |
+| `distinct` | 0.20 | 12 | **1.000** | 0.667 | 0.800 |
+| `hard` | 0.10 | 17 | 0.882 | 0.833 | **0.857** |
+| `hard` | 0.20 | 11 | **1.000** | 0.611 | 0.759 |
+| `quartet_no_octave` | 0.10 | 20 | 0.700 | 0.583 | 0.636 |
+
+At three voices there is a gate where **every note reported is correct**, at two-thirds
+recall. That is the right trade for notation: a wrong note on the page costs more trust than
+a missing one, and a missing one is exactly what an editable draft is for. At four voices no
+gate rescues it — confidence stops discriminating — so Path A has its own four-voice problem,
+and it is a different problem from Path B's.
+
+**Architectural consequence: Path A does not need Layer 2 at all.** It stops at note events,
+so no inverse STFT, no mask synthesis, no per-voice audio. That removes the single largest
+piece of new DSP from its critical path, and it means Path A can ship long before Path B —
+on evidence Path B has not yet produced.
+
 ## Recommended next steps
 
+0. **Split the work into two tracks with separate gates and separate shipping order.**
+   Track A (notes) is cheaper, needs no ISTFT, is immune to the unison case, and already has
+   a 100%-precision operating point at three voices. Track B (stems) needs the whole DSP
+   stack and is still below baseline at four voices. Sequencing them together holds the
+   cheap one hostage to the expensive one.
 1. **Amend the PRD taxonomy**: drop `vocals.double` as a separable part; state that a
-   double rides with the lead.
+   double rides with the lead. For Track A it is not even a distinct note.
 2. **Target three parts as the shipping goal** (lead + two harmonies), with four as a
    stretch that depends on (3) and (4).
 3. ~~**Improve mask synthesis before anything else**~~ — **done and closed**, see the

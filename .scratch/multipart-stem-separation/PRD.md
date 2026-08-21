@@ -55,6 +55,34 @@ This taxonomy is the deliverable to agree on before any modelling. It says a "pa
 *persistent voice role*, not a per-frame pitch — which is exactly why pitch alone cannot produce
 it and timbral analysis is load-bearing.
 
+## 2b. Two tracks, not one project (Eric, 2026-08-21)
+
+Note detection and playable stems are separate deliverables with separate solutions. They
+share the front half of the chain and diverge completely after it, and the spike measured
+them failing in different places for different reasons (`FINDINGS-timbral-spike.md`,
+follow-up 3).
+
+| | **Track A — notes** | **Track B — stems** |
+| --- | --- | --- |
+| deliverable | note events on the chart / preview pane | playable, soloable per-voice audio |
+| output type | `(onset, offset, midi, confidence, part)` — the shape `BassNoteObservation` already uses | one WAV per part |
+| chain | STFT → multi-f0 → tracks → timbral assignment → **note segmentation** | …the same front half → **masks → ISTFT** |
+| needs inverse STFT | **no** | yes — Layer 2 in full |
+| unison double | **free** — one note on the page | **fatal** — unrecoverable, −35 dB |
+| octave pair | costs a note | costs a whole part |
+| measured at 3 voices | F1 0.857, or **P 1.000 / R 0.667** at a 0.20 confidence gate | +12.9 / +13.1 / +3.6 dB SI-SDR |
+| measured at 4 voices | F1 0.61-0.64, no gate rescues it | below baseline; stereo gets leakage under the gate |
+| error posture | a draft the user edits — a missing note is cheap, a wrong one is not | there is no editing a bad stem |
+| gates | note precision/recall, pitch error in cents, onset error in ms | SI-SDR, cross-part leakage, reconstruction |
+
+**Consequence for sequencing: Track A ships first and independently.** It carries none of
+Layer 2, which is the largest single piece of new DSP in this document, and it already has a
+three-voice operating point where every note it reports is correct. Holding it behind Track
+B's mask-synthesis problem would delay a working feature for an unsolved one.
+
+Both tracks still depend on Layer 1 (a genuine lead/backing checkpoint, issue `02`) to have
+a clean backing stem to work on.
+
 ## 3. Architecture — three layers
 
 ### Layer 1 — model split (buy, don't build)
@@ -150,7 +178,8 @@ Per-song, automatable:
 | P2 | `03` | LarsNet exported and registered → 5 drum parts incl. hi-hat |
 | P3 | `04` | Native STFT/ISTFT with golden parity; DrumSep packing parity closed |
 | P4 | `05` | Multi-f0 + track formation over the backing stem — **algorithm proven offline** |
-| P5 | `06` | Timbral fingerprinting + part assignment + mask synthesis — **assignment proven offline; mask synthesis is the open problem** |
+| P5a | `08` | **Track A** — note segmentation, confidence gating, chart integration. No ISTFT |
+| P5b | `06` | **Track B** — mask synthesis and per-voice stems. Needs Layer 2; four-voice quality unresolved |
 | P6 | `07` | Quality gates, memory/runtime budget, UI (the waveform pane already groups parts behind disclosure triangles) |
 
 P1 and P2 are independent of P3-P5 and deliver visible value first. P4/P5 are the R&D, and the

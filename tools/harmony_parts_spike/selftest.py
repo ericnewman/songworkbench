@@ -73,5 +73,18 @@ low = scale_invariant_sdr(sources["harmony_low"], estimates[matched["harmony_low
 baseline = scale_invariant_sdr(sources["harmony_low"], signal)
 check("si_sdr_harmony_low_gain_db", low - baseline, ">= 4.0", low - baseline >= 4.0)
 
+# Track A (notes) is a separate deliverable with separate gates, so it gets its own
+# assertion: at the 0.20 confidence gate every note reported must be correct.
+import notes as notes_lib  # noqa: E402
+from run_notes import reference_notes  # noqa: E402
+
+events = notes_lib.detect_notes(signal, 3, config=config)
+gated = [event for event in events if event.confidence >= 0.20]
+reference = reference_notes(lines, sorted(sources), True)
+note_matches, pitch_errors, _, _ = notes_lib.match_notes(reference, gated)
+precision = note_matches / max(len(gated), 1)
+check("note_precision_at_gate_0.20", precision, "== 1.00", precision >= 0.999)
+check("note_pitch_error_cents", float(np.mean(pitch_errors)), "<= 25", np.mean(pitch_errors) <= 25.0)
+
 print("\nFAILED: " + ", ".join(failures) if failures else "\nall checks passed")
 raise SystemExit(1 if failures else 0)
