@@ -30,3 +30,21 @@ from the voice.
 - [ ] Synthetic multi-singer fixture (known parts) recovers the right number of parts.
 - [ ] Degrade path proven by a test with a single-voice backing stem.
 - [ ] Listening pass, last.
+
+## Update 2026-08-21 — assignment proven, synthesis is the open problem
+
+Measured in `tools/harmony_parts_spike/` (`FINDINGS-timbral-spike.md`):
+
+- Timbral clustering assigns notes to singers at **0.947 accuracy** on three pitch-distinct
+  voices, and it carries a voice crossing that pitch-rank assignment cannot.
+- Separation quality on that cast: **+12.9 / +13.1 / +3.6 dB SI-SDR** against a −3.6 dB
+  baseline, cross-part correlation **0.085**.
+- At four voices the assignment still holds (4/4 singers, 0.818) but the split degrades:
+  correlation **0.342**, two parts below baseline. **Mask synthesis is the binding
+  constraint**, not clustering — four voices in one octave share most partials, so a 1/h
+  comb mask has too little exclusive evidence. Improve this before porting: per-voice partial
+  amplitude estimation instead of a fixed comb, and a complex/phase-aware mask.
+- **`vocals.double` is removed from the taxonomy**: a unison double shares every partial with
+  the lead and never forms its own track. It rides with the lead.
+
+Next: re-run the spike on a real backing stem (needs issue `02` first), then port.

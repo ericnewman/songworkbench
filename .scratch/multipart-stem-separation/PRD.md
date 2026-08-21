@@ -39,11 +39,17 @@ So the target decomposes into a proposed part taxonomy:
 
 | part | what it is | how it is found |
 | --- | --- | --- |
-| `vocals.lead` | the main sung line | karaoke model (model-level split) |
-| `vocals.double` | unison/octave doubles of the lead | **timbral**: same voice, f0 within ±20 cents or ±1 octave of lead |
-| `vocals.harmonyHigh` | harmony above the lead | multi-f0 track ranked above lead, stable across the phrase |
-| `vocals.harmonyLow` | harmony below the lead | multi-f0 track ranked below lead |
+| `vocals.lead` | the main sung line, **including any unison double of it** | karaoke model (model-level split) |
+| `vocals.harmonyHigh` | harmony above the lead | multi-f0 track, assigned by timbral cluster |
+| `vocals.harmonyLow` | harmony below the lead | multi-f0 track, assigned by timbral cluster |
+| `vocals.harmonyMid` (4th) | a third harmony line when one is present | multi-f0 track, assigned by timbral cluster |
 | `vocals.adlib` (5th, optional) | ad-libs, shouts, whispered/unpitched | **timbral**: low pitch salience, high spectral flux, off-phrase |
+
+`vocals.double` was in this table and has been **removed on measured evidence**
+(`FINDINGS-timbral-spike.md`): a unison double shares every partial with the lead, so no
+f0-informed method can separate it — it never even forms its own f0 track. It rides with
+the lead. Separating it would need different evidence entirely (stereo/phase, or a model
+trained for it), and that is not in scope.
 
 This taxonomy is the deliverable to agree on before any modelling. It says a "part" is a
 *persistent voice role*, not a per-frame pitch — which is exactly why pitch alone cannot produce
@@ -105,6 +111,16 @@ Layer 3 is genuinely new signal processing and the riskiest part of this PRD. It
 route to 4 pop vocal parts with open weights, and it degrades gracefully: if clustering is
 inconclusive for a song, emit lead + backing exactly as today rather than four bad stems.
 
+**Proven offline, 2026-08-21** — `tools/harmony_parts_spike/`, results in
+`FINDINGS-timbral-spike.md`. On synthetic multi-singer fixtures the chain recovers 3 of 3
+pitch-distinct singers with 0.947 note-assignment accuracy, 0.085 cross-part correlation, and
++12.9 / +13.1 / +3.6 dB SI-SDR against a −3.6 dB unseparated baseline — a ~16 dB improvement,
+carried by timbral clustering rather than pitch rank (it survives a voice crossing). Four
+pitch-distinct singers are all *found* (4/4, 0.818 assignment) but the audio split is not yet
+clean (0.342 correlation against the 0.2 gate). Mask synthesis, not part assignment, is the
+binding constraint at four parts. Two structural limits are recorded in the findings: unison
+doubles and octave-related parts.
+
 ## 4. Robustness — what we will measure (no "finite WAV files were written")
 
 Per-song, automatable:
@@ -127,20 +143,32 @@ Per-song, automatable:
 | P1 | `02` | Correct karaoke checkpoint verified + exported → real lead/backing (2 parts) |
 | P2 | `03` | LarsNet exported and registered → 5 drum parts incl. hi-hat |
 | P3 | `04` | Native STFT/ISTFT with golden parity; DrumSep packing parity closed |
-| P4 | `05` | Multi-f0 + track formation over the backing stem |
-| P5 | `06` | Timbral fingerprinting + part assignment + mask synthesis → 4-5 vocal parts |
+| P4 | `05` | Multi-f0 + track formation over the backing stem — **algorithm proven offline** |
+| P5 | `06` | Timbral fingerprinting + part assignment + mask synthesis — **assignment proven offline; mask synthesis is the open problem** |
 | P6 | `07` | Quality gates, memory/runtime budget, UI (the waveform pane already groups parts behind disclosure triangles) |
 
-P1 and P2 are independent of P3-P5 and deliver visible value first. P4/P5 are the R&D.
+P1 and P2 are independent of P3-P5 and deliver visible value first. P4/P5 are the R&D, and the
+2026-08-21 spike has now de-risked their algorithm: what remains for them is the native port plus
+the mask-synthesis work the findings identify.
 
-## 6. Open decisions (blocking)
+## 6. Decisions (Eric, 2026-08-21)
 
-1. **Audio parts, or analysis?** This PRD assumes separately playable/exportable audio stems. If
-   what is wanted is *notated* harmony (which notes each part sings, on the chart), Layer 3 stops
-   after step 3 and Layer 2 is not needed at all — a much cheaper project.
-2. **Licence posture.** LarsNet is CC BY-NC; the mel-band karaoke weights have unclear terms.
+1. **Audio parts, or analysis? → Both, stems first.** Separately playable stems are the goal; the
+   note data falls out of the same f0/timbre layer, so expose it on the chart once parts exist.
+   Layers 1-3 all stay in scope.
+2. **Drums → both.** Close the DrumSep packing parity gap first so the baseline is trustworthy,
+   then add LarsNet for the hi-hat split (issues `03` and `04`).
+3. **Scope of the first pass → prove the timbral layer offline first.** Done — see
+   `FINDINGS-timbral-spike.md` and `tools/harmony_parts_spike/`.
+
+Still open, and now sharper because the spike answered the ones above:
+
+4. **Three parts or four as the shipping target?** Three measure cleanly; four are found but
+   split poorly, and an ordinary SATB octave voicing costs a part outright. Recommendation:
+   ship three, treat the fourth as a stretch gated on better mask synthesis.
+5. **Licence posture.** LarsNet is CC BY-NC; the mel-band karaoke weights have unclear terms.
    Both are fine under the existing personal-use gate, neither is fine for a commercial ship.
-3. **Cost ceiling.** Is a macOS-only, slower-than-realtime cascade acceptable for these parts, or
-   must the whole set stay within some multiple of playback time?
-4. **Degrade or refuse?** When timbral clustering is inconclusive, emit lead+backing only, or
-   emit 4 parts of lower confidence and mark them draft?
+6. **Cost ceiling.** Is a macOS-only, slower-than-realtime cascade acceptable, or must the whole
+   set stay within some multiple of playback time? The karaoke precedent is 8.74 GB / 0.88x.
+7. **Degrade or refuse?** When clustering is inconclusive, emit lead+backing only, or emit four
+   lower-confidence parts marked draft?
