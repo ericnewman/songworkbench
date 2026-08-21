@@ -73,9 +73,14 @@ final class LyricGroupingDiagnosticTests: XCTestCase {
     /// app's container.
     func testOverlappingSegmentBoundarySurvivesGrouping() throws {
         let caches = (try? loadTranscriptionCaches()) ?? []
-        let docHoliday = try XCTUnwrap(
-            caches.first { abs($0.value.sourceDuration - 298.9695625) < 0.01 },
-            "Doc Holiday's cached Whisper transcription not found")
+        // Skip, don't fail, when the cache is absent — which is what the doc comment above
+        // already promises and what every CI runner hits, since the app's container only
+        // exists on a machine that has actually analysed this song. `XCTUnwrap` fails
+        // instead, so `verify` was permanently red on main for a missing local fixture.
+        let match = caches.first { abs($0.value.sourceDuration - 298.9695625) < 0.01 }
+        guard let docHoliday = match else {
+            throw XCTSkip("Doc Holiday's cached Whisper transcription not found")
+        }
 
         let onsets = TimedLyricSegmentGrouper.lineStartOnsets(of: docHoliday.value.segments)
         XCTAssertTrue(
