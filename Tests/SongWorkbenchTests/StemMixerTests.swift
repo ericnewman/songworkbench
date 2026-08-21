@@ -25,8 +25,7 @@ final class StemMixerTests: XCTestCase {
         XCTAssertEqual(groups.map(\.id), ["vocals", "drums", "bass"])
         XCTAssertEqual(groups.map(\.displayName), ["Vocals", "Drums", "Bass"])
         XCTAssertEqual(groups.map(\.isCollapsible), [true, true, false])
-        XCTAssertEqual(
-            groups[0].lanes.map(\.id), [.vocalLead, .vocalBacking])
+        XCTAssertEqual(groups[0].lanes.map(\.id), [.vocalLead, .vocalBacking])
         XCTAssertEqual(groups[1].lanes.map(\.id), [.drumKick, .drumSnare])
         XCTAssertEqual(groups[2].lanes.map(\.id), [StemKind.bass.id])
     }

@@ -2903,3 +2903,17 @@ Verification:
 - Not run in this environment: no Swift toolchain is installed in the remote container
   (`swift`/`xcrun` are absent), so `swift test`, `swift format lint`, and `xcodebuild` could not be
   executed here. The new grouping tests in `StemMixerTests` need a local run.
+
+### CI follow-up 2026-08-21
+
+`verify` failed on every commit of the branch with one lint error:
+`ContentView.swift:940:61: error: [AddLines] add 1 line break` — the closing paren of the
+disclosure header's multi-line `.help(...)` ternary needed its own line, matching the
+convention the rest of the file already uses. Fixed.
+
+Note `scripts/verify_repo.sh` runs under `set -e` with lint BEFORE `swift test` and
+`swift build`, so the lint failure meant the test and release-build steps never ran on this
+branch at all. Their result is still unknown, and no Swift toolchain exists in the remote
+container to check locally (`swift`, `xcrun`, and download.swift.org are all unavailable) —
+`git diff --check` and `python3 -m compileall scripts Benchmarks/Tools` are the only two
+verify steps reproducible there, and both pass.

@@ -937,7 +937,8 @@ private struct PlayerView: View {
         .help(
             isCollapsed
                 ? "Show the \(group.displayName) stem lanes"
-                : "Hide the \(group.displayName) stem lanes")
+                : "Hide the \(group.displayName) stem lanes"
+        )
         .accessibilityLabel("\(group.displayName) stem lanes")
         .accessibilityValue(isCollapsed ? "Hidden" : "Shown")
     }
