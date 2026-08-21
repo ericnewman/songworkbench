@@ -2937,3 +2937,23 @@ fails where `XCTSkipUnless`/`XCTSkip` was intended. The same file already uses
 `XCTSkipUnless` for its env-gated test at line 99. Left alone deliberately: it is a
 pre-existing main failure and outside this branch's scope. Proposed patch is recorded for
 Eric to accept or decline.
+
+Second CI observation, same commit a0c25eb: the two runs of the SAME TREE disagree. The
+push-event run (32480023809) reported 1 failure; the pull_request-event run (32480027747)
+reported 3 — the extra two being both assertions inside
+`AppModelTests.testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart`
+(`AppModelTests.swift:159` and `:167`, each `XCTAssertEqual failed: ("2") is not equal to
+("1")`).
+
+That test asserts the re-analyze queue sits at index 1 of 2 right after `reanalyzeAllSongs()`.
+Getting index 2 means the first song's analysis finished before the assertion ran — a timing
+race, not a logic error. Identical tree, different outcome, so it is flaky by direct
+evidence rather than by inference; no re-run needed to establish it.
+
+`git diff c8b4b6f..HEAD -- Sources/SongWorkbench/AppModel.swift
+Tests/SongWorkbenchTests/AppModelTests.swift` is EMPTY: this branch does not touch either
+file. Not fixed here — a concurrency race in an unrelated test is neither small nor in
+scope, and quarantining it is not on the table.
+
+Net: the branch's own contribution is green (986 tests, +3 new, all passing). The two
+failures seen are a permanently-red base test and a pre-existing flake.
