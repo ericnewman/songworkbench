@@ -310,6 +310,70 @@ Left **opt-in and off** (`separate_stereo(octave_partners=True)`); the default p
 previously recorded number are unchanged, verified by re-running `run_stereo.py` (0.292 →
 0.161 reproduces exactly) and `selftest.py` (9/9).
 
+## Follow-up 6 — interval structure predicts separability, and inverts consonance
+
+Eric asked (2026-08-21) whether looking for the specific intervals harmony actually uses —
+unison, octave, 3rd, 5th, 7th — is a useful way to tell signal streams apart. It is, but the
+useful quantity turns out not to be consonance. `interval_sweep.py` measures two voices at
+every interval from unison to the octave, nothing else in the mix.
+
+Two voices at frequency ratio p:q (lowest terms) collide on every partial of the upper voice
+whose index is a multiple of q. So **q predicts how much of the upper voice is exclusively
+its own** — and that, not interval size and not consonance, is what the data tracks:
+
+| interval | ratio | q | upper partials colliding | det | lower SI-SDR | upper SI-SDR |
+| --- | --- | --- | --- | --- | --- | --- |
+| unison | 1:1 | 1 | 100% | 2/2 | −1.95 | −5.82 |
+| **octave** | 2:1 | 1 | 100% | **1/2** | −1.38 | **−26.49** |
+| **perfect 5th** | 3:2 | 2 | 50% | 2/2 | **−8.64** | +0.83 |
+| perfect 4th | 4:3 | 3 | 30% | 2/2 | +7.42 | +8.57 |
+| major 2nd | 9:8 | 8 | 10% | 2/2 | +12.78 | +16.79 |
+| major 7th | 17:9 | 9 | 10% | 2/2 | +8.97 | +5.53 |
+| tritone | 17:12 | 12 | 0% | 2/2 | +21.83 | +23.32 |
+| minor 6th | 19:12 | 12 | 0% | 2/2 | +23.34 | +23.26 |
+| minor 7th | 25:14 | 14 | 0% | 2/2 | +24.59 | +21.74 |
+| major 3rd | 19:15 | 15 | 0% | 2/2 | +26.67 | +27.12 |
+| minor 3rd | 19:16 | 16 | 0% | 2/2 | +21.97 | +24.11 |
+| **major 6th** | 27:16 | 16 | 0% | 2/2 | **+29.95** | **+28.73** |
+| minor 2nd | 17:16 | 16 | 0% | 2/2 | +3.93 | +5.37 |
+
+Baseline is ~0 dB in every row.
+
+**The most consonant intervals are the hardest to separate.** Unison, octave and the perfect
+fifth — the three simplest ratios in music — are the three worst rows in the table, spanning
+−26 to +1 dB, while thirds and sixths reach **+22 to +30 dB**. Simple ratios are consonant
+*because* their partials coincide, and coinciding partials are exactly what leaves a
+separator nothing to work with. This is the cleanest explanation the spike has produced for
+anything, and it retro-explains earlier results: the octave collapse, the unison double, and
+the four-voice quartets (four voices in one octave necessarily contain fifths and octaves).
+
+**There is a second, independent difficulty axis: frequency proximity.** The minor 2nd has
+q=16 and no collisions at all, yet manages only +3.9/+5.4 dB — far below the other q=16 rows.
+Its two fundamentals sit ~100 cents apart, inside the tracker's 70-cent minimum separation
+once ±40-cent vibrato is added. That is a resolution limit, not a collision limit, and it
+needs a different fix (finer f0 resolution) from everything else in this document.
+
+**What this is good for, concretely:**
+
+1. **Predicting difficulty instead of discovering it.** Given a detected lead and a candidate
+   harmony pitch, q says up front whether the split will be clean. A UI can say "this part
+   overlaps the lead too closely to isolate" rather than shipping a −26 dB stem.
+2. **Interval-aware masking, which is the well-conditioned version of what already failed.**
+   Follow-up 1 found mask sophistication worthless — but NNLS estimated every voice's level
+   from ALL its partials, collided ones included. Knowing the ratio says exactly which
+   partials are exclusive, so each voice's gain can be estimated from evidence nothing else
+   is standing on, and only the shared bins need splitting. That is the obvious next
+   experiment.
+3. **Bounding where positional evidence is REQUIRED.** For q=1 (unison, octave) there are no
+   exclusive partials at any level of cleverness, so spectral methods cannot win by
+   construction — which is precisely where follow-ups 4 and 5 had to reach for stereo. The
+   table turns that from a surprise into a prediction.
+
+The intervals pop harmony leans on hardest — 3rds and 6ths — are the easiest to separate.
+The taxonomy's `harmonyHigh` / `harmonyLow` parts are therefore the favourable case, and the
+awkward cases are the octave doubling and the unison double, both already handled by folding
+them into the lead.
+
 ## Recommended next steps
 
 0. **Split the work into two tracks with separate gates and separate shipping order.**
@@ -321,6 +385,10 @@ previously recorded number are unchanged, verified by re-running `run_stereo.py`
    double rides with the lead. For Track A it is not even a distinct note.
 2. **Target three parts as the shipping goal** (lead + two harmonies), with four as a
    stretch that depends on (3) and (4).
+3a. **Interval-aware gain estimation** (new, follow-up 6): estimate each voice's level from
+   its EXCLUSIVE partials, which the interval ratio identifies, then split only the shared
+   bins. This is the well-conditioned version of the NNLS attempt that failed, and it is now
+   the most promising open idea for the four-part case.
 3. ~~**Improve mask synthesis before anything else**~~ — **done and closed**, see the
    follow-up section above. Per-voice profiles, per-frame gains, and a per-frame NNLS fit
    were all measured; together they buy 1.7 dB at four parts and change nothing at three.

@@ -20,6 +20,7 @@ python3 tools/harmony_parts_spike/compare_masks.py              # mask variants,
 python3 tools/harmony_parts_spike/run_stereo.py                 # stereo evidence
 python3 tools/harmony_parts_spike/run_octave.py                 # the octave trap
 python3 tools/harmony_parts_spike/run_octave_seeds.py           # ...across seeds, with guards
+python3 tools/harmony_parts_spike/interval_sweep.py             # separability vs interval
 python3 tools/harmony_parts_spike/run_notes.py                  # Track A: note metrics
 python3 tools/harmony_parts_spike/run_notes.py --sweep           # confidence gate
 ```
@@ -49,6 +50,7 @@ quickest way to hear what a given failure mode actually sounds like.
 | `run_stereo.py` | measures the spatial term, with a near-mono control |
 | `run_octave.py` | the octave trap: pan-slice vs octave-aware f0, with a near-mono control |
 | `run_octave_seeds.py` | the same across 4 seeds, plus non-octave casts as a regression guard |
+| `interval_sweep.py` | separability at every interval from unison to the octave |
 | `notes.py` | Track A: f0 tracks → note events (no ISTFT, no masks) |
 | `run_notes.py` | note-level metrics; `--sweep` for the confidence gate |
 | `selftest.py` | asserts the working configuration stays working |
