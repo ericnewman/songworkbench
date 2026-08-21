@@ -211,6 +211,58 @@ so no inverse STFT, no mask synthesis, no per-voice audio. That removes the sing
 piece of new DSP from its critical path, and it means Path A can ship long before Path B —
 on evidence Path B has not yet produced.
 
+## Follow-up 4 — the octave trap, attacked with stereo
+
+Recommended step 4 said octave separation was worth retrying with stereo evidence in hand,
+because two voices an octave apart are inseparable by pitch but perfectly separable by
+position. Tested on the octave-voiced quartet (`part1_top` exactly one octave above
+`part4_bottom`), `run_octave.py`. `det` counts how many of the four scored parts have an f0
+track on their pitch — the question the octave trap actually decides.
+
+| configuration | det | tracks | max corr | mean SI-SDR | top part SI-SDR |
+| --- | --- | --- | --- | --- | --- |
+| wide / neither | 3/4 | 22 | 0.082 | −11.71 | −45.45 |
+| wide / spatial mask only | 3/4 | 22 | 0.074 | −11.60 | −45.70 |
+| wide / **pan-slice f0 estimation** | **4/4** | 47 | 0.324 | −28.16 | −36.63 |
+| wide / **octave-aware f0** | 3/4 | 26 | 0.388 | **−3.41** | −18.46 |
+| near-mono / pan-slice f0 | 4/4 | 31 | 0.251 | −21.83 | −70.04 |
+| near-mono / octave-aware f0 | 3/4 | 28 | 0.239 | −6.70 | +0.65 |
+| near-mono / neither | 3/4 | 28 | 0.239 | −6.70 | +0.66 |
+
+Baseline is −4.8 dB.
+
+**First: spatial masking alone cannot help an octave pair, and it is worth saying why.** By
+the time the mask runs, the upper voice is already gone — the estimator ran on the mono mid,
+found the lower voice first, and notched away its harmonic series, which *contains* the upper
+voice's fundamental. `wide / spatial mask only` is identical to `wide / neither` (3/4, −11.6
+vs −11.7). The earlier stereo win was real, but it was a win about *sharing* energy between
+detected voices, not about detecting a voice that was never there.
+
+**Pan-slice estimation recovers the voice, but not for the reason it claims.** Estimating f0
+inside each of five pan slices and pooling the candidates does reach 4/4 — and so does the
+near-mono control, where there is almost no position to exploit. That makes it noise-fitting,
+not positional evidence, and it costs dearly: tracks 22 → 47, leakage 0.074 → 0.324, mean
+SI-SDR −11.6 → −28.2. **Rejected**, same verdict and same reason as the mono octave test.
+
+**The octave-aware estimator is selective and partly works.** It adds a partner at 2·f0 only
+when the spectral test AND a positional test both fire — the positional test comparing how
+the even partials are panned against how the odd ones are (odd partials belong to the lower
+voice alone, so a difference means somebody else is on the even ones). The control is exactly
+right this time: on the near-mono spread it is **inert**, reproducing the no-op numbers to
+two decimals (0.239 / −6.70 / +0.65 vs +0.66), because the evidence it requires is absent.
+On the wide spread it fires, adds four tracks, and lifts mean SI-SDR from **−11.60 to −3.41**
+(+8.2 dB, the largest single improvement measured on this cast).
+
+But it still reports 3/4: it does not fire on enough frames to give the top voice a sustained
+track. Its gate is `octave_above_present`, the spectral test already known to be unreliable,
+so the positional evidence never gets consulted on most frames.
+
+**Where to resume**: relax or replace the spectral precondition and let the positional test
+carry the decision on its own. The near-mono control is the guard that makes that safe to
+try — it caught the pan-slice approach cleanly, and it will catch a too-loose gate the same
+way. Not attempted here: it is a third octave iteration, and the risk of tuning to one 8 s
+fixture outweighs the value of another point estimate.
+
 ## Recommended next steps
 
 0. **Split the work into two tracks with separate gates and separate shipping order.**
@@ -227,10 +279,10 @@ on evidence Path B has not yet produced.
    were all measured; together they buy 1.7 dB at four parts and change nothing at three.
    Magnitude-domain masking is at its limit. A phase-aware/complex mask remains untried and
    is the only remaining idea in this direction worth spending on.
-4. **Treat octave separation as its own research item.** It is a known-hard multi-f0
-   problem; the spike has the harness to measure any attempt in seconds. Worth retrying
-   with stereo evidence in hand: two voices an octave apart but panned differently are
-   separable by position even though they are inseparable by pitch.
+4. **Treat octave separation as its own research item.** Attempted twice more with stereo
+   (follow-up 4): pan-slice estimation is rejected, the octave-aware estimator is worth
+   resuming from — it is control-clean and already buys +8.2 dB on the octave cast, and the
+   one identified change is to stop gating it behind the unreliable spectral test.
 5. **Build the part layer on stereo input from the start.** See follow-up 2 — a mono
    downmix discards the evidence that makes four parts plausible at all.
 6. **Re-run on real audio** before committing to the Swift port: the fixture has no
