@@ -2957,3 +2957,15 @@ scope, and quarantining it is not on the table.
 
 Net: the branch's own contribution is green (986 tests, +3 new, all passing). The two
 failures seen are a permanently-red base test and a pre-existing flake.
+
+Follow-up: the pane's height math was duplicated. The view spaced its lanes with literal
+`2`, its mix lane with `64`, its stack gap with `14`, and its top padding with `6`, while
+`waveformPanelHeight` carried its own copies of all four plus the lane and header heights.
+Changing one and not the other clips the stack or leaves a gap behind it, and nothing would
+catch it — a SwiftUI frame height is not observable from a test.
+
+`StemWaveformLaneLayout` now owns the six constants; the view reads them and
+`panelHeight(groups:collapsed:)` is pure and tested. Four new cases cover the empty pane,
+flat lanes, a collapsed family (header kept, lanes reclaimed), and collapsing a group that
+has no triangle. Expected values were re-derived independently rather than read off the
+implementation.

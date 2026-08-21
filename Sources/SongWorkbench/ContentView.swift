@@ -802,7 +802,10 @@ private struct PlayerView: View {
                 GeometryReader { geo in
                     let laneWidth = max(geo.size.width, geo.size.width * waveformZoom)
                     ScrollView(.horizontal) {
-                        VStack(alignment: .leading, spacing: 14) {
+                        VStack(
+                            alignment: .leading,
+                            spacing: CGFloat(StemWaveformLaneLayout.mixToStackGap)
+                        ) {
                             WaveformView(
                                 envelope: waveform,
                                 currentTime: model.activePlaybackTime,
@@ -812,14 +815,19 @@ private struct PlayerView: View {
                                 onSeek: { model.seekActivePlayback(to: $0) }
                             )
                             // Fill the card at 1x; widen (and scroll) as zoom increases.
-                            .frame(width: laneWidth, height: 64)
+                            .frame(
+                                width: laneWidth,
+                                height: CGFloat(StemWaveformLaneLayout.mixHeight))
 
                             // One waveform lane per available stem, sharing the mix's time axis so
                             // each instrument's energy lines up vertically with the mix above.
                             // Refined families (Vocals, Drums, …) sit under a disclosure triangle
                             // so their child lanes can be hidden when the stack gets tall.
                             if !model.stemWaveforms.isEmpty {
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(
+                                    alignment: .leading,
+                                    spacing: CGFloat(StemWaveformLaneLayout.laneSpacing)
+                                ) {
                                     ForEach(stemWaveformGroups) { group in
                                         if group.isCollapsible {
                                             stemGroupHeader(group)
@@ -845,7 +853,7 @@ private struct PlayerView: View {
                                 }
                             }
                         }
-                        .padding(.top, 6)
+                        .padding(.top, CGFloat(StemWaveformLaneLayout.topPadding))
                     }
                     .scrollIndicators(.visible)
                 }
@@ -897,10 +905,6 @@ private struct PlayerView: View {
         )
     }
 
-    private static let stemLaneHeight: CGFloat = 26
-    private static let stemLaneSpacing: CGFloat = 2
-    private static let stemGroupHeaderHeight: CGFloat = 18
-
     /// Lanes gathered into their categories, so a refined family (Vocals, Drums, …) can be hidden
     /// or shown as a unit.
     private var stemWaveformGroups: [StemWaveformLaneGroup] {
@@ -930,7 +934,8 @@ private struct PlayerView: View {
             }
             .foregroundStyle(group.lanes.first?.id.laneColor ?? Color.swTextSecondary)
             .padding(.leading, 4)
-            .frame(height: Self.stemGroupHeaderHeight, alignment: .leading)
+            .frame(
+                height: CGFloat(StemWaveformLaneLayout.groupHeaderHeight), alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -969,28 +974,13 @@ private struct PlayerView: View {
         }
     }
 
-    /// Total height of the waveform + stacked-stem-lane area. The main mix lane is 64pt; each stem
-    /// lane is 26pt with 2pt spacing, plus 4pt between the mix and the stem stack. Collapsed
-    /// families contribute only their 18pt disclosure header.
+    /// Total height of the waveform + stacked-stem-lane area. The arithmetic lives in
+    /// `StemWaveformLaneLayout` so it can be tested against the same constants the stack
+    /// draws with.
     private var waveformPanelHeight: CGFloat {
-        let topPadding: CGFloat = 6
-        let mixHeight: CGFloat = 64
-        guard !model.stemWaveforms.isEmpty else { return topPadding + mixHeight }
-        let groups = stemWaveformGroups
-        var rowCount = 0
-        var stackHeight: CGFloat = 0
-        for group in groups {
-            if group.isCollapsible {
-                rowCount += 1
-                stackHeight += Self.stemGroupHeaderHeight
-                if collapsedStemGroups.contains(group.id) { continue }
-            }
-            rowCount += group.lanes.count
-            stackHeight += CGFloat(group.lanes.count) * Self.stemLaneHeight
-        }
-        stackHeight += CGFloat(max(rowCount - 1, 0)) * Self.stemLaneSpacing
-        let mixToStackGap: CGFloat = 14
-        return topPadding + mixHeight + mixToStackGap + stackHeight
+        CGFloat(
+            StemWaveformLaneLayout.panelHeight(
+                groups: stemWaveformGroups, collapsed: collapsedStemGroups))
     }
 
 }
