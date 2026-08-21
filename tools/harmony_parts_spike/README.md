@@ -16,6 +16,8 @@ python3 tools/harmony_parts_spike/selftest.py                   # 1.6 s regressi
 python3 tools/harmony_parts_spike/run_spike.py --cast distinct --parts 3
 python3 tools/harmony_parts_spike/run_spike.py --cast quartet_no_octave --parts 4
 python3 tools/harmony_parts_spike/debug_tracks.py distinct 3    # per-note diagnosis
+python3 tools/harmony_parts_spike/compare_masks.py              # mask variants, all casts
+python3 tools/harmony_parts_spike/run_stereo.py                 # stereo evidence
 ```
 
 On a real vocal stem (16-bit PCM WAV, mono or stereo):
@@ -38,6 +40,9 @@ quickest way to hear what a given failure mode actually sounds like.
 | `parts.py` | STFT/ISTFT, multi-f0, tracks, fingerprints, clustering, mask synthesis |
 | `run_spike.py` | runs the chain and scores it against the PRD gates |
 | `debug_tracks.py` | per-note table: f0, cluster label, true owner, timbral features |
+| `compare_masks.py` | A/B/C/D the mask-synthesis variants across every cast |
+| `stereo.py` | pan estimation and spatial masking (the four-part lever) |
+| `run_stereo.py` | measures the spatial term, with a near-mono control |
 | `selftest.py` | asserts the working configuration stays working |
 
 ## Casts

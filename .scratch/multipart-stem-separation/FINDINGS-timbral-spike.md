@@ -120,6 +120,44 @@ simplest thing to port to Swift, and the alternatives only pay on a four-part ca
 not shippable anyway. Do not port the complexity; the measurements are here if the four-part
 case is ever revisited.
 
+## Follow-up 2 — stereo evidence, and it is the lever
+
+The mask work concluded the limit was evidence rather than estimation, and named stereo
+position as the untested source of it. Tested. `run_stereo.py` reproduces this.
+
+Four pitch-distinct voices, panned, separated with and without a spatial term in the mask.
+The spatial term weights each bin by how well its observed inter-channel ratio matches each
+voice's estimated pan; pan per voice is the median reading across its partials.
+
+| spread | spatial | max correlation | mean SI-SDR (mono sum) | best-channel SI-SDR | baseline |
+| --- | --- | --- | --- | --- | --- |
+| wide (±0.8 / ±0.35) | off | 0.292 | −7.73 | — | −4.91 |
+| wide | **on** | **0.161** | −6.87 | **−2.75** | −4.91 |
+| narrow (±0.3 / ±0.12) | off | 0.325 | −5.41 | — | −4.84 |
+| narrow | on | 0.300 | −5.20 | −3.27 | −4.84 |
+| near-mono (±0.1 / ±0.03) | off | 0.337 | −5.52 | — | −4.83 |
+| near-mono | on | 0.335 | −5.48 | −5.02 | −4.83 |
+
+**Cross-part leakage passes its gate for the first time at four parts**: 0.292 → 0.161
+against a < 0.2 requirement, where every mask refinement combined had only reached 0.264.
+Best-channel SI-SDR — the honest read for a stereo stem, since a panned voice is cleanest in
+the channel it sits in — goes from below the unseparated baseline to **+2.2 dB above it**.
+
+The near-mono row is the control, and it is why this can be believed: with the voices
+stacked in the middle the spatial term changes nothing (0.337 → 0.335, SI-SDR at baseline).
+The improvement scales with how far apart the voices actually sit, which is what a real
+positional effect looks like and what fitting noise does not. Estimated pans land within
+about 0.1 of the true ones (±0.70 / ±0.27 recovered from ±0.8 / ±0.35).
+
+**Practical consequence, and it is a design constraint, not a nicety: run part separation on
+the STEREO backing stem, never on a mono downmix.** Demucs-family separation preserves the
+original mix's panning in its stems, so a backing stack that was spread in the mix arrives
+spread in the stem — and downmixing to mono, which the natural implementation does, throws
+away the single strongest piece of evidence available for telling those voices apart.
+
+Four parts are still not *clean* (+2.2 dB over baseline is a long way from the three-part
+case's +13 dB). But the direction is now established and cheap to exploit.
+
 ## Recommended next steps
 
 1. **Amend the PRD taxonomy**: drop `vocals.double` as a separable part; state that a
@@ -132,8 +170,12 @@ case is ever revisited.
    Magnitude-domain masking is at its limit. A phase-aware/complex mask remains untried and
    is the only remaining idea in this direction worth spending on.
 4. **Treat octave separation as its own research item.** It is a known-hard multi-f0
-   problem; the spike has the harness to measure any attempt in seconds.
-5. **Re-run on real audio** before committing to the Swift port: the fixture has no
+   problem; the spike has the harness to measure any attempt in seconds. Worth retrying
+   with stereo evidence in hand: two voices an octave apart but panned differently are
+   separable by position even though they are inseparable by pitch.
+5. **Build the part layer on stereo input from the start.** See follow-up 2 — a mono
+   downmix discards the evidence that makes four parts plausible at all.
+6. **Re-run on real audio** before committing to the Swift port: the fixture has no
    consonants, breath, reverb, or separation artifacts, and every one of those will hurt.
    `run_spike.py --input backing.wav` is ready for that; it needs a real backing stem,
    which in turn needs PRD issue `02` (a genuine lead/backing checkpoint) to land first.

@@ -102,6 +102,12 @@ Input: the backing stem (and the lead, for double detection). Output: 3-4 part s
    assign tracks to parts by clustering those fingerprints, with pitch rank as the tiebreak and
    phrase-level continuity as a prior. Same singer double-tracked = one cluster near the lead's
    f0; a real harmony = a distinct cluster offset by a stable interval.
+3b. **Stereo position.** Measured (`FINDINGS-timbral-spike.md`, follow-up 2) to be the
+   strongest single piece of evidence for separating four voices: weighting each bin by how
+   well its inter-channel ratio matches each voice's estimated pan cut cross-part leakage
+   from 0.292 to 0.161 — the first four-part result to pass that gate — while a near-mono
+   control confirmed the effect comes from position rather than from fitting. **This layer
+   must consume the stereo stem; a mono downmix discards the evidence.**
 4. **Synthesis** — build a soft harmonic mask per part (comb around each track's f0 and its
    partials, energy shared proportionally where partials collide), apply to the backing STFT,
    ISTFT, and write a stem. Constraint: the parts must sum back to the backing stem within
