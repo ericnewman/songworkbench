@@ -57,6 +57,40 @@ final class StemSeparationTests: XCTestCase {
         )
     }
 
+    func testKaraokeThreadCountDefaultsToLowerCapAndCanBeOverridden() {
+        // macOS caps at the performance-core count (8): measured 1.53x faster than 4 on a 3:36
+        // song. iOS stays at 4 for thermals and the smaller memory budget.
+        #if os(macOS)
+            let defaultCap: Int32 = 8
+        #else
+            let defaultCap: Int32 = 4
+        #endif
+        XCTAssertEqual(
+            ONNXKaraokeChunkPredictor.resolvedIntraOpThreadCount(
+                activeProcessorCount: 12,
+                environment: [:],
+                userDefaultValue: nil
+            ),
+            defaultCap
+        )
+        XCTAssertEqual(
+            ONNXKaraokeChunkPredictor.resolvedIntraOpThreadCount(
+                activeProcessorCount: 12,
+                environment: [ONNXKaraokeChunkPredictor.threadCountEnvironmentKey: "2"],
+                userDefaultValue: 5
+            ),
+            2
+        )
+        XCTAssertEqual(
+            ONNXKaraokeChunkPredictor.resolvedIntraOpThreadCount(
+                activeProcessorCount: 4,
+                environment: [ONNXKaraokeChunkPredictor.threadCountEnvironmentKey: "99"],
+                userDefaultValue: nil
+            ),
+            3
+        )
+    }
+
     func testLegacyStemFilesRemainValidAndSixSourceFilesExposeNewTracks() {
         let root = URL(fileURLWithPath: "/tmp/stems")
         let files = StemFiles(
@@ -258,6 +292,55 @@ final class StemSeparationTests: XCTestCase {
         XCTAssertGreaterThan(result.processingDuration, .zero)
     }
 
+    func testRefinementPipelineReservesProgressForRefiners() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let recorder = StemSeparationProgressRecorder()
+        let engine = StemRefinementPipelineEngine(
+            baseEngine: DeferredStemEngineStub(),
+            refiners: [
+                StubStemRefiner(
+                    identifier: "progress-refiner",
+                    outputStemIDs: [.drumKick]
+                )
+            ],
+            sourceDigest: "source-digest"
+        )
+
+        _ = try await engine.separate(
+            request: StemSeparationRequest(
+                inputURL: root.appendingPathComponent("source.wav"),
+                outputDirectory: root.appendingPathComponent("stems", isDirectory: true)
+            ),
+            progress: { recorder.record($0) }
+        )
+
+        let values = recorder.values()
+        XCTAssertTrue(
+            values.contains(
+                StemSeparationProgress(
+                    phase: .writingOutputs,
+                    completedUnits: 700,
+                    totalUnits: 1_000
+                )))
+        XCTAssertTrue(
+            values.contains(
+                StemSeparationProgress(
+                    phase: .refining,
+                    completedUnits: 850,
+                    totalUnits: 1_000
+                )))
+        XCTAssertEqual(
+            values.last,
+            StemSeparationProgress(
+                phase: .writingOutputs,
+                completedUnits: 1_000,
+                totalUnits: 1_000
+            ))
+    }
+
     func testRefinementPipelineFailsWhenRefinerOmitsExpectedAsset() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -346,6 +429,54 @@ final class StemSeparationTests: XCTestCase {
             result.assets.map(\.producerID), ["native-drum-pieces", "native-drum-pieces"])
         XCTAssertTrue(engine.cacheIdentity.contains("native-test-model"))
         XCTAssertTrue(engine.cacheIdentity.contains("model-v2"))
+    }
+
+    func testNativeRefinementEngineForwardsModelProgress() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let vocalsURL = root.appendingPathComponent("vocals.wav")
+        try Data("vocals".utf8).write(to: vocalsURL)
+        let model = RecordingNativeStemEngine()
+        let engine = NativeStemRefinementEngine(
+            identifier: "native-vocal-parts",
+            parentStemID: StemKind.vocals.id,
+            outputs: [
+                NativeStemRefinementOutput(
+                    modelOutputID: StemKind.vocals.id,
+                    id: .vocalLead,
+                    displayName: "Lead",
+                    order: 100
+                )
+            ],
+            engine: model
+        )
+        let recorder = StemSeparationProgressRecorder()
+
+        _ = try await engine.refine(
+            request: StemRefinementRequest(
+                inputURL: root.appendingPathComponent("source.wav"),
+                outputDirectory: root.appendingPathComponent("refined", isDirectory: true),
+                sourceDigest: "digest",
+                manifest: StemSetManifest(
+                    descriptors: [
+                        StemDescriptor(
+                            id: StemKind.vocals.id,
+                            role: .source,
+                            displayName: "Vocals",
+                            order: 0
+                        )
+                    ],
+                    assets: [
+                        StemAsset(id: StemKind.vocals.id, audioURL: vocalsURL, producerID: "base")
+                    ]
+                )
+            ),
+            progress: { recorder.record($0) }
+        )
+
+        XCTAssertTrue(recorder.values().contains(progress(completed: 2, total: 4)))
     }
 
     func testNativeRefinementEngineRejectsMissingParentStem() async throws {
@@ -601,6 +732,12 @@ private actor RecordingNativeStemEngine: StemSeparationEngine {
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
         inputURL = request.inputURL
+        progress(
+            StemSeparationProgress(
+                phase: .separating,
+                completedUnits: 2,
+                totalUnits: 4
+            ))
         try FileManager.default.createDirectory(
             at: request.outputDirectory,
             withIntermediateDirectories: true
@@ -645,6 +782,12 @@ private struct DeferredStemEngineStub: StemSeparationEngine {
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
         let root = request.outputDirectory
+        progress(
+            StemSeparationProgress(
+                phase: .writingOutputs,
+                completedUnits: 1,
+                totalUnits: 1
+            ))
         return StemSeparationResult(
             stems: StemFiles(
                 vocals: root.appendingPathComponent("vocals.wav"),
@@ -659,13 +802,39 @@ private struct DeferredStemEngineStub: StemSeparationEngine {
     }
 }
 
+private final class StemSeparationProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [StemSeparationProgress] = []
+
+    func record(_ value: StemSeparationProgress) {
+        lock.lock()
+        recorded.append(value)
+        lock.unlock()
+    }
+
+    func values() -> [StemSeparationProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+}
+
 private struct StubStemRefiner: StemRefinementEngine {
     let identifier: String
     let outputStemIDs: [StemID]
     var producedStemIDs: [StemID]?
     var delayNanoseconds: UInt64 = 0
 
-    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
+        progress(
+            StemSeparationProgress(
+                phase: .separating,
+                completedUnits: 1,
+                totalUnits: 2
+            ))
         if delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: delayNanoseconds)
         }

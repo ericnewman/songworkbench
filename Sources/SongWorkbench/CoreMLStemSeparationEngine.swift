@@ -1,4 +1,5 @@
 import AVFoundation
+import Accelerate
 import CoreML
 import Foundation
 
@@ -162,13 +163,33 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
             try Task.checkCancellation()
             let chunkStart = chunkIndex * strideFrames
             let chunk = makeChunk(from: audio, start: chunkStart)
-            var prediction = try await predictor.predict(chunk)
-            if let normalization {
-                prediction = Self.denormalized(
-                    prediction,
-                    mean: normalization.mean,
-                    standardDeviation: normalization.standardDeviation
-                )
+            var prediction: StemChunkPrediction
+            if normalization == nil, Self.isSilent(chunk) {
+                // Every separation model maps silence to silence, and inference over a song's
+                // instrumental stretches is pure waste: on a measured track 16-20% of the karaoke
+                // refiner's chunks sat below -50 dBFS. Peak-gated, not RMS, so a quiet but present
+                // vocal is never skipped. Only taken when the engine does NOT normalize, because a
+                // mean-shifted silent chunk is not zero on the model's input scale.
+                prediction = StemChunkPrediction(
+                    samplesByStem: Dictionary(
+                        uniqueKeysWithValues: predictor.supportedStems.map {
+                            (
+                                $0,
+                                [
+                                    [Float](repeating: 0, count: segmentFrames),
+                                    [Float](repeating: 0, count: segmentFrames),
+                                ]
+                            )
+                        }))
+            } else {
+                prediction = try await predictor.predict(chunk)
+                if let normalization {
+                    prediction = Self.denormalized(
+                        prediction,
+                        mean: normalization.mean,
+                        standardDeviation: normalization.standardDeviation
+                    )
+                }
             }
             try validate(prediction)
 
@@ -287,6 +308,19 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                 0..<available, with: audio.channels[1][start..<(start + available)])
         }
         return StereoAudioChunk(left: left, right: right)
+    }
+
+    /// -50 dBFS peak over the whole chunk. Deliberately conservative: real sung material sits far
+    /// above this even at its quietest, so the gate only catches true instrumental gaps.
+    static let silencePeakThreshold: Float = 0.00316
+
+    private static func isSilent(_ chunk: StereoAudioChunk) -> Bool {
+        for channel in chunk.channels {
+            var peak: Float = 0
+            vDSP_maxmgv(channel, 1, &peak, vDSP_Length(chunk.frameCount))
+            if peak >= silencePeakThreshold { return false }
+        }
+        return true
     }
 
     private func validate(_ prediction: StemChunkPrediction) throws {

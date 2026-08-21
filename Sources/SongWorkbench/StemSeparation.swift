@@ -424,12 +424,19 @@ protocol StemRefinementEngine: Sendable {
     var taxonomyVersion: Int { get }
     var outputStemIDs: [StemID] { get }
 
-    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult
 }
 
 extension StemRefinementEngine {
     var cacheIdentity: String { identifier }
     var taxonomyVersion: Int { 1 }
+
+    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+        try await refine(request: request) { _ in }
+    }
 }
 
 struct NativeStemRefinementOutput: Equatable, Sendable {
@@ -480,7 +487,10 @@ struct NativeStemRefinementEngine: StemRefinementEngine {
         self.engine = engine
     }
 
-    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
         guard let parentAsset = request.manifest.assetsByID[parentStemID] else {
             throw StemRefinementError.missingParentStem(parentStemID)
         }
@@ -497,7 +507,7 @@ struct NativeStemRefinementEngine: StemRefinementEngine {
                 inputURL: parentAsset.audioURL,
                 outputDirectory: modelOutputDirectory
             )
-        ) { _ in }
+        ) { progress($0) }
         let modelAssets = modelResult.stemSet.assetsByID
 
         var descriptors: [StemDescriptor] = []
@@ -629,7 +639,16 @@ struct ExternalStemRefinementEngine: StemRefinementEngine {
         self.runner = runner
     }
 
-    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
+        progress(
+            StemSeparationProgress(
+                phase: .refining,
+                completedUnits: 0,
+                totalUnits: 1
+            ))
         try FileManager.default.createDirectory(
             at: request.outputDirectory,
             withIntermediateDirectories: true
@@ -654,6 +673,12 @@ struct ExternalStemRefinementEngine: StemRefinementEngine {
             environment: environment
         )
         try await runner.run(invocation)
+        progress(
+            StemSeparationProgress(
+                phase: .refining,
+                completedUnits: 1,
+                totalUnits: 1
+            ))
         guard FileManager.default.fileExists(atPath: responseManifestURL.path) else {
             throw StemRefinementError.externalManifestMissing(responseManifestURL)
         }
@@ -744,7 +769,18 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
         let start = ContinuousClock.now
-        let baseResult = try await baseEngine.separate(request: request, progress: progress)
+        let baseResult = try await baseEngine.separate(request: request) { value in
+            guard !refiners.isEmpty else {
+                progress(value)
+                return
+            }
+            progress(
+                StemSeparationProgress(
+                    phase: value.phase,
+                    completedUnits: Int((value.fractionCompleted * 700).rounded()),
+                    totalUnits: 1_000
+                ))
+        }
         guard !refiners.isEmpty else { return baseResult }
 
         var manifest = baseResult.stemSet
@@ -759,11 +795,15 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
 
         for (index, refiner) in refiners.enumerated() {
             try Task.checkCancellation()
+            let unitsPerRefiner = 1_000
+            let refinementBaseUnits = 700
+            let refinementTotalUnits = 300
             progress(
                 StemSeparationProgress(
                     phase: .refining,
-                    completedUnits: index,
-                    totalUnits: refiners.count
+                    completedUnits: refinementBaseUnits
+                        + index * refinementTotalUnits / refiners.count,
+                    totalUnits: unitsPerRefiner
                 ))
             let outputDirectory = refinementRoot.appendingPathComponent(
                 refiner.identifier,
@@ -781,7 +821,17 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
                         recipeIdentity: recipe
                     )
                 )
-            )
+            ) { value in
+                let innerCompleted = Int(
+                    (value.fractionCompleted * Double(refinementTotalUnits)).rounded())
+                progress(
+                    StemSeparationProgress(
+                        phase: .refining,
+                        completedUnits: refinementBaseUnits
+                            + (index * refinementTotalUnits + innerCompleted) / refiners.count,
+                        totalUnits: unitsPerRefiner
+                    ))
+            }
             for expectedID in refiner.outputStemIDs {
                 guard let asset = result.assets.first(where: { $0.id == expectedID }),
                     fileManager.fileExists(atPath: asset.audioURL.path)
@@ -792,6 +842,12 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
             descriptors = StemSetManifest.mergingDescriptors(descriptors, result.descriptors)
             assets = StemSetManifest.mergingAssets(assets, result.assets)
         }
+        progress(
+            StemSeparationProgress(
+                phase: .writingOutputs,
+                completedUnits: 1_000,
+                totalUnits: 1_000
+            ))
 
         manifest = StemSetManifest(
             descriptors: descriptors,

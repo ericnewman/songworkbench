@@ -686,7 +686,6 @@ struct HarmonyStage: AnalysisStageRunning {
     /// Detects the played bass line from the BASS stem. Constructed once;
     /// stateless and `Sendable`.
     private let bassLineAnalyzer = BassLineAnalyzer()
-
     /// Runs bass-line detection over the separated BASS stem, if present and
     /// readable. Purely additive to the harmony stage: returns `nil` (leaving
     /// `bassNotes` unchanged) when there is no bass stem, and swallows any
@@ -708,6 +707,72 @@ struct HarmonyStage: AnalysisStageRunning {
         return notes
     }
 
+    private func detectVocalHarmonies(_ context: AnalysisStageContext)
+        -> [VocalHarmonyObservation]?
+    {
+        guard (try? Task.checkCancellation()) != nil else { return nil }
+        let vocalSources = vocalHarmonySources(in: context.document)
+        guard !vocalSources.isEmpty else { return nil }
+        let analyzer = VocalHarmonyAnalyzer(
+            maximumNotesPerFrame: Self.vocalHarmonyMaximumVoices())
+        var observations: [VocalHarmonyObservation] = []
+        for (index, source) in vocalSources.enumerated() {
+            guard
+                let notes = try? analyzer.analyze(
+                    url: source.url,
+                    sourceID: source.id,
+                    voiceIndex: index
+                )
+            else { continue }
+            observations.append(contentsOf: notes)
+        }
+        let withIntervals = VocalHarmonyAnalyzer.addIntervals(observations)
+        guard !withIntervals.isEmpty else { return nil }
+        // Voice identity is decided ONCE here, across the whole song and all vocal stems, and
+        // persisted on each observation. The Review pane then just reads it.
+        return VocalHarmonyAnalyzer.assigningVoices(
+            withIntervals,
+            maximumVoices: Self.vocalHarmonyMaximumVoices())
+    }
+
+    private func vocalHarmonySources(in document: SongAnalysisDocument)
+        -> [(id: StemID, url: URL)]
+    {
+        if let manifest = document.stemSet?.resolved() {
+            let assets = manifest.assetsByID
+            let children = manifest.descriptors
+                .filter { descriptor in
+                    descriptor.parentID == StemID(.vocals)
+                        && assets[descriptor.id] != nil
+                        && (descriptor.id == .vocalLead
+                            || descriptor.id == .vocalBacking
+                            || descriptor.id.rawValue.contains("harmony"))
+                }
+                .sorted { lhs, rhs in
+                    if lhs.order == rhs.order { return lhs.id < rhs.id }
+                    return lhs.order < rhs.order
+                }
+                .compactMap { descriptor -> (id: StemID, url: URL)? in
+                    guard let asset = assets[descriptor.id] else { return nil }
+                    return (descriptor.id, asset.audioURL)
+                }
+            if !children.isEmpty { return children }
+            if let asset = assets[StemID(.vocals)] { return [(StemID(.vocals), asset.audioURL)] }
+        }
+        if let vocals = document.stems?.resolved().vocals {
+            return [(StemID(.vocals), vocals)]
+        }
+        return []
+    }
+
+    private static func vocalHarmonyMaximumVoices() -> Int {
+        let key = VocalHarmonyPreferences.maximumVoicesUserDefaultsKey
+        let stored =
+            UserDefaults.standard.object(forKey: key) as? Int
+        return VocalHarmonyPreferences.clampedMaximumVoices(
+            stored ?? VocalHarmonyPreferences.defaultMaximumVoices)
+    }
+
     func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
         let harmonySource = try? HarmonyAudioSourceSelector().select(
             recordingURL: context.request.sourceURL,
@@ -719,6 +784,7 @@ struct HarmonyStage: AnalysisStageRunning {
         let harmonyEngine = context.harmonyEngine
         let cache = context.cache
         let stageProgress = context.stageProgress
+        let vocalHarmonyMaximumVoices = Self.vocalHarmonyMaximumVoices()
 
         do {
             guard let source = harmonySource, let sourceHash = harmonySourceDigest else {
@@ -750,7 +816,7 @@ struct HarmonyStage: AnalysisStageRunning {
                 loadedFromCache = false
             }
             try Task.checkCancellation()
-            stageProgress(1, "completed")
+            stageProgress(0.75, "reducing chords")
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: source.kind,
@@ -790,10 +856,25 @@ struct HarmonyStage: AnalysisStageRunning {
                         // reduce-24: decode grid extended back over a pre-drums intro; per-frame
                         // window evidence so the no-chord floor stops being tempo-dependent.
                         + "|reduce-24-intro-and-nochord"
+                        // reduce-25: persist vocal harmony note observations for the Review
+                        // pane's optional Harmonies row. Raw chroma cache remains reusable.
+                        + "|reduce-25-vocal-harmonies"
+                        // reduce-26: harmony detection/display defaults to four voices for choir
+                        // use cases, with a persisted 2/3/4 max-voices control.
+                        + "|reduce-26-harmony-max-voices"
+                        // reduce-27: each harmony observation carries a harmonic-envelope
+                        // timbre fingerprint, so voice rows cluster by singer instead of pitch.
+                        + "|reduce-27-vocal-timbre"
+                        // reduce-28: voice identity is assigned once per song (partitioned by
+                        // vocal stem, then subdivided by timbre) and persisted, instead of being
+                        // re-clustered inside every lyric-line window at display time.
+                        + "|reduce-28-song-level-voices"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
-                configurationIdentifier: source.configurationIdentifier,
+                configurationIdentifier:
+                    source.configurationIdentifier
+                    + "|harmonies-max-\(vocalHarmonyMaximumVoices)",
                 confidence: AnalysisStageRecordFactory.confidenceSummary(
                     result.chords.map(\.confidence)),
                 loadedFromCache: loadedFromCache
@@ -819,7 +900,11 @@ struct HarmonyStage: AnalysisStageRunning {
             // Additive: detect the played bass line from the BASS stem (runs
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
+            stageProgress(0.82, "detecting bass")
             let detectedBassNotes = detectBassNotes(context)
+            stageProgress(0.88, "detecting harmony notes")
+            let detectedVocalHarmonyNotes = detectVocalHarmonies(context)
+            stageProgress(0.92, "aligning chord changes")
             // Instrumental onsets from the GUITAR stem (falling back to "other"/accompaniment):
             // computed BEFORE decoding so the Viterbi can discount its switch penalty for beat
             // windows that start on an attack, then reused to snap event times. Best-effort —
@@ -1002,6 +1087,7 @@ struct HarmonyStage: AnalysisStageRunning {
             let alignedChords = chords
             let evidenceAudit = evidence.audit
             let qualityAudit = quality.audit
+            stageProgress(1, "completed")
             // With the chord timeline final, re-arbitrate BORDERLINE bass-note roundings
             // against it — ambiguous fractional pitches snap to the concurrent chord's
             // tone; decisive ones stay (see `BassChordReconciler`).
@@ -1026,6 +1112,9 @@ struct HarmonyStage: AnalysisStageRunning {
                     protectedIDs: qualityProtectedIDs)
                 if let reconciledBassNotes {
                     document.bassNotes = reconciledBassNotes
+                }
+                if let detectedVocalHarmonyNotes {
+                    document.vocalHarmonyNotes = detectedVocalHarmonyNotes
                 }
                 document.chordReviewState = .draft
                 // Keep the placement evidence so an uploaded reference chart can be judged

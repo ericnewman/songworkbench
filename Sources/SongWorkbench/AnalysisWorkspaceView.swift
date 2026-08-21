@@ -56,6 +56,19 @@ struct AnalysisWorkspaceView: View {
                 // analysis now runs every installed transcription mode, and the "Lyric Blend"
                 // window is how the user chooses between them per line — see
                 // `AppModel.primaryTranscriptionMode`/`runLyricBlendPasses`.
+                //
+                // One place for every choice that costs analysis time: the stem-separation
+                // switches (low-memory separation used to hide in the Models popover, where its
+                // price was invisible) and the transcription sliders, with the running cost of
+                // the current selection under the Analyze button.
+                Text("Analysis options")
+                    .font(.swDisplay(12, weight: .semibold))
+                    .foregroundStyle(Color.swTextSecondary)
+
+                #if os(macOS)
+                    SeparationOptionControls(model: model)
+                #endif
+
                 HStack(spacing: 8) {
                     Text("Decode speed")
                         .font(.caption)
@@ -144,6 +157,15 @@ struct AnalysisWorkspaceView: View {
                     Spacer()
                 }
                 .controlSize(.small)
+
+                Label(model.estimatedAnalysisSummary, systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(
+                        "Wall-clock estimate for the options above, scaled from measured pass "
+                            + "times on an 8-core Mac. It updates as you change them; your "
+                            + "machine and other load will move it."
+                    )
 
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(SongAnalysisStage.allCases, id: \.self) { stage in
@@ -440,6 +462,70 @@ private struct AnalysisProgressSheet: View {
     }
 }
 
+#if os(macOS)
+    /// Every stem-separation choice that costs analysis time, on the main workspace card rather
+    /// than behind a popover. Each refiner adds a whole extra model pass over a stem, and
+    /// low-memory separation slows the base pass down; the "+n min" labels come from the same
+    /// measured factors as the card's headline estimate, so the two cannot disagree.
+    private struct SeparationOptionControls: View {
+        @ObservedObject var model: AppModel
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Stem separation")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(
+                    isOn: Binding(
+                        get: { model.vocalVoiceSeparationEnabled },
+                        set: { model.vocalVoiceSeparationEnabled = $0 }
+                    )
+                ) {
+                    Text("Lead / backing vocals")
+                        + Text("  \(model.vocalVoiceSeparationCostSummary)")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                .font(.caption)
+                .help(
+                    "Splits the vocals stem into lead and backing so each voice is playable and "
+                        + "harmony rows can tell the singers apart. The slowest step in analysis."
+                )
+                Toggle(
+                    isOn: Binding(
+                        get: { model.drumPieceSeparationEnabled },
+                        set: { model.drumPieceSeparationEnabled = $0 }
+                    )
+                ) {
+                    Text("Drum pieces")
+                        + Text("  \(model.drumPieceSeparationCostSummary)")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                .font(.caption)
+                .help("Splits the drums stem into kick, snare, toms and cymbals.")
+                Toggle(
+                    isOn: Binding(
+                        get: { model.lowMemorySeparationEnabled },
+                        set: { model.lowMemorySeparationEnabled = $0 }
+                    )
+                ) {
+                    Text("Low-memory separation")
+                        + Text("  \(model.lowMemorySeparationCostSummary)")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                .font(.caption)
+                .help(
+                    "Separates in 2.5s segments instead of 7.8s: about 2.1GB peak instead of 3.9GB. Use it if analysis crawls or the Mac starts swapping. Stems are weaker — guitar most of all, which is what chord detection listens to — and these separations are cached separately from full-quality ones."
+                )
+                if !model.advancedStemRefinementEnabled {
+                    Text("Analysis runs the six base stems only — the fastest setting.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+#endif
+
 private struct ModelPackagesView: View {
     @ObservedObject var model: AppModel
     @State private var isPresented = false
@@ -464,30 +550,6 @@ private struct ModelPackagesView: View {
                         .font(.swMono(12))
                         .foregroundStyle(Color.swTextSecondary)
                 }
-                #if os(macOS)
-                    Toggle(
-                        "Advanced stem refinement",
-                        isOn: Binding(
-                            get: { model.advancedStemRefinementEnabled },
-                            set: { model.advancedStemRefinementEnabled = $0 }
-                        )
-                    )
-                    .font(.swDisplay(12))
-                    .help(
-                        "When enabled and DrumSep is installed, Analyze refines drums into kick, snare, cymbals, and toms. Mixer and waveforms follow those children."
-                    )
-                    Toggle(
-                        "Low-memory separation",
-                        isOn: Binding(
-                            get: { model.lowMemorySeparationEnabled },
-                            set: { model.lowMemorySeparationEnabled = $0 }
-                        )
-                    )
-                    .font(.swDisplay(12))
-                    .help(
-                        "Separates in 2.5s segments instead of 7.8s: about 2.1GB peak instead of 3.9GB. Use it if analysis crawls or the Mac starts swapping. Stems are weaker — guitar most of all, which is what chord detection listens to — and these separations are cached separately from full-quality ones."
-                    )
-                #endif
                 // Hide packages outside the active product tier instead of offering installs
                 // that cannot be used by that build. Includes optional refiners via offersModelPackage.
                 let installable = ModelCatalog.all.filter {

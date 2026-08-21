@@ -101,7 +101,10 @@ struct SongAnalysisPipelineFactory: Sendable {
                 for: StemRefinementEngineFactory.Context(
                     capabilityProfile: capabilityProfile,
                     baseStemPackage: baseStemPackage,
-                    modelStatuses: statuses
+                    modelStatuses: statuses,
+                    wantsVocalVoiceSeparation: AnalysisCapabilityProfile
+                        .prefersVocalVoiceSeparation,
+                    wantsDrumPieceSeparation: AnalysisCapabilityProfile.prefersDrumPieceSeparation
                 )
             )
         } else {
@@ -161,21 +164,44 @@ struct StemRefinementEngineFactory: Sendable {
         let capabilityProfile: AnalysisCapabilityProfile
         let baseStemPackage: InstalledModelPackage?
         let modelStatuses: [String: ModelPackageStatus]
+        /// Which optional refiners the user actually wants. Passed in rather than read from
+        /// `UserDefaults` inside the factory so the choice is visible at the call site and
+        /// testable without touching global state.
+        let wantsVocalVoiceSeparation: Bool
+        let wantsDrumPieceSeparation: Bool
+
+        init(
+            capabilityProfile: AnalysisCapabilityProfile,
+            baseStemPackage: InstalledModelPackage?,
+            modelStatuses: [String: ModelPackageStatus],
+            wantsVocalVoiceSeparation: Bool = true,
+            wantsDrumPieceSeparation: Bool = true
+        ) {
+            self.capabilityProfile = capabilityProfile
+            self.baseStemPackage = baseStemPackage
+            self.modelStatuses = modelStatuses
+            self.wantsVocalVoiceSeparation = wantsVocalVoiceSeparation
+            self.wantsDrumPieceSeparation = wantsDrumPieceSeparation
+        }
     }
 
     var makeEngines: @Sendable (Context) async throws -> [any StemRefinementEngine]
 
     static let empty = StemRefinementEngineFactory { _ in [] }
 
-    /// Production desktop refiners. Currently registers DrumSep when its package is installed;
-    /// guitar lead/rhythm remains unregistered until a verified model artifact exists.
+    /// Production desktop refiners: each optional refiner is registered only when its package is
+    /// installed AND the user asked for it, because each one adds a full model pass (measured on a
+    /// 3:36 song: vocals 310 s, drums 73 s). Guitar lead/rhythm remains unregistered until a
+    /// verified model artifact exists.
     static let production = StemRefinementEngineFactory { context in
         guard context.capabilityProfile.stemSeparationTier == .advancedDesktop else {
             return []
         }
         #if os(macOS)
             var engines: [any StemRefinementEngine] = []
-            if case .installed(let package) = context.modelStatuses[ModelCatalog.drumsep.id] {
+            if context.wantsDrumPieceSeparation,
+                case .installed(let package) = context.modelStatuses[ModelCatalog.drumsep.id]
+            {
                 let deferred = DeferredStemSeparationEngine(
                     metadata: ONNXDrumPieceSeparationEngine.metadata
                 ) {
@@ -190,7 +216,9 @@ struct StemRefinementEngineFactory: Sendable {
                     )
                 )
             }
-            if case .installed(let package) = context.modelStatuses[ModelCatalog.karaokeVocals.id] {
+            if context.wantsVocalVoiceSeparation,
+                case .installed(let package) = context.modelStatuses[ModelCatalog.karaokeVocals.id]
+            {
                 let deferred = DeferredStemSeparationEngine(
                     metadata: ONNXKaraokeVocalSeparationEngine.metadata
                 ) {

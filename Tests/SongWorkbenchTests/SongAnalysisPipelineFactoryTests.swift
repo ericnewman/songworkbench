@@ -196,6 +196,80 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
         XCTAssertTrue(empty.isEmpty)
     }
 
+    /// Each refiner costs minutes of wall clock, so an installed package is NOT enough — the user
+    /// has to have asked for that split. Without this, turning a switch off would silently keep
+    /// paying for the pass.
+    func testProductionFactorySkipsRefinersTheUserTurnedOff() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modelDirectory = root.appendingPathComponent("models", isDirectory: true)
+        let basePackage = try installFakeHTDemucsPackage(in: modelDirectory)
+        let drumPackage = try installFakeDrumsepPackage(in: modelDirectory)
+        let karaokePackage = try installFakeKaraokePackage(in: modelDirectory)
+        let statuses: [String: ModelPackageStatus] = [
+            ModelCatalog.drumsep.id: .installed(drumPackage),
+            ModelCatalog.karaokeVocals.id: .installed(karaokePackage),
+        ]
+
+        let vocalsOnly = try await StemRefinementEngineFactory.production.engines(
+            for: StemRefinementEngineFactory.Context(
+                capabilityProfile: .desktopAdvanced,
+                baseStemPackage: basePackage,
+                modelStatuses: statuses,
+                wantsVocalVoiceSeparation: true,
+                wantsDrumPieceSeparation: false
+            )
+        )
+        XCTAssertEqual(vocalsOnly.map(\.identifier), ["karaoke-bsroformer-v1"])
+
+        let drumsOnly = try await StemRefinementEngineFactory.production.engines(
+            for: StemRefinementEngineFactory.Context(
+                capabilityProfile: .desktopAdvanced,
+                baseStemPackage: basePackage,
+                modelStatuses: statuses,
+                wantsVocalVoiceSeparation: false,
+                wantsDrumPieceSeparation: true
+            )
+        )
+        XCTAssertEqual(drumsOnly.map(\.identifier), ["drumsep-onnx-v1"])
+
+        let neither = try await StemRefinementEngineFactory.production.engines(
+            for: StemRefinementEngineFactory.Context(
+                capabilityProfile: .desktopAdvanced,
+                baseStemPackage: basePackage,
+                modelStatuses: statuses,
+                wantsVocalVoiceSeparation: false,
+                wantsDrumPieceSeparation: false
+            )
+        )
+        XCTAssertTrue(neither.isEmpty)
+    }
+
+    func testProductionFactoryInjectsKaraokeVocalRefinerWhenPackageInstalled() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let modelDirectory = root.appendingPathComponent("models", isDirectory: true)
+        let basePackage = try installFakeHTDemucsPackage(in: modelDirectory)
+        let karaokePackage = try installFakeKaraokePackage(in: modelDirectory)
+
+        let refiners = try await StemRefinementEngineFactory.production.engines(
+            for: StemRefinementEngineFactory.Context(
+                capabilityProfile: .desktopAdvanced,
+                baseStemPackage: basePackage,
+                modelStatuses: [
+                    ModelCatalog.karaokeVocals.id: .installed(karaokePackage)
+                ]
+            )
+        )
+
+        XCTAssertEqual(refiners.map(\.identifier), ["karaoke-bsroformer-v1"])
+        XCTAssertEqual(refiners.first?.outputStemIDs, [.vocalLead, .vocalBacking])
+    }
+
     private func installFakeDrumsepPackage(in modelDirectory: URL) throws -> InstalledModelPackage {
         let packageDirectory =
             modelDirectory
@@ -215,6 +289,31 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
         return InstalledModelPackage(
             descriptorID: ModelCatalog.drumsep.id,
             version: ModelCatalog.drumsep.version,
+            packageDirectoryURL: packageDirectory,
+            entryPointURL: modelURL,
+            sizeBytes: Int64(payload.count)
+        )
+    }
+
+    private func installFakeKaraokePackage(in modelDirectory: URL) throws -> InstalledModelPackage {
+        let packageDirectory =
+            modelDirectory
+            .appendingPathComponent(ModelCatalog.karaokeVocals.id, isDirectory: true)
+            .appendingPathComponent(ModelCatalog.karaokeVocals.version, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: packageDirectory, withIntermediateDirectories: true)
+        let modelURL = packageDirectory.appendingPathComponent("karaoke_waveform.onnx")
+        let payload = Data("fake karaoke onnx".utf8)
+        try payload.write(to: modelURL)
+        let manifest = """
+            {"files":[{"relativePath":"karaoke_waveform.onnx","sizeBytes":\(payload.count),"sha256":"\(sha256Hex(payload))"}]}
+            """
+        try Data(manifest.utf8).write(
+            to: packageDirectory.appendingPathComponent(".installation-manifest.json")
+        )
+        return InstalledModelPackage(
+            descriptorID: ModelCatalog.karaokeVocals.id,
+            version: ModelCatalog.karaokeVocals.version,
             packageDirectoryURL: packageDirectory,
             entryPointURL: modelURL,
             sizeBytes: Int64(payload.count)
@@ -276,7 +375,10 @@ private struct FactoryRefiner: StemRefinementEngine {
     let identifier: String
     let outputStemIDs: [StemID] = [.drumKick]
 
-    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
         throw CancellationError()
     }
 }

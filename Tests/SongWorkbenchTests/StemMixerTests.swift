@@ -70,6 +70,112 @@ final class StemMixerTests: XCTestCase {
         )
     }
 
+    func testMixerChannelsNumberPlayableVocalChildren() {
+        let root = URL(fileURLWithPath: "/tmp/refined-vocals")
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.vocals.id,
+                    role: .source,
+                    displayName: "Vocals",
+                    order: 0
+                ),
+                StemDescriptor(
+                    id: .vocalLead,
+                    parentID: StemKind.vocals.id,
+                    role: .refinement,
+                    displayName: "Lead Vocals",
+                    order: 1
+                ),
+                StemDescriptor(
+                    id: .vocalBacking,
+                    parentID: StemKind.vocals.id,
+                    role: .refinement,
+                    displayName: "Backing Vocals",
+                    order: 2
+                ),
+                StemDescriptor(
+                    id: StemKind.bass.id,
+                    role: .source,
+                    displayName: "Bass",
+                    order: 3
+                ),
+            ],
+            assets: [
+                StemAsset(
+                    id: StemKind.vocals.id,
+                    audioURL: root.appendingPathComponent("vocals.wav"),
+                    producerID: "base"
+                ),
+                StemAsset(
+                    id: .vocalLead,
+                    audioURL: root.appendingPathComponent("lead.wav"),
+                    producerID: "refiner"
+                ),
+                StemAsset(
+                    id: .vocalBacking,
+                    audioURL: root.appendingPathComponent("backing.wav"),
+                    producerID: "refiner"
+                ),
+                StemAsset(
+                    id: StemKind.bass.id,
+                    audioURL: root.appendingPathComponent("bass.wav"),
+                    producerID: "base"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            StemMixerChannelProjector.channels(for: manifest).map(\.displayName),
+            ["Voice 1", "Voice 2", "Bass"]
+        )
+    }
+
+    func testMixerChannelsNumberFutureFourPartVocalChildren() {
+        let root = URL(fileURLWithPath: "/tmp/refined-choir")
+        let voiceIDs: [StemID] = [
+            "vocals.voice.1", "vocals.voice.2", "vocals.voice.3", "vocals.voice.4",
+        ]
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.vocals.id,
+                    role: .source,
+                    displayName: "Vocals",
+                    order: 0
+                )
+            ]
+                + voiceIDs.enumerated().map { offset, id in
+                    StemDescriptor(
+                        id: id,
+                        parentID: StemKind.vocals.id,
+                        role: .refinement,
+                        displayName: "Part \(offset + 1)",
+                        order: offset + 1
+                    )
+                },
+            assets: [
+                StemAsset(
+                    id: StemKind.vocals.id,
+                    audioURL: root.appendingPathComponent("vocals.wav"),
+                    producerID: "base"
+                )
+            ]
+                + voiceIDs.map { id in
+                    StemAsset(
+                        id: id,
+                        audioURL: root.appendingPathComponent("\(id.rawValue).wav"),
+                        producerID: "choir-refiner"
+                    )
+                }
+        )
+
+        XCTAssertEqual(
+            StemMixerChannelProjector.channels(for: manifest).map(\.displayName),
+            ["Voice 1", "Voice 2", "Voice 3", "Voice 4"]
+        )
+    }
+
     func testWaveformLaneTargetsMatchMixerFrontierIncludingDrumChildren() {
         let root = URL(fileURLWithPath: "/tmp/refined-waveforms")
         let manifest = StemSetManifest(
@@ -176,6 +282,56 @@ final class StemMixerTests: XCTestCase {
         XCTAssertEqual(
             StemMixerChannelProjector.channels(for: manifest).map(\.id), targets.map(\.id))
         XCTAssertEqual(StemID.drumKick.laneColor, StemKind.drums.laneColor)
+    }
+
+    func testWaveformLaneTargetsUseNumberedVocalChildNames() {
+        let root = URL(fileURLWithPath: "/tmp/refined-vocal-waveforms")
+        let manifest = StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.vocals.id,
+                    role: .source,
+                    displayName: "Vocals",
+                    order: 0
+                ),
+                StemDescriptor(
+                    id: .vocalLead,
+                    parentID: StemKind.vocals.id,
+                    role: .refinement,
+                    displayName: "Lead Vocals",
+                    order: 1
+                ),
+                StemDescriptor(
+                    id: .vocalBacking,
+                    parentID: StemKind.vocals.id,
+                    role: .refinement,
+                    displayName: "Backing Vocals",
+                    order: 2
+                ),
+            ],
+            assets: [
+                StemAsset(
+                    id: StemKind.vocals.id,
+                    audioURL: root.appendingPathComponent("vocals.wav"),
+                    producerID: "base"
+                ),
+                StemAsset(
+                    id: .vocalLead,
+                    audioURL: root.appendingPathComponent("lead.wav"),
+                    producerID: "refiner"
+                ),
+                StemAsset(
+                    id: .vocalBacking,
+                    audioURL: root.appendingPathComponent("backing.wav"),
+                    producerID: "refiner"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            StemWaveformLaneProjector.targets(for: manifest).map(\.displayName),
+            ["Voice 1", "Voice 2"]
+        )
     }
 
     func testEffectiveGainsRespectGainMuteAndSolo() {

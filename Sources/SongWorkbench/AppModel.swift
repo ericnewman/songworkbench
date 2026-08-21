@@ -249,6 +249,9 @@ final class AppModel: ObservableObject {
     @Published var bassNotes: [BassNoteObservation] = [] {
         didSet { persistSelectedAnalysis() }
     }
+    @Published var vocalHarmonyNotes: [VocalHarmonyObservation] = [] {
+        didSet { persistSelectedAnalysis() }
+    }
     @Published var estimatedKey: MusicalKey? {
         didSet { persistSelectedAnalysis() }
     }
@@ -386,18 +389,55 @@ final class AppModel: ObservableObject {
     static func waveformStemProgress(
         selectedSongID: Song.ID?,
         currentAnalyzedSongID: Song.ID?,
+        selectedSongIsQueued: Bool = false,
         isRunning: Bool,
-        progress: SongAnalysisPipelineProgress?
+        progress: SongAnalysisPipelineProgress?,
+        batch: ReanalyzeAllStatus? = nil
     ) -> WaveformStemProgress? {
-        guard isRunning,
-            selectedSongID == currentAnalyzedSongID,
-            let progress,
-            progress.stage == .separation
-        else { return nil }
+        if selectedSongIsQueued, selectedSongID != currentAnalyzedSongID {
+            return WaveformStemProgress(
+                message: "Waiting to analyze this song",
+                fractionCompleted: 0,
+                isIndeterminate: true
+            )
+        }
+        guard isRunning else { return nil }
+        let fraction = progress.map { min(max($0.fractionCompleted, 0), 1) } ?? 0
+        guard selectedSongID == currentAnalyzedSongID else {
+            let title = batch?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let suffix = title.isEmpty ? "" : " · \(title)"
+            return WaveformStemProgress(
+                message: "Analyzing in background\(suffix)",
+                fractionCompleted: fraction,
+                isIndeterminate: progress == nil
+            )
+        }
+        guard let progress else {
+            return WaveformStemProgress(
+                message: "Analyzing this song",
+                fractionCompleted: 0,
+                isIndeterminate: true
+            )
+        }
+        if progress.stage == .separation {
+            return WaveformStemProgress(
+                message: waveformStemProgressMessage(for: progress.message),
+                fractionCompleted: min(max(progress.stageFraction, 0), 1)
+            )
+        }
         return WaveformStemProgress(
-            message: waveformStemProgressMessage(for: progress.message),
-            fractionCompleted: min(max(progress.stageFraction, 0), 1)
+            message: waveformAnalysisProgressMessage(for: progress),
+            fractionCompleted: min(max(progress.fractionCompleted, 0), 1)
         )
+    }
+
+    static func waveformAnalysisProgressMessage(
+        for progress: SongAnalysisPipelineProgress
+    ) -> String {
+        guard let stage = progress.stage else {
+            return progress.message.isEmpty ? "Analyzing this song" : progress.message
+        }
+        return "Analyzing \(stageTitle(stage))"
     }
 
     static let accuracyDecodeSpeedDefaultsKey = "accuracyDecodeSpeed"
@@ -473,14 +513,29 @@ final class AppModel: ObservableObject {
     struct WaveformStemProgress: Equatable {
         let message: String
         let fractionCompleted: Double
+        let isIndeterminate: Bool
+
+        init(
+            message: String,
+            fractionCompleted: Double,
+            isIndeterminate: Bool = false
+        ) {
+            self.message = message
+            self.fractionCompleted = fractionCompleted
+            self.isIndeterminate = isIndeterminate
+        }
     }
 
     var waveformStemProgress: WaveformStemProgress? {
         Self.waveformStemProgress(
             selectedSongID: selectedSongID,
             currentAnalyzedSongID: currentAnalyzedSongID,
+            selectedSongIsQueued: selectedSongID.map { selectedID in
+                analysisQueue.contains { $0.id == selectedID }
+            } ?? false,
             isRunning: isSongAnalysisRunning,
-            progress: songAnalysisProgress
+            progress: songAnalysisProgress,
+            batch: reanalyzeAllStatus
         )
     }
 
@@ -504,12 +559,123 @@ final class AppModel: ObservableObject {
     }
 
     var advancedStemRefinementEnabled: Bool {
-        get { AnalysisCapabilityProfile.prefersAdvancedStemRefinement }
+        AnalysisCapabilityProfile.prefersAdvancedStemRefinement
+    }
+
+    /// Splits the vocals stem into lead and backing. The most expensive thing in the pipeline
+    /// (310 s of a 3:36 song's analysis), so it gets its own switch.
+    var vocalVoiceSeparationEnabled: Bool {
+        get { AnalysisCapabilityProfile.prefersVocalVoiceSeparation }
         set {
-            AnalysisCapabilityProfile.prefersAdvancedStemRefinement = newValue
+            AnalysisCapabilityProfile.prefersVocalVoiceSeparation = newValue
             objectWillChange.send()
             Task { await refreshModelPackageStatuses() }
         }
+    }
+
+    /// Splits the drums stem into kick/snare/toms/cymbals. Roughly 73 s on the same song.
+    var drumPieceSeparationEnabled: Bool {
+        get { AnalysisCapabilityProfile.prefersDrumPieceSeparation }
+        set {
+            AnalysisCapabilityProfile.prefersDrumPieceSeparation = newValue
+            objectWillChange.send()
+            Task { await refreshModelPackageStatuses() }
+        }
+    }
+
+    // MARK: - Analysis time estimate
+
+    /// Cost of each analysis pass as a MULTIPLE OF SONG DURATION, so the estimate scales with
+    /// the song instead of only being right for the one it was measured on. Measured on an
+    /// 8-performance-core Mac against a 3:36 (216 s) song: base six-stem separation 58 s,
+    /// drum-piece refiner 73 s, vocal lead/backing refiner 172 s, and transcription + harmony
+    /// 100 s (those two overlap, so they are counted once).
+    enum AnalysisCostFactor {
+        static let baseSeparation = 58.0 / 216.0
+        static let drumPieceRefiner = 73.0 / 216.0
+        static let vocalVoiceRefiner = 172.0 / 216.0
+        static let transcriptionAndHarmony = 100.0 / 216.0
+        /// ponytail: guess, not a measurement — low-memory separation runs ~3x as many ONNX
+        /// segments over the same audio, and no full song has been timed at that setting.
+        static let lowMemorySeparationPenalty = 0.6
+    }
+
+    /// Stand-in duration when no song is selected or its length is not known yet. The UI says
+    /// so, so the number is never mistaken for a measurement of the user's actual song.
+    static let typicalSongSeconds: TimeInterval = 210
+
+    /// Pure so the estimate can be tested without touching the preference store.
+    static func estimatedAnalysisSeconds(
+        forDuration duration: TimeInterval,
+        vocalVoiceSeparation: Bool,
+        drumPieceSeparation: Bool,
+        lowMemorySeparation: Bool
+    ) -> TimeInterval {
+        let basePenalty =
+            lowMemorySeparation ? 1 + AnalysisCostFactor.lowMemorySeparationPenalty : 1
+        var factor = AnalysisCostFactor.baseSeparation * basePenalty
+        if vocalVoiceSeparation { factor += AnalysisCostFactor.vocalVoiceRefiner }
+        if drumPieceSeparation { factor += AnalysisCostFactor.drumPieceRefiner }
+        factor += AnalysisCostFactor.transcriptionAndHarmony
+        return duration * factor
+    }
+
+    func estimatedAnalysisSeconds(forDuration duration: TimeInterval) -> TimeInterval {
+        Self.estimatedAnalysisSeconds(
+            forDuration: duration,
+            vocalVoiceSeparation: vocalVoiceSeparationEnabled,
+            drumPieceSeparation: drumPieceSeparationEnabled,
+            lowMemorySeparation: lowMemorySeparationEnabled)
+    }
+
+    /// Seconds below a minute, whole minutes above it — the estimate is an order-of-magnitude
+    /// claim, so "3 min 42 s" would promise precision it does not have.
+    static func formattedAnalysisDuration(_ seconds: TimeInterval) -> String {
+        seconds < 60
+            ? "\(max(1, Int(seconds.rounded()))) s"
+            : "\(max(1, Int((seconds / 60).rounded()))) min"
+    }
+
+    /// Length of the selected song, if it is known: the analysis document's own measurement
+    /// first, then the loaded player. Nil before either exists.
+    var knownSongDuration: TimeInterval? {
+        guard selectedSong != nil else { return nil }
+        if let sourceDuration, sourceDuration > 0 { return sourceDuration }
+        return activePlaybackDuration > 0 ? activePlaybackDuration : nil
+    }
+
+    /// Length the estimate is built on.
+    var estimateSongDuration: TimeInterval { knownSongDuration ?? Self.typicalSongSeconds }
+
+    /// Headline cost of the currently selected options, shown beside Analyze.
+    var estimatedAnalysisSummary: String {
+        let text = Self.formattedAnalysisDuration(
+            estimatedAnalysisSeconds(forDuration: estimateSongDuration))
+        return knownSongDuration == nil
+            ? "Estimated ~\(text) for a typical 3:30 song"
+            : "Estimated ~\(text)"
+    }
+
+    /// Per-switch costs come from the same factors as the headline, so a toggle's "+3 min" and
+    /// the total can never drift apart.
+    var vocalVoiceSeparationCostSummary: String {
+        "+"
+            + Self.formattedAnalysisDuration(
+                estimateSongDuration * AnalysisCostFactor.vocalVoiceRefiner)
+    }
+
+    var drumPieceSeparationCostSummary: String {
+        "+"
+            + Self.formattedAnalysisDuration(
+                estimateSongDuration * AnalysisCostFactor.drumPieceRefiner)
+    }
+
+    /// Low-memory separation adds nothing new; it makes the base pass slower.
+    var lowMemorySeparationCostSummary: String {
+        "+"
+            + Self.formattedAnalysisDuration(
+                estimateSongDuration * AnalysisCostFactor.baseSeparation
+                    * AnalysisCostFactor.lowMemorySeparationPenalty)
     }
 
     /// True once the initial on-disk model status scan has completed — the onboarding gate
@@ -632,13 +798,16 @@ final class AppModel: ObservableObject {
     private var isApplyingAnalysis = false
     private var hasRestoredProjects = false
     private var needsSaveAfterRestore = false
+    private let sourceRecoveryDirectories: [URL]?
 
     init(
         store: any ProjectStore = SplitProjectStore.standard,
-        musicLibrary: (any MusicLibraryProviding)? = nil
+        musicLibrary: (any MusicLibraryProviding)? = nil,
+        sourceRecoveryDirectories: [URL]? = nil
     ) {
         self.store = store
         self.musicLibrary = musicLibrary ?? DefaultMusicLibrary.make()
+        self.sourceRecoveryDirectories = sourceRecoveryDirectories
         let applicationSupportDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -774,7 +943,6 @@ final class AppModel: ObservableObject {
 
     var hasStaleStemPlayback: Bool {
         stemFiles != nil && analysisStageRecords[.separation]?.state == .stale
-            && !stemPlayback.isLoaded
     }
 
     var includedChordEventCount: Int {
@@ -1186,19 +1354,26 @@ final class AppModel: ObservableObject {
             stage: nil, completedStages: 0, totalStages: stages.count,
             stageFraction: 0, message: "Checking source file")
         let sourceURL = song.url
+        let sourceRecoveryDirectories = sourceRecoveryDirectories
         analysisPreflightTask = Task { [weak self] in
-            let availability = await Task.detached(priority: .userInitiated) {
-                AppModel.sourceAvailability(of: sourceURL)
+            let preflight = await Task.detached(priority: .userInitiated) {
+                let recovered =
+                    AppModel.recoveredReadableSourceURL(
+                        for: sourceURL,
+                        additionalDirectories: sourceRecoveryDirectories
+                    ) ?? sourceURL
+                return (url: recovered, availability: AppModel.sourceAvailability(of: recovered))
             }.value
             guard let self, !Task.isCancelled,
                 analysisPreflightGeneration == preflightGeneration
             else { return }
             analysisPreflightTask = nil
             analysisPreflightGeneration = nil
-            switch availability {
+            switch preflight.availability {
             case .available:
                 self.beginAnalysis(
                     for: song, stages: stages,
+                    sourceURL: preflight.url,
                     replaceExistingChordPro: replaceExistingChordPro,
                     runLyricBlend: runLyricBlend, completion: completion)
             case .unavailable(let message):
@@ -1261,6 +1436,7 @@ final class AppModel: ObservableObject {
     private func beginAnalysis(
         for song: Song,
         stages: Set<SongAnalysisStage>,
+        sourceURL: URL? = nil,
         replaceExistingChordPro: Bool = false,
         runLyricBlend: Bool = false,
         completion: ((_ cancelled: Bool) -> Void)? = nil
@@ -1276,7 +1452,7 @@ final class AppModel: ObservableObject {
             message: "Preparing analysis"
         )
         let request = SongAnalysisPipelineRequest(
-            sourceURL: song.url,
+            sourceURL: sourceURL ?? song.url,
             outputDirectory: analysisOutputDirectory(for: songID),
             title: song.title,
             stages: stages,
@@ -1864,6 +2040,81 @@ final class AppModel: ObservableObject {
             .appendingPathComponent("Sources", isDirectory: true)
     }
 
+    nonisolated private static func sandboxContainerSourcesDirectory() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Containers", isDirectory: true)
+            .appendingPathComponent("com.local.SongWorkbench", isDirectory: true)
+            .appendingPathComponent("Data", isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("SongWorkbench", isDirectory: true)
+            .appendingPathComponent("Sources", isDirectory: true)
+    }
+
+    nonisolated private static func sourceRecoverySearchDirectories(
+        additionalDirectories: [URL]?
+    ) -> [URL] {
+        let defaultDirectories = [localSourcesDirectory(), sandboxContainerSourcesDirectory()]
+            .compactMap(\.self)
+        var seen: Set<String> = []
+        return (additionalDirectories ?? defaultDirectories).filter { url in
+            let path = url.standardizedFileURL.path
+            return seen.insert(path).inserted
+        }
+    }
+
+    nonisolated private static func sourceIdentifier(for url: URL) -> String {
+        SHA256.hash(data: Data(url.standardizedFileURL.resolvingSymlinksInPath().path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    nonisolated private static func isReadableSourceFile(_ url: URL) -> Bool {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard FileManager.default.fileExists(atPath: url.path),
+            let handle = try? FileHandle(forReadingFrom: url)
+        else { return false }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: 1)) != nil
+    }
+
+    nonisolated private static func recoveredReadableSourceURL(
+        for url: URL,
+        additionalDirectories: [URL]? = nil
+    ) -> URL? {
+        guard !isReadableSourceFile(url) else { return nil }
+        let fileManager = FileManager.default
+        let name = url.lastPathComponent
+        let identifier = sourceIdentifier(for: url)
+        let directories = sourceRecoverySearchDirectories(
+            additionalDirectories: additionalDirectories)
+
+        for directory in directories {
+            let candidate =
+                directory
+                .appendingPathComponent(identifier, isDirectory: true)
+                .appendingPathComponent(name)
+            if isReadableSourceFile(candidate) { return candidate }
+        }
+
+        var filenameMatches: [URL] = []
+        for directory in directories where fileManager.fileExists(atPath: directory.path) {
+            guard
+                let enumerator = fileManager.enumerator(
+                    at: directory,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants])
+            else { continue }
+            for case let candidate as URL in enumerator
+            where candidate.lastPathComponent == name && isReadableSourceFile(candidate) {
+                filenameMatches.append(candidate)
+            }
+        }
+        return filenameMatches.count == 1 ? filenameMatches[0] : nil
+    }
+
     private enum LocalizedSourceOutcome: Sendable {
         /// `refreshed` is true when an EXISTING local copy was replaced because the source
         /// at the same original path changed content — the caller must re-analyze.
@@ -1906,9 +2157,7 @@ final class AppModel: ObservableObject {
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         // Key the destination folder by the resolved original path so re-importing the same file
         // reuses the copy instead of duplicating it.
-        let identifier = SHA256.hash(
-            data: Data(url.standardizedFileURL.resolvingSymlinksInPath().path.utf8)
-        ).map { String(format: "%02x", $0) }.joined()
+        let identifier = sourceIdentifier(for: url)
         let destinationDirectory = sourcesDirectory.appendingPathComponent(
             identifier, isDirectory: true)
         let destination = destinationDirectory.appendingPathComponent(name)
@@ -2208,6 +2457,7 @@ final class AppModel: ObservableObject {
         estimatedBPM = nil
         beatTimes = []
         bassNotes = []
+        vocalHarmonyNotes = []
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
         chordPlacementPicks = []
@@ -2705,7 +2955,12 @@ final class AppModel: ObservableObject {
                 stored -> (Song, PracticeSettings, SongAnalysisDocument, Date?)? in
                 let resolution = stored.resolvedURLWithStaleness()
                 needsBookmarkRefresh = needsBookmarkRefresh || resolution.isStale
-                let url = resolution.url
+                let url =
+                    AppModel.recoveredReadableSourceURL(
+                        for: resolution.url,
+                        additionalDirectories: sourceRecoveryDirectories
+                    ) ?? resolution.url
+                needsBookmarkRefresh = needsBookmarkRefresh || url != resolution.url
                 guard SongImportPolicy.accepts(url) else { return nil }
                 var settings = stored.settings
                 settings.normalize()
@@ -2824,6 +3079,7 @@ final class AppModel: ObservableObject {
         sourceDuration = analysis.sourceDuration
         untranscribedVocalRegions = analysis.untranscribedVocalRegions
         bassNotes = analysis.bassNotes
+        vocalHarmonyNotes = analysis.vocalHarmonyNotes
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
         chordPlacementPicks = analysis.chordPlacementPicks
@@ -2841,7 +3097,14 @@ final class AppModel: ObservableObject {
         let chordProBeforeRebuild = chordProSource
         rebuildGeneratedChordProDraft()
         let chordProRebuilt = chordProSource != chordProBeforeRebuild
-        if let stemFiles, isCurrentSeparation(record: analysisStageRecords[.separation]) {
+        if stemFiles != nil,
+            shouldMarkSeparationStale(record: analysisStageRecords[.separation])
+        {
+            analysisStageRecords[.separation] = staleSeparationRecord(
+                from: analysisStageRecords[.separation]
+            )
+        }
+        if let stemFiles, stemAudioFilesExist(stemFiles: stemFiles, stemSet: stemSet) {
             if let stemSet {
                 try? stemPlayback.load(stemSet, mixer: stemMixer)
             } else {
@@ -2854,13 +3117,6 @@ final class AppModel: ObservableObject {
         } else {
             stemPlayback.unload()
             activePlaybackSource = .recording
-            if stemFiles != nil,
-                shouldMarkSeparationStale(record: analysisStageRecords[.separation])
-            {
-                analysisStageRecords[.separation] = staleSeparationRecord(
-                    from: analysisStageRecords[.separation]
-                )
-            }
         }
         isApplyingAnalysis = false
         // Persist once when the load ran the timing migration or refreshed the generated chart.
@@ -2882,6 +3138,18 @@ final class AppModel: ObservableObject {
 
     private func staleSeparationRecord(from record: AnalysisStageRecord?) -> AnalysisStageRecord {
         separationCachingPolicy.markStale(record)
+    }
+
+    private func stemAudioFilesExist(stemFiles: StemFiles, stemSet: StemSetManifest?) -> Bool {
+        if let stemSet {
+            return stemSet.assets.allSatisfy {
+                FileManager.default.fileExists(atPath: $0.audioURL.path)
+            }
+        }
+        return stemFiles.availableKinds.allSatisfy { kind in
+            guard let url = stemFiles[kind] else { return false }
+            return FileManager.default.fileExists(atPath: url.path)
+        }
     }
 
     private func persistSelectedAnalysis() {
@@ -2907,6 +3175,7 @@ final class AppModel: ObservableObject {
             preReconciliationTiming: preReconciliationTiming,
             timingPostPassTag: timingPostPassTag,
             bassNotes: bassNotes,
+            vocalHarmonyNotes: vocalHarmonyNotes,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
             chordPlacementPicks: chordPlacementPicks,

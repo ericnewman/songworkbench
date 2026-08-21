@@ -270,9 +270,11 @@ final class SongAnalysisPipelineTests: XCTestCase {
             result.document.stageRecords[.harmony]?.provenance?.sourceKind,
             .recording
         )
+        // The max-voices control is part of the harmony configuration identity, so a change to it
+        // re-runs the stage; the fallback marker is a prefix of that identifier, not the whole of it.
         XCTAssertEqual(
             result.document.stageRecords[.harmony]?.provenance?.configurationIdentifier,
-            "full-mix-fallback"
+            "full-mix-fallback|harmonies-max-4"
         )
         XCTAssertEqual(
             result.document.stageRecords[.transcription]?.provenance?.sourceKind,
@@ -1074,7 +1076,10 @@ private struct PipelineStubStemRefiner: StemRefinementEngine {
     let identifier = "pipeline-drum-refiner"
     let outputStemIDs: [StemID] = [.drumKick]
 
-    func refine(request: StemRefinementRequest) async throws -> StemRefinementResult {
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
         let kickURL = request.outputDirectory.appendingPathComponent("kick.wav")
         try Data("kick audio".utf8).write(to: kickURL)
         return StemRefinementResult(

@@ -50,22 +50,45 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
     let executionPolicy: AnalysisPipelineExecutionPolicy
     let performanceTracks: Set<PerformanceTrackCapability>
 
+    /// Legacy single switch for both refiners. Still read as the DEFAULT for the two per-refiner
+    /// keys below, so anyone who had advanced refinement on keeps both after updating.
     private static let advancedStemRefinementDefaultsKey =
         "SongWorkbench.advancedStemRefinement"
+    private static let vocalVoiceSeparationDefaultsKey = "SongWorkbench.vocalVoiceSeparation"
+    private static let drumPieceSeparationDefaultsKey = "SongWorkbench.drumPieceSeparation"
 
+    /// The two refiners are separately priced in wall-clock — on a 3:36 song the vocal split cost
+    /// 310 s and the drum split 73 s — so they are separately switchable rather than sharing one
+    /// "advanced" switch that made you pay for both to get either.
+    static var prefersVocalVoiceSeparation: Bool {
+        get { refinerPreference(vocalVoiceSeparationDefaultsKey) }
+        set { setRefinerPreference(vocalVoiceSeparationDefaultsKey, newValue) }
+    }
+
+    static var prefersDrumPieceSeparation: Bool {
+        get { refinerPreference(drumPieceSeparationDefaultsKey) }
+        set { setRefinerPreference(drumPieceSeparationDefaultsKey, newValue) }
+    }
+
+    /// True when EITHER refiner is wanted — the advanced tier is what makes refiners available
+    /// at all, so it stays on until both are off.
     static var prefersAdvancedStemRefinement: Bool {
-        get {
-            #if os(macOS)
-                UserDefaults.standard.bool(forKey: advancedStemRefinementDefaultsKey)
-            #else
-                false
-            #endif
-        }
-        set {
-            #if os(macOS)
-                UserDefaults.standard.set(newValue, forKey: advancedStemRefinementDefaultsKey)
-            #endif
-        }
+        prefersVocalVoiceSeparation || prefersDrumPieceSeparation
+    }
+
+    private static func refinerPreference(_ key: String) -> Bool {
+        #if os(macOS)
+            UserDefaults.standard.object(forKey: key) as? Bool
+                ?? UserDefaults.standard.bool(forKey: advancedStemRefinementDefaultsKey)
+        #else
+            false
+        #endif
+    }
+
+    private static func setRefinerPreference(_ key: String, _ value: Bool) {
+        #if os(macOS)
+            UserDefaults.standard.set(value, forKey: key)
+        #endif
     }
 
     private static let lowMemorySeparationDefaultsKey =

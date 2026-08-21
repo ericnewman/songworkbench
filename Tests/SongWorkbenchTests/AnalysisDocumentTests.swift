@@ -26,6 +26,7 @@ final class AnalysisDocumentTests: XCTestCase {
         XCTAssertEqual(document.chordReviewState, .draft)
         XCTAssertEqual(document.chordProReviewState, .draft)
         XCTAssertEqual(document.chordConfidenceThreshold, 0.5)
+        XCTAssertTrue(document.vocalHarmonyNotes.isEmpty)
         XCTAssertTrue(document.stageRecords.isEmpty)
     }
 
@@ -44,6 +45,17 @@ final class AnalysisDocumentTests: XCTestCase {
             loadedFromCache: false
         )
         let source = SongAnalysisDocument(
+            vocalHarmonyNotes: [
+                VocalHarmonyObservation(
+                    timestamp: 1,
+                    duration: 0.5,
+                    midiNote: 61,
+                    confidence: 0.8,
+                    sourceID: .vocalBacking,
+                    voiceIndex: 1,
+                    intervalSemitones: 4
+                )
+            ],
             estimatedKey: MusicalKey(root: .e, quality: .minor),
             chordConfidenceThreshold: 0.72,
             lyricReviewState: .reviewed,
