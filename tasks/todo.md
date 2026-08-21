@@ -2917,3 +2917,23 @@ branch at all. Their result is still unknown, and no Swift toolchain exists in t
 container to check locally (`swift`, `xcrun`, and download.swift.org are all unavailable) —
 `git diff --check` and `python3 -m compileall scripts Benchmarks/Tools` are the only two
 verify steps reproducible there, and both pass.
+
+Result of the lint fix (run 32480023809, head a0c25eb): **lint passed, the Swift compiled,
+and all three new `StemMixerTests` cases passed.** The branch executes 986 tests where main
+executes 983 — the +3 are the new grouping tests, and the delta in failures is zero.
+
+The one remaining failure is inherited from the base branch, not introduced here:
+
+| branch | head | tests | failures |
+| --- | --- | --- | --- |
+| main | c8b4b6f | 983 | 1 — `LyricGroupingDiagnosticTests.testOverlappingSegmentBoundarySurvivesGrouping` |
+| this branch | a0c25eb | 986 | 1 — the same test |
+
+`LyricGroupingDiagnosticTests.swift:76` does `XCTUnwrap` on Doc Holiday's cached Whisper
+transcription, which cannot exist on a CI runner. The test's own doc comment states it
+"Skips (does not fail) when the cache is absent, so this is inert on a machine without the
+app's container" — so the implementation contradicts its documented contract; `XCTUnwrap`
+fails where `XCTSkipUnless`/`XCTSkip` was intended. The same file already uses
+`XCTSkipUnless` for its env-gated test at line 99. Left alone deliberately: it is a
+pre-existing main failure and outside this branch's scope. Proposed patch is recorded for
+Eric to accept or decline.
