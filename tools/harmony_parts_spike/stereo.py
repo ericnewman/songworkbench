@@ -193,28 +193,37 @@ def octave_pan_evidence(
     f0: float,
     partials: int = 10,
 ) -> float:
-    """How differently the even partials of `f0` are panned from the odd ones.
+    """How differently partial 2 of `f0` is panned from its odd neighbours.
 
-    Odd partials belong to the lower voice alone. Even ones are shared with any voice an
-    octave above. If the two sets sit at different places in the stereo field, something
-    other than the lower voice is contributing to the even ones — and unlike the spectral
-    octave test, that is evidence a same-position voice cannot fake.
+    Partial 2 is where an octave partner's FUNDAMENTAL sits — its single strongest
+    component — while partials 1 and 3 belong to the lower voice alone. So the comparison
+    is between one informative bin and its two clean neighbours.
+
+    Medianing across every even partial instead was measurably wrong, and wrong in both
+    directions at once. Diagnosed on the octave quartet: the real bottom voice's tracks
+    (midi 60/62/64) scored 0.03-0.36 agreement and earned no partner, while junk tracks
+    around midi 55 scored 0.87-1.00 and earned bogus ones. Above partial 2 the partner's
+    energy has decayed by 1/h and each even partial is a near-even mixture, so four
+    uninformative comparisons outvoted the one that carried the signal.
     """
-    odd_pans, even_pans = [], []
-    for harmonic in range(1, partials + 1):
-        center = f0 * harmonic
-        if center >= frequencies[-1]:
-            break
-        magnitude_left = float(np.interp(center, frequencies, left_magnitude_frame))
-        magnitude_right = float(np.interp(center, frequencies, right_magnitude_frame))
+    def pan_at(frequency: float) -> float | None:
+        if frequency >= frequencies[-1]:
+            return None
+        magnitude_left = float(np.interp(frequency, frequencies, left_magnitude_frame))
+        magnitude_right = float(np.interp(frequency, frequencies, right_magnitude_frame))
         total = magnitude_left + magnitude_right
         if total <= 1e-9:
-            continue
-        pan = (magnitude_right - magnitude_left) / total
-        (odd_pans if harmonic % 2 else even_pans).append(pan)
-    if len(odd_pans) < 2 or len(even_pans) < 2:
+            return None
+        return (magnitude_right - magnitude_left) / total
+
+    partner = pan_at(2.0 * f0)
+    if partner is None:
         return 0.0
-    return abs(float(np.median(even_pans)) - float(np.median(odd_pans)))
+    neighbours = [pan_at(f0), pan_at(3.0 * f0)]
+    clean = [value for value in neighbours if value is not None]
+    if not clean:
+        return 0.0
+    return abs(partner - float(np.mean(clean)))
 
 
 def estimate_f0s_octave_aware(
@@ -226,6 +235,7 @@ def estimate_f0s_octave_aware(
     maximum_count: int,
     relative_floor: float,
     pan_threshold: float = 0.15,
+    require_spectral_gate: bool = True,
 ) -> list[tuple[float, float]]:
     """Mid-signal estimation, plus an octave partner ONLY where position corroborates it.
 
@@ -240,7 +250,7 @@ def estimate_f0s_octave_aware(
     )
     extra: list[tuple[float, float]] = []
     for hz, strength in found:
-        if not part_lib.octave_above_present(
+        if require_spectral_gate and not part_lib.octave_above_present(
             magnitude_frame, frequencies, hz, salience_config.harmonics
         ):
             continue
@@ -253,6 +263,68 @@ def estimate_f0s_octave_aware(
     return found + extra
 
 
+def octave_partner_tracks(
+    tracks: list[part_lib.Track],
+    left_magnitude: np.ndarray,
+    right_magnitude: np.ndarray,
+    frequencies: np.ndarray,
+    pan_threshold: float = 0.15,
+    agreement: float = 0.6,
+) -> list[part_lib.Track]:
+    """Add an octave-partner track for any track whose positional evidence PERSISTS.
+
+    Deciding this per frame is what broke the ungated estimator. Measured across four seeds,
+    firing on per-frame evidence recovered the octave voice reliably (4.00/4, and inert in
+    the near-mono control, so it was genuinely positional) — but it also injected phantom
+    partners into casts with no octave pair at all, taking the three-voice case from +5.30 to
+    −12.74 dB SI-SDR. Interference between any two voices moves the even/odd pan balance on
+    SOME frames; only a real octave partner moves it on MOST of them.
+
+    So the same rule the rest of this chain already follows applies here: a part is a
+    persistent thing, so decide it once per note using the whole note's evidence.
+    """
+    partners: list[part_lib.Track] = []
+    for track in tracks:
+        # Only rescue a voice that is MISSING. If a track already sits near 2*f0 and
+        # overlaps in time, the energy up there is explained and no partner is warranted.
+        #
+        # This is the specificity the measure lacked on its own. Without it the corrected
+        # evidence fired on `distinct`, where the low voice's partial 2 lands about 100
+        # cents from the high voice's fundamental — close enough to move the pan balance,
+        # so a voice that was already detected was re-detected as a hidden partner and the
+        # three-voice case fell from +5.30 to -5.12 dB.
+        target = 2.0 * track.median_hz
+        already_present = any(
+            other is not track
+            and abs(1_200.0 * np.log2(other.median_hz / target)) < 150.0
+            and other.start <= track.end
+            and track.start <= other.end
+            for other in tracks
+        )
+        if already_present:
+            continue
+
+        votes = 0
+        counted = 0
+        for frame, f0 in zip(track.frames, track.f0):
+            evidence = octave_pan_evidence(
+                left_magnitude[frame], right_magnitude[frame], frequencies, f0
+            )
+            counted += 1
+            if evidence >= pan_threshold:
+                votes += 1
+        if counted == 0 or votes / counted < agreement:
+            continue
+        partners.append(
+            part_lib.Track(
+                frames=list(track.frames),
+                f0=[hz * 2.0 for hz in track.f0],
+                strength=list(track.strength),
+            )
+        )
+    return partners
+
+
 def separate_stereo(
     left: np.ndarray,
     right: np.ndarray,
@@ -261,6 +333,8 @@ def separate_stereo(
     use_pan: bool = True,
     spatial_tracking: bool = False,
     octave_aware: bool = False,
+    octave_spectral_gate: bool = True,
+    octave_partners: bool = False,
 ) -> dict[str, object]:
     """Full stereo chain. f0 tracking runs on the mid signal; masking uses both channels.
 
@@ -301,6 +375,7 @@ def separate_stereo(
                 salience_config,
                 part_count + 1,
                 0.10,
+                require_spectral_gate=octave_spectral_gate,
             )
             if voiced[frame]
             else []
@@ -330,6 +405,10 @@ def separate_stereo(
             for frame in range(mid_magnitude.shape[0])
         ]
     tracks = part_lib.form_tracks(peaks_per_frame)
+    if octave_partners:
+        tracks = tracks + octave_partner_tracks(
+            tracks, left_magnitude, right_magnitude, config.frequencies
+        )
     fingerprints = [part_lib.fingerprint(track, mid_magnitude, config) for track in tracks]
     labels = part_lib.assign_parts(tracks, fingerprints, part_count)
 

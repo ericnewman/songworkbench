@@ -263,6 +263,53 @@ try — it caught the pan-slice approach cleanly, and it will catch a too-loose 
 way. Not attempted here: it is a third octave iteration, and the risk of tuning to one 8 s
 fixture outweighs the value of another point estimate.
 
+## Follow-up 5 — octave rescue, done properly and still not ready
+
+Follow-up 4 ended with a named next step (stop gating the octave test behind the unreliable
+spectral test) and a named risk (tuning to one 8 s fixture). This does it across **four
+seeds**, both spreads, with the near-mono control AND the two non-octave casts as a
+regression guard. `run_octave_seeds.py` reproduces it. Averages over seeds 3/7/11/19:
+
+| cast | config | det | max corr | mean SI-SDR |
+| --- | --- | --- | --- | --- |
+| octave quartet, wide | off | 3.00/4 | 0.088 | −11.59 |
+| | gated | 3.00/4 | 0.308 | −4.82 |
+| | ungated | **4.00/4** | 0.333 | −9.48 |
+| | **per-track** | **4.00/4** | 0.456 | −8.35 |
+| octave quartet, near-mono (control) | off / per-track | 3.00/4 | 0.186 | −7.58 |
+| `quartet_no_octave`, wide | off | 4.00/4 | 0.157 | **−6.71** |
+| | per-track | 4.00/4 | 0.179 | −11.75 |
+| `distinct` (3 voices), wide | off | 3.00/3 | 0.063 | **+5.30** |
+| | per-track | 3.00/3 | 0.171 | −5.43 |
+
+**Two things were fixed along the way, and both were real bugs rather than tuning.**
+
+*Per-frame → per-track.* Firing on per-frame evidence injected phantom partners into casts
+with no octave pair, taking `distinct` from +5.30 to −12.74 dB. Interference between any two
+voices moves the even/odd pan balance on SOME frames; only a real partner moves it on most.
+Deciding once per note — the rule the rest of this chain already follows — removed that.
+
+*The evidence measure was medianing away its own signal.* Diagnosed by printing the per-track
+vote table: the real bottom voice's tracks (midi 60/62/64) scored **0.03-0.36** agreement and
+earned no partner, while junk tracks near midi 55 scored **0.87-1.00** and earned bogus ones.
+Partial 2 is the only informative one — it is where a partner's fundamental sits — and above
+it the partner's energy has decayed by 1/h, so four near-even mixtures outvoted the one bin
+carrying the signal. Comparing partial 2 against its odd neighbours (1 and 3) instead takes
+detection from 3.00/4 to **4.00/4 on every seed**, with the control still perfectly inert.
+
+**And it is still not shippable.** Every configuration that recovers the octave voice also
+damages the casts that already worked: `distinct` +5.30 → −5.43, `quartet_no_octave` −6.71 →
+−11.75. A specificity constraint — only rescue a voice that is MISSING, i.e. skip when a
+track already sits within 150 cents of 2·f0 — was the obvious candidate explanation and was
+tested: it moved `distinct` from −5.12 to −5.43, i.e. **not at all**. So the hypothesis that
+the regression comes from re-detecting an already-detected voice is **wrong, and the real
+cause is unknown.** That is the next question, and it is a better question than the one this
+follow-up started with.
+
+Left **opt-in and off** (`separate_stereo(octave_partners=True)`); the default path and every
+previously recorded number are unchanged, verified by re-running `run_stereo.py` (0.292 →
+0.161 reproduces exactly) and `selftest.py` (9/9).
+
 ## Recommended next steps
 
 0. **Split the work into two tracks with separate gates and separate shipping order.**
@@ -279,10 +326,11 @@ fixture outweighs the value of another point estimate.
    were all measured; together they buy 1.7 dB at four parts and change nothing at three.
    Magnitude-domain masking is at its limit. A phase-aware/complex mask remains untried and
    is the only remaining idea in this direction worth spending on.
-4. **Treat octave separation as its own research item.** Attempted twice more with stereo
-   (follow-up 4): pan-slice estimation is rejected, the octave-aware estimator is worth
-   resuming from — it is control-clean and already buys +8.2 dB on the octave cast, and the
-   one identified change is to stop gating it behind the unreliable spectral test.
+4. **Treat octave separation as its own research item.** Four attempts recorded (follow-ups
+   4 and 5). Detection is SOLVED — 4.00/4 across four seeds, control-clean, via per-track
+   decisions plus a partial-2-vs-odd-neighbours evidence measure. What is not solved is why
+   enabling it degrades the non-octave casts; the obvious explanation was tested and refuted.
+   Resume there, with `run_octave_seeds.py` as the harness.
 5. **Build the part layer on stereo input from the start.** See follow-up 2 — a mono
    downmix discards the evidence that makes four parts plausible at all.
 6. **Re-run on real audio** before committing to the Swift port: the fixture has no
