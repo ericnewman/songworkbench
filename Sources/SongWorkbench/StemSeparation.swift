@@ -769,7 +769,28 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
         let start = ContinuousClock.now
-        let baseResult = try await baseEngine.separate(request: request) { value in
+        let baseResult = try await separateBase(request: request, progress: progress)
+        guard !refiners.isEmpty else { return baseResult }
+        let manifest = try await refine(
+            baseManifest: baseResult.stemSet,
+            request: request,
+            progress: progress
+        )
+        return StemSeparationResult(
+            stems: baseResult.stems,
+            stemSet: manifest,
+            processingDuration: start.duration(to: .now)
+        )
+    }
+
+    /// Phase 1 alone: the base engine's stems, with progress scaled into the composite's first
+    /// 70% when refiners will follow. Split from `separate` so the pipeline can start
+    /// transcription and harmony on these stems while `refine` still runs.
+    func separateBase(
+        request: StemSeparationRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemSeparationResult {
+        try await baseEngine.separate(request: request) { value in
             guard !refiners.isEmpty else {
                 progress(value)
                 return
@@ -781,9 +802,17 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
                     totalUnits: 1_000
                 ))
         }
-        guard !refiners.isEmpty else { return baseResult }
+    }
 
-        var manifest = baseResult.stemSet
+    /// Phase 2 alone: run every refiner over an already-produced base manifest and return the
+    /// merged hierarchical manifest. Same outputs, same refined-file locations, and the same
+    /// recipe identity as the inline path — only WHEN it runs differs.
+    func refine(
+        baseManifest: StemSetManifest,
+        request: StemSeparationRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemSetManifest {
+        var manifest = baseManifest
         var descriptors = manifest.descriptors
         var assets = manifest.assets
         let fileManager = FileManager.default
@@ -854,11 +883,7 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
             assets: assets,
             recipeIdentity: recipe
         )
-        return StemSeparationResult(
-            stems: baseResult.stems,
-            stemSet: manifest,
-            processingDuration: start.duration(to: .now)
-        )
+        return manifest
     }
 
     var recipeIdentity: StemRecipeIdentity {

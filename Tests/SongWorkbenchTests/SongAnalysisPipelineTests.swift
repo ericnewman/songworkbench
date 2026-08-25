@@ -734,6 +734,109 @@ final class SongAnalysisPipelineTests: XCTestCase {
         )
     }
 
+    /// The refiners must OVERLAP transcription, not precede it: the vocal split alone costs
+    /// minutes, and running it before ASR serialized the two longest phases of the pipeline.
+    /// Also pins end-state parity — the deferred path's document must be indistinguishable from
+    /// the old inline path's (hierarchical manifest, full recipe id on the separation record).
+    func testDeferredRefinementOverlapsTranscriptionAndMatchesInlineEndState() async throws {
+        let sourceURL = try temporarySource()
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        let clock = EventClock()
+        let transcription = EventRecordingTranscriptionEngine(
+            result: transcriptionResult(), clock: clock)
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: StubStemEngine(outputDirectory: outputDirectory),
+            stemRefiners: [SlowEventRecordingStemRefiner(clock: clock)],
+            fastTranscriptionEngine: transcription,
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: StubHarmonyEngine()
+        )
+
+        let result = try await pipeline.run(
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL,
+                outputDirectory: outputDirectory,
+                title: "Overlapped Refinement",
+                stages: Set(SongAnalysisStage.allCases),
+                transcriptionMode: .fastDraft,
+                existingDocument: SongAnalysisDocument()
+            )
+        ) { _ in }
+
+        // Overlap: transcription began while the refiner was still running.
+        let events = await clock.events()
+        let transcriptionStart = try XCTUnwrap(
+            events.first { $0.label == "transcription-start" }?.index)
+        let refinerEnd = try XCTUnwrap(events.first { $0.label == "refiner-end" }?.index)
+        XCTAssertLessThan(
+            transcriptionStart, refinerEnd,
+            "transcription must start while the refiner is still running; events: \(events)")
+
+        // End-state parity with the inline path (same assertions as
+        // testSeparationStagePersistsConfiguredRefinedStemSet).
+        let manifest = try XCTUnwrap(result.document.stemSet?.resolved())
+        XCTAssertEqual(manifest.recipeIdentity?.refiners, ["pipeline-drum-refiner"])
+        XCTAssertEqual(manifest.descriptorsByID[.drumKick]?.parentID, StemKind.drums.id)
+        XCTAssertEqual(
+            result.document.stageRecords[.separation]?.provenance?.engineIdentifier,
+            "stem-separation+refiners"
+        )
+        XCTAssertTrue(
+            result.document.stageRecords[.separation]?.provenance?.configurationIdentifier
+                .hasPrefix("stem-recipe-") == true
+        )
+        XCTAssertEqual(result.document.stageRecords[.separation]?.state, .succeeded)
+        XCTAssertEqual(result.document.stageRecords[.transcription]?.state, .succeeded)
+        XCTAssertEqual(result.document.stageRecords[.harmony]?.state, .succeeded)
+    }
+
+    /// A refiner failure while transcription runs must not poison the run: base stems stand,
+    /// the separation record keeps its (accurate) base-only identity, and every other stage
+    /// completes normally. The recipe mismatch makes the next analyze re-separate.
+    func testDeferredRefinementFailureLeavesBaseStemsAndOtherStagesIntact() async throws {
+        let sourceURL = try temporarySource()
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: StubStemEngine(outputDirectory: outputDirectory),
+            stemRefiners: [FailingStemRefiner()],
+            fastTranscriptionEngine: RecordingTranscriptionEngine(result: transcriptionResult()),
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: StubHarmonyEngine()
+        )
+
+        let result = try await pipeline.run(
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL,
+                outputDirectory: outputDirectory,
+                title: "Refiner Failure",
+                stages: Set(SongAnalysisStage.allCases),
+                transcriptionMode: .fastDraft,
+                existingDocument: SongAnalysisDocument()
+            )
+        ) { _ in }
+
+        let manifest = try XCTUnwrap(result.document.stemSet?.resolved())
+        XCTAssertNil(manifest.descriptorsByID[.drumKick], "failed refiner must add no children")
+        XCTAssertEqual(result.document.stageRecords[.separation]?.state, .succeeded)
+        XCTAssertEqual(result.document.stageRecords[.transcription]?.state, .succeeded)
+        XCTAssertEqual(result.document.stageRecords[.harmony]?.state, .succeeded)
+        XCTAssertFalse(
+            result.document.stageRecords[.separation]?.provenance?.engineIdentifier
+                .hasSuffix("+refiners") == true,
+            "record must not claim refiners that never produced output"
+        )
+    }
+
     @MainActor
     func testCoordinatorDrainsCancelledRunBeforeStartingReplacement() async throws {
         let sourceURL = try temporarySource()
@@ -1323,5 +1426,95 @@ private final class LockedProgressRecorder: @unchecked Sendable {
 
     func append(_ value: Double) {
         lock.withLock { storage.append(value) }
+    }
+}
+
+/// Ordered event log for concurrency assertions: the ORDER of appends is the assertion,
+/// not wall-clock times.
+private actor EventClock {
+    struct Event: Sendable, CustomStringConvertible {
+        let index: Int
+        let label: String
+        var description: String { "\(index):\(label)" }
+    }
+
+    private var log: [Event] = []
+
+    func record(_ label: String) {
+        log.append(Event(index: log.count, label: label))
+    }
+
+    func events() -> [Event] {
+        log
+    }
+}
+
+private actor EventRecordingTranscriptionEngine: TranscriptionEngine {
+    nonisolated let metadata: TranscriptionEngineMetadata
+    private let result: TranscriptionResult
+    private let clock: EventClock
+
+    init(result: TranscriptionResult, clock: EventClock) {
+        self.result = result
+        self.clock = clock
+        metadata = result.engine
+    }
+
+    func transcribe(
+        request: TranscriptionRequest,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async throws -> TranscriptionResult {
+        await clock.record("transcription-start")
+        // Give the refiner time to finish FIRST if the pipeline wrongly serialized them —
+        // makes the ordering assertion fail loudly rather than by luck.
+        try? await Task.sleep(for: .milliseconds(50))
+        return result
+    }
+
+    func cancel(requestID: UUID) async {}
+
+    func releaseResources() async {}
+}
+
+private struct SlowEventRecordingStemRefiner: StemRefinementEngine {
+    let identifier = "pipeline-drum-refiner"
+    let outputStemIDs: [StemID] = [.drumKick]
+    let clock: EventClock
+
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
+        await clock.record("refiner-start")
+        try await Task.sleep(for: .milliseconds(300))
+        await clock.record("refiner-end")
+        let kickURL = request.outputDirectory.appendingPathComponent("kick.wav")
+        try Data("kick audio".utf8).write(to: kickURL)
+        return StemRefinementResult(
+            descriptors: [
+                StemDescriptor(
+                    id: .drumKick,
+                    parentID: StemKind.drums.id,
+                    role: .refinement,
+                    displayName: "Kick",
+                    order: 100
+                )
+            ],
+            assets: [
+                StemAsset(id: .drumKick, audioURL: kickURL, producerID: identifier)
+            ]
+        )
+    }
+}
+
+private struct FailingStemRefiner: StemRefinementEngine {
+    let identifier = "pipeline-drum-refiner"
+    let outputStemIDs: [StemID] = [.drumKick]
+
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
+        throw StemRefinementError.missingProducedAsset(.drumKick)
     }
 }

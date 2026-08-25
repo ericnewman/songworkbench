@@ -42,6 +42,14 @@ struct AnalysisStageContext: Sendable {
     let chordProBuilder: ChordProDraftBuilder
     let chordProReplacementPolicy: ChordProReplacementPolicy
     let stageProgress: @Sendable (Double, String) -> Void
+    /// When true, a live separation run executes the BASE engine only and the pipeline runs the
+    /// refiners itself, concurrently with transcription and harmony. Cache checks still use the
+    /// full base+refiners recipe, so a previously completed refined document is still a hit.
+    var defersRefinement: Bool = false
+    /// Set by the pipeline for the harmony stage while deferred refinement is in flight: awaits
+    /// the refined manifest (nil on refiner failure or cancellation, in which case harmony falls
+    /// back to the un-refined stems it already has).
+    var awaitRefinedStemSet: (@Sendable () async -> StemSetManifest?)? = nil
 }
 
 /// Uniform interface every stage adapter conforms to. The pipeline owns
@@ -151,13 +159,31 @@ struct SeparationStage: AnalysisStageRunning {
                 throw SongAnalysisPipelineError.missingStemEngine
             }
             let stageProgress = context.stageProgress
-            let result = try await stemEngine.separate(
-                request: StemSeparationRequest(
-                    inputURL: context.request.sourceURL,
-                    outputDirectory: context.request.outputDirectory
-                )
-            ) { value in
-                stageProgress(value.fractionCompleted, value.phase.rawValue)
+            let separationRequest = StemSeparationRequest(
+                inputURL: context.request.sourceURL,
+                outputDirectory: context.request.outputDirectory
+            )
+            let result: StemSeparationResult
+            // The record must describe what THIS run actually produced: on the deferred path only
+            // the base engine has run when this record is written, so it carries the base
+            // metadata; the pipeline rewrites it to the full base+refiners identity only after
+            // the refiners actually deliver. A record claiming "+refiners" over a manifest with
+            // no children would poison the cache check.
+            let recordMetadata: StemSeparationEngineMetadata
+            if context.defersRefinement,
+                let composite = stemEngine as? StemRefinementPipelineEngine
+            {
+                // Base only; the pipeline runs `composite.refine` concurrently with
+                // transcription and harmony and merges the refined manifest afterwards.
+                result = try await composite.separateBase(request: separationRequest) { value in
+                    stageProgress(value.fractionCompleted, value.phase.rawValue)
+                }
+                recordMetadata = composite.baseEngine.metadata
+            } else {
+                result = try await stemEngine.separate(request: separationRequest) { value in
+                    stageProgress(value.fractionCompleted, value.phase.rawValue)
+                }
+                recordMetadata = stemEngine.metadata
             }
             let stems = StoredStemFiles(files: result.stems)
             let stemSet = StoredStemSetManifest(manifest: result.stemSet)
@@ -168,11 +194,11 @@ struct SeparationStage: AnalysisStageRunning {
                 sourceDigest: sourceDigest,
                 sourceKind: .recording,
                 engine: AnalysisEngineVersion(
-                    identifier: stemEngine.metadata.engineIdentifier,
-                    version: stemEngine.metadata.engineVersion
+                    identifier: recordMetadata.engineIdentifier,
+                    version: recordMetadata.engineVersion
                 ),
-                modelIdentifier: stemEngine.metadata.modelIdentifier,
-                modelVersion: stemEngine.metadata.modelVersion,
+                modelIdentifier: recordMetadata.modelIdentifier,
+                modelVersion: recordMetadata.modelVersion,
                 configurationIdentifier: configurationIdentifier,
                 confidence: nil
             )
@@ -708,10 +734,20 @@ struct HarmonyStage: AnalysisStageRunning {
     }
 
     private func detectVocalHarmonies(_ context: AnalysisStageContext)
-        -> [VocalHarmonyObservation]?
+        async -> [VocalHarmonyObservation]?
     {
         guard (try? Task.checkCancellation()) != nil else { return nil }
-        let vocalSources = vocalHarmonySources(in: context.document)
+        // Deferred refinement: the lead/backing stems may still be separating when this — the
+        // tail of the harmony stage — is reached. Wait for them HERE rather than before the
+        // stage: everything above this point reads only base stems. A nil result (refiner failed
+        // or cancelled) degrades to the whole-vocals path below, same as no refiner at all.
+        var refinedManifest: StemSetManifest?
+        if let awaitRefined = context.awaitRefinedStemSet {
+            context.stageProgress(0.88, "waiting for voice stems")
+            refinedManifest = await awaitRefined()
+        }
+        let vocalSources = vocalHarmonySources(
+            in: context.document, refinedManifest: refinedManifest)
         guard !vocalSources.isEmpty else { return nil }
         let analyzer = VocalHarmonyAnalyzer(
             maximumNotesPerFrame: Self.vocalHarmonyMaximumVoices())
@@ -735,10 +771,13 @@ struct HarmonyStage: AnalysisStageRunning {
             maximumVoices: Self.vocalHarmonyMaximumVoices())
     }
 
-    private func vocalHarmonySources(in document: SongAnalysisDocument)
+    private func vocalHarmonySources(
+        in document: SongAnalysisDocument,
+        refinedManifest: StemSetManifest? = nil
+    )
         -> [(id: StemID, url: URL)]
     {
-        if let manifest = document.stemSet?.resolved() {
+        if let manifest = refinedManifest ?? document.stemSet?.resolved() {
             let assets = manifest.assetsByID
             let children = manifest.descriptors
                 .filter { descriptor in
@@ -903,7 +942,7 @@ struct HarmonyStage: AnalysisStageRunning {
             stageProgress(0.82, "detecting bass")
             let detectedBassNotes = detectBassNotes(context)
             stageProgress(0.88, "detecting harmony notes")
-            let detectedVocalHarmonyNotes = detectVocalHarmonies(context)
+            let detectedVocalHarmonyNotes = await detectVocalHarmonies(context)
             stageProgress(0.92, "aligning chord changes")
             // Instrumental onsets from the GUITAR stem (falling back to "other"/accompaniment):
             // computed BEFORE decoding so the Viterbi can discount its switch penalty for beat

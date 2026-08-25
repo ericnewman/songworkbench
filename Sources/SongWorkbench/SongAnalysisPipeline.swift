@@ -463,6 +463,13 @@ struct SongAnalysisPipeline: Sendable {
                 message: "Preparing analysis"
             ))
 
+        // Deferred refinement: when the vocal/drum refiners are enabled, the separation stage
+        // runs only the BASE model and this task runs the refiners concurrently with
+        // transcription and harmony (which read base stems only, except harmony's final
+        // vocal-harmony step, which awaits this task). nil result = failed or cancelled.
+        var pendingRefinement: Task<StemSetManifest?, Never>?
+        defer { pendingRefinement?.cancel() }
+
         var index = 0
         stageLoop: while index < orderedStages.count {
             let stage = orderedStages[index]
@@ -537,13 +544,19 @@ struct SongAnalysisPipeline: Sendable {
                     digest: snapshotDigest,
                     stageProgress: transcriptionProgress
                 )
-                let harmonyContext = makeContext(
+                var harmonyContext = makeContext(
                     request: request,
                     document: document,
                     sourceDigest: sourceDigest,
                     digest: snapshotDigest,
                     stageProgress: harmonyProgress
                 )
+
+                if let refinement = pendingRefinement {
+                    // Harmony's vocal-harmony step (the tail of the stage) waits on the refined
+                    // lead/backing stems; everything before it reads base stems only.
+                    harmonyContext.awaitRefinedStemSet = { await refinement.value }
+                }
 
                 let transcription: AnalysisStageOutcome
                 let harmony: AnalysisStageOutcome
@@ -619,6 +632,43 @@ struct SongAnalysisPipeline: Sendable {
 
                 if wasCancelled { break stageLoop }
 
+                // Fold the concurrently-refined stems into the document. Harmony already awaited
+                // the task, so this is an immediate read. On success the persisted document is
+                // IDENTICAL to the old inline path: hierarchical manifest plus a separation
+                // record carrying the full base+refiners recipe identity. On refiner failure or
+                // cancellation the base-only record stands — accurate (the manifest really has
+                // no children), and the recipe mismatch makes the next analyze re-separate.
+                if let refinement = pendingRefinement {
+                    pendingRefinement = nil
+                    if let refined = await refinement.value,
+                        let recipe = refined.recipeIdentity,
+                        var record = document.stageRecords[.separation],
+                        record.state == .succeeded
+                    {
+                        document.stemSet = StoredStemSetManifest(manifest: refined)
+                        if var provenance = record.provenance {
+                            let context = makeContext(
+                                request: request,
+                                document: document,
+                                sourceDigest: sourceDigest,
+                                digest: { _ in nil },
+                                stageProgress: { _, _ in }
+                            )
+                            if let composite = context.effectiveStemEngine {
+                                provenance.engineIdentifier =
+                                    composite.metadata.engineIdentifier
+                                provenance.engineVersion = composite.metadata.engineVersion
+                                provenance.modelIdentifier = composite.metadata.modelIdentifier
+                                provenance.modelVersion = composite.metadata.modelVersion
+                            }
+                            provenance.configurationIdentifier =
+                                "stem-recipe-\(recipe.stableStorageName)"
+                            record.provenance = provenance
+                        }
+                        document.stageRecords[.separation] = record
+                    }
+                }
+
                 // Skip the standalone harmony iteration; it has been handled.
                 index += 1
                 if index < orderedStages.count, orderedStages[index] == .harmony {
@@ -646,7 +696,7 @@ struct SongAnalysisPipeline: Sendable {
             let memoDigest: @Sendable (URL) -> String? = { url in
                 try? digestMemo.digest(of: url)
             }
-            let context = makeContext(
+            var context = makeContext(
                 request: request,
                 document: document,
                 sourceDigest: sourceDigest,
@@ -658,6 +708,17 @@ struct SongAnalysisPipeline: Sendable {
                     progress: progress
                 )
             )
+            // Defer refiners out of the separation stage only when transcription and harmony are
+            // BOTH scheduled next and may run concurrently — otherwise there is nothing to
+            // overlap with and the inline path is simpler. Serial (iPad) profiles never defer:
+            // overlapping a refiner with ASR is exactly the working-set collision that profile
+            // exists to prevent.
+            let defersRefinement =
+                stage == .separation
+                && executionPolicy == .concurrentIndependentStages
+                && !stemRefiners.isEmpty
+                && stages.contains(.transcription) && stages.contains(.harmony)
+            if defersRefinement { context.defersRefinement = true }
             let runner: any AnalysisStageRunning
             switch stage {
             case .separation:
@@ -674,6 +735,35 @@ struct SongAnalysisPipeline: Sendable {
             if outcome.wasCancelled {
                 wasCancelled = true
                 break stageLoop
+            }
+            if defersRefinement,
+                document.stageRecords[.separation]?.state == .succeeded,
+                document.stageRecords[.separation]?.provenance?.loadedFromCache != true,
+                let composite = context.effectiveStemEngine as? StemRefinementPipelineEngine,
+                let baseManifest = document.stemSet?.resolved()
+            {
+                let refinementRequest = StemSeparationRequest(
+                    inputURL: request.sourceURL,
+                    outputDirectory: request.outputDirectory
+                )
+                let refinementProgress = stageProgress(
+                    stage: .separation,
+                    completedStages: completedStages,
+                    totalStages: totalStages,
+                    progress: progress
+                )
+                pendingRefinement = Task {
+                    do {
+                        return try await composite.refine(
+                            baseManifest: baseManifest,
+                            request: refinementRequest
+                        ) { value in
+                            refinementProgress(value.fractionCompleted, value.phase.rawValue)
+                        }
+                    } catch {
+                        return nil
+                    }
+                }
             }
             // A solo transcription or harmony run refreshed one of the trio's inputs; re-derive
             // the displayed timing from raw before any later stage (ChordPro) reads it.
