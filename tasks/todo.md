@@ -3120,3 +3120,38 @@ Verification:
 - `swift format lint --strict --recursive Sources Tests`: passed.
 - Harmony stage tags bumped to `reduce-27-vocal-timbre` and `reduce-28-song-level-voices`, so
   cached analyses re-run.
+
+---
+
+## 2026-08-25/26 — Native Core ML separation, refiner concurrency, staleness fix
+
+Performance review found the models current (BS-RoFormer tops MVSep; HTDemucs dated for vocals
+but the karaoke refiner covers that) and the execution wrong: everything ran on CPU.
+
+- [x] Measured and closed the ONNX CoreML EP question: 120-partition graph, 472 s vs 49 s CPU.
+  Gate removed; verdict in `Benchmarks/STEM_SEPARATION.md` so it is not re-tried.
+- [x] Refiners now run concurrently with transcription+harmony (separation stage runs base only;
+  harmony's vocal-harmony tail awaits the refined manifest). Finished documents are
+  field-identical to the inline path; refiner failure keeps the honest base-only record.
+  Measured 330 s → 295 s (CPU contention limits the overlap until separation moved off-CPU).
+- [x] Native Core ML export of htdemucs_6s (`tools/demucs_export/export_coreml.py`): real-STFT,
+  conv-transpose overlap-add, rank-5 mask, aten::Int shim. 0.48 s/chunk under `.all` vs 1.7 s
+  ONNX CPU. Compute unit CHANGES NUMERICS: `.cpuOnly` = 9.7 dB garbage; `.all` pinned.
+- [x] Real-song A/B vs ONNX production stems: 37 s vs 49 s cold, 54–58 dB parity on every
+  signal-bearing stem. Synthetic-noise SDR understated real-music parity by ~35 dB — judge FP16
+  conversions on real audio.
+- [x] Bundled the 172 MB mlpackage into the macOS app via a copy-if-present build phase
+  (gitignored; missing artifact still builds and falls back to ONNX). CLI keeps the
+  `SW_STEM_NATIVE_COREML_MODEL` override. iPad untouched.
+- [x] Stem groups open collapsed (user preference).
+- [x] Fixed "stems are stale after a fresh analysis": the staleness expectation was pinned to the
+  ONNX engine while fresh records carried the native identity — the third shipping of this bug
+  class. Expectation now resolves through
+  `SongAnalysisPipelineFactory.currentSixStemEngineMetadata`; regression pinned in
+  `SeparationCachingPolicyTests`.
+
+Verification: policy 30/30, pipeline+factory 44/44, full suite 1021 (1 pre-existing fixture
+failure), lint clean, app resource verified at 172 MB inside Contents/Resources, relaunched.
+
+Open: listening pass on native stems; Analysis-card estimate still uses the ONNX base-pass
+multiplier (now over-estimates ~20–30 s); stem WAV writing is the next profiling target.
