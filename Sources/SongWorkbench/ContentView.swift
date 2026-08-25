@@ -364,6 +364,24 @@ private struct SongSidebar: View {
             .onMove { source, destination in
                 model.moveSongs(fromOffsets: source, toOffset: destination)
             }
+            // Files still being copied into local storage. Shown so a drop is acknowledged at
+            // once — the copy (and, for an iCloud source, the download) can take seconds, and a
+            // list that stays empty that whole time reads as a drop that did not work. Not
+            // selectable: until the copy lands there is nothing of ours to play.
+            ForEach(model.importingSongs) { song in
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 14)
+                    Text(song.title)
+                        .lineLimit(1)
+                        .foregroundStyle(Color.swTextSecondary)
+                    Spacer()
+                }
+                .help("Copying into the library…")
+                .accessibilityLabel("\(song.title), importing")
+                .selectionDisabled()
+            }
         }
     }
 

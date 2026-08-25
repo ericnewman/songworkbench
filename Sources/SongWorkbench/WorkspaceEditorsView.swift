@@ -1275,10 +1275,10 @@ struct ChordProTabEditor: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var playback: AudioPlaybackService
     @ObservedObject private var stemPlayback: StemPlaybackService
-    /// The white word-tracking ball was removed (Eric, 2026-08-20: "we can eliminate the white
-    /// bouncing ball") — the word highlight and the amber chord ball carry the playback cue.
-    /// Kept as a `let` gating all its machinery off, same pattern as `rhythmicSpacing` below.
-    private let bouncingBallEnabled = false
+    /// The white word-tracking ball: bounces along the lyric, landing on each word as it is sung.
+    /// Switched off on 2026-08-20 and back on on 2026-08-21, so it is a stored preference now
+    /// rather than a compile-time `let` — the machinery it gates never went anywhere.
+    @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     /// Beats per chart row; 0 = automatic from the measured phrase period.
     @AppStorage("chordProBeatsPerRow") private var beatsPerRow = 0
@@ -5603,6 +5603,10 @@ struct StemMixSidebar: View {
     @AppStorage(StemMixSidebar.expansionDefaultsKey) private var isExpanded = true
     static let expansionDefaultsKey = "stemMixRailExpanded"
     @State private var errorMessage: String?
+    /// Which refined stems are showing their parts. Starts empty and is filled from the manifest
+    /// in `.task`, so a newly separated song opens with its parts VISIBLE — the triangle is there
+    /// to collapse the detail you already have, not to hide it until you find the control.
+    @State private var expandedStemGroups: Set<StemID> = []
 
     init(model: AppModel) {
         self.model = model
@@ -5731,13 +5735,34 @@ struct StemMixSidebar: View {
                 // vertical fader + segmented VU meter, M/S, scribble label), just narrower.
                 HStack(alignment: .bottom, spacing: 3) {
                     ForEach(mixerChannels) { channel in
-                        slimStrip(channel)
+                        if channel.isGroup {
+                            groupStrip(channel)
+                            if expandedStemGroups.contains(channel.id) {
+                                ForEach(channel.children) { child in
+                                    slimStrip(child)
+                                }
+                            }
+                        } else {
+                            slimStrip(channel)
+                        }
                     }
                     slimClickStrip
                     Divider().padding(.horizontal, 2)
                     slimMasterStrip
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Open every group the first time a song's stems appear (and whenever the set of
+                // groups changes), without clobbering a collapse the user has since made.
+                .onChange(of: mixerChannels.map(\.id)) { _, _ in
+                    for channel in mixerChannels where channel.isGroup {
+                        expandedStemGroups.insert(channel.id)
+                    }
+                }
+                .task {
+                    for channel in mixerChannels where channel.isGroup {
+                        expandedStemGroups.insert(channel.id)
+                    }
+                }
             }
         }
     }
@@ -5802,6 +5827,75 @@ struct StemMixSidebar: View {
             }
             .frame(maxHeight: .infinity)
             .help("\(channel.displayName): \(Int((state.gain * 100).rounded()))%")
+
+            VStack(spacing: 2) {
+                miniToggle("M", isOn: state.isMuted, tint: Color.swCoral) {
+                    model.setStemMuted($0, for: channel.id)
+                }
+                miniToggle("S", isOn: state.isSoloed, tint: Color.swAccent) {
+                    model.setStemSoloed($0, for: channel.id)
+                }
+            }
+
+            ScribbleStrip(text: shortName(channel.displayName))
+        }
+        .frame(maxWidth: 38)
+    }
+
+    /// A refined stem's parent, as a group bus: one fader that scales every part under it, plus
+    /// the triangle that shows or hides them. The parent itself is not playing —
+    /// `StemMixGraph.activeNodes` drops it once it has children — so this fader reaches the audio
+    /// through those children (see `StemMixerModel.effectiveGain(for:activeIDs:parentByID:)`).
+    private func groupStrip(_ channel: StemMixerChannel) -> some View {
+        let state = model.stemMixer[channel.id]
+        let isExpanded = expandedStemGroups.contains(channel.id)
+        let partNames = channel.children.map(\.displayName).joined(separator: ", ")
+        return VStack(spacing: 4) {
+            Button {
+                withAnimation(.snappy) {
+                    if isExpanded {
+                        expandedStemGroups.remove(channel.id)
+                    } else {
+                        expandedStemGroups.insert(channel.id)
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(height: HorizontalLRMeter.totalHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(
+                isExpanded
+                    ? "Hide \(channel.displayName) parts (\(partNames))"
+                    : "Show \(channel.displayName) parts (\(partNames))"
+            )
+            .accessibilityLabel("\(channel.displayName) parts")
+
+            // No pan pot: panning a bus that has no node of its own would have to be pushed onto
+            // the children, silently overwriting the pan they each already carry.
+            Color.clear.frame(height: PanKnob.defaultSize)
+
+            HStack(spacing: 2) {
+                VerticalFader(
+                    value: Binding(
+                        get: { Double(model.stemMixer[channel.id].gain) },
+                        set: { model.setStemGain(Float($0), for: channel.id) }
+                    ),
+                    range: 0...Double(StemMixState.maximumGain),
+                    thumbWidth: 14,
+                    controlWidth: 15
+                )
+                Color.clear.frame(width: 11)
+            }
+            .frame(maxHeight: .infinity)
+            .help(
+                "\(channel.displayName) group: \(Int((state.gain * 100).rounded()))% — scales "
+                    + partNames
+            )
 
             VStack(spacing: 2) {
                 miniToggle("M", isOn: state.isMuted, tint: Color.swCoral) {

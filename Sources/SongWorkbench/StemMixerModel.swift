@@ -125,12 +125,45 @@ struct StemMixerModel: Codable, Equatable, Sendable {
     }
 
     func effectiveGain(for id: StemID, activeIDs: [StemID]? = nil) -> Float {
-        let state = self[id]
-        guard !state.isMuted else { return 0 }
-        let soloScope = activeIDs ?? Array(states.keys)
+        effectiveGain(for: id, activeIDs: activeIDs, parentByID: [:])
+    }
+
+    /// Gain for one audible stem, with refined stems treated as members of their parent's group:
+    /// the parent is a BUS, so its fader scales every child and its mute/solo applies to all of
+    /// them. `parentByID` comes from the stem manifest; pass `[:]` and this behaves exactly as the
+    /// flat mixer did, which is what every non-hierarchical caller still gets.
+    ///
+    /// Only the children are actually playing (`StemMixGraph.activeNodes` drops any parent that
+    /// has children), so a group fader has to reach the audio THROUGH its children — there is no
+    /// separate bus node to attenuate.
+    func effectiveGain(
+        for id: StemID,
+        activeIDs: [StemID]?,
+        parentByID: [StemID: StemID]
+    ) -> Float {
+        let chain = Self.ancestry(of: id, parentByID: parentByID)
+        // Muting a group mutes everything under it.
+        guard !chain.contains(where: { self[$0].isMuted }) else { return 0 }
+        let scope = activeIDs ?? Array(states.keys)
+        // Soloing a group solos its children, so a solo anywhere in a playing stem's ancestry
+        // counts — otherwise hitting S on "Vocals" would silence the very stems it names.
+        let soloScope = Set(scope.flatMap { Self.ancestry(of: $0, parentByID: parentByID) })
         let hasSolo = soloScope.contains { self[$0].isSoloed }
-        guard !hasSolo || state.isSoloed else { return 0 }
-        return state.gain
+        if hasSolo, !chain.contains(where: { self[$0].isSoloed }) { return 0 }
+        return chain.reduce(Float(1)) { $0 * self[$1].gain }
+    }
+
+    /// `id` first, then each ancestor. Defensively bounded: a manifest with a parent cycle would
+    /// otherwise hang the audio thread.
+    private static func ancestry(of id: StemID, parentByID: [StemID: StemID]) -> [StemID] {
+        var chain: [StemID] = []
+        var seen: Set<StemID> = []
+        var cursor: StemID? = id
+        while let current = cursor, seen.insert(current).inserted {
+            chain.append(current)
+            cursor = parentByID[current]
+        }
+        return chain
     }
 
     func effectiveGain(for kind: StemKind) -> Float {
@@ -148,17 +181,34 @@ struct StemMixerChannel: Identifiable, Equatable, Sendable {
     let id: StemID
     let displayName: String
     let order: Int
+    /// Refined stems that make up this one. Empty for an ordinary stem; when non-empty this
+    /// channel is a GROUP: it is not itself playing, and its fader scales these children.
+    let children: [StemMixerChannel]
+
+    init(id: StemID, displayName: String, order: Int, children: [StemMixerChannel] = []) {
+        self.id = id
+        self.displayName = displayName
+        self.order = order
+        self.children = children
+    }
+
+    var isGroup: Bool { !children.isEmpty }
 }
 
 enum StemMixerChannelProjector {
+    /// The console's strips, as a one-level tree: an ordinary stem is a leaf, and a stem that was
+    /// refined into parts becomes a GROUP holding them. The refined parts used to simply replace
+    /// their parent, which left no way to see that "Voice 1"/"Voice 2" were the vocals, and no
+    /// single fader for them.
     static func channels(for manifest: StemSetManifest) -> [StemMixerChannel] {
         let descriptors = manifest.descriptorsByID
-        let activeNodes = StemMixGraph(manifest: manifest).activeNodes
+        let graph = StemMixGraph(manifest: manifest)
+        let activeNodes = graph.activeNodes
         let numberedVocalNames = StemVoiceDisplayNames.numberedVocalNames(
             for: activeNodes,
             descriptorsByID: descriptors
         )
-        return activeNodes.compactMap { node in
+        func leaf(_ node: StemMixGraph.Node) -> StemMixerChannel? {
             guard let descriptor = descriptors[node.id] else { return nil }
             return StemMixerChannel(
                 id: node.id,
@@ -166,6 +216,40 @@ enum StemMixerChannelProjector {
                 order: descriptor.order
             )
         }
+        var grouped: [StemID: [StemMixerChannel]] = [:]
+        var roots: [StemMixerChannel] = []
+        for node in activeNodes {
+            guard let channel = leaf(node) else { continue }
+            if let parentID = node.parentID, descriptors[parentID] != nil {
+                grouped[parentID, default: []].append(channel)
+            } else {
+                roots.append(channel)
+            }
+        }
+        for (parentID, children) in grouped {
+            guard let descriptor = descriptors[parentID] else { continue }
+            roots.append(
+                StemMixerChannel(
+                    id: parentID,
+                    displayName: descriptor.displayName,
+                    order: descriptor.order,
+                    children: children.sorted { lhs, rhs in
+                        lhs.order == rhs.order ? lhs.id < rhs.id : lhs.order < rhs.order
+                    }
+                ))
+        }
+        return roots.sorted { lhs, rhs in
+            lhs.order == rhs.order ? lhs.id < rhs.id : lhs.order < rhs.order
+        }
+    }
+
+    /// Every playing stem's parent, for `StemMixerModel.effectiveGain`.
+    static func parentByID(for manifest: StemSetManifest) -> [StemID: StemID] {
+        var map: [StemID: StemID] = [:]
+        for descriptor in manifest.descriptors {
+            if let parentID = descriptor.parentID { map[descriptor.id] = parentID }
+        }
+        return map
     }
 }
 

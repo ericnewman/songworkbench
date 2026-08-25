@@ -74,15 +74,24 @@ struct SongAnalysisPipelineFactory: Sendable {
             // to ~3.9 GB, which thrashes on a machine that is already swapping. See
             // `AnalysisCapabilityProfile.prefersLowMemorySeparation`.
             let segmentFrames = ONNXSixStemSeparationEngine.currentSegmentFrames
+            let usesCoreML = ProcessInfo.processInfo.environment["SW_STEM_COREML"] == "1"
             stemEngine = DeferredStemSeparationEngine(
+                // Must agree with the provider chosen inside the closure below: this metadata is
+                // the separation cache identity, and a mismatch would serve one provider's stems
+                // as the other's.
                 metadata: ONNXSixStemSeparationEngine.metadata(
-                    usesCoreML: false, segmentFrames: segmentFrames)
+                    usesCoreML: usesCoreML, segmentFrames: segmentFrames)
             ) {
                 try await Task.detached(priority: .userInitiated) {
                     // CPU execution provider (known-good). The CoreML/ANE provider was tried for
-                    // speed but reverted until it can be verified not to break separation output.
+                    // speed but reverted until it can be verified not to break separation output;
+                    // SW_STEM_COREML=1 opts a run in so that verification can be done headlessly
+                    // (the engine's metadata already keys the cache differently per provider, so
+                    // the two variants never alias).
                     try ONNXSixStemSeparationEngine(
-                        modelURL: stemPackage.entryPointURL, segmentFrames: segmentFrames)
+                        modelURL: stemPackage.entryPointURL,
+                        usesCoreMLExecutionProvider: usesCoreML,
+                        segmentFrames: segmentFrames)
                 }.value
             }
         } else {

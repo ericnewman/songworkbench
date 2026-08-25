@@ -117,6 +117,15 @@ final class AppModel: ObservableObject {
     static let importLog = Logger(subsystem: "com.local.SongWorkbench", category: "import")
 
     @Published private(set) var songs: [Song] = []
+    /// Files accepted by a drop that are still being copied into local storage, in the order they
+    /// were picked. A drop used to show NOTHING until the copy (and, for iCloud items, the
+    /// download) finished, which reads as "the drop didn't work" and gets retried.
+    ///
+    /// Deliberately a separate list rather than placeholder entries inside `songs`: everything
+    /// else in the app takes `songs` to mean real, localized, selectable, persistable songs, and
+    /// putting not-yet-copied files in there quietly broke selection, persistence and the
+    /// duplicate guard at once.
+    @Published private(set) var importingSongs: [Song] = []
     @Published var selectedSongID: Song.ID?
     @Published private(set) var waveform: WaveformEnvelope?
     @Published private(set) var isLoadingWaveform = false
@@ -1856,6 +1865,9 @@ final class AppModel: ObservableObject {
         // deliberate import is auto-selected; bulk/folder imports only auto-select when nothing
         // is selected yet.
         let selectImmediately = urls.count == 1
+        // Show every accepted file NOW, in the order the user picked them, so the drop is
+        // acknowledged instantly instead of after the copy finishes.
+        importingSongs.append(contentsOf: imported)
         Task { [weak self] in
             // Release the security-scoped access held above once every source has been
             // copied into local storage (or failed) — runs on self == nil too.
@@ -1882,6 +1894,11 @@ final class AppModel: ObservableObject {
             // concurrent completions still slot into the user's picked order.
             let batchInsertionBase = self.songs.count
             var insertedBatchIndices: [Int] = []
+            @MainActor func finishImporting(_ id: Song.ID) {
+                if let index = self.importingSongs.firstIndex(where: { $0.id == id }) {
+                    self.importingSongs.remove(at: index)
+                }
+            }
 
             // Localize CONCURRENTLY. Each file's copy is keyed by a hash of its own original
             // path, so no two sources ever contend for a destination — but the loop used to run
@@ -1928,49 +1945,50 @@ final class AppModel: ObservableObject {
                     case .success(let localURL, let refreshed):
                         let localSong = Song(url: localURL)
                         if refreshed { refreshedSongs.append(localSong) }
-                        // Show each song the moment IT lands, rather than holding the whole batch
-                        // back until the last file finishes — a ten-file import previously showed
-                        // nothing at all until every copy completed.
-                        if !seenIDs.contains(localSong.id) {
-                            // Same bytes as an existing library song, or as a file accepted
-                            // earlier in THIS batch (two copies dropped together): skip it and
-                            // say so in the summary rather than growing a twin.
-                            if let duplicateOfTitle = result.duplicateOfTitle {
-                                skippedDuplicates += 1
-                                AppModel.importLog.log(
-                                    "importSongs: skipped \(song.title, privacy: .public) — same content as \(duplicateOfTitle, privacy: .public)"
-                                )
-                                continue
-                            }
-                            if let digest = result.digest,
-                                !acceptedDigests.insert(digest).inserted
-                            {
-                                skippedDuplicates += 1
-                                continue
-                            }
-                            seenIDs.insert(localSong.id)
-                            newSongs.append(localSong)
-                            // Land at the END of the library, in the order the user PICKED them
-                            // — not the order they happened to finish copying (localization runs
-                            // several at a time), and not alphabetically, which would silently
-                            // reshuffle a hand-ordered library on every import.
-                            let offset = insertedBatchIndices.filter { $0 < result.index }.count
-                            self.songs.insert(localSong, at: batchInsertionBase + offset)
-                            insertedBatchIndices.append(result.index)
-                            // Auto-select the first song of the batch as soon as it exists, on the
-                            // same terms as before: never while something is already analyzing (see
-                            // the note below on `resetSelectedSongProgressState`).
-                            if newSongs.count == 1, !self.isSongAnalysisRunning,
-                                selectImmediately || self.selectedSongID == nil
-                            {
-                                self.select(localSong)
-                            }
+                        guard !seenIDs.contains(localSong.id) else {
+                            finishImporting(song.id)
+                            continue
+                        }
+                        // Same bytes as an existing library song, or as a file accepted
+                        // earlier in THIS batch (two copies dropped together): skip it and
+                        // say so in the summary rather than growing a twin.
+                        if let duplicateOfTitle = result.duplicateOfTitle {
+                            skippedDuplicates += 1
+                            AppModel.importLog.log(
+                                "importSongs: skipped \(song.title, privacy: .public) — same content as \(duplicateOfTitle, privacy: .public)"
+                            )
+                            finishImporting(song.id)
+                            continue
+                        }
+                        if let digest = result.digest, !acceptedDigests.insert(digest).inserted {
+                            skippedDuplicates += 1
+                            finishImporting(song.id)
+                            continue
+                        }
+                        seenIDs.insert(localSong.id)
+                        newSongs.append(localSong)
+                        // Land at the END of the library, in the order the user PICKED them
+                        // — not the order they happened to finish copying (localization runs
+                        // several at a time), and not alphabetically, which would silently
+                        // reshuffle a hand-ordered library on every import.
+                        let offset = insertedBatchIndices.filter { $0 < result.index }.count
+                        self.songs.insert(localSong, at: batchInsertionBase + offset)
+                        insertedBatchIndices.append(result.index)
+                        finishImporting(song.id)
+                        // Auto-select the first song of the batch as soon as it exists, on the
+                        // same terms as before: never while something is already analyzing (see
+                        // the note below on `resetSelectedSongProgressState`).
+                        if newSongs.count == 1, !self.isSongAnalysisRunning,
+                            selectImmediately || self.selectedSongID == nil
+                        {
+                            self.select(localSong)
                         }
                     case .failure(let reason):
                         AppModel.importLog.error(
                             "importSongs: localization FAILED for \(song.title, privacy: .public): \(reason, privacy: .public)"
                         )
                         if firstFailure == nil { firstFailure = reason }
+                        finishImporting(song.id)
                     }
                 }
             }

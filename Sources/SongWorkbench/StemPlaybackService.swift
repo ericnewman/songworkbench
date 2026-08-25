@@ -35,6 +35,9 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         uniqueKeysWithValues: StemKind.allCases.map { ($0.id, AVAudioPlayerNode()) }
     )
     private var files: [StemID: AVAudioFile] = [:]
+    /// Parent of each playing stem, so a group fader reaches the children it names. Empty for
+    /// the flat `StemFiles` path, which has no hierarchy.
+    private var parentByID: [StemID: StemID] = [:]
     private var meterFiles: [StemID: AVAudioFile] = [:]
     private var accessedURLs: [URL] = []
     private var generation = 0
@@ -95,6 +98,7 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             engine.disconnectNodeOutput(player)
         }
         let activeNodes = StemMixGraph(manifest: manifest).activeNodes
+        parentByID = StemMixerChannelProjector.parentByID(for: manifest)
 
         do {
             for node in activeNodes {
@@ -130,7 +134,8 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         appliedMixer = mixer
         let activeIDs = files.keys.sorted()
         for id in activeIDs {
-            players[id]?.volume = mixer.effectiveGain(for: id, activeIDs: activeIDs)
+            players[id]?.volume = mixer.effectiveGain(
+                for: id, activeIDs: activeIDs, parentByID: parentByID)
             // AVAudioPlayerNode adopts AVAudioMixing: pan applies on the mixer input bus
             // (balance for stereo stems, constant-power placement for mono).
             players[id]?.pan = mixer[id].pan
@@ -384,6 +389,7 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     func unload() {
         stop(resetPosition: true)
         files.removeAll()
+        parentByID.removeAll()
         meterFiles.removeAll()
         duration = 0
         referenceID = nil

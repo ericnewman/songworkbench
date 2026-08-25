@@ -28,6 +28,8 @@ actor StemMixExporter {
         let graph = StemMixGraph(manifest: manifest)
         let activeNodes = graph.activeNodes
         let activeIDs = activeNodes.map(\.id)
+        // Group faders must survive export, or a bounce would not match what was auditioned.
+        let parentByID = StemMixerChannelProjector.parentByID(for: manifest)
         let accessedURLs = activeNodes.filter {
             $0.audioURL.startAccessingSecurityScopedResource() == true
         }
@@ -111,7 +113,8 @@ actor StemMixExporter {
             // (verified by the panned-export unit test).
             for id in activeIDs {
                 guard let player = players[id] else { continue }
-                player.volume = mixer.effectiveGain(for: id, activeIDs: activeIDs)
+                player.volume = mixer.effectiveGain(
+                    for: id, activeIDs: activeIDs, parentByID: parentByID)
                 // Match live playback: the exported mix carries each stem's pan position.
                 player.pan = mixer[id].pan
             }

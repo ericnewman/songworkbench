@@ -5,7 +5,7 @@ import XCTest
 @testable import SongWorkbench
 
 final class StemMixerTests: XCTestCase {
-    func testMixerChannelsExposeRefinedChildrenInsteadOfTheirParent() {
+    func testMixerChannelsGroupRefinedChildrenUnderTheirParent() {
         let root = URL(fileURLWithPath: "/tmp/refined-stems")
         let manifest = StemSetManifest(
             descriptors: [
@@ -60,11 +60,21 @@ final class StemMixerTests: XCTestCase {
             ]
         )
 
+        // The refined parts stay under their parent, which becomes a group bus: without this the
+        // console showed "Kick"/"Snare" as loose strips with nothing saying they were the drums,
+        // and no single fader over them.
         XCTAssertEqual(
             StemMixerChannelProjector.channels(for: manifest),
             [
-                StemMixerChannel(id: .drumKick, displayName: "Kick", order: 2),
-                StemMixerChannel(id: .drumSnare, displayName: "Snare", order: 3),
+                StemMixerChannel(
+                    id: StemKind.drums.id,
+                    displayName: "Drums",
+                    order: 1,
+                    children: [
+                        StemMixerChannel(id: .drumKick, displayName: "Kick", order: 2),
+                        StemMixerChannel(id: .drumSnare, displayName: "Snare", order: 3),
+                    ]
+                ),
                 StemMixerChannel(id: StemKind.bass.id, displayName: "Bass", order: 4),
             ]
         )
@@ -125,10 +135,11 @@ final class StemMixerTests: XCTestCase {
             ]
         )
 
+        let channels = StemMixerChannelProjector.channels(for: manifest)
+        XCTAssertEqual(channels.map(\.displayName), ["Vocals", "Bass"])
+        // The numbering the user reads is on the PARTS, under the vocals group.
         XCTAssertEqual(
-            StemMixerChannelProjector.channels(for: manifest).map(\.displayName),
-            ["Voice 1", "Voice 2", "Bass"]
-        )
+            channels.first?.children.map(\.displayName), ["Voice 1", "Voice 2"])
     }
 
     func testMixerChannelsNumberFutureFourPartVocalChildren() {
@@ -170,8 +181,10 @@ final class StemMixerTests: XCTestCase {
                 }
         )
 
+        let channels = StemMixerChannelProjector.channels(for: manifest)
+        XCTAssertEqual(channels.map(\.displayName), ["Vocals"])
         XCTAssertEqual(
-            StemMixerChannelProjector.channels(for: manifest).map(\.displayName),
+            channels.first?.children.map(\.displayName),
             ["Voice 1", "Voice 2", "Voice 3", "Voice 4"]
         )
     }
@@ -279,8 +292,12 @@ final class StemMixerTests: XCTestCase {
                 "Vocals", "Kick", "Snare", "Cymbals", "Toms", "Bass",
             ])
         XCTAssertFalse(targets.contains { $0.id == StemKind.drums.id })
-        XCTAssertEqual(
-            StemMixerChannelProjector.channels(for: manifest).map(\.id), targets.map(\.id))
+        // Waveform lanes stay FLAT — they show what is actually playing. The mixer nests the same
+        // stems under their parent, so compare the lanes against the console's leaves.
+        let leafIDs = StemMixerChannelProjector.channels(for: manifest).flatMap { channel in
+            channel.isGroup ? channel.children.map(\.id) : [channel.id]
+        }
+        XCTAssertEqual(leafIDs, targets.map(\.id))
         XCTAssertEqual(StemID.drumKick.laneColor, StemKind.drums.laneColor)
     }
 
@@ -332,6 +349,62 @@ final class StemMixerTests: XCTestCase {
             StemWaveformLaneProjector.targets(for: manifest).map(\.displayName),
             ["Voice 1", "Voice 2"]
         )
+    }
+
+    /// A refined stem's parent is a group BUS: it has no player of its own (the frontier drops it
+    /// once it has children), so its fader has to reach the audio through the children.
+    func testGroupFaderScalesItsChildrenAndMuteSoloCoverTheGroup() {
+        let parents: [StemID: StemID] = [
+            .vocalLead: StemKind.vocals.id,
+            .vocalBacking: StemKind.vocals.id,
+        ]
+        let active: [StemID] = [.vocalLead, .vocalBacking, StemKind.bass.id]
+        var mixer = StemMixerModel()
+        mixer.setGain(0.5, for: StemKind.vocals.id)
+        mixer.setGain(0.5, for: .vocalLead)
+
+        // child gain * group gain
+        XCTAssertEqual(
+            mixer.effectiveGain(for: .vocalLead, activeIDs: active, parentByID: parents), 0.25)
+        XCTAssertEqual(
+            mixer.effectiveGain(for: .vocalBacking, activeIDs: active, parentByID: parents), 0.5)
+        // an unrelated stem is untouched by the group
+        XCTAssertEqual(
+            mixer.effectiveGain(for: StemKind.bass.id, activeIDs: active, parentByID: parents), 1)
+
+        // Muting the group silences every part under it.
+        mixer.setMuted(true, for: StemKind.vocals.id)
+        XCTAssertEqual(
+            mixer.effectiveGain(for: .vocalLead, activeIDs: active, parentByID: parents), 0)
+        XCTAssertEqual(
+            mixer.effectiveGain(for: .vocalBacking, activeIDs: active, parentByID: parents), 0)
+        XCTAssertEqual(
+            mixer.effectiveGain(for: StemKind.bass.id, activeIDs: active, parentByID: parents), 1)
+        mixer.setMuted(false, for: StemKind.vocals.id)
+
+        // Soloing the group keeps its parts audible and silences everything else — the bug worth
+        // pinning is the opposite, where solo on a non-playing parent muted the whole song.
+        mixer.setSoloed(true, for: StemKind.vocals.id)
+        XCTAssertEqual(
+            mixer.effectiveGain(for: .vocalLead, activeIDs: active, parentByID: parents), 0.25)
+        XCTAssertEqual(
+            mixer.effectiveGain(for: .vocalBacking, activeIDs: active, parentByID: parents), 0.5)
+        XCTAssertEqual(
+            mixer.effectiveGain(for: StemKind.bass.id, activeIDs: active, parentByID: parents), 0)
+    }
+
+    /// With no hierarchy the grouped path must be byte-for-byte the old flat behaviour.
+    func testEmptyParentMapMatchesFlatMixing() {
+        var mixer = StemMixerModel()
+        mixer.setGain(0.75, for: .vocals)
+        mixer.setMuted(true, for: .drums)
+        let active = StemKind.allCases.map(\.id)
+        for kind in StemKind.allCases {
+            XCTAssertEqual(
+                mixer.effectiveGain(for: kind.id, activeIDs: active, parentByID: [:]),
+                mixer.effectiveGain(for: kind.id, activeIDs: active)
+            )
+        }
     }
 
     func testEffectiveGainsRespectGainMuteAndSolo() {

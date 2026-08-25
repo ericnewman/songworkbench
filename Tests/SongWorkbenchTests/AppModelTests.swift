@@ -31,6 +31,41 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.songs.contains { $0.id == Song(url: restoredURL).id })
     }
 
+    /// A dropped song must be visible before its file has finished being copied in. It used to
+    /// appear only after localization (a whole-file copy, plus an iCloud download for cloud
+    /// sources), which reads as a failed drop and gets retried.
+    func testDroppedSongIsListedAsImportingBeforeLocalizationCompletes() async throws {
+        let sourceURL = try makeSilentWAV()
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let store = DelayedProjectStore(document: ProjectLibraryDocument(songs: []))
+        let model = AppModel(store: store)
+
+        model.importSongs(from: [sourceURL])
+
+        // Synchronously after the call — no awaiting, no polling.
+        XCTAssertEqual(model.importingSongs.map(\.title), [Song(url: sourceURL).title])
+        // ...and NOT in `songs`, which every other part of the app reads as "real, playable".
+        XCTAssertTrue(model.songs.isEmpty)
+
+        try await waitUntil { model.importingSongs.isEmpty }
+        XCTAssertEqual(model.songs.map(\.title), [Song(url: sourceURL).title])
+    }
+
+    /// A failed import must not leave its row spinning forever.
+    func testFailedImportClearsTheImportingRow() async throws {
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("Gone.wav")
+        let store = DelayedProjectStore(document: ProjectLibraryDocument(songs: []))
+        let model = AppModel(store: store)
+
+        model.importSongs(from: [missingURL])
+
+        // The file does not exist, so it never becomes an importing row at all.
+        XCTAssertTrue(model.importingSongs.isEmpty)
+        XCTAssertTrue(model.songs.isEmpty)
+    }
+
     func testRestoreUsesReadableLocalSourceCacheWhenSavedSourceIsMissing() async throws {
         let missingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
