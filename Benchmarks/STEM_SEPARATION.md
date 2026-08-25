@@ -162,3 +162,51 @@ smaller/faster model export — not a provider flag on the existing ONNX files.
 For context, karaoke lead/backing refiner on the same track and build: 473 s
 originally, 310 s after raising intra-op threads 4->8, 172 s after skipping
 near-silent chunks and halving overlap to 1/8 segment.
+
+## 2026-08-26 — Native Core ML export of htdemucs_6s (tools/demucs_export/export_coreml.py)
+
+Converted the SAME 6-stem model the ONNX path uses, via torch.jit.trace +
+coremltools 9 (FP16 mlprogram, fixed 7.8 s input). Required: the repo's
+real-STFT patch (Core ML has no general complex dtype — native torch.stft
+lowers, but the first slice on the complex tensor fails), a conv-transpose
+overlap-add in place of F.fold (Core ML col2im needs stride >= kernel), a
+rank-5 rewrite of the cac mask (rank-6 tensors rejected), and an aten::Int
+converter shim. Patched-vs-stock parity 66 dB worst stem: patches are clean.
+
+Per 7.8 s chunk, same Mac as all measurements above:
+
+| Configuration | Time | Worst stem SDR vs FP32 torch | Verdict |
+| --- | --- | --- | --- |
+| .all (ANE fails to compile; FP16 Metal carries it) | 0.48 s | 19.2 dB, finite | PASS — ship candidate |
+| .cpuOnly | 0.40 s | 9.7 dB | FAIL — numerics, not speed |
+| .cpuAndGPU with FP32 DFT ops | 91.8 s | — | never ship; Metal chokes on FP32 matmuls |
+| ONNX Runtime CPU (production) | ~1.7 s | exact-class | current baseline |
+
+Compute unit CHANGES NUMERICS for this model: the Swift integration must pin
+.all and treat any fallback as an error, not a degradation. FP16-vs-FP32
+deviation of ~19-30 dB is the same class as the shipped June 4-stem package
+(0.99 correlation) and far below the separation model's own error; the ship
+gate is a real-song A/B against the ONNX production stems plus downstream
+chord/beat equality, not synthetic SDR alone.
+
+Projected: base separation for a 3:36 song ~15-20 s vs 49 s ONNX CPU, and it
+frees the CPU for the transcription/refiner phases that now run concurrently.
+
+### Real-song A/B, native Core ML vs production ONNX (2026-08-26)
+
+"What's the Use" (3:36), release CLI, cold cache, refiners off, engine behind
+`SW_STEM_NATIVE_COREML_MODEL`:
+
+- Wall clock: 37 s (includes first-run mlpackage compile) vs 49 s ONNX CPU.
+  Inference is ~18 s of the 37; stem WAV writing now dominates.
+- Stem parity vs the ONNX stems: vocals 58.1 dB, guitar 55.4, drums 55.1,
+  accompaniment 54.7, bass 53.9, other 43.4 — all above the 40 dB inaudible
+  bar. Piano reads 22.4 dB only because the stem is ~-70 dBFS silence in this
+  track; its absolute difference is -93 dBFS.
+- The synthetic-noise SDR (~19-30 dB) understated real-music parity by ~35 dB:
+  random noise is out-of-distribution and FP16-hostile. Judge FP16 conversions
+  on real audio.
+
+Not yet promoted to default: needs a distribution decision for the 172 MB
+mlpackage (host alongside the other catalog models vs bundle) and a listening
+pass. The ONNX CPU path remains the default and the fallback.

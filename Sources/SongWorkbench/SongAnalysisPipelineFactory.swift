@@ -67,6 +67,22 @@ struct SongAnalysisPipelineFactory: Sendable {
             baseStemPackage = nil
         } else if capabilityProfile.stemSeparationTier == .fullSixStem
             || capabilityProfile.stemSeparationTier == .advancedDesktop,
+            let nativeModelPath = ProcessInfo.processInfo
+                .environment["SW_STEM_NATIVE_COREML_MODEL"],
+            FileManager.default.fileExists(atPath: nativeModelPath)
+        {
+            // Experiment gate for the native Core ML six-stem engine (16x realtime on GPU vs the
+            // ONNX CPU path; Benchmarks/STEM_SEPARATION.md 2026-08-26). Point the variable at the
+            // exported .mlpackage. Becomes a catalog model once the real-song A/B passes.
+            let nativeURL = URL(fileURLWithPath: nativeModelPath)
+            stemEngine = DeferredStemSeparationEngine(
+                metadata: CoreMLNativeSixStemSeparationEngine.metadata
+            ) {
+                try await CoreMLNativeSixStemSeparationEngine(modelURL: nativeURL)
+            }
+            baseStemPackage = await installedPackage(ModelCatalog.htdemucs)
+        } else if capabilityProfile.stemSeparationTier == .fullSixStem
+            || capabilityProfile.stemSeparationTier == .advancedDesktop,
             let stemPackage = await installedPackage(ModelCatalog.htdemucs)
         {
             baseStemPackage = stemPackage

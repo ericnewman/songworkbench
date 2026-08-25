@@ -218,6 +218,8 @@
 		F0C0DE000000000000000006 /* VocalHarmonyAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C0DE000000000000000002 /* VocalHarmonyAnalysis.swift */; };
 		F0C0DE000000000000000015 /* VocalTimbreClustering.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C0DE000000000000000012 /* VocalTimbreClustering.swift */; };
 		F0C0DE000000000000000016 /* VocalTimbreClustering.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C0DE000000000000000012 /* VocalTimbreClustering.swift */; };
+		F0C0DE000000000000000025 /* CoreMLNativeSixStemEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C0DE000000000000000022 /* CoreMLNativeSixStemEngine.swift */; };
+		F0C0DE000000000000000026 /* CoreMLNativeSixStemEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C0DE000000000000000022 /* CoreMLNativeSixStemEngine.swift */; };
 		F0C0DE000000000000000013 /* VocalTimbreClusteringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C0DE000000000000000014 /* VocalTimbreClusteringTests.swift */; };
 		F0C0DE000000000000000003 /* VocalHarmonyAnalyzerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C0DE000000000000000004 /* VocalHarmonyAnalyzerTests.swift */; };
 		B826B21A7B84403145708BDE /* Transcription.swift in Sources */ = {isa = PBXBuildFile; fileRef = C988753BCB1FE231508B56F9 /* Transcription.swift */; };
@@ -400,6 +402,7 @@
 		456D32DB3E7F5B0D7B6B72C7 /* BassLineAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BassLineAnalysis.swift; sourceTree = "<group>"; };
 		F0C0DE000000000000000002 /* VocalHarmonyAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VocalHarmonyAnalysis.swift; sourceTree = "<group>"; };
 		F0C0DE000000000000000012 /* VocalTimbreClustering.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VocalTimbreClustering.swift; sourceTree = "<group>"; };
+		F0C0DE000000000000000022 /* CoreMLNativeSixStemEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLNativeSixStemEngine.swift; sourceTree = "<group>"; };
 		47ABEB97E666EF44EF47BFCF /* WhisperFramework */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WhisperFramework; path = Dependencies/WhisperFramework; sourceTree = "<group>"; };
 		49C72557949867ABB059D603 /* StemPlaybackService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemPlaybackService.swift; sourceTree = "<group>"; };
 		4A0D13DB20D2C9D500EB12FE /* ChordProDraftBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProDraftBuilder.swift; sourceTree = "<group>"; };
@@ -641,6 +644,7 @@
 				456D32DB3E7F5B0D7B6B72C7 /* BassLineAnalysis.swift */,
 				F0C0DE000000000000000002 /* VocalHarmonyAnalysis.swift */,
 				F0C0DE000000000000000012 /* VocalTimbreClustering.swift */,
+				F0C0DE000000000000000022 /* CoreMLNativeSixStemEngine.swift */,
 				FAF0D950143B5B253B90EDA5 /* BassNote.swift */,
 				25BAD6AC10B9CFACB46DDDF1 /* BeatTracking.swift */,
 				861DC39E9A17EC50BDEC7609 /* ChartPickupGutter.swift */,
@@ -1059,6 +1063,7 @@
 				535EFEED5EEAF4D340FE6A9B /* BassLineAnalysis.swift in Sources */,
 				F0C0DE000000000000000005 /* VocalHarmonyAnalysis.swift in Sources */,
 				F0C0DE000000000000000015 /* VocalTimbreClustering.swift in Sources */,
+				F0C0DE000000000000000025 /* CoreMLNativeSixStemEngine.swift in Sources */,
 				029190A5E1F3E68176C124E8 /* BassNote.swift in Sources */,
 				3F8ABE242D107C4034AA8195 /* BeatTracking.swift in Sources */,
 				D04CC74F55DE7F0989830742 /* ChartPickupGutter.swift in Sources */,
@@ -1161,6 +1166,7 @@
 				B7C72C06BEDD4172AAA3E2B3 /* BassLineAnalysis.swift in Sources */,
 				F0C0DE000000000000000006 /* VocalHarmonyAnalysis.swift in Sources */,
 				F0C0DE000000000000000016 /* VocalTimbreClustering.swift in Sources */,
+				F0C0DE000000000000000026 /* CoreMLNativeSixStemEngine.swift in Sources */,
 				96577A098115DC83793C55B4 /* BassNote.swift in Sources */,
 				54B24FF88EBEDC0C65E91180 /* BeatTracking.swift in Sources */,
 				55B20F1597FC6956C474FCBD /* ChartPickupGutter.swift in Sources */,
