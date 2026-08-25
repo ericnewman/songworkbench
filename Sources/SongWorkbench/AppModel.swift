@@ -3143,7 +3143,10 @@ final class AppModel: ObservableObject {
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {
-        SeparationCachingPolicy(currentEngine: ONNXSixStemSeparationEngine.currentPlatformMetadata)
+        // Resolved through the factory so the expectation always matches whichever six-stem
+        // engine (native Core ML or ONNX) fresh separations actually run.
+        SeparationCachingPolicy(
+            currentEngine: SongAnalysisPipelineFactory.currentSixStemEngineMetadata)
     }
 
     private func isCurrentSeparation(record: AnalysisStageRecord?) -> Bool {

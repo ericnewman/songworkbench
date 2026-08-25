@@ -7,6 +7,18 @@ import Foundation
 /// resolves each model package's status and returns the assembled pipeline along
 /// with the statuses it observed, so the caller can publish them.
 struct SongAnalysisPipelineFactory: Sendable {
+    /// The engine identity a FRESH separation will record on this platform and configuration.
+    /// Every staleness/cache check must ask THIS, not a concrete engine type: pinning the check
+    /// to one engine has now shipped the "every song reports stale forever" bug twice — July's
+    /// low-memory `3-seg` records, and the native Core ML engine whose fresh records could never
+    /// match an ONNX expectation.
+    static var currentSixStemEngineMetadata: StemSeparationEngineMetadata {
+        if nativeSixStemModelURL != nil {
+            return CoreMLNativeSixStemSeparationEngine.metadata
+        }
+        return ONNXSixStemSeparationEngine.currentPlatformMetadata
+    }
+
     /// The native Core ML six-stem model, if this process can see one: the env override first
     /// (CLI and export testing), then the copy bundled into the macOS app. nil means the ONNX
     /// engine runs instead. macOS-only: the 7.8s FP16 forward pass is untested against the iPad

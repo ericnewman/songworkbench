@@ -17,6 +17,39 @@ final class SeparationCachingPolicyTests: XCTestCase {
 
     // MARK: - isCurrentEngine
 
+    /// The bug this pins (shipped 2026-08-26): the app's staleness expectation stayed pinned to
+    /// the ONNX engine while fresh separations recorded the native Core ML engine, so every
+    /// just-analyzed song reported "stems are stale". The expectation must come from
+    /// `SongAnalysisPipelineFactory.currentSixStemEngineMetadata`, and a policy built from the
+    /// native metadata must accept native records — with and without the refiner suffix.
+    func testNativeCoreMLRecordsAreCurrentForNativePolicy() {
+        let native = CoreMLNativeSixStemSeparationEngine.metadata
+        let nativePolicy = SeparationCachingPolicy(currentEngine: native)
+        let plain = record(
+            state: .succeeded,
+            provenance: provenance(
+                engineIdentifier: native.engineIdentifier,
+                engineVersion: native.engineVersion,
+                modelIdentifier: native.modelIdentifier ?? "",
+                modelVersion: native.modelVersion ?? ""
+            ))
+        XCTAssertTrue(nativePolicy.isCurrentEngine(plain))
+        let refined = record(
+            state: .succeeded,
+            provenance: provenance(
+                engineIdentifier: native.engineIdentifier
+                    + StemRefinementPipelineEngine.refinedSuffix,
+                engineVersion: native.engineVersion,
+                modelIdentifier: native.modelIdentifier ?? "",
+                modelVersion: native.modelVersion ?? ""
+            ))
+        XCTAssertTrue(nativePolicy.isCurrentEngine(refined))
+        // The failing configuration: an ONNX-pinned policy judging a native record.
+        XCTAssertFalse(policy.isCurrentEngine(plain))
+        XCTAssertFalse(
+            nativePolicy.isCurrentEngine(record(state: .succeeded, provenance: provenance())))
+    }
+
     func testIsCurrentEngineTrueWhenSucceededAndIdentityMatches() {
         XCTAssertTrue(policy.isCurrentEngine(record(state: .succeeded, provenance: provenance())))
     }
