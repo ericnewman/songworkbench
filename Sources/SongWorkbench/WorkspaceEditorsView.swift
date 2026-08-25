@@ -5603,9 +5603,10 @@ struct StemMixSidebar: View {
     @AppStorage(StemMixSidebar.expansionDefaultsKey) private var isExpanded = true
     static let expansionDefaultsKey = "stemMixRailExpanded"
     @State private var errorMessage: String?
-    /// Which refined stems are showing their parts. Starts empty and is filled from the manifest
-    /// in `.task`, so a newly separated song opens with its parts VISIBLE — the triangle is there
-    /// to collapse the detail you already have, not to hide it until you find the control.
+    /// Which refined stems are showing their parts. Starts empty — groups open COLLAPSED
+    /// (Eric, 2026-08-26): the console reads as the familiar six stems first, and the triangle
+    /// reveals the parts on demand. The group strip's fader/mute/solo still control the whole
+    /// group while collapsed, so nothing is lost until you want the per-part controls.
     @State private var expandedStemGroups: Set<StemID> = []
 
     init(model: AppModel) {
@@ -5751,18 +5752,6 @@ struct StemMixSidebar: View {
                     slimMasterStrip
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Open every group the first time a song's stems appear (and whenever the set of
-                // groups changes), without clobbering a collapse the user has since made.
-                .onChange(of: mixerChannels.map(\.id)) { _, _ in
-                    for channel in mixerChannels where channel.isGroup {
-                        expandedStemGroups.insert(channel.id)
-                    }
-                }
-                .task {
-                    for channel in mixerChannels where channel.isGroup {
-                        expandedStemGroups.insert(channel.id)
-                    }
-                }
             }
         }
     }
