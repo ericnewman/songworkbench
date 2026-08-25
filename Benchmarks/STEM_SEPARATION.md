@@ -139,3 +139,26 @@ requirement, and minimal upstream history require visible download/storage
 controls and a fallback error path. Objective output comparison found no gross
 leakage or boundary regression; a human listening pass remains advisable
 before a production release because correlation is not a perceptual metric.
+
+## 2026-08-25 — Current 6-stem ONNX path, CPU vs CoreML EP (measured)
+
+Machine: 8P+4E Apple Silicon, 24 GB. Input: "What's the Use" (3:36, 44.1 kHz
+stereo). Release build, cold analysis cache, both optional refiners disabled,
+`--stages separation` via the headless CLI.
+
+| Provider | Wall clock | Notes |
+| --- | --- | --- |
+| CPU (production default) | 49 s | 6 threads, ~3.9 GB arena |
+| CoreML/ANE (`SW_STEM_COREML=1`, since removed) | 472 s | graph split into 120 partitions of 1542 nodes; per-partition CPU<->ANE handoffs dominate |
+
+Verdict: the CoreML execution provider is ~10x SLOWER for this export and was
+removed rather than left as a trap. The karaoke BS-RoFormer ONNX fails the same
+way (179 partitions of 3341 nodes, ~59 s compile per session, SIGKILLed twice
+on 24 GB). ONNX Runtime's CoreML EP requires near-total op coverage in one
+partition to win; neither export has it. Acceleration paths that could work:
+a native Core ML model conversion (single graph, no EP partitioning) or a
+smaller/faster model export — not a provider flag on the existing ONNX files.
+
+For context, karaoke lead/backing refiner on the same track and build: 473 s
+originally, 310 s after raising intra-op threads 4->8, 172 s after skipping
+near-silent chunks and halving overlap to 1/8 segment.

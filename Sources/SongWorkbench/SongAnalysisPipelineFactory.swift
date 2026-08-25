@@ -74,24 +74,19 @@ struct SongAnalysisPipelineFactory: Sendable {
             // to ~3.9 GB, which thrashes on a machine that is already swapping. See
             // `AnalysisCapabilityProfile.prefersLowMemorySeparation`.
             let segmentFrames = ONNXSixStemSeparationEngine.currentSegmentFrames
-            let usesCoreML = ProcessInfo.processInfo.environment["SW_STEM_COREML"] == "1"
             stemEngine = DeferredStemSeparationEngine(
-                // Must agree with the provider chosen inside the closure below: this metadata is
-                // the separation cache identity, and a mismatch would serve one provider's stems
-                // as the other's.
                 metadata: ONNXSixStemSeparationEngine.metadata(
-                    usesCoreML: usesCoreML, segmentFrames: segmentFrames)
+                    usesCoreML: false, segmentFrames: segmentFrames)
             ) {
                 try await Task.detached(priority: .userInitiated) {
-                    // CPU execution provider (known-good). The CoreML/ANE provider was tried for
-                    // speed but reverted until it can be verified not to break separation output;
-                    // SW_STEM_COREML=1 opts a run in so that verification can be done headlessly
-                    // (the engine's metadata already keys the cache differently per provider, so
-                    // the two variants never alias).
+                    // CPU execution provider, and MEASURED as the right choice — do not re-try
+                    // CoreML without new evidence: on a 3:36 song the CoreML/ANE provider ran the
+                    // exported graph as 120 partitions of 1542 nodes and took 472 s against CPU's
+                    // 49 s (2026-08-25, Benchmarks/STEM_SEPARATION.md). The karaoke BS-RoFormer
+                    // failed the same way (179 partitions, SIGKILL). Any future acceleration
+                    // needs a single-partition export, not a provider flag.
                     try ONNXSixStemSeparationEngine(
-                        modelURL: stemPackage.entryPointURL,
-                        usesCoreMLExecutionProvider: usesCoreML,
-                        segmentFrames: segmentFrames)
+                        modelURL: stemPackage.entryPointURL, segmentFrames: segmentFrames)
                 }.value
             }
         } else {

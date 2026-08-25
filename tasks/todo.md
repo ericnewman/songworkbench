@@ -976,9 +976,9 @@ Only after Phase 0 clears the gate.
 - [ ] **iPad ~3 GB per-process ceiling.** Already forced the 2.5 s bundled re-export (7.8 s
       OOMs, 3.5 s tipped the cap). Running multiple separation models per song on iPad may be
       impossible. Any per-song selection MUST degrade to a single model on iPad.
-- [ ] **No timing data for the current 6-stem ONNX CPU path.** The only recorded benchmark is
-      the older 4-stem CoreML FP16 engine (`Benchmarks/STEM_SEPARATION.md`). Measure the
-      current path before promising switchable models — capture it during Phase 0.
+- [x] **No timing data for the current 6-stem ONNX CPU path.** Measured 2026-08-25 (see
+      `Benchmarks/STEM_SEPARATION.md`): 49 s for a 3:36 song on CPU; the CoreML EP was also
+      measured (472 s, 120-partition graph) and removed as a dead end.
 - [ ] **Licensing.** The current base model is CC-BY-NC-4.0 (non-commercial), and the best
       RoFormer weights are community-trained with unclear terms. Audit both before any
       commercial ship. This is a pre-existing exposure, not one this feature creates.
