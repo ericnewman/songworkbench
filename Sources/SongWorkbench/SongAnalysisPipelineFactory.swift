@@ -7,6 +7,25 @@ import Foundation
 /// resolves each model package's status and returns the assembled pipeline along
 /// with the statuses it observed, so the caller can publish them.
 struct SongAnalysisPipelineFactory: Sendable {
+    /// The native Core ML six-stem model, if this process can see one: the env override first
+    /// (CLI and export testing), then the copy bundled into the macOS app. nil means the ONNX
+    /// engine runs instead. macOS-only: the 7.8s FP16 forward pass is untested against the iPad
+    /// memory ceiling, and iPad ships the short-segment ONNX re-export.
+    static var nativeSixStemModelURL: URL? {
+        #if os(macOS)
+            if let override = ProcessInfo.processInfo
+                .environment["SW_STEM_NATIVE_COREML_MODEL"],
+                FileManager.default.fileExists(atPath: override)
+            {
+                return URL(fileURLWithPath: override)
+            }
+            return Bundle.main.url(
+                forResource: "HTDemucs6S_FP16", withExtension: "mlpackage")
+        #else
+            return nil
+        #endif
+    }
+
     let modelPackageManager: ModelPackageManager
     let harmonyEngine: AudioFileAnalysisService
     let cache: AnalysisResultDiskCache
@@ -67,14 +86,13 @@ struct SongAnalysisPipelineFactory: Sendable {
             baseStemPackage = nil
         } else if capabilityProfile.stemSeparationTier == .fullSixStem
             || capabilityProfile.stemSeparationTier == .advancedDesktop,
-            let nativeModelPath = ProcessInfo.processInfo
-                .environment["SW_STEM_NATIVE_COREML_MODEL"],
-            FileManager.default.fileExists(atPath: nativeModelPath)
+            let nativeURL = Self.nativeSixStemModelURL
         {
-            // Experiment gate for the native Core ML six-stem engine (16x realtime on GPU vs the
-            // ONNX CPU path; Benchmarks/STEM_SEPARATION.md 2026-08-26). Point the variable at the
-            // exported .mlpackage. Becomes a catalog model once the real-song A/B passes.
-            let nativeURL = URL(fileURLWithPath: nativeModelPath)
+            // Native Core ML six-stem engine: same model as the ONNX path, on the GPU — 37s vs
+            // 49s for a full song with 54+ dB stem parity (Benchmarks/STEM_SEPARATION.md,
+            // 2026-08-26). Bundled into the macOS app; the env var serves the headless CLI
+            // (which has no app bundle) and export testing. ONNX below remains the fallback
+            // whenever the bundled model is absent.
             stemEngine = DeferredStemSeparationEngine(
                 metadata: CoreMLNativeSixStemSeparationEngine.metadata
             ) {
