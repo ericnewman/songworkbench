@@ -905,8 +905,12 @@ private struct ChordGridDetailPopover: View {
                     Text("Added manually").font(.swDisplay(11))
                 }
             }
+            Toggle("Hidden", isOn: $event.hidden)
+                .help(
+                    "A hidden chord stays in this list but leaves the chart, the click, and "
+                        + "the included count — same switch the Review chart's popup sets.")
             LabeledContent("ChordPro") {
-                Text(isIncluded ? "Included" : "Below threshold")
+                Text(event.hidden ? "Hidden" : isIncluded ? "Included" : "Below threshold")
                     .font(.swDisplay(11))
                     .foregroundStyle(isIncluded ? Color.swMint : Color.swTextSecondary)
             }
@@ -1457,6 +1461,12 @@ struct ChordProTabEditor: View {
                             onToggleChordAccepted: { id in model.toggleChordAccepted(id: id) },
                             onSetChordManualTime: { id, time in
                                 model.setChordManualTime(id: id, manualTime: time)
+                            },
+                            onSetChordName: { id, name in
+                                model.setChordName(id: id, name: name)
+                            },
+                            onSetChordHidden: { id, hidden in
+                                model.setChordHidden(id: id, hidden: hidden)
                             }
                         )
                     }
@@ -1565,6 +1575,9 @@ struct ChordProTabEditor: View {
             fontSizeControl
             if config.showsPlaybackControls {
                 timingOffsetControl
+                if config.showsReviewAffordances {
+                    chordConfidenceControl
+                }
                 Menu {
                     if config.showsReviewAffordances {
                         Toggle("Beat dots", isOn: $beatDotsEnabled)
@@ -1940,6 +1953,36 @@ struct ChordProTabEditor: View {
 
     /// Compact render-only timing-offset tuner for the playback position indicators (word
     /// highlight and amber chord ball). −500…+500 ms, center = 0.
+    /// The same ChordPro confidence threshold the Chords page exposes (one shared model value,
+    /// so moving either slider moves both): chords below it leave the chart, the click, and the
+    /// count. Surfaced here because Review is where low-confidence chords are actually judged.
+    @ViewBuilder private var chordConfidenceControl: some View {
+        HStack(spacing: 6) {
+            VStack(spacing: 1) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.chordConfidenceThreshold) },
+                        set: { model.chordConfidenceThreshold = Float($0) }
+                    ),
+                    in: 0...1,
+                    step: 0.05
+                )
+                .frame(width: 90)
+                Text("Confidence")
+                    .font(.swDisplay(10))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .fixedSize()
+            }
+            .help(
+                "Minimum chord confidence for the chart and click — same threshold as the "
+                    + "Chords page. Chords below it are dropped from the generated chart.")
+            Text(model.chordConfidenceThreshold, format: .percent.precision(.fractionLength(0)))
+                .font(.swMono(11))
+                .foregroundStyle(Color.swTextSecondary)
+                .frame(width: 34, alignment: .trailing)
+        }
+    }
+
     @ViewBuilder private var timingOffsetControl: some View {
         let offsetBinding = Binding<Double>(
             get: { Double(model.chordProTimingOffsetMS) },
@@ -2123,7 +2166,7 @@ struct ChordProTabEditor: View {
             model.chordEvents
             .filter { event in
                 event.time >= gapStart && event.time < upSegment.start
-                    && (event.confidence.map { $0 >= model.chordConfidenceThreshold } ?? true)
+                    && model.isChordIncludedInChordPro(event)
             }
             .map(\.time)
             .sorted()
@@ -2399,6 +2442,8 @@ struct ChordProAppPreview: View {
     var onCommitLyricOverride: (TimedLyricSegment.ID, String) -> Void = { _, _ in }
     var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
     var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
+    var onSetChordName: (EditableChordEvent.ID, String) -> Void = { _, _ in }
+    var onSetChordHidden: (EditableChordEvent.ID, Bool) -> Void = { _, _ in }
 
     /// The live segment behind a rendered lyric line, by ordinal (nil for chord-only rows or an
     /// out-of-range ordinal — matches the existing `bassLabel(forLyricOrdinal:)` convention).
@@ -3003,7 +3048,9 @@ struct ChordProAppPreview: View {
             onCommitLyricOverride: onCommitLyricOverride,
             rowChordEvents: chordRow.events,
             onToggleChordAccepted: onToggleChordAccepted,
-            onSetChordManualTime: onSetChordManualTime
+            onSetChordManualTime: onSetChordManualTime,
+            onSetChordName: onSetChordName,
+            onSetChordHidden: onSetChordHidden
         )
     }
 
@@ -3732,6 +3779,8 @@ private struct ChordProPreviewBlockView: View {
     var rowChordEvents: [EditableChordEvent?] = []
     var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
     var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
+    var onSetChordName: (EditableChordEvent.ID, String) -> Void = { _, _ in }
+    var onSetChordHidden: (EditableChordEvent.ID, Bool) -> Void = { _, _ in }
 
     @State private var isEditingLyric = false
     @State private var draftLyricText = ""
@@ -3857,6 +3906,8 @@ private struct ChordProPreviewBlockView: View {
                         showsReviewAffordances: showsReviewAffordances,
                         onToggleChordAccepted: onToggleChordAccepted,
                         onSetChordManualTime: onSetChordManualTime,
+                        onSetChordName: onSetChordName,
+                        onSetChordHidden: onSetChordHidden,
                         overrideText: lyricSegment?.overrideText,
                         rowBassNotes: rowBassNotes,
                         rowHarmonyParts: rowHarmonyParts)
@@ -4141,6 +4192,8 @@ private struct ChordProPreviewLineView: View {
     var showsReviewAffordances = true
     var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
     var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
+    var onSetChordName: (EditableChordEvent.ID, String) -> Void = { _, _ in }
+    var onSetChordHidden: (EditableChordEvent.ID, Bool) -> Void = { _, _ in }
     /// A user-typed correction for this line (backlog #15 Phase 2 remainder). When set, the line
     /// renders as plain corrected text instead of the per-word ASR layout — hand-typed text has
     /// no per-word ASR timings to place rhythmically or bounce the ball over.
@@ -4251,6 +4304,50 @@ private struct ChordProPreviewLineView: View {
     /// Confidence marker drawn as a thin outline box around the chord glyph. A solid tinted
     /// background made the light chord text hard to read (amber behind light blue especially),
     /// so the tier color is now an outline only — same `chordTint(at:)` mapping, no fill.
+    /// Which chord glyph's correction popover is open, as an index into `line.chords`. One value
+    /// (not per-chord state) so opening another chord closes the first.
+    @State private var editedChordIndex: Int?
+
+    private func chordPopoverBinding(_ index: Int) -> Binding<Bool> {
+        Binding(
+            get: { editedChordIndex == index },
+            set: { if !$0 { editedChordIndex = nil } }
+        )
+    }
+
+    /// Click a chord glyph → hide it, correct its name, or accept it — the same storage the
+    /// Chords page edits, so a fix made while listening here is the fix, not a shadow copy.
+    @ViewBuilder private func chordPopover(at index: Int) -> some View {
+        if let event = chordEvent(at: index) {
+            ReviewChordPopover(
+                event: event,
+                rename: { name in onSetChordName(event.id, name) },
+                hide: { onSetChordHidden(event.id, true) },
+                toggleAccepted: { onToggleChordAccepted(event.id) },
+                dismiss: { editedChordIndex = nil }
+            )
+        }
+    }
+
+    /// Tiny percent above a LOW-confidence chord's name, so the number that decides its tint is
+    /// readable at a glance instead of only on click. High-tier and accepted chords stay clean.
+    @ViewBuilder private func chordConfidenceBadge(at index: Int) -> some View {
+        if showsReviewAffordances,
+            let event = chordEvent(at: index),
+            !event.accepted,
+            let confidence = event.confidence
+        {
+            let tier = ReviewConfidenceTier(confidence)
+            if tier.tint != Color.clear {
+                Text(confidence, format: .percent.precision(.fractionLength(0)))
+                    .font(.swMono(8, weight: .medium))
+                    .foregroundStyle(tier.tint)
+                    .fixedSize()
+                    .offset(y: -scale.scaled(10))
+            }
+        }
+    }
+
     /// A brief glow on a chord glyph at the moment its onset passes under the playhead, decaying
     /// over the beat it triggers on. The audible chord click answers "is this placement right?"
     /// better than any static picture can, but the click alone leaves you guessing WHICH chord
@@ -4367,7 +4464,8 @@ private struct ChordProPreviewLineView: View {
                     value.translation.width * value.translation.width
                     + value.translation.height * value.translation.height
                 guard distance > 9 else {
-                    onToggleChordAccepted(event.id)
+                    // Tap: open the correction popover (accept lives inside it now).
+                    editedChordIndex = index
                     return
                 }
                 let ruler = rowRuler
@@ -4503,11 +4601,11 @@ private struct ChordProPreviewLineView: View {
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(x: monospaceChordX(chord, at: index))
                     .onTapGesture {
-                        guard showsReviewAffordances else { return }
-                        if let event = chordEvent(at: index) {
-                            onToggleChordAccepted(event.id)
-                        }
+                        guard showsReviewAffordances, chordEvent(at: index) != nil else { return }
+                        editedChordIndex = index
                     }
+                    .overlay(alignment: .top) { chordConfidenceBadge(at: index) }
+                    .popover(isPresented: chordPopoverBinding(index)) { chordPopover(at: index) }
             }
         }
         .frame(width: monospaceWidth, alignment: .topLeading)
@@ -4836,9 +4934,12 @@ private struct ChordProPreviewLineView: View {
                     .overlay(chordOnsetGlow(at: index))
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(x: chordXs[index], y: topReserve + harmonyReserve + bassReserve)
-                    // Free-timestamp drag (no snapping) + tap-to-accept — rhythmic mode has a
-                    // true, uniform time axis (`pixelsPerSecond`), so dragging here is exact.
+                    // Free-timestamp drag (no snapping); a tap opens the correction popover —
+                    // rhythmic mode has a true, uniform time axis (`pixelsPerSecond`), so
+                    // dragging here is exact.
                     .gesture(chordDragGesture(at: index))
+                    .overlay(alignment: .top) { chordConfidenceBadge(at: index) }
+                    .popover(isPresented: chordPopoverBinding(index)) { chordPopover(at: index) }
             }
             // Rest marker: a short TRUE break after the last word (audit RC-4) — so the pause
             // the musician hears is visible on the chart instead of unexplained blank space.
@@ -5296,10 +5397,13 @@ private struct ChordProPreviewLineView: View {
                         // typeset over words, not seconds), so only tap-to-accept is offered
                         // here — free-timestamp drag needs rhythmic mode's real time axis.
                         .onTapGesture {
-                            guard showsReviewAffordances else { return }
-                            if let event = chordEvent(at: index) {
-                                onToggleChordAccepted(event.id)
-                            }
+                            guard showsReviewAffordances, chordEvent(at: index) != nil
+                            else { return }
+                            editedChordIndex = index
+                        }
+                        .overlay(alignment: .top) { chordConfidenceBadge(at: index) }
+                        .popover(isPresented: chordPopoverBinding(index)) {
+                            chordPopover(at: index)
                         }
                 }
             }
@@ -6266,5 +6370,65 @@ private struct ScribbleStrip: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 2).stroke(Color.black.opacity(0.2), lineWidth: 0.5)
             )
+    }
+}
+
+/// The chord-correction popup on the Review chart: hide a wrong detection, fix its name, or
+/// accept it — writing through the same model mutators the Chords page uses, so the two surfaces
+/// can never disagree about what an edit means.
+private struct ReviewChordPopover: View {
+    let event: EditableChordEvent
+    let rename: (String) -> Void
+    let hide: () -> Void
+    let toggleAccepted: () -> Void
+    let dismiss: () -> Void
+
+    @State private var name = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                TextField("Chord", text: $name)
+                    .font(.swMono(13, weight: .semibold))
+                    .frame(width: 90)
+                    .onSubmit {
+                        rename(name)
+                        dismiss()
+                    }
+                Button("Apply") {
+                    rename(name)
+                    dismiss()
+                }
+                .disabled(
+                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || name == event.chord)
+            }
+            LabeledContent("Confidence") {
+                if let confidence = event.confidence {
+                    Text(confidence, format: .percent.precision(.fractionLength(0)))
+                        .font(.swMono(12))
+                } else {
+                    Text("Added manually").font(.swDisplay(11))
+                }
+            }
+            Divider()
+            HStack {
+                Button(event.accepted ? "Un-accept" : "Accept") {
+                    toggleAccepted()
+                    dismiss()
+                }
+                Spacer()
+                Button("Hide Chord", role: .destructive) {
+                    hide()
+                    dismiss()
+                }
+                .help(
+                    "Removes this chord from the chart and the click without deleting it — "
+                        + "un-hide it from the Chords page.")
+            }
+        }
+        .padding(12)
+        .frame(width: 230)
+        .onAppear { name = event.chord }
     }
 }

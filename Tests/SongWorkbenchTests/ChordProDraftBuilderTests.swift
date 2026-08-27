@@ -854,6 +854,28 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertFalse(document.contains("low-confidence"))
     }
 
+    /// A user-hidden chord leaves the chart even when its confidence clears the threshold —
+    /// and even when it was added manually (nil confidence), which the threshold never drops.
+    func testBuildExcludesHiddenChordsRegardlessOfConfidence() {
+        let input = ChordProDraftInput(
+            title: "Hidden",
+            tempo: nil,
+            lyrics: [TimedLyricSegment(start: 0, end: 4, text: "One two three")],
+            chords: [
+                EditableChordEvent(time: 0, chord: "C", confidence: 0.95, hidden: true),
+                EditableChordEvent(time: 1, chord: "G", confidence: 0.95),
+                EditableChordEvent(time: 2, chord: "Am", confidence: nil, hidden: true),
+            ],
+            confidenceThreshold: 0.5
+        )
+
+        let document = ChordProDraftBuilder().build(input)
+
+        XCTAssertFalse(document.contains("[C]"))
+        XCTAssertTrue(document.contains("[G]"))
+        XCTAssertFalse(document.contains("[Am]"))
+    }
+
     func testBuildIsStableAcrossDifferentPersistenceIdentifiers() {
         let firstID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let secondID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!

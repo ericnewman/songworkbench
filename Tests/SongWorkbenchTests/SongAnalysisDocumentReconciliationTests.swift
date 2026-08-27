@@ -265,4 +265,36 @@ final class SongAnalysisDocumentReconciliationTests: XCTestCase {
         XCTAssertFalse(pick.contains(12))
         XCTAssertFalse(pick.contains(3.9))
     }
+
+    // MARK: - Hidden chords (Review popup / Chords page, 2026-08-26)
+
+    /// A hide is a judgement about the SONG, not one detection run — like `accepted`, it must
+    /// survive re-analysis onto whichever fresh event lands at the same time.
+    func testChordReconciliationCarriesHiddenForward() {
+        let old = [
+            EditableChordEvent(time: 10, chord: "C", confidence: 0.9, hidden: true),
+            EditableChordEvent(time: 20, chord: "G", confidence: 0.9),
+        ]
+        let fresh = [
+            EditableChordEvent(time: 10.2, chord: "C", confidence: 0.8),
+            EditableChordEvent(time: 20.1, chord: "G", confidence: 0.8),
+        ]
+
+        let reconciled = EditableChordEvent.reconciled(newEvents: fresh, against: old)
+
+        XCTAssertTrue(reconciled[0].hidden)
+        XCTAssertFalse(reconciled[1].hidden)
+    }
+
+    /// Documents written before the flag existed must decode with `hidden == false`.
+    func testChordEventDecodesWithoutHiddenKey() throws {
+        let legacy = Data(
+            """
+            {"time": 3.5, "chord": "Am", "confidence": 0.6}
+            """.utf8)
+        let event = try JSONDecoder().decode(EditableChordEvent.self, from: legacy)
+        XCTAssertFalse(event.hidden)
+        XCTAssertEqual(event.chord, "Am")
+    }
+
 }

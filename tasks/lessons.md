@@ -907,3 +907,12 @@ auditionable vocal audio stems unless a separator actually produced those files.
 - Read UserDefaults at the composition root, not inside a factory. Gating optional refiners on a
   static preference read inside `StemRefinementEngineFactory.production` broke its existing tests
   immediately; passing the choice through `Context` made the dependency visible and testable.
+
+## 2026-08-26 — Preserve the full requested Review affordance scope in handoffs
+
+**Mistake:** The recovery summary described the chord-correction popup and hidden-chord behavior,
+but omitted the concurrently implemented Review confidence slider and compact confidence badges.
+
+**Rule:** When resuming uncommitted UI work, summarize every user-visible surface from the working
+diff before asking what to do next; do not collapse related controls into the most recently edited
+interaction.

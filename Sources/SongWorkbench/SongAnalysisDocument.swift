@@ -259,6 +259,11 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
     /// Whether the user has explicitly accepted this chord event in the Review tab (backlog #15).
     /// Purely additive to the existing whole-song `chordReviewState` — does not affect it.
     var accepted: Bool = false
+    /// Explicitly hidden by the user (Review/Chords pages): kept in the event list — so it can be
+    /// un-hidden and so reconciliation across a re-analysis still has it to match against — but
+    /// excluded from the generated chart, the chord click, and the included count, exactly as if
+    /// it had fallen below the confidence threshold.
+    var hidden: Bool = false
     /// A user-dragged position from the Review chart (backlog #15 Phase 2 consolidation). `nil`
     /// means "use the detected `time`." Deliberately a FREE timestamp with no snapping (Eric's
     /// confirmed decision) — dragging a chord drops it exactly where released. Kept separate from
@@ -278,6 +283,7 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         case chord
         case confidence
         case accepted
+        case hidden
         case manualTime
         case placementCandidates
     }
@@ -288,6 +294,7 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         chord: String,
         confidence: Float? = nil,
         accepted: Bool = false,
+        hidden: Bool = false,
         manualTime: TimeInterval? = nil,
         placementCandidates: [String: TimeInterval] = [:]
     ) {
@@ -296,6 +303,7 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         self.chord = chord
         self.confidence = confidence
         self.accepted = accepted
+        self.hidden = hidden
         self.manualTime = manualTime
         self.placementCandidates = placementCandidates
     }
@@ -307,6 +315,7 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
         chord = try container.decode(String.self, forKey: .chord)
         confidence = try container.decodeIfPresent(Float.self, forKey: .confidence)
         accepted = try container.decodeIfPresent(Bool.self, forKey: .accepted) ?? false
+        hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
         manualTime = try container.decodeIfPresent(TimeInterval.self, forKey: .manualTime)
         placementCandidates =
             try container.decodeIfPresent([String: TimeInterval].self, forKey: .placementCandidates)
@@ -379,6 +388,9 @@ struct EditableChordEvent: Identifiable, Codable, Equatable, Sendable {
             var carried = fresh
             carried.manualTime = match.manualTime
             carried.accepted = match.accepted
+            // A hide is a judgement about the SONG ("no chord change here"), not about one
+            // detection run — it survives re-analysis the same way accepted does.
+            carried.hidden = match.hidden
             return carried
         }
     }

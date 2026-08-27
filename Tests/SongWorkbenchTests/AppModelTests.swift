@@ -373,6 +373,51 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.chordEvents[1].accepted)
     }
 
+    /// The Review popup's corrections write the same storage the Chords page edits — and unlike
+    /// the Chords page's raw binding, they rebuild the generated chart immediately (Eric,
+    /// 2026-07-07: edits propagate to every screen).
+    func testSetChordNameRewritesTheEventAndTheGeneratedChart() {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.lyricSegments = [TimedLyricSegment(start: 0, end: 4, text: "one two")]
+        let chord = EditableChordEvent(time: 0, chord: "Cmaj", confidence: 0.9)
+        model.chordEvents = [chord]
+
+        model.markChordsReviewed()
+        model.setChordName(id: chord.id, name: "C7")
+
+        XCTAssertEqual(model.chordEvents[0].chord, "C7")
+        // A rename is an edit: a previously reviewed chart must drop back to draft. (The chart
+        // TEXT rebuild is gated on a selected song + succeeded chordPro stage — production
+        // conditions covered by the builder tests, not constructible here.)
+        XCTAssertEqual(model.chordReviewState, .draft)
+
+        // Whitespace-only names are refused rather than committed as an empty chord.
+        model.setChordName(id: chord.id, name: "   ")
+        XCTAssertEqual(model.chordEvents[0].chord, "C7")
+    }
+
+    /// Hiding removes the chord from the chart, the included count, and the click times, while
+    /// the event itself stays for un-hiding from the Chords page.
+    func testSetChordHiddenExcludesFromChartCountAndClick() {
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        model.lyricSegments = [TimedLyricSegment(start: 0, end: 4, text: "one two")]
+        let hiddenChord = EditableChordEvent(time: 0, chord: "F#dim", confidence: 0.9)
+        let kept = EditableChordEvent(time: 2, chord: "G", confidence: 0.9)
+        model.chordEvents = [hiddenChord, kept]
+
+        model.setChordHidden(id: hiddenChord.id, hidden: true)
+
+        XCTAssertTrue(model.chordEvents[0].hidden)
+        XCTAssertFalse(model.isChordIncludedInChordPro(model.chordEvents[0]))
+        XCTAssertEqual(model.includedChordEventCount, 1)
+        XCTAssertEqual(model.placedChordTimes, [2], "a hidden chord must not click")
+
+        model.setChordHidden(id: hiddenChord.id, hidden: false)
+        XCTAssertTrue(model.isChordIncludedInChordPro(model.chordEvents[0]))
+        XCTAssertEqual(model.includedChordEventCount, 2)
+        XCTAssertEqual(model.placedChordTimes, [0, 2])
+    }
+
     func testSetChordManualTimeSetsAndClearsTheDragOverride() {
         let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
         let chord = EditableChordEvent(time: 4, chord: "C")
@@ -1189,7 +1234,7 @@ final class AppModelTests: XCTestCase {
                 lowMemorySeparation: lowMemory)
         }
 
-        // The song it was measured on: 58 + 73 + 172 + 100 s of work.
+        // The ONNX fallback: 58 + 73 + 172 + 100 s of work.
         XCTAssertEqual(estimate(216), 403, accuracy: 1)
         // Dropping the vocal refiner is the big lever — it must remove its whole 172 s.
         XCTAssertEqual(estimate(216, vocals: false), 231, accuracy: 1)
@@ -1205,6 +1250,16 @@ final class AppModelTests: XCTestCase {
 
         XCTAssertEqual(AppModel.formattedAnalysisDuration(45), "45 s")
         XCTAssertEqual(AppModel.formattedAnalysisDuration(403), "7 min")
+
+        // The native Core ML base model measured 37 s on the same song. It does not implement
+        // ONNX's low-memory segment option, so that switch cannot inflate the native estimate.
+        let native = AppModel.estimatedAnalysisSeconds(
+            forDuration: 216,
+            vocalVoiceSeparation: true,
+            drumPieceSeparation: true,
+            lowMemorySeparation: true,
+            nativeCoreMLSeparation: true)
+        XCTAssertEqual(native, 382, accuracy: 1)
     }
 }
 

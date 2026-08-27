@@ -3153,5 +3153,37 @@ but the karaoke refiner covers that) and the execution wrong: everything ran on 
 Verification: policy 30/30, pipeline+factory 44/44, full suite 1021 (1 pre-existing fixture
 failure), lint clean, app resource verified at 172 MB inside Contents/Resources, relaunched.
 
-Open: listening pass on native stems; Analysis-card estimate still uses the ONNX base-pass
-multiplier (now over-estimates ~20–30 s); stem WAV writing is the next profiling target.
+Outstanding follow-ups:
+
+- [ ] Complete a listening pass on native Core ML stems against the ONNX production stems.
+- [x] Recalibrate the Analysis-card estimate for the native Core ML base pass; it currently uses
+      the ONNX multiplier and over-estimates by roughly 20–30 seconds.
+- [x] Profile stem WAV writing to establish whether it is the next material analysis bottleneck.
+
+Trial review (2026-08-26): a clean separation-only CLI run on the Apr 20 `Summertime's here with
+you` recording completed with the bundled native Core ML model and produced vocals, drums, bass,
+guitar, piano, other, and accompaniment WAVs, each 233.50 seconds long, in a new temporary output
+directory. The debug CLI wall-clock time is not a release benchmark. `StreamingStemWriter` now
+emits aggregate `separation-output wav-write-finished` timing to the analysis-performance log;
+prior release profiling established that WAV writing dominates after the ~18-second inference pass.
+The only remaining acceptance item is an audible native-versus-ONNX comparison.
+
+---
+
+## 2026-08-26 — Review chord confidence controls and correction popover
+
+Acceptance criteria:
+
+- [x] Expose the shared chord-confidence threshold in the Review pane, with its current numeric
+      value, without changing the existing Chords-page behavior.
+- [x] Show small percentage badges above low- and medium-confidence Review chord glyphs; accepted
+      and high-confidence chords remain visually clean.
+- [x] Let a Review chord popup rename, accept, or hide that event through the same model state as
+      the Chords page.
+- [x] Persist hidden chords compatibly, carry their user judgement through re-analysis, and omit
+      them from the generated chart, click track, and included count.
+- [x] Run focused tests plus formatting and whitespace checks.
+
+Review: `swift test --jobs 1 --filter 'AppModelTests|ChordProDraftBuilderTests|
+SongAnalysisDocumentReconciliationTests'` completed, then the five added regressions passed
+explicitly. `make format-check` and `git diff --check` passed.

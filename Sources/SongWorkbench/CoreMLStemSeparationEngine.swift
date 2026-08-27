@@ -633,6 +633,7 @@ private final class StreamingStemWriter {
     private let includeAccompaniment: Bool
     private var files: [StemKind: AVAudioFile] = [:]
     private var accompanimentFile: AVAudioFile?
+    private var totalWriteDuration: Duration = .zero
 
     init(outputDirectory: URL, stems: [StemKind], sampleRate: Double) throws {
         self.outputDirectory = outputDirectory
@@ -660,6 +661,8 @@ private final class StreamingStemWriter {
 
     func append(_ region: [StemKind: [[Float]]], frameCount: Int) throws {
         guard frameCount > 0 else { return }
+        let startedAt = ContinuousClock.now
+        defer { totalWriteDuration += startedAt.duration(to: .now) }
         for kind in stems {
             guard let channels = region[kind], channels.count == 2 else {
                 throw CoreMLStemSeparationError.invalidPrediction
@@ -707,6 +710,8 @@ private final class StreamingStemWriter {
         } else {
             try fileManager.moveItem(at: staging, to: outputDirectory)
         }
+        AnalysisResourceLog.duration(
+            stage: "separation-output", event: "wav-write-finished", elapsed: totalWriteDuration)
         return StemFiles(
             vocals: outputDirectory.appendingPathComponent("vocals.wav"),
             drums: outputDirectory.appendingPathComponent("drums.wav"),

@@ -200,7 +200,9 @@ struct ChordProDraftBuilder: Sendable {
         // comment, or a same-section instrumental breath would wrongly fragment the section.
         var openSection: SongStructureAnalyzer.SectionKind?
         let includedChords = input.chords.compactMap { event -> RenderableChordEvent? in
-            guard event.confidence.map({ $0 >= input.confidenceThreshold }) ?? true else {
+            guard !event.hidden,
+                event.confidence.map({ $0 >= input.confidenceThreshold }) ?? true
+            else {
                 return nil
             }
             guard let label = chordLabel(event), !label.isEmpty else { return nil }

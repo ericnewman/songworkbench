@@ -596,11 +596,13 @@ final class AppModel: ObservableObject {
 
     /// Cost of each analysis pass as a MULTIPLE OF SONG DURATION, so the estimate scales with
     /// the song instead of only being right for the one it was measured on. Measured on an
-    /// 8-performance-core Mac against a 3:36 (216 s) song: base six-stem separation 58 s,
-    /// drum-piece refiner 73 s, vocal lead/backing refiner 172 s, and transcription + harmony
-    /// 100 s (those two overlap, so they are counted once).
+    /// 8-performance-core Mac against a 3:36 (216 s) song: base six-stem separation was 58 s
+    /// with ONNX CPU and is 37 s with the native Core ML model, drum-piece refiner 73 s, vocal
+    /// lead/backing refiner 172 s, and transcription + harmony 100 s (those two overlap, so they
+    /// are counted once).
     enum AnalysisCostFactor {
-        static let baseSeparation = 58.0 / 216.0
+        static let onnxBaseSeparation = 58.0 / 216.0
+        static let nativeCoreMLBaseSeparation = 37.0 / 216.0
         static let drumPieceRefiner = 73.0 / 216.0
         static let vocalVoiceRefiner = 172.0 / 216.0
         static let transcriptionAndHarmony = 100.0 / 216.0
@@ -618,11 +620,17 @@ final class AppModel: ObservableObject {
         forDuration duration: TimeInterval,
         vocalVoiceSeparation: Bool,
         drumPieceSeparation: Bool,
-        lowMemorySeparation: Bool
+        lowMemorySeparation: Bool,
+        nativeCoreMLSeparation: Bool = SongAnalysisPipelineFactory.nativeSixStemModelURL != nil
     ) -> TimeInterval {
+        let baseSeparation =
+            nativeCoreMLSeparation
+            ? AnalysisCostFactor.nativeCoreMLBaseSeparation
+            : AnalysisCostFactor.onnxBaseSeparation
         let basePenalty =
-            lowMemorySeparation ? 1 + AnalysisCostFactor.lowMemorySeparationPenalty : 1
-        var factor = AnalysisCostFactor.baseSeparation * basePenalty
+            lowMemorySeparation && !nativeCoreMLSeparation
+            ? 1 + AnalysisCostFactor.lowMemorySeparationPenalty : 1
+        var factor = baseSeparation * basePenalty
         if vocalVoiceSeparation { factor += AnalysisCostFactor.vocalVoiceRefiner }
         if drumPieceSeparation { factor += AnalysisCostFactor.drumPieceRefiner }
         factor += AnalysisCostFactor.transcriptionAndHarmony
@@ -681,9 +689,10 @@ final class AppModel: ObservableObject {
 
     /// Low-memory separation adds nothing new; it makes the base pass slower.
     var lowMemorySeparationCostSummary: String {
-        "+"
+        guard SongAnalysisPipelineFactory.nativeSixStemModelURL == nil else { return "+0 s" }
+        return "+"
             + Self.formattedAnalysisDuration(
-                estimateSongDuration * AnalysisCostFactor.baseSeparation
+                estimateSongDuration * AnalysisCostFactor.onnxBaseSeparation
                     * AnalysisCostFactor.lowMemorySeparationPenalty)
     }
 
@@ -1006,7 +1015,7 @@ final class AppModel: ObservableObject {
     }
 
     func isChordIncludedInChordPro(_ event: EditableChordEvent) -> Bool {
-        event.confidence.map { $0 >= chordConfidenceThreshold } ?? true
+        !event.hidden && (event.confidence.map { $0 >= chordConfidenceThreshold } ?? true)
     }
 
     func toggleActivePlayback() {
@@ -1767,6 +1776,35 @@ final class AppModel: ObservableObject {
     /// Toggles a chord event's Review-chart "accepted" flag, by id (backlog #15 Phase 2
     /// remainder — chart interactivity). A no-op if the id isn't found, e.g. a stale tap racing
     /// a fast re-analysis that already replaced the event.
+    /// Renames a chord from any surface (Review popup or Chords page) — one storage, one
+    /// behavior. Rebuilds the generated chart immediately: Eric, 2026-07-07, edits propagate to
+    /// every screen, and a rename after marking the chart reviewed un-reviews it the same way a
+    /// lyric edit does.
+    func setChordName(id: EditableChordEvent.ID, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+            let index = chordEvents.firstIndex(where: { $0.id == id }),
+            chordEvents[index].chord != trimmed
+        else { return }
+        chordEvents[index].chord = trimmed
+        chordProReviewState = .draft
+        rebuildGeneratedChordProDraft()
+        refreshChordClickTrack()
+    }
+
+    /// Hides or un-hides a chord: it stays in the event list (and survives re-analysis) but
+    /// leaves the chart, the click, and the included count, exactly like falling below the
+    /// confidence threshold.
+    func setChordHidden(id: EditableChordEvent.ID, hidden: Bool) {
+        guard let index = chordEvents.firstIndex(where: { $0.id == id }),
+            chordEvents[index].hidden != hidden
+        else { return }
+        chordEvents[index].hidden = hidden
+        chordProReviewState = .draft
+        rebuildGeneratedChordProDraft()
+        refreshChordClickTrack()
+    }
+
     func toggleChordAccepted(id: EditableChordEvent.ID) {
         guard let index = chordEvents.firstIndex(where: { $0.id == id }) else { return }
         chordEvents[index].accepted.toggle()
@@ -1790,7 +1828,10 @@ final class AppModel: ObservableObject {
     /// Chord onset times as currently resolved — the array to hand anything that must agree with
     /// what the user is seeing and hearing (chart positions, the chord click track).
     var placedChordTimes: [TimeInterval] {
-        chordEvents.map { placementTime(for: $0) }.sorted()
+        // Hidden chords are the user saying "no chord change here" — they must not click, and
+        // the ball must not chase them. (Below-threshold chords deliberately still pass: the
+        // threshold is a display gate the user audibly audits by ear.)
+        chordEvents.filter { !$0.hidden }.map { placementTime(for: $0) }.sorted()
     }
 
     func setChordManualTime(id: EditableChordEvent.ID, manualTime: TimeInterval?) {

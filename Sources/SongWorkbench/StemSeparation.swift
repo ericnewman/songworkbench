@@ -34,6 +34,19 @@ enum AnalysisResourceLog {
         logger.notice("\(fields.joined(separator: " "), privacy: .public)")
     }
 
+    /// Emits a measured sub-operation duration without pretending it began at a particular wall
+    /// clock instant. Used for work such as incremental WAV writes that happens repeatedly inside
+    /// a larger separation pass.
+    static func duration(stage: String, event: String, elapsed: Duration) {
+        let components = elapsed.components
+        let seconds =
+            Double(components.seconds)
+            + Double(components.attoseconds) / 1_000_000_000_000_000_000
+        logger.notice(
+            "stage=\(stage) event=\(event) elapsed_s=\(String(format: "%.2f", seconds), privacy: .public)"
+        )
+    }
+
     private static var physicalFootprintBytes: UInt64? {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(
