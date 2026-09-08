@@ -610,6 +610,8 @@ struct SongAnalysisPipeline: Sendable {
                 // Timing post-passes run HERE — where the data was made — so the ChordPro
                 // stage and the persisted document see the same lyrics/beats the app displays.
                 AnalysisTimingPostPasses.apply(to: &document)
+                // Bucket notes are cut on the grid the post-passes just settled, so they run last.
+                BucketNotePass.apply(to: &document, force: true)
 
                 completedStages += 1
                 progress(
@@ -771,6 +773,7 @@ struct SongAnalysisPipeline: Sendable {
                 document.stageRecords[stage]?.state == .succeeded
             {
                 AnalysisTimingPostPasses.apply(to: &document)
+                BucketNotePass.apply(to: &document, force: stage == .harmony)
             }
 
             completedStages += 1

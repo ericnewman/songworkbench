@@ -166,6 +166,46 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(BucketNoteTimeline.self, from: data), timeline)
     }
 
+    func testDocumentRoundTripsBucketNotesAndOlderDocumentsDecodeNil() throws {
+        let key = BucketGridKey(bpm: 100, anchor: 0.25, duration: 30)
+        let timeline = BucketNoteTimeline(
+            gridKey: key, clickTimes: [0.25, 0.85],
+            stems: [
+                StemBucketNotes(
+                    stemID: StemID(.bass),
+                    notes: [
+                        StemBucketNote(
+                            bucketIndex: 0, midiNote: 40, pitchClasses: [4], confidence: 0.9,
+                            coverage: 1)
+                    ])
+            ])
+        let document = SongAnalysisDocument(estimatedBPM: 100, bucketNotes: timeline)
+        let data = try JSONEncoder().encode(document)
+        let decoded = try JSONDecoder().decode(SongAnalysisDocument.self, from: data)
+        XCTAssertEqual(decoded.bucketNotes, timeline)
+
+        let older = try JSONDecoder().decode(
+            SongAnalysisDocument.self, from: Data("{}".utf8))
+        XCTAssertNil(older.bucketNotes)
+    }
+
+    func testPassSkipsCurrentTimelineUnlessForcedAndLeavesDocumentsWithoutStemsAlone() {
+        var document = SongAnalysisDocument(
+            sourceDuration: 4, estimatedBPM: 120, beatTimes: [0.5, 1.0, 1.5, 2.0])
+        XCTAssertNotNil(BucketNotePass.gridKey(for: document))
+        XCTAssertTrue(BucketNotePass.stemAudio(for: document).isEmpty)
+        BucketNotePass.apply(to: &document)
+        XCTAssertNil(document.bucketNotes)  // no stems → nothing to cut, nothing invented
+
+        let current = BucketNoteTimeline(
+            gridKey: BucketNotePass.gridKey(for: document)!, clickTimes: [0, 0.5], stems: [])
+        document.bucketNotes = current
+        BucketNotePass.apply(to: &document)
+        XCTAssertEqual(document.bucketNotes, current)  // current → untouched
+        BucketNotePass.apply(to: &document, force: true)
+        XCTAssertEqual(document.bucketNotes, current)  // forced but no stems → keeps the old
+    }
+
     // MARK: - Helpers
 
     private func tone(frequency: Double, duration: TimeInterval, amplitude: Float = 0.5) -> [Float]

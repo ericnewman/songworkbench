@@ -261,6 +261,12 @@ final class AppModel: ObservableObject {
     @Published var vocalHarmonyNotes: [VocalHarmonyObservation] = [] {
         didSet { persistSelectedAnalysis() }
     }
+    /// Per-stem notes per metronome bucket, mirrored from the document. May be stale for the
+    /// current grid — Review checks `isBucketTimelineCurrent` before drawing the rows.
+    @Published private(set) var bucketNotes: BucketNoteTimeline? {
+        didSet { persistSelectedAnalysis() }
+    }
+    @Published private(set) var isComputingBucketNotes = false
     @Published var estimatedKey: MusicalKey? {
         didSet { persistSelectedAnalysis() }
     }
@@ -1815,6 +1821,55 @@ final class AppModel: ObservableObject {
     /// Re-points the chord click at wherever the chords currently sit. Called whenever the
     /// audition changes so switching variants re-schedules the clicks against the SAME audio
     /// without stopping playback — that continuity is what makes the comparison judgeable.
+    /// The grid key the selected song's CURRENT timing produces (nil = no usable tempo grid).
+    var bucketGridKey: BucketGridKey? {
+        guard let selectedSongID, let document = analysisBySongID[selectedSongID] else {
+            return nil
+        }
+        return BucketNotePass.gridKey(for: document)
+    }
+
+    /// True when `bucketNotes` was cut on the grid the chart currently shows.
+    var isBucketTimelineCurrent: Bool {
+        bucketNotes?.isCurrent(for: bucketGridKey) ?? false
+    }
+
+    /// Whether "Compute Bucket Notes" can do anything: stems on disk and a tempo grid to cut on.
+    var canComputeBucketNotes: Bool {
+        guard !isComputingBucketNotes, !isSongAnalysisRunning, let selectedSongID,
+            let document = analysisBySongID[selectedSongID]
+        else { return false }
+        return BucketNotePass.gridKey(for: document) != nil
+            && !BucketNotePass.stemAudio(for: document).isEmpty
+    }
+
+    /// Recuts the bucket-note timeline from the stems on disk, on the current grid — the same
+    /// pass the pipeline runs, so a stale timeline (after a metrical retune) is refreshed
+    /// without re-separating or re-decoding anything.
+    func computeBucketNotes() {
+        guard canComputeBucketNotes, let songID = selectedSongID,
+            let document = analysisBySongID[songID]
+        else { return }
+        isComputingBucketNotes = true
+        Task { [weak self] in
+            let timeline = await Task.detached(priority: .userInitiated) {
+                BucketNotePass.timeline(for: document)
+            }.value
+            guard let self else { return }
+            self.isComputingBucketNotes = false
+            guard self.selectedSongID == songID else {
+                // The user moved on: store it on the song it belongs to without touching the
+                // published mirror.
+                if let timeline {
+                    self.analysisBySongID[songID]?.bucketNotes = timeline
+                    self.scheduleSave()
+                }
+                return
+            }
+            if let timeline { self.bucketNotes = timeline }
+        }
+    }
+
     func refreshChordClickTrack() {
         stemPlayback.loadChordClickTrack(times: placedChordTimes)
     }
@@ -2517,6 +2572,7 @@ final class AppModel: ObservableObject {
         beatTimes = []
         bassNotes = []
         vocalHarmonyNotes = []
+        bucketNotes = nil
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
         chordPlacementPicks = []
@@ -3139,6 +3195,7 @@ final class AppModel: ObservableObject {
         untranscribedVocalRegions = analysis.untranscribedVocalRegions
         bassNotes = analysis.bassNotes
         vocalHarmonyNotes = analysis.vocalHarmonyNotes
+        bucketNotes = analysis.bucketNotes
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
         chordPlacementPicks = analysis.chordPlacementPicks
@@ -3242,6 +3299,7 @@ final class AppModel: ObservableObject {
             timingPostPassTag: timingPostPassTag,
             bassNotes: bassNotes,
             vocalHarmonyNotes: vocalHarmonyNotes,
+            bucketNotes: bucketNotes,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
             chordPlacementPicks: chordPlacementPicks,

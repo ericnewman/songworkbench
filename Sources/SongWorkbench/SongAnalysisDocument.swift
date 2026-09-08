@@ -551,6 +551,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var timingPostPassTag: String?
     var bassNotes: [BassNoteObservation] = []
     var vocalHarmonyNotes: [VocalHarmonyObservation] = []
+    /// Per-stem notes inside each metronome bucket (`BucketNotePass`). `nil` for documents
+    /// analysed before this existed or with no usable tempo grid; may be STALE — check
+    /// `isCurrent(for:)` against the current grid key before showing it.
+    var bucketNotes: BucketNoteTimeline?
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
     /// Listener verdicts from the chord-placement A/B, newest last. A later pick overlapping an
@@ -584,6 +588,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case timingPostPassTag
         case bassNotes
         case vocalHarmonyNotes
+        case bucketNotes
         case estimatedKey
         case chordConfidenceThreshold
         case chordPlacementPicks
@@ -616,6 +621,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         timingPostPassTag: String? = nil,
         bassNotes: [BassNoteObservation] = [],
         vocalHarmonyNotes: [VocalHarmonyObservation] = [],
+        bucketNotes: BucketNoteTimeline? = nil,
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
         chordPlacementPicks: [ChordPlacementPick] = [],
@@ -646,6 +652,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.timingPostPassTag = timingPostPassTag
         self.bassNotes = bassNotes
         self.vocalHarmonyNotes = vocalHarmonyNotes
+        self.bucketNotes = bucketNotes
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
         self.chordPlacementPicks = chordPlacementPicks
@@ -695,6 +702,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
             try container.decodeIfPresent(
                 [VocalHarmonyObservation].self, forKey: .vocalHarmonyNotes)
             ?? []
+        bucketNotes = try container.decodeIfPresent(BucketNoteTimeline.self, forKey: .bucketNotes)
         estimatedKey =
             try container.decodeIfPresent(MusicalKey.self, forKey: .estimatedKey)
             ?? MusicalKeyEstimator().estimate(from: chords)

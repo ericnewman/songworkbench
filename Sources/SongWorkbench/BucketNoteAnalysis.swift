@@ -326,3 +326,80 @@ enum MonoSampleLoader {
         return (samples, format.sampleRate)
     }
 }
+
+/// The pipeline/app step that turns a document's stems and timing into its bucket timeline.
+/// Runs AFTER `AnalysisTimingPostPasses` (the grid it cuts on is the reconciled one the chart
+/// shows) and is best-effort: nothing here can fail a stage. It is also what the app's
+/// "Compute Bucket Notes" action calls, so a stale timeline is refreshed by the same code that
+/// made it.
+enum BucketNotePass {
+    /// The grid key the document's CURRENT timing produces, or nil when it has no usable grid.
+    static func gridKey(for document: SongAnalysisDocument) -> BucketGridKey? {
+        BucketGridKey.current(
+            beatTimes: document.beatTimes, bpm: document.estimatedBPM, barGrid: document.barGrid,
+            duration: duration(for: document))
+    }
+
+    /// The audio to listen to: the playable leaves of the stem set (a kept lead/backing split
+    /// replaces its parent vocals), else the legacy flat stem files. Drums are excluded here so
+    /// the analyzer never even opens them.
+    static func stemAudio(for document: SongAnalysisDocument) -> [(id: StemID, url: URL)] {
+        var entries: [(id: StemID, url: URL)] = []
+        if let manifest = document.stemSet?.resolved() {
+            entries = StemMixGraph(manifest: manifest).activeNodes.map { ($0.id, $0.audioURL) }
+        } else if let files = document.stems?.resolved() {
+            entries = [
+                (StemID(.vocals), files.vocals), (StemID(.bass), files.bass),
+                (StemID(.other), files.other),
+            ]
+            if let guitar = files.guitar { entries.append((StemID(.guitar), guitar)) }
+            if let piano = files.piano { entries.append((StemID(.piano), piano)) }
+            if let accompaniment = files.accompaniment {
+                entries.append((StemID(rawValue: "accompaniment"), accompaniment))
+            }
+        }
+        return entries.filter { BucketNoteAnalyzer.role(for: $0.id) != nil }
+            .sorted { $0.id < $1.id }
+    }
+
+    /// Cuts every pitched stem on the document's current metronome grid. `nil` when there is
+    /// no grid or no stems; a stem whose file cannot be read is simply absent from the result.
+    static func timeline(for document: SongAnalysisDocument) -> BucketNoteTimeline? {
+        guard let key = gridKey(for: document) else { return nil }
+        let clicks = MetronomeGrid.clickTimes(
+            beatTimes: document.beatTimes, bpm: document.estimatedBPM, barGrid: document.barGrid,
+            duration: key.duration)
+        guard clicks.count >= 2 else { return nil }
+        let audio = stemAudio(for: document)
+        guard !audio.isEmpty else { return nil }
+        let analyzer = BucketNoteAnalyzer()
+        var stems: [StemBucketNotes] = []
+        for entry in audio {
+            guard let role = BucketNoteAnalyzer.role(for: entry.id),
+                let notes = try? analyzer.analyze(url: entry.url, role: role, clickTimes: clicks)
+            else { continue }
+            stems.append(StemBucketNotes(stemID: entry.id, notes: notes))
+        }
+        guard !stems.isEmpty else { return nil }
+        return BucketNoteTimeline(gridKey: key, clickTimes: clicks, stems: stems)
+    }
+
+    /// Recomputes the timeline when the stored one is missing or stale for the document's
+    /// current grid — or always when `force` is set, which is what a fresh harmony run does,
+    /// since the stems it listened to may themselves be new even if the grid is not.
+    static func apply(to document: inout SongAnalysisDocument, force: Bool = false) {
+        if !force, let existing = document.bucketNotes,
+            existing.isCurrent(for: gridKey(for: document))
+        {
+            return
+        }
+        if let fresh = timeline(for: document) {
+            document.bucketNotes = fresh
+        }
+    }
+
+    private static func duration(for document: SongAnalysisDocument) -> TimeInterval {
+        if let source = document.sourceDuration, source > 0 { return source }
+        return document.beatTimes.max() ?? 0
+    }
+}
