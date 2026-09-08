@@ -58,7 +58,10 @@ SoloTranscriptionDiagnosticTests`, optional `SW_SOLO_DIAG_MATCH`, `SW_SOLO_DIAG_
   is upstream (a `guitar.lead` split, which the stem graph already models) or a real
   multi-pitch salience front end, not another chroma threshold.
 - A bare power chord (root + fifth) is two dominant classes and reads as lead.
-- Row rendering only on rhythmic-mode lines with word timings (same gate as the bucket rows);
-  instrumental lines — where solos actually live — are v2, as for bucket rows.
+- Rows render on any rhythmic-mode row with a time window — sung rows AND instrumental rows
+  (`monospaceContent` draws them on the same row ruler; the window is the row's SongTimeline
+  window via `ChordProPreviewLineWindowResolver.stemRowWindow`). Verified on Eight Miles High:
+  both passages land on instrumental rows 5–6 (0:16–0:24) and 48–49 (3:21–3:30). Monospace
+  (non-rhythmic) mode still has no ruler and shows no rows.
 - Two-digit column width means a 16th column is two monospaced characters wide; at small
   zoom on a fast song adjacent columns can touch.

@@ -69,4 +69,27 @@ final class ChordOnlyRowWindowTests: XCTestCase {
         }
         XCTAssertEqual(widths, [5.0, 5.0])
     }
+
+    /// Per-stem rows (bucket notes, solo tab) follow the lyric window on sung lines and the
+    /// row's own resolved window on instrumental rows, so a solo on an intro/break row is cut
+    /// on the same span the row's ruler draws.
+    func testStemRowWindowPrefersLyricWindowThenRowWindow() {
+        let lyric: [ClosedRange<TimeInterval>] = [10...14, 20...25]
+        XCTAssertEqual(
+            ChordProPreviewLineWindowResolver.stemRowWindow(
+                lyricOrdinal: 1, lyricLineWindows: lyric, rowStart: 0, rowDuration: 8),
+            20...25)
+        XCTAssertEqual(
+            ChordProPreviewLineWindowResolver.stemRowWindow(
+                lyricOrdinal: nil, lyricLineWindows: lyric, rowStart: 30, rowDuration: 8),
+            30...38)
+        // An ordinal the windows don't cover falls back to the row window too.
+        XCTAssertEqual(
+            ChordProPreviewLineWindowResolver.stemRowWindow(
+                lyricOrdinal: 5, lyricLineWindows: lyric, rowStart: 30, rowDuration: 8),
+            30...38)
+        XCTAssertNil(
+            ChordProPreviewLineWindowResolver.stemRowWindow(
+                lyricOrdinal: nil, lyricLineWindows: lyric, rowStart: 30, rowDuration: 0))
+    }
 }

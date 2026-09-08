@@ -50,6 +50,7 @@ final class SoloTranscriptionDiagnosticTests: XCTestCase {
             report += "bpm \(String(format: "%.1f", key.bpm)), \(clicks.count - 1) buckets, "
             report += "\(beatsPerBar)/4\n"
             let started = Date()
+            let rows = Self.timelineRows(for: document, title: name)
             let reference = SoloTranscriptionPass.referenceBucketRMS(
                 for: document, clickTimes: clicks)
             report += reference == nil ? "no vocal stem for prominence\n" : ""
@@ -112,6 +113,8 @@ final class SoloTranscriptionDiagnosticTests: XCTestCase {
                         Self.clock(passage.startTime) + "–" + Self.clock(passage.endTime),
                         passage.startTime, passage.endTime, passage.startBucket,
                         passage.endBucket, notes.count, passage.confidence)
+                    report += Self.rowsReceivingBlock(
+                        transcription: transcription, timeline: timeline, rows: rows)
                     for (row, label) in SoloTabRowFormatter.stringLabels.enumerated() {
                         report += "    \(label)|" + columns.map { $0.cells[row] }.joined() + "\n"
                     }
@@ -171,6 +174,43 @@ final class SoloTranscriptionDiagnosticTests: XCTestCase {
                 confidences.isEmpty ? 0 : confidences.reduce(0, +) / Float(confidences.count))
         }
         return out
+    }
+
+    /// The chart's `SongTimeline` rows, built exactly as `AppModel.songTimelineForPreview` does
+    /// (minus the confidence threshold and key, which do not move row windows).
+    private static func timelineRows(for document: SongAnalysisDocument, title: String)
+        -> [SongTimeline.Row]
+    {
+        guard let bpm = document.estimatedBPM, bpm > 0, !document.chords.isEmpty else { return [] }
+        let input = ChordProDraftInput(
+            title: title, tempo: bpm, lyrics: document.lyrics, chords: document.chords,
+            beatTimes: document.beatTimes, sourceDuration: document.sourceDuration,
+            untranscribedVocalRegions: document.untranscribedVocalRegions,
+            barGrid: document.barGrid, bassNotes: document.bassNotes)
+        return ChordProDraftBuilder().buildResult(input).timeline.rows
+    }
+
+    /// Which display rows would show a block for this passage: the rows whose window (lyric or
+    /// instrumental — the same fallback `ChordProPreviewLineWindowResolver.stemRowWindow` makes)
+    /// contains at least one of its 16th columns, as `SoloTabRowFormatter.blocks` decides.
+    private static func rowsReceivingBlock(
+        transcription: SoloTranscription, timeline: SoloTranscriptionTimeline,
+        rows: [SongTimeline.Row]
+    ) -> String {
+        let single = SoloTranscriptionTimeline(
+            gridKey: timeline.gridKey, clickTimes: timeline.clickTimes,
+            transcriptions: [transcription])
+        let receiving = rows.filter { row in
+            row.end > row.start
+                && !SoloTabRowFormatter.blocks(timeline: single, inWindow: row.start...row.end)
+                    .isEmpty
+        }
+        guard !receiving.isEmpty else { return "    rows: none (no row window covers it)\n" }
+        return "    rows: "
+            + receiving.map { row in
+                "\(row.number) (\(row.isLyric ? "lyric" : "instrumental") "
+                    + "\(clock(row.start))–\(clock(row.end)))"
+            }.joined(separator: ", ") + "\n"
     }
 
     /// Absolute (un-normalised) frame RMS percentiles in dBFS: what the stem's level actually

@@ -2611,19 +2611,31 @@ struct ChordProAppPreview: View {
 
     /// The line's bucket rows (one per visible stem), on the same window the bass/harmony rows
     /// use so the three kinds of row agree about which beats belong to the line.
-    private func bucketRows(forLyricOrdinal ordinal: Int?) -> [BucketNoteRow] {
-        guard let bucketNotes, let ordinal, lyricLineWindows.indices.contains(ordinal)
+    /// Sung lines use their lyric window; instrumental rows use the row's own strip window
+    /// (`lineStrip` — the SongTimeline row window when there is one), so the rows cover exactly
+    /// the span the row's ruler draws. See `ChordProPreviewLineWindowResolver.stemRowWindow`.
+    private func bucketRows(
+        forLyricOrdinal ordinal: Int?, rowStart: TimeInterval, rowDuration: TimeInterval
+    ) -> [BucketNoteRow] {
+        guard let bucketNotes,
+            let window = ChordProPreviewLineWindowResolver.stemRowWindow(
+                lyricOrdinal: ordinal, lyricLineWindows: lyricLineWindows, rowStart: rowStart,
+                rowDuration: rowDuration)
         else { return [] }
         return BucketNoteRowFormatter.rows(
             timeline: bucketNotes, hiddenStems: hiddenBucketStems,
-            inWindow: lyricLineWindows[ordinal], transposedBy: transpose)
+            inWindow: window, transposedBy: transpose)
     }
 
-    private func soloBlocks(forLyricOrdinal ordinal: Int?) -> [SoloTabBlock] {
-        guard let soloTranscriptions, let ordinal, lyricLineWindows.indices.contains(ordinal)
+    private func soloBlocks(
+        forLyricOrdinal ordinal: Int?, rowStart: TimeInterval, rowDuration: TimeInterval
+    ) -> [SoloTabBlock] {
+        guard let soloTranscriptions,
+            let window = ChordProPreviewLineWindowResolver.stemRowWindow(
+                lyricOrdinal: ordinal, lyricLineWindows: lyricLineWindows, rowStart: rowStart,
+                rowDuration: rowDuration)
         else { return [] }
-        return SoloTabRowFormatter.blocks(
-            timeline: soloTranscriptions, inWindow: lyricLineWindows[ordinal])
+        return SoloTabRowFormatter.blocks(timeline: soloTranscriptions, inWindow: window)
     }
 
     /// Beats per bar: the song's shared `SongBarGrid` when supplied (it always is from the app
@@ -3105,8 +3117,10 @@ struct ChordProAppPreview: View {
             forLyricOrdinal: item.lyricOrdinal)
         let itemRowHarmonyParts = timedHarmonyParts(
             forLyricOrdinal: item.lyricOrdinal)
-        let itemBucketRows = bucketRows(forLyricOrdinal: item.lyricOrdinal)
-        let itemSoloBlocks = soloBlocks(forLyricOrdinal: item.lyricOrdinal)
+        let itemBucketRows = bucketRows(
+            forLyricOrdinal: item.lyricOrdinal, rowStart: strip.start, rowDuration: strip.duration)
+        let itemSoloBlocks = soloBlocks(
+            forLyricOrdinal: item.lyricOrdinal, rowStart: strip.start, rowDuration: strip.duration)
         ChordProPreviewBlockView(
             block: item.block,
             scale: rowScale,
@@ -3641,6 +3655,21 @@ enum ChordProPreviewIndexing {
 }
 
 enum ChordProPreviewLineWindowResolver {
+    /// The time window a row's per-stem rows (bucket notes, solo tab) are cut on: a sung line's
+    /// lyric window, else the row's own resolved window (`rowStart`/`rowDuration`, which for an
+    /// instrumental row is the SongTimeline row window when one exists). `nil` when the row has
+    /// no usable window — then it has no ruler either, and nothing can be placed on it.
+    static func stemRowWindow(
+        lyricOrdinal: Int?, lyricLineWindows: [ClosedRange<TimeInterval>],
+        rowStart: TimeInterval, rowDuration: TimeInterval
+    ) -> ClosedRange<TimeInterval>? {
+        if let lyricOrdinal, lyricLineWindows.indices.contains(lyricOrdinal) {
+            return lyricLineWindows[lyricOrdinal]
+        }
+        guard rowDuration > 0 else { return nil }
+        return rowStart...(rowStart + rowDuration)
+    }
+
     static func chordOnlyLineWindow(
         items: [ChordProPreviewIndexedBlock],
         index: Int,
@@ -4375,7 +4404,7 @@ private struct ChordProPreviewLineView: View {
     /// bucket is one beat wide by construction, and a cell that would overlap its neighbour is a
     /// label too long for the beat, which is worth seeing rather than hiding.
     private var rhythmicBucketRows: [(row: BucketNoteRow, xs: [CGFloat])] {
-        guard !rowBucketRows.isEmpty, !rhythmicWords.isEmpty else { return [] }
+        guard !rowBucketRows.isEmpty, hasRowRuler else { return [] }
         return rowBucketRows.map { row in
             (row: row, xs: row.cells.map { rhythmicX(forTime: $0.time) })
         }
@@ -4385,9 +4414,69 @@ private struct ChordProPreviewLineView: View {
     /// rather than as one monospaced string so the tab stays on the beat even where the row's
     /// ruler is not perfectly linear.
     private var rhythmicSoloBlocks: [(block: SoloTabBlock, xs: [CGFloat])] {
-        guard !rowSoloBlocks.isEmpty, !rhythmicWords.isEmpty else { return [] }
+        guard !rowSoloBlocks.isEmpty, hasRowRuler else { return [] }
         return rowSoloBlocks.map { block in
             (block: block, xs: block.columns.map { rhythmicX(forTime: $0.time) })
+        }
+    }
+
+    /// True when `rhythmicX(forTime:)` means something on this row: sung rows with word timings
+    /// (the rhythmic path) and any rhythmic-mode row with a real time window — instrumental
+    /// rows and untranscribed lines, which `monospaceContent` draws on the same row ruler.
+    private var hasRowRuler: Bool {
+        !rhythmicWords.isEmpty || (rhythmicSpacing && lineDuration > 0)
+    }
+
+    /// Height the bucket rows and solo blocks take together.
+    private func stemRowsReserve(bucketRowCount: Int, soloBlockCount: Int) -> CGFloat {
+        bucketRowReserve * CGFloat(bucketRowCount)
+            + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
+            * CGFloat(soloBlockCount)
+    }
+
+    /// The per-stem bucket rows stacked from `baseY`, then the solo tab blocks (six strings
+    /// each) under them — one drawing for both the sung-row and the instrumental-row paths, so
+    /// the offsets cannot drift apart.
+    @ViewBuilder
+    private func stemRows(
+        bucketRows: [(row: BucketNoteRow, xs: [CGFloat])],
+        soloBlocks: [(block: SoloTabBlock, xs: [CGFloat])], baseY: CGFloat
+    ) -> some View {
+        ForEach(Array(bucketRows.enumerated()), id: \.offset) { rowIndex, entry in
+            let rowY = baseY + bucketRowReserve * CGFloat(rowIndex)
+            Text(entry.row.label)
+                .font(.swDisplay(scale.scaled(9), weight: .semibold))
+                .foregroundStyle(Color.swViolet.opacity(0.85))
+                .offset(x: 0, y: rowY)
+            ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
+                Text(cell.text)
+                    .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
+                    .foregroundStyle(Color.swViolet.opacity(cell.isDim ? 0.45 : 1))
+                    .offset(x: entry.xs[index], y: rowY)
+            }
+        }
+        ForEach(Array(soloBlocks.enumerated()), id: \.offset) { blockIndex, entry in
+            let blockY =
+                baseY + bucketRowReserve * CGFloat(bucketRows.count)
+                + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
+                * CGFloat(blockIndex)
+            ForEach(Array(SoloTabRowFormatter.stringLabels.enumerated()), id: \.offset) {
+                row, label in
+                Text(label)
+                    .font(.swDisplay(scale.scaled(8), weight: .semibold))
+                    .foregroundStyle(Color.swCoral.opacity(0.85))
+                    .offset(x: 0, y: blockY + soloStringReserve * CGFloat(row))
+            }
+            ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
+                ForEach(Array(column.cells.enumerated()), id: \.offset) { row, cell in
+                    Text(cell)
+                        .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
+                        .foregroundStyle(
+                            Color.swCoral.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
+                        )
+                        .offset(x: entry.xs[index], y: blockY + soloStringReserve * CGFloat(row))
+                }
+            }
         }
     }
 
@@ -5030,43 +5119,8 @@ private struct ChordProPreviewLineView: View {
                     .foregroundStyle(Color.swMint)
                     .offset(x: x, y: topReserve + harmonyReserve + bucketReserve + soloReserve)
             }
-            ForEach(Array(soloBlocks.enumerated()), id: \.offset) { blockIndex, entry in
-                let blockY =
-                    topReserve + harmonyReserve + bucketReserve
-                    + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
-                    * CGFloat(blockIndex)
-                ForEach(Array(SoloTabRowFormatter.stringLabels.enumerated()), id: \.offset) {
-                    row, label in
-                    Text(label)
-                        .font(.swDisplay(scale.scaled(8), weight: .semibold))
-                        .foregroundStyle(Color.swCoral.opacity(0.85))
-                        .offset(x: 0, y: blockY + soloStringReserve * CGFloat(row))
-                }
-                ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
-                    ForEach(Array(column.cells.enumerated()), id: \.offset) { row, cell in
-                        Text(cell)
-                            .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
-                            .foregroundStyle(
-                                Color.swCoral.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
-                            )
-                            .offset(
-                                x: entry.xs[index], y: blockY + soloStringReserve * CGFloat(row))
-                    }
-                }
-            }
-            ForEach(Array(bucketRows.enumerated()), id: \.offset) { rowIndex, entry in
-                let rowY = topReserve + harmonyReserve + bucketRowReserve * CGFloat(rowIndex)
-                Text(entry.row.label)
-                    .font(.swDisplay(scale.scaled(9), weight: .semibold))
-                    .foregroundStyle(Color.swViolet.opacity(0.85))
-                    .offset(x: 0, y: rowY)
-                ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
-                    Text(cell.text)
-                        .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
-                        .foregroundStyle(Color.swViolet.opacity(cell.isDim ? 0.45 : 1))
-                        .offset(x: entry.xs[index], y: rowY)
-                }
-            }
+            stemRows(
+                bucketRows: bucketRows, soloBlocks: soloBlocks, baseY: topReserve + harmonyReserve)
             ForEach(Array(harmonyRows.enumerated()), id: \.offset) { rowIndex, row in
                 Text(row.part.displayName)
                     .font(.swDisplay(scale.scaled(9), weight: .semibold))
@@ -5532,7 +5586,14 @@ private struct ChordProPreviewLineView: View {
 
     private var monospaceContent: some View {
         let dotSize = scale.scaled(3.5)
-        let contentHeight = contentBandHeight + ballTopReserve
+        // Bucket rows and solo tab draw here too when the row has a ruler — instrumental rows
+        // are where solos actually live. They sit under the ball reserve and push the chord
+        // band down, the same stacking as the sung rows.
+        let bucketRows = rhythmicBucketRows
+        let soloBlocks = rhythmicSoloBlocks
+        let stemReserve = stemRowsReserve(
+            bucketRowCount: bucketRows.count, soloBlockCount: soloBlocks.count)
+        let contentHeight = contentBandHeight + ballTopReserve + stemReserve
         return ZStack(alignment: .topLeading) {
             // A bar is every `beatsPerBar` beats in the instrumental passages and untimed
             // lines too — same ruler, same faint barlines as the sung rows, so the page's bar
@@ -5591,7 +5652,8 @@ private struct ChordProPreviewLineView: View {
                         }
                 }
             }
-            .offset(y: ballTopReserve)
+            .offset(y: ballTopReserve + stemReserve)
+            stemRows(bucketRows: bucketRows, soloBlocks: soloBlocks, baseY: ballTopReserve)
 
             soundingChordBall(
                 chordXs: line.chords.enumerated().map { monospaceChordX($1, at: $0) })
@@ -5606,7 +5668,7 @@ private struct ChordProPreviewLineView: View {
         }
         .frame(
             width: monospaceFrameWidth,
-            height: contentBandHeight + ballTopReserve,
+            height: contentHeight,
             alignment: .topLeading
         )
     }

@@ -3342,4 +3342,6 @@ that is the metronome telling the truth about the estimate, not a bug to smooth 
 - [x] Stage b: document field, `SoloTranscriptionPass` after `BucketNotePass`, AppModel (7048d49)
 - [x] Stage c: View menu "Solo Tab", `SoloTabRowFormatter`, six-string block in rows (d5d93ba)
 - [x] Stage d: prominence gate vs. vocal stems, env-gated diagnostic, spec
-- [ ] Verify in the .app; solos on instrumental (chord-only) lines; lead/rhythm stem split
+- [x] Stage e: bucket rows + solo block on instrumental rows (row-window fallback, shared
+      `stemRows` drawing in both line paths)
+- [ ] Verify in the .app; lead/rhythm stem split
