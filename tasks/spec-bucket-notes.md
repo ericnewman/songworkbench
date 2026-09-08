@@ -2,8 +2,8 @@
 
 Status: IMPLEMENTED 2026-09-08 (commits 90184d1, 8032220, 386f30a, + Review rows). Decisions
 (Eric): all pitched stems; one bucket per metronome click; computed in the pipeline and
-persisted. Defaults taken on the open questions (Eric said "continue"): chroma share 0.18 /
-max 3 classes; rows ordered voices → guitars → piano → other → bass (bass bucket row directly
+persisted. Defaults taken on the open questions (Eric said "continue"): chroma gate: RELATIVE (top ≥ 1.5/12, others ≥ 60 % of top — the absolute 0.18 silenced most
+of the guitar and piano, see tasks/bucket-chord-agreement-2026-09-08.md) / max 3 classes; rows ordered voices → guitars → piano → other → bass (bass bucket row directly
 above the bass-onset row); BOTH a pipeline sub-step and a "Compute Bucket Notes" View-menu
 action (same `BucketNotePass`, detached) — the action is also how a stale timeline is refreshed.
 

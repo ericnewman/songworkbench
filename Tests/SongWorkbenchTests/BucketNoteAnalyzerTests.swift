@@ -54,7 +54,7 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         var triad = [Float](repeating: 0, count: 12)
         triad[0] = 0.5  // C
         triad[4] = 0.3  // E
-        triad[7] = 0.15  // G — below the 0.18 share gate
+        triad[7] = 0.15  // G — under 60% of the top class (0.5), so not listed
         triad[9] = 0.05
         let frames = [
             BucketNoteAnalyzer.ChromaFrame(time: 0.25, chroma: triad, weight: 1),
@@ -159,7 +159,7 @@ final class BucketNoteAnalyzerTests: XCTestCase {
             timeline.isCurrent(for: BucketGridKey(bpm: 120, anchor: 1.0 + 1e-9, duration: 10)))
 
         var stale = timeline
-        stale.versionTag = "buckets-0"
+        stale.versionTag = "buckets-1"
         XCTAssertFalse(stale.isCurrent(for: key))
 
         let data = try JSONEncoder().encode(timeline)

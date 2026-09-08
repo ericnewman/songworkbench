@@ -60,7 +60,7 @@ struct StemBucketNotes: Codable, Equatable, Sendable {
 /// metronome grid at compute time — so bucket k spans `clickTimes[k]..<clickTimes[k+1]`.
 struct BucketNoteTimeline: Codable, Equatable, Sendable {
     /// Bump when detection or aggregation semantics change so stored timelines recompute.
-    static let currentVersionTag = "buckets-1"
+    static let currentVersionTag = "buckets-2"
 
     var versionTag: String
     var gridKey: BucketGridKey
@@ -101,8 +101,15 @@ struct BucketNoteAnalyzer: Sendable {
 
     /// Buckets with fewer voiced frames than this share are rests (no entry stored).
     static let minimumCoverage: Float = 0.2
-    /// Polyphonic: a pitch class needs this share of the bucket's chroma mass to be listed.
-    static let minimumPitchClassShare: Float = 0.18
+    /// Polyphonic: the strongest pitch class must carry at least this share of the bucket's
+    /// chroma mass (1.5× a flat 1/12) or the bucket is noise, not a chord. Measured 2026-09-08 on
+    /// real stems: the guitar's MEDIAN top share was 0.175 and the piano's 0.159, so the earlier
+    /// absolute 0.18 gate silenced most of both.
+    static let minimumTopShare: Float = 1.5 / 12
+    /// Polyphonic: further classes are listed while they hold at least this fraction of the top
+    /// class's share — relative, because harmonics spread a real instrument's chroma so that a
+    /// triad's tones each sit around 0.15–0.25 rather than clearing a fixed bar.
+    static let relativePitchClassShare: Float = 0.6
     static let maximumPitchClasses = 3
     /// Polyphonic: frames below this RMS (peak-normalised) are silence.
     static let silenceThreshold: Float = 0.003
@@ -224,8 +231,9 @@ struct BucketNoteAnalyzer: Sendable {
             let sum = mass[bucket].reduce(0, +)
             guard coverage >= minimumCoverage, sum > 0 else { continue }
             let shares = mass[bucket].map { $0 / sum }
+            guard let topShare = shares.max(), topShare >= minimumTopShare else { continue }
             let ranked = shares.enumerated()
-                .filter { $0.element >= minimumPitchClassShare }
+                .filter { $0.element >= topShare * relativePitchClassShare }
                 .sorted { $0.element > $1.element }
                 .prefix(maximumPitchClasses)
             guard let top = ranked.first else { continue }
