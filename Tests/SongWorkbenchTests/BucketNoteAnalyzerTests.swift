@@ -206,6 +206,56 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertEqual(document.bucketNotes, current)  // forced but no stems → keeps the old
     }
 
+    // MARK: - Review row formatting
+
+    func testRowsAreWindowedOrderedAndTransposedWithBassLast() {
+        let key = BucketGridKey(bpm: 120, anchor: 0, duration: 4)
+        let clicks: [TimeInterval] = [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+        let timeline = BucketNoteTimeline(
+            gridKey: key, clickTimes: clicks,
+            stems: [
+                StemBucketNotes(
+                    stemID: StemID(.bass),
+                    notes: [
+                        StemBucketNote(
+                            bucketIndex: 2, midiNote: 40, pitchClasses: [4], confidence: 0.9,
+                            coverage: 1),
+                        StemBucketNote(
+                            bucketIndex: 6, midiNote: 45, pitchClasses: [9], confidence: 0.9,
+                            coverage: 1),
+                    ]),
+                StemBucketNotes(
+                    stemID: StemID(.guitar),
+                    notes: [
+                        StemBucketNote(
+                            bucketIndex: 3, midiNote: nil, pitchClasses: [4, 8, 11],
+                            confidence: 0.3, coverage: 0.8)
+                    ]),
+                StemBucketNotes(
+                    stemID: .vocalLead,
+                    notes: [
+                        StemBucketNote(
+                            bucketIndex: 2, midiNote: 64, pitchClasses: [4], confidence: 0.7,
+                            coverage: 0.5)
+                    ]),
+                StemBucketNotes(stemID: StemID(.piano), notes: []),
+            ])
+
+        let rows = BucketNoteRowFormatter.rows(
+            timeline: timeline, inWindow: 1.0...2.0, transposedBy: 1)
+
+        // Voice, guitar, then bass last; the empty piano stem is dropped.
+        XCTAssertEqual(rows.map(\.label), ["Ld", "Gt", "Bs"])
+        XCTAssertEqual(rows[0].cells, [BucketNoteRowCell(time: 1.0, text: "F", isDim: false)])
+        XCTAssertEqual(rows[1].cells, [BucketNoteRowCell(time: 1.5, text: "F·A·C", isDim: true)])
+        XCTAssertEqual(rows[2].cells.map(\.time), [1.0])  // bucket 6 at 3.0 s is outside
+
+        XCTAssertEqual(
+            BucketNoteRowFormatter.rows(
+                timeline: timeline, hiddenStems: [StemID(.bass)], inWindow: 0...4
+            ).map(\.label), ["Ld", "Gt"])
+    }
+
     // MARK: - Helpers
 
     private func tone(frequency: Double, duration: TimeInterval, amplitude: Float = 0.5) -> [Float]

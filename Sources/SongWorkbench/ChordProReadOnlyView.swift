@@ -408,6 +408,112 @@ enum BassNoteRowFormatter {
     }
 }
 
+/// One cell of a bucket-note row: what a stem sounded like in the bucket starting at `time`.
+struct BucketNoteRowCell: Equatable, Sendable {
+    let time: TimeInterval
+    let text: String
+    /// Low-confidence verdicts are drawn dimmed rather than hidden — the bucket was voiced,
+    /// the detector just wasn't sure what of.
+    let isDim: Bool
+}
+
+/// One stem's row under a chart line: a short label and a cell per bucket in the line's window.
+struct BucketNoteRow: Equatable, Sendable {
+    let stemID: StemID
+    let label: String
+    let cells: [BucketNoteRowCell]
+}
+
+/// Formats a `BucketNoteTimeline` for the Review chart's optional per-stem bucket rows. Non-view,
+/// like `BassNoteRowFormatter`, so the windowing/naming/ordering is testable without SwiftUI.
+enum BucketNoteRowFormatter {
+    /// Cells below this confidence are dimmed.
+    static let dimConfidence: Float = 0.5
+
+    /// Rows in display order — voices, guitars, piano, other, bass last (so the bass bucket row
+    /// sits directly above the existing bass-onset row) — for every stem in the timeline not in
+    /// `hiddenStems`, restricted to buckets whose start falls in `window`. Stems with no cells in
+    /// the window are omitted. `transposedBy` MUST match the chart's chord transpose.
+    static func rows(
+        timeline: BucketNoteTimeline,
+        hiddenStems: Set<StemID> = [],
+        inWindow window: ClosedRange<TimeInterval>,
+        transposedBy semitones: Int = 0
+    ) -> [BucketNoteRow] {
+        let clicks = timeline.clickTimes
+        return timeline.stems
+            .filter { !hiddenStems.contains($0.stemID) }
+            .sorted { displayOrder($0.stemID) < displayOrder($1.stemID) }
+            .compactMap { stem in
+                let cells = stem.notes.compactMap { note -> BucketNoteRowCell? in
+                    guard clicks.indices.contains(note.bucketIndex),
+                        window.contains(clicks[note.bucketIndex])
+                    else { return nil }
+                    return BucketNoteRowCell(
+                        time: clicks[note.bucketIndex],
+                        text: text(for: note, transposedBy: semitones),
+                        isDim: note.confidence < dimConfidence)
+                }
+                guard !cells.isEmpty else { return nil }
+                return BucketNoteRow(
+                    stemID: stem.stemID, label: label(for: stem.stemID),
+                    cells: cells)
+            }
+    }
+
+    /// Monophonic buckets name the note; polyphonic ones list pitch classes strongest first,
+    /// dot-separated ("C·E·G") so sharps stay readable.
+    static func text(for note: StemBucketNote, transposedBy semitones: Int) -> String {
+        if let midi = note.midiNote {
+            return BassNoteNaming.name(forMidiNote: midi + semitones)
+        }
+        return note.pitchClasses
+            .map { BassNoteNaming.name(forMidiNote: $0 + semitones) }
+            .joined(separator: "·")
+    }
+
+    /// Two-letter row tags, short enough to sit in the row's left gutter without pushing the
+    /// first cell off its beat.
+    static func label(for stemID: StemID) -> String {
+        switch stemID {
+        case .vocalLead: return "Ld"
+        case .vocalBacking: return "Bk"
+        case .guitarLead: return "GL"
+        case .guitarRhythm: return "GR"
+        default: break
+        }
+        switch stemID.legacyKind {
+        case .vocals: return "Vx"
+        case .bass: return "Bs"
+        case .guitar: return "Gt"
+        case .piano: return "Pn"
+        case .other: return "Ot"
+        case .drums: return "Dr"
+        case .none:
+            return stemID.rawValue == "accompaniment"
+                ? "Ac"
+                : String(
+                    stemID.rawValue.prefix(2)
+                ).capitalized
+        }
+    }
+
+    /// Sort key for `rows` — see its doc comment for the order and why bass goes last.
+    static func displayOrder(_ stemID: StemID) -> (Int, String) {
+        let root = stemID.rawValue.split(separator: ".").first.map(String.init) ?? ""
+        let rank: Int
+        switch StemKind(rawValue: root) {
+        case .vocals: rank = 0
+        case .guitar: rank = 1
+        case .piano: rank = 2
+        case .other: rank = 3
+        case .bass: rank = 5
+        case .drums, .none: rank = 4  // accompaniment and anything else sit with "other"
+        }
+        return (rank, stemID.rawValue)
+    }
+}
+
 /// The ChordPro tab: the shared toolbar (transpose, export, JustChords) over the playback chart.
 /// It reuses Review's timeline-aware renderer for bouncing balls, while
 /// `ChordProTabConfig.chordProPlayback` disables Review-only affordances.

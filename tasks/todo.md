@@ -3325,3 +3325,14 @@ estimatedBPM, phase = barGrid downbeat (beatTimes[barPhase]). Gain faders unchan
 Review: no new Swift files, so no `tuist generate`. Default metronome ON (UserDefaults
 `clickMetronomeEnabled`). Period = 60/estimatedBPM; a BPM off by 0.5 drifts ~1 s over 4 min —
 that is the metronome telling the truth about the estimate, not a bug to smooth away.
+
+## 2026-09-08 — Metronome-bucket note timeline (spec: tasks/spec-bucket-notes.md)
+- [x] Stage 1: `MetronomeGrid` extracted from `StemPlaybackService` (90184d1)
+- [x] Stage 2: `BucketNoteAnalyzer` + `BucketNoteTimeline` + 9 tests (8032220)
+- [x] Stage 3: document field, `BucketNotePass` after timing post-passes, AppModel mirror +
+      `computeBucketNotes()` (386f30a)
+- [x] Stage 4: Review rows — View menu toggles (Bucket Notes / Bucket Stems / Compute),
+      `BucketNoteRowFormatter`, rows between harmony rows and bass row
+- [ ] Verify in the .app on a real song once xcodebuild works again (iCloud .git eviction);
+      check row alignment on the beat dots, label/first-cell overlap, dim cells, stale → recompute
+- [ ] v2: rows on chord-only/instrumental lines; monospace mode; ChordPro export of rows

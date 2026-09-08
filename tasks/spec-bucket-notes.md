@@ -1,7 +1,21 @@
 # Spec — Metronome-bucket note timeline (per stem)
 
-Status: DRAFT for Eric's review, 2026-09-08. Decisions so far (Eric): all pitched stems;
-one bucket per metronome click; computed in the pipeline and persisted.
+Status: IMPLEMENTED 2026-09-08 (commits 90184d1, 8032220, 386f30a, + Review rows). Decisions
+(Eric): all pitched stems; one bucket per metronome click; computed in the pipeline and
+persisted. Defaults taken on the open questions (Eric said "continue"): chroma share 0.18 /
+max 3 classes; rows ordered voices → guitars → piano → other → bass (bass bucket row directly
+above the bass-onset row); BOTH a pipeline sub-step and a "Compute Bucket Notes" View-menu
+action (same `BucketNotePass`, detached) — the action is also how a stale timeline is refreshed.
+
+Implementation notes vs. the draft below:
+- `MetronomeGrid` (enum) is the extracted grid; `StemPlaybackService` calls it for the click.
+- Persisted shape is as specified; `BucketNoteTimeline.versionTag` = "buckets-1".
+- Rows render in rhythmic mode on rows that have word timings (same gate as the bass row);
+  chord-only/instrumental rows are v2. Row tags are two letters (Bs, Vx, Ld, Bk, Gt, Pn, Ot).
+- Cells are drawn at their true bucket x and NOT collision-nudged (a label wider than a beat
+  overlapping its neighbour is information, not a layout bug to hide).
+- NOT yet verified in the running .app: xcodebuild is wedged on this Mac by the iCloud-evicted
+  `.git` (see project memory `icloud-dataless-git-blocks-builds`). Unit-verified only.
 
 ## Idea
 The metronome (commit 8332afb) is a rigid grid: period `60/estimatedBPM`, phase anchored at
