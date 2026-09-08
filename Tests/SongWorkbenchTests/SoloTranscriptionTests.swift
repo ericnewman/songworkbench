@@ -48,6 +48,43 @@ final class SoloTranscriptionTests: XCTestCase {
         XCTAssertEqual(verdicts[9..<12].map(\.kind), Array(repeating: .silent, count: 3))
     }
 
+    func testBuriedLeadBucketsAreNotLeadAndLevelsAreAbsolute() {
+        // Two buckets of the same sparse frames; the stem is 10 dB under the voices in the
+        // second, so only the first is lead.
+        let clicks: [TimeInterval] = [0, 1, 2]
+        var single = [Float](repeating: 0, count: 12)
+        single[4] = 1
+        let chroma = [0.25, 0.75, 1.25, 1.75].map {
+            BucketNoteAnalyzer.ChromaFrame(time: $0, chroma: single, weight: 0.5)
+        }
+        let pitch = [0.25, 0.75, 1.25, 1.75].map {
+            PitchFrameEstimate(time: $0, midiNote: 64, confidence: 0.9)
+        }
+        let verdicts = SoloTranscriptionAnalyzer.classifyBuckets(
+            chromaFrames: chroma, pitchFrames: pitch, clickTimes: clicks,
+            levels: (stem: [0.1, 0.03], reference: [0.05, 0.1]))
+        XCTAssertEqual(verdicts.map(\.kind), [.lead, .chordal])
+        XCTAssertEqual(
+            SoloTranscriptionAnalyzer.classifyBuckets(
+                chromaFrames: chroma, pitchFrames: pitch, clickTimes: clicks
+            ).map(\.kind), [.lead, .lead])
+
+        // bucketRMS is un-normalised: a 0.5-amplitude sine has RMS 0.5/√2 whatever else is in
+        // the file, and buckets past the audio are 0.
+        let samples =
+            tone(frequency: 440, duration: 1) + tone(frequency: 440, duration: 1, amplitude: 0.1)
+        let rms = SoloTranscriptionAnalyzer.bucketRMS(
+            samples: samples, sampleRate: sampleRate, clickTimes: [0, 1, 2, 3])
+        XCTAssertEqual(rms.count, 3)
+        XCTAssertEqual(rms[0], 0.5 / Float(2.0.squareRoot()), accuracy: 1e-3)
+        XCTAssertEqual(rms[1], 0.1 / Float(2.0.squareRoot()), accuracy: 1e-3)
+        XCTAssertEqual(rms[2], 0)
+        XCTAssertEqual(
+            SoloTranscriptionAnalyzer.combinedBucketRMS([[3, 0], [4]]).map { $0.map { Double($0) } }
+                ?? [], [5, 0])
+        XCTAssertNil(SoloTranscriptionAnalyzer.combinedBucketRMS([]))
+    }
+
     // MARK: - Passage grouping
 
     func testPassagesNeedTwoBarsAndTolerateSingleBucketGaps() {

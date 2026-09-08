@@ -99,6 +99,13 @@ struct SoloTranscriptionAnalyzer: Sendable {
     /// …and the pitch tracker to have found a note in this share of them, so a noisy but sparse
     /// frame (a scrape, a muted pluck) is not a lead.
     static let minimumPitchCoverage: Float = 0.4
+    /// A lead bucket must be at least as loud as the vocal stems in the same bucket. A solo is
+    /// mixed forward and the singer usually stops for it; what this rejects is separation
+    /// LEAKAGE. Measured 2026-09-08 on an a cappella quartet: the "piano" and "other" stems
+    /// carried the voices 9–18 dB down (median) and read as 21 sparse melodic passages ungated,
+    /// 3 at −6 dB, 1 at 0 dB — while the real lead passages on other songs sat 40–96 dB above
+    /// the (silent) vocals and were untouched.
+    static let minimumProminence: Float = 1
     /// A passage is at least this many bars of lead buckets.
     static let minimumPassageBars = 2
     /// A single non-lead bucket inside a run (a breath, a chord stab) does not end it.
@@ -111,27 +118,37 @@ struct SoloTranscriptionAnalyzer: Sendable {
 
     // MARK: - Entry points
 
-    func analyze(url: URL, clickTimes: [TimeInterval], beatsPerBar: Int, stemID: StemID) throws
-        -> [SoloTranscription]
-    {
+    /// `referenceBucketRMS` is the vocal stems' per-bucket RMS (see `bucketRMS`), or nil when
+    /// the song has no vocal stem to measure prominence against.
+    func analyze(
+        url: URL, clickTimes: [TimeInterval], beatsPerBar: Int, stemID: StemID,
+        referenceBucketRMS: [Float]? = nil
+    ) throws -> [SoloTranscription] {
         let (samples, sampleRate) = try MonoSampleLoader.load(url: url)
         try Task.checkCancellation()
         return transcriptions(
             samples: samples, sampleRate: sampleRate, clickTimes: clickTimes,
-            beatsPerBar: beatsPerBar, stemID: stemID)
+            beatsPerBar: beatsPerBar, stemID: stemID, referenceBucketRMS: referenceBucketRMS)
     }
 
     func transcriptions(
         samples: [Float], sampleRate: Double, clickTimes: [TimeInterval], beatsPerBar: Int,
-        stemID: StemID
+        stemID: StemID, referenceBucketRMS: [Float]? = nil
     ) -> [SoloTranscription] {
         guard clickTimes.count >= 2, sampleRate > 0, !samples.isEmpty else { return [] }
         let chroma = BucketNoteAnalyzer.chromaFrames(samples: samples, sampleRate: sampleRate)
         let pitch = VocalHarmonyAnalyzer(
             maximumNotesPerFrame: 1, midiRange: VocalHarmonyAnalyzer.guitarMidiRange
         ).frameEstimates(samples: samples, sampleRate: sampleRate)
+        let levels = referenceBucketRMS.map {
+            (
+                stem: Self.bucketRMS(
+                    samples: samples, sampleRate: sampleRate, clickTimes: clickTimes),
+                reference: $0
+            )
+        }
         let verdicts = Self.classifyBuckets(
-            chromaFrames: chroma, pitchFrames: pitch, clickTimes: clickTimes)
+            chromaFrames: chroma, pitchFrames: pitch, clickTimes: clickTimes, levels: levels)
         return Self.passages(
             verdicts: verdicts, clickTimes: clickTimes, beatsPerBar: beatsPerBar, stemID: stemID
         ).map { passage in
@@ -153,10 +170,12 @@ struct SoloTranscriptionAnalyzer: Sendable {
 
     /// One verdict per bucket of `clickTimes`. Chroma frames decide silent/lead/chordal by
     /// majority of voiced frames; the pitch tracker must also have been able to name a note in
-    /// enough of them for the bucket to count as lead.
+    /// enough of them, and — when `levels` are given — the stem must be prominent against the
+    /// reference (`minimumProminence`) for the bucket to count as lead. A sparse but buried
+    /// bucket is classed chordal: it is not a rest, just not a solo.
     static func classifyBuckets(
         chromaFrames: [BucketNoteAnalyzer.ChromaFrame], pitchFrames: [PitchFrameEstimate],
-        clickTimes: [TimeInterval]
+        clickTimes: [TimeInterval], levels: (stem: [Float], reference: [Float])? = nil
     ) -> [BucketVerdict] {
         let bucketCount = clickTimes.count - 1
         guard bucketCount > 0 else { return [] }
@@ -188,7 +207,13 @@ struct SoloTranscriptionAnalyzer: Sendable {
             let leadShare = Float(lead[bucket]) / Float(voiced[bucket])
             let pitchCoverage =
                 pitchTotal[bucket] > 0 ? Float(pitched[bucket]) / Float(pitchTotal[bucket]) : 0
-            if leadShare >= minimumLeadShare, pitchCoverage >= minimumPitchCoverage {
+            var prominent = true
+            if let levels, levels.stem.indices.contains(bucket),
+                levels.reference.indices.contains(bucket)
+            {
+                prominent = levels.stem[bucket] >= minimumProminence * levels.reference[bucket]
+            }
+            if leadShare >= minimumLeadShare, pitchCoverage >= minimumPitchCoverage, prominent {
                 return BucketVerdict(bucketIndex: bucket, kind: .lead, confidence: leadShare)
             }
             return BucketVerdict(bucketIndex: bucket, kind: .chordal, confidence: leadShare)
@@ -236,6 +261,33 @@ struct SoloTranscriptionAnalyzer: Sendable {
         }
         close()
         return passages
+    }
+
+    /// Absolute (un-normalised) RMS of the samples inside each bucket, so two stems' levels can
+    /// be compared bucket for bucket. Buckets past the audio are 0.
+    static func bucketRMS(samples: [Float], sampleRate: Double, clickTimes: [TimeInterval])
+        -> [Float]
+    {
+        let bucketCount = clickTimes.count - 1
+        guard bucketCount > 0, sampleRate > 0 else { return [] }
+        return (0..<bucketCount).map { bucket in
+            let start = max(Int(clickTimes[bucket] * sampleRate), 0)
+            let end = min(Int(clickTimes[bucket + 1] * sampleRate), samples.count)
+            guard end > start else { return 0 }
+            var sum: Float = 0
+            for index in start..<end { sum += samples[index] * samples[index] }
+            return (sum / Float(end - start)).squareRoot()
+        }
+    }
+
+    /// The per-bucket RMS of several stems heard together (powers add).
+    static func combinedBucketRMS(_ parts: [[Float]]) -> [Float]? {
+        guard let count = parts.map(\.count).max(), count > 0 else { return nil }
+        return (0..<count).map { bucket in
+            parts.reduce(Float(0)) { sum, part in
+                bucket < part.count ? sum + part[bucket] * part[bucket] : sum
+            }.squareRoot()
+        }
     }
 
     // MARK: - Transcription (pure)
@@ -412,17 +464,36 @@ enum SoloTranscriptionPass {
         let audio = stemAudio(for: document)
         guard !audio.isEmpty else { return nil }
         let beatsPerBar = document.barGrid?.beatsPerBar ?? SongBarGrid.unknown.beatsPerBar
+        let reference = referenceBucketRMS(for: document, clickTimes: clicks)
         let analyzer = SoloTranscriptionAnalyzer()
         var transcriptions: [SoloTranscription] = []
         for entry in audio {
             guard
                 let found = try? analyzer.analyze(
-                    url: entry.url, clickTimes: clicks, beatsPerBar: beatsPerBar, stemID: entry.id)
+                    url: entry.url, clickTimes: clicks, beatsPerBar: beatsPerBar, stemID: entry.id,
+                    referenceBucketRMS: reference)
             else { continue }
             transcriptions.append(contentsOf: found)
         }
         return SoloTranscriptionTimeline(
             gridKey: key, clickTimes: clicks, transcriptions: transcriptions)
+    }
+
+    /// The vocal stems' combined per-bucket RMS — the prominence reference — or nil when the
+    /// song has no readable vocal stem.
+    static func referenceBucketRMS(for document: SongAnalysisDocument, clickTimes: [TimeInterval])
+        -> [Float]?
+    {
+        let parts = BucketNotePass.stemAudio(for: document)
+            .filter { BucketNoteAnalyzer.role(for: $0.id) == .voice }
+            .compactMap { entry -> [Float]? in
+                guard let (samples, rate) = try? MonoSampleLoader.load(url: entry.url) else {
+                    return nil
+                }
+                return SoloTranscriptionAnalyzer.bucketRMS(
+                    samples: samples, sampleRate: rate, clickTimes: clickTimes)
+            }
+        return SoloTranscriptionAnalyzer.combinedBucketRMS(parts)
     }
 
     /// Recomputes when the stored timeline is missing or stale for the current grid, or always

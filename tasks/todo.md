@@ -3336,3 +3336,10 @@ that is the metronome telling the truth about the estimate, not a bug to smooth 
 - [ ] Verify in the .app on a real song once xcodebuild works again (iCloud .git eviction);
       check row alignment on the beat dots, label/first-cell overlap, dim cells, stale → recompute
 - [ ] v2: rows on chord-only/instrumental lines; monospace mode; ChordPro export of rows
+
+## 2026-09-08 — Solo passages as guitar tab (spec: tasks/spec-solo-tab.md)
+- [x] Stage a: classifier + passage grouping + 16th transcription + tab DP (3989601)
+- [x] Stage b: document field, `SoloTranscriptionPass` after `BucketNotePass`, AppModel (7048d49)
+- [x] Stage c: View menu "Solo Tab", `SoloTabRowFormatter`, six-string block in rows (d5d93ba)
+- [x] Stage d: prominence gate vs. vocal stems, env-gated diagnostic, spec
+- [ ] Verify in the .app; solos on instrumental (chord-only) lines; lead/rhythm stem split
