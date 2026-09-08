@@ -71,60 +71,6 @@ let project = Project(
             ])
         ),
         .target(
-            name: "SongWorkbenchiPad",
-            destinations: [.iPad],
-            product: .app,
-            bundleId: "com.local.SongWorkbench.iPad",
-            deploymentTargets: .iOS("17.0"),
-            infoPlist: .extendingDefault(with: [
-                "CFBundleDisplayName": "SongWorkbench",
-                "LSApplicationCategoryType": "public.app-category.music",
-                "NSMicrophoneUsageDescription":
-                    "SongWorkbench uses audio input for music analysis.",
-                "NSAppleMusicUsageDescription":
-                    "SongWorkbench reads your Music library so you can open and analyze local tracks.",
-                // Required on iOS; an empty launch-screen dictionary uses the app's background.
-                "UILaunchScreen": [:],
-                // Landscape-only (2026-07-06): the 3-column desktop-style layout (song
-                // list / editor / stem mixer) doesn't reflow for portrait width yet —
-                // confirmed on an iPad Pro 13" simulator (columns clipped off-screen,
-                // labels truncated). Revisit once the layout adapts responsively; until
-                // then, don't offer an orientation the app can't actually render in.
-                "UISupportedInterfaceOrientations": [
-                    "UIInterfaceOrientationLandscapeLeft",
-                    "UIInterfaceOrientationLandscapeRight",
-                ],
-                // Let users pull songs in via the Files app.
-                "UIFileSharingEnabled": true,
-                "LSSupportsOpeningDocumentsInPlace": true,
-            ]),
-            sources: ["Sources/SongWorkbench/**"],
-            // BundledModels (iPad only): the shorter-segment 6-stem HTDemucs export, shipped in
-            // the app so stem separation fits memory without a 246MB download. macOS downloads
-            // the full 7.8s model instead, so it does NOT bundle this. `*.onnx` only: the
-            // macOS-side HTDemucs6S_FP16.mlpackage (gitignored, copied by a shell phase) also
-            // lives here, and a `.mlpackage` in a resource glob makes `tuist generate` fail.
-            resources: ["Resources/**", "BundledModels/*.onnx"],
-            // iOS entitlements: increased-memory-limit so HTDemucs stem separation isn't
-            // jetsam-killed at the default per-process ceiling on 4GB iPads.
-            entitlements: .file(path: "SongWorkbenchiPad.entitlements"),
-            dependencies: [
-                .package(product: "FluidAudio"),
-                .package(product: "onnxruntime"),
-                .package(product: "WhisperFramework"),
-            ],
-            settings: .settings(base: [
-                "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-                "CODE_SIGN_STYLE": "Automatic",
-                "CURRENT_PROJECT_VERSION": "1",
-                "DEVELOPMENT_TEAM": "65FBMF6CMD",
-                "GENERATE_INFOPLIST_FILE": "YES",
-                "MARKETING_VERSION": "1.0",
-                "SWIFT_VERSION": "6.0",
-                "TARGETED_DEVICE_FAMILY": "2",
-            ])
-        ),
-        .target(
             name: "SongWorkbenchTests",
             destinations: .macOS,
             product: .unitTests,
@@ -150,12 +96,6 @@ let project = Project(
             testAction: .targets(["SongWorkbenchTests"]),
             runAction: .runAction(configuration: .debug),
             archiveAction: .archiveAction(configuration: .release)
-        ),
-        .scheme(
-            name: "SongWorkbenchiPad",
-            shared: true,
-            buildAction: .buildAction(targets: ["SongWorkbenchiPad"]),
-            runAction: .runAction(configuration: .debug)
         ),
     ]
 )

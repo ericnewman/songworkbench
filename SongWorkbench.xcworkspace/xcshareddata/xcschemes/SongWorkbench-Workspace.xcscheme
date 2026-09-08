@@ -34,20 +34,6 @@
                ReferencedContainer = "container:SongWorkbench.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "9D8FE9D61D57DF84D4FFF9DE"
-               BuildableName = "SongWorkbenchiPad.app"
-               BlueprintName = "SongWorkbenchiPad"
-               ReferencedContainer = "container:SongWorkbench.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction

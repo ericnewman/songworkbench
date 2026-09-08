@@ -1,3 +1,7 @@
+> **Shelved 2026-09-08.** iPad support was removed from the project (target, scheme,
+> entitlements, bundled short-segment model). The `#if os(iOS)` branches and `PlatformShims`
+> were left in place so this plan can be picked back up without a fresh port.
+
 # iPad (iPadOS) Port — Feasibility Audit & Plan
 
 Branch: `ipad-support` (worktree). Date: 2026-07-05.

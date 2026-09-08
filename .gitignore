@@ -22,7 +22,5 @@ tools/demucs_export/*.onnx.data
 tools/karaoke_export/models/
 tools/karaoke_export/.probevenv/
 
-# iPad-bundled short-segment stem model (regenerate via tools/demucs_export)
-BundledModels/*.onnx
 .scratch/
 BundledModels/HTDemucs6S_FP16.mlpackage/

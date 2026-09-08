@@ -4,7 +4,7 @@ import XCTest
 /// wired into each target's Sources build phase. Without this test the package builds green while
 /// Xcode fails — which is exactly how `SongBarGrid.swift` and `HarmonyDecodeResolution.swift`
 /// reached Eric's machine unbuildable, and how `WaveformAnalyzer.swift` sat in the macOS target
-/// but not the iPad one.
+/// but not the (since removed) iPad one.
 final class XcodeProjectRegistrationTests: XCTestCase {
     private static let repo = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // SongWorkbenchTests
@@ -68,15 +68,16 @@ final class XcodeProjectRegistrationTests: XCTestCase {
             """)
     }
 
-    /// Every app target compiles every source file. The two app targets deliberately differ only
-    /// in their generated `Tuist*` bundle accessors — anything else missing from one of them is a
-    /// target the package tests can't see failing.
-    func testBothAppTargetsCompileEverySourceFile() throws {
+    /// Every app target compiles every source file (generated `Tuist*` bundle accessors aside) —
+    /// anything missing from a target is one the package tests can't see failing. There is one
+    /// app target since iPad support was shelved (2026-09-08); the loop stays so a second target
+    /// is covered the day one returns.
+    func testEveryAppTargetCompilesEverySourceFile() throws {
         let pbxproj = try projectFile()
         let sources = Set(try swiftFiles(in: "Sources/SongWorkbench"))
         let appPhases = sourcesPhases(pbxproj).values
             .filter { !$0.contains("AnalysisDocumentTests.swift") }
-        XCTAssertEqual(appPhases.count, 2, "Expected the macOS and iPad app targets")
+        XCTAssertEqual(appPhases.count, 1, "Expected exactly the macOS app target")
 
         for phase in appPhases {
             let missing = sources.subtracting(phase).sorted()
