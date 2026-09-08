@@ -387,3 +387,54 @@ enum GuitarTabAssigner {
         return cost
     }
 }
+
+/// The pipeline/app step that turns a document's melodic stems and timing into its solo
+/// transcriptions. Runs right after `BucketNotePass` on the same grid and is best-effort.
+enum SoloTranscriptionPass {
+    static func gridKey(for document: SongAnalysisDocument) -> BucketGridKey? {
+        BucketNotePass.gridKey(for: document)
+    }
+
+    /// The melodic stems (guitars, piano, other, accompaniment) among the document's playable
+    /// stem leaves.
+    static func stemAudio(for document: SongAnalysisDocument) -> [(id: StemID, url: URL)] {
+        BucketNotePass.stemAudio(for: document).filter {
+            SoloTranscriptionAnalyzer.isMelodicStem($0.id)
+        }
+    }
+
+    static func timeline(for document: SongAnalysisDocument) -> SoloTranscriptionTimeline? {
+        guard let key = gridKey(for: document) else { return nil }
+        let clicks = MetronomeGrid.clickTimes(
+            beatTimes: document.beatTimes, bpm: document.estimatedBPM, barGrid: document.barGrid,
+            duration: key.duration)
+        guard clicks.count >= 2 else { return nil }
+        let audio = stemAudio(for: document)
+        guard !audio.isEmpty else { return nil }
+        let beatsPerBar = document.barGrid?.beatsPerBar ?? SongBarGrid.unknown.beatsPerBar
+        let analyzer = SoloTranscriptionAnalyzer()
+        var transcriptions: [SoloTranscription] = []
+        for entry in audio {
+            guard
+                let found = try? analyzer.analyze(
+                    url: entry.url, clickTimes: clicks, beatsPerBar: beatsPerBar, stemID: entry.id)
+            else { continue }
+            transcriptions.append(contentsOf: found)
+        }
+        return SoloTranscriptionTimeline(
+            gridKey: key, clickTimes: clicks, transcriptions: transcriptions)
+    }
+
+    /// Recomputes when the stored timeline is missing or stale for the current grid, or always
+    /// when `force` is set (a fresh harmony run may have new stems on the same grid).
+    static func apply(to document: inout SongAnalysisDocument, force: Bool = false) {
+        if !force, let existing = document.soloTranscriptions,
+            existing.isCurrent(for: gridKey(for: document))
+        {
+            return
+        }
+        if let fresh = timeline(for: document) {
+            document.soloTranscriptions = fresh
+        }
+    }
+}

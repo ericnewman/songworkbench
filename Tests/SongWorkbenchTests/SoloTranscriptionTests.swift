@@ -188,6 +188,59 @@ final class SoloTranscriptionTests: XCTestCase {
         XCTAssertNil(timeline.time(ofSixteenth: 8, in: passage))
     }
 
+    // MARK: - Persistence and pass
+
+    func testDocumentRoundTripsSoloTranscriptionsAndOlderDocumentsDecodeNil() throws {
+        let key = BucketGridKey(bpm: 100, anchor: 0.25, duration: 30)
+        let passage = SoloPassage(
+            stemID: .guitarLead, startBucket: 0, endBucket: 7, startTime: 0.25, endTime: 5.05,
+            confidence: 0.7)
+        let timeline = SoloTranscriptionTimeline(
+            gridKey: key, clickTimes: (0...8).map { 0.25 + Double($0) * 0.6 },
+            transcriptions: [
+                SoloTranscription(
+                    stemID: .guitarLead, passage: passage,
+                    notes: [
+                        SoloNote(
+                            startSixteenth: 2, lengthSixteenths: 3, midiNote: 64, confidence: 0.9,
+                            string: 2, fret: 14)
+                    ])
+            ])
+        let document = SongAnalysisDocument(estimatedBPM: 100, soloTranscriptions: timeline)
+        let data = try JSONEncoder().encode(document)
+        let decoded = try JSONDecoder().decode(SongAnalysisDocument.self, from: data)
+        XCTAssertEqual(decoded.soloTranscriptions, timeline)
+
+        let older = try JSONDecoder().decode(SongAnalysisDocument.self, from: Data("{}".utf8))
+        XCTAssertNil(older.soloTranscriptions)
+    }
+
+    func testPassSkipsCurrentTimelineUnlessForcedAndOnlyListensToMelodicStems() {
+        var document = SongAnalysisDocument(
+            sourceDuration: 4, estimatedBPM: 120, beatTimes: [0.5, 1.0, 1.5, 2.0])
+        XCTAssertNotNil(SoloTranscriptionPass.gridKey(for: document))
+        XCTAssertTrue(SoloTranscriptionPass.stemAudio(for: document).isEmpty)
+        SoloTranscriptionPass.apply(to: &document)
+        XCTAssertNil(document.soloTranscriptions)
+
+        let key = SoloTranscriptionPass.gridKey(for: document)!
+        let current = SoloTranscriptionTimeline(
+            gridKey: key, clickTimes: [0.5, 1.0], transcriptions: [])
+        document.soloTranscriptions = current
+        SoloTranscriptionPass.apply(to: &document)
+        XCTAssertEqual(document.soloTranscriptions, current)  // current → untouched
+        SoloTranscriptionPass.apply(to: &document, force: true)
+        XCTAssertEqual(document.soloTranscriptions, current)  // no stems → nothing replaces it
+
+        XCTAssertTrue(SoloTranscriptionAnalyzer.isMelodicStem(StemID(.guitar)))
+        XCTAssertTrue(SoloTranscriptionAnalyzer.isMelodicStem(.guitarLead))
+        XCTAssertTrue(SoloTranscriptionAnalyzer.isMelodicStem(StemID(.piano)))
+        XCTAssertTrue(SoloTranscriptionAnalyzer.isMelodicStem("accompaniment"))
+        XCTAssertFalse(SoloTranscriptionAnalyzer.isMelodicStem(StemID(.bass)))
+        XCTAssertFalse(SoloTranscriptionAnalyzer.isMelodicStem(.vocalLead))
+        XCTAssertFalse(SoloTranscriptionAnalyzer.isMelodicStem(StemID(.drums)))
+    }
+
     // MARK: - Helpers
 
     private func tone(frequency: Double, duration: TimeInterval, amplitude: Float = 0.5) -> [Float]

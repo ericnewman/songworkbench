@@ -267,6 +267,12 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published private(set) var isComputingBucketNotes = false
+    /// Solo passages as guitar tab, mirrored from the document; same staleness rule as
+    /// `bucketNotes` — Review checks `isSoloTimelineCurrent` before drawing.
+    @Published private(set) var soloTranscriptions: SoloTranscriptionTimeline? {
+        didSet { persistSelectedAnalysis() }
+    }
+    @Published private(set) var isComputingSolos = false
     @Published var estimatedKey: MusicalKey? {
         didSet { persistSelectedAnalysis() }
     }
@@ -1870,6 +1876,43 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var isSoloTimelineCurrent: Bool {
+        soloTranscriptions?.isCurrent(for: bucketGridKey) ?? false
+    }
+
+    /// Whether "Compute Solo Tab" can do anything: melodic stems on disk and a grid to cut on.
+    var canComputeSolos: Bool {
+        guard !isComputingSolos, !isSongAnalysisRunning, let selectedSongID,
+            let document = analysisBySongID[selectedSongID]
+        else { return false }
+        return SoloTranscriptionPass.gridKey(for: document) != nil
+            && !SoloTranscriptionPass.stemAudio(for: document).isEmpty
+    }
+
+    /// Same shape as `computeBucketNotes`: the pipeline's pass, run detached, stored on the song
+    /// it was computed for even if the user has since switched.
+    func computeSolos() {
+        guard canComputeSolos, let songID = selectedSongID,
+            let document = analysisBySongID[songID]
+        else { return }
+        isComputingSolos = true
+        Task { [weak self] in
+            let timeline = await Task.detached(priority: .userInitiated) {
+                SoloTranscriptionPass.timeline(for: document)
+            }.value
+            guard let self else { return }
+            self.isComputingSolos = false
+            guard self.selectedSongID == songID else {
+                if let timeline {
+                    self.analysisBySongID[songID]?.soloTranscriptions = timeline
+                    self.scheduleSave()
+                }
+                return
+            }
+            if let timeline { self.soloTranscriptions = timeline }
+        }
+    }
+
     func refreshChordClickTrack() {
         stemPlayback.loadChordClickTrack(times: placedChordTimes)
     }
@@ -2573,6 +2616,7 @@ final class AppModel: ObservableObject {
         bassNotes = []
         vocalHarmonyNotes = []
         bucketNotes = nil
+        soloTranscriptions = nil
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
         chordPlacementPicks = []
@@ -3196,6 +3240,7 @@ final class AppModel: ObservableObject {
         bassNotes = analysis.bassNotes
         vocalHarmonyNotes = analysis.vocalHarmonyNotes
         bucketNotes = analysis.bucketNotes
+        soloTranscriptions = analysis.soloTranscriptions
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
         chordPlacementPicks = analysis.chordPlacementPicks
@@ -3300,6 +3345,7 @@ final class AppModel: ObservableObject {
             bassNotes: bassNotes,
             vocalHarmonyNotes: vocalHarmonyNotes,
             bucketNotes: bucketNotes,
+            soloTranscriptions: soloTranscriptions,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
             chordPlacementPicks: chordPlacementPicks,
