@@ -342,7 +342,9 @@ struct TranscriptionEngineFactory: Sendable {
 /// cannot measurably improve. Bumping `versionTag` re-runs them on already-processed lyrics.
 enum AnalysisTimingPostPasses {
     /// Bump when regroup/reconcile/recut semantics change, so stamped documents re-derive.
-    static let versionTag = "timing-1"
+    // timing-2: rows are recut on `SongBeatsPerLine.rowBeats` (the preview's period) instead of
+    // the raw fit, so stored lines re-derive onto the period they are framed at.
+    static let versionTag = "timing-2"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag

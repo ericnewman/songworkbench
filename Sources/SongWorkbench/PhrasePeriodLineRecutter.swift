@@ -148,11 +148,12 @@ enum PhrasePeriodLineRecutter {
         guard
             let beatLength = MetricalLevelReconciler.medianBeatLength(
                 beatTimes: beatTimes, bpm: bpm), beatLength > 0,
-            let fit = SongBeatsPerLine.estimate(
-                beatTimes: beatTimes, bpm: bpm, lineOnsets: sorted.map(\.start))
+            let rowBeats = SongBeatsPerLine.rowBeats(
+                beatTimes: beatTimes, bpm: bpm,
+                lineOnsets: sorted.map(SongBeatsPerLine.lineOnset))
         else { return (lyrics, nil) }
 
-        let period = Double(fit.beatsPerLine) * beatLength
+        let period = Double(rowBeats) * beatLength
         guard period > 0 else { return (lyrics, nil) }
 
         var splits = 0
@@ -182,10 +183,10 @@ enum PhrasePeriodLineRecutter {
         // the re-cut, so the gate cannot be satisfied by the metric moving rather than the lines
         // improving.
         let before = SongBeatsPerLine.measure(
-            lineOnsets: sorted.map(\.start), beatsPerLine: fit.beatsPerLine,
+            lineOnsets: sorted.map(\.start), beatsPerLine: rowBeats,
             beatLength: beatLength)
         let after = SongBeatsPerLine.measure(
-            lineOnsets: afterMerge.map(\.start), beatsPerLine: fit.beatsPerLine,
+            lineOnsets: afterMerge.map(\.start), beatsPerLine: rowBeats,
             beatLength: beatLength)
         let outlierBefore = SongBeatsPerLine.outlierRate(before)
         let outlierAfter = SongBeatsPerLine.outlierRate(after)
@@ -200,7 +201,7 @@ enum PhrasePeriodLineRecutter {
                     && ratioAfter <= ratioBefore - configuration.minimumRatioImprovement))
 
         let report = Report(
-            beatsPerLine: fit.beatsPerLine, beatLength: beatLength, splits: splits, merges: merges,
+            beatsPerLine: rowBeats, beatLength: beatLength, splits: splits, merges: merges,
             outlierRateBefore: outlierBefore, outlierRateAfter: outlierAfter,
             spanRatioBefore: ratioBefore, spanRatioAfter: ratioAfter,
             splitCandidates: tally.candidates, splitBlocked: tally, accepted: accepted)

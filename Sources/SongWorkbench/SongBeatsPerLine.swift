@@ -70,6 +70,32 @@ enum SongBeatsPerLine {
             intervals: intervals, configuration: configuration)
     }
 
+    /// The number of beats every chart row is cut on AND drawn to — the one rule both the
+    /// pipeline's `PhrasePeriodLineRecutter` and the preview's phrase frame consult, so a row can
+    /// never be cut to one period and framed at another.
+    ///
+    /// Low occupancy means most scored intervals span TWO fitted periods, which the fit itself
+    /// documents as "the period is likely half the real phrase length". The RANKING stays
+    /// error-only (occupancy in the ranking was tried and measurably wrong — see
+    /// `MetricalLevelReconciler.bestDyadicFit`), but the row extent honours the signal and takes
+    /// the full phrase. Measured 2026-09-08: with the doubling applied only in the preview, three
+    /// of fourteen library songs were cut to 4 beats and framed at 8 — every row read half-width.
+    static func rowBeats(
+        beatTimes: [TimeInterval], bpm: Double, lineOnsets: [TimeInterval]
+    ) -> Int? {
+        guard let fit = estimate(beatTimes: beatTimes, bpm: bpm, lineOnsets: lineOnsets) else {
+            return nil
+        }
+        if fit.occupancy < 0.5, fit.beatsPerLine < 16 { return fit.beatsPerLine * 2 }
+        return fit.beatsPerLine
+    }
+
+    /// A line's measured onset for period fitting: its first WORD when it has one (a real
+    /// measurement), else the segment start (padding-derived).
+    static func lineOnset(_ line: TimedLyricSegment) -> TimeInterval {
+        line.words.first?.start ?? line.start
+    }
+
     /// Measures every line against the phrase period.
     ///
     /// Uses the interval to the NEXT line's onset rather than the line's own end time, because

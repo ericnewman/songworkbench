@@ -2659,21 +2659,11 @@ struct ChordProAppPreview: View {
     /// measured unrecoverable (see `SongBeatsPerLine`).
     private var phraseBeats: Int? {
         if beatsPerRowOverride > 0 { return beatsPerRowOverride }
-        guard
-            let fit = SongBeatsPerLine.estimate(
-                beatTimes: beatTimes,
-                bpm: bpm ?? 0,
-                lineOnsets: lyricLineWords.compactMap { $0.first?.start })
-        else { return nil }
-        // Low occupancy = most scored intervals span TWO fitted periods, which the fit itself
-        // documents as "the period is likely half the real phrase length". The RANKING must stay
-        // error-only (occupancy in the ranking was tried and measurably wrong — see
-        // `bestDyadicFit`), but the LINE extent a row is drawn to can honor the signal: draw the
-        // full phrase, not the half-phrase the choppy segmentation exposed.
-        if fit.occupancy < 0.5, fit.beatsPerLine < 16 {
-            return fit.beatsPerLine * 2
-        }
-        return fit.beatsPerLine
+        // The SAME rule (and the same onsets) the pipeline recut the rows on — see
+        // `SongBeatsPerLine.rowBeats`; anything else frames rows at a period they were not cut to.
+        return SongBeatsPerLine.rowBeats(
+            beatTimes: beatTimes, bpm: bpm ?? 0,
+            lineOnsets: lyricSegments.map(SongBeatsPerLine.lineOnset))
     }
 
     /// Seconds per beat (60/bpm), or 0 without a tempo.
