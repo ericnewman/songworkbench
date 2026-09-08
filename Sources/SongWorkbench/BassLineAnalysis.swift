@@ -155,18 +155,52 @@ struct BassLineAnalyzer: Sendable {
     /// Core detection over raw samples at a known rate. Exposed so callers (and
     /// tests) can analyze a `[Float]` buffer directly without a real file.
     func analyze(samples: [Float], sampleRate: Double) -> [BassNoteObservation] {
-        guard sampleRate > 0, !samples.isEmpty else { return [] }
+        guard let frames = frameAnalysis(samples: samples, sampleRate: sampleRate) else {
+            return []
+        }
+        return segments(
+            midi: frames.midi,
+            pitch: frames.pitch,
+            clarity: frames.clarity,
+            startTimes: frames.startTimes
+        )
+    }
+
+    /// One pitch verdict per analysis frame: the tuning-normalised, median-smoothed MIDI note
+    /// (nil = silent/unvoiced) and the autocorrelation clarity, stamped at the frame's CENTRE.
+    /// This is the stream `analyze` segments into notes; the bucket-note timeline reads it
+    /// directly so both views of the bass line come from one detector.
+    func frameEstimates(samples: [Float], sampleRate: Double) -> [PitchFrameEstimate] {
+        guard let frames = frameAnalysis(samples: samples, sampleRate: sampleRate) else {
+            return []
+        }
+        let halfFrame = frames.frameDuration / 2
+        return zip(zip(frames.midi, frames.clarity), frames.startTimes).map {
+            PitchFrameEstimate(time: $1 + halfFrame, midiNote: $0.0, confidence: $0.1)
+        }
+    }
+
+    private struct FrameAnalysis {
+        var midi: [Int?]
+        var pitch: [Double?]
+        var clarity: [Float]
+        var startTimes: [TimeInterval]
+        var frameDuration: TimeInterval
+    }
+
+    private func frameAnalysis(samples: [Float], sampleRate: Double) -> FrameAnalysis? {
+        guard sampleRate > 0, !samples.isEmpty else { return nil }
 
         let leveled = peakNormalized(samples)
         let (decimated, decimatedRate) = decimate(samples: leveled, sampleRate: sampleRate)
-        guard decimated.count >= frameLength else { return [] }
+        guard decimated.count >= frameLength else { return nil }
 
         let minimumLag = max(Int((decimatedRate / maximumFrequency).rounded(.down)), 1)
         let maximumLag = min(
             Int((decimatedRate / minimumFrequency).rounded(.up)),
             frameLength - 1
         )
-        guard maximumLag > minimumLag else { return [] }
+        guard maximumLag > minimumLag else { return nil }
 
         // One entry per frame: the detected fractional MIDI pitch (or nil for
         // silent/unvoiced frames) plus the frame's clarity. Fractional pitch is kept
@@ -238,12 +272,12 @@ struct BassLineAnalyzer: Sendable {
             return Int(pitch.rounded())
         }
 
-        let smoothed = medianFiltered(frameMidi, window: medianWindow)
-        return segments(
-            midi: smoothed,
+        return FrameAnalysis(
+            midi: medianFiltered(frameMidi, window: medianWindow),
             pitch: adjustedPitch,
             clarity: frameClarity,
-            startTimes: frameStartTime
+            startTimes: frameStartTime,
+            frameDuration: Double(frameLength) / decimatedRate
         )
     }
 

@@ -433,35 +433,14 @@ struct VocalHarmonyAnalyzer: Sendable {
         voiceIndex: Int? = nil
     ) -> [VocalHarmonyObservation] {
         guard sampleRate > 0, samples.count >= frameLength else { return [] }
-        let leveled = peakNormalized(samples)
-        guard
-            let framer = try? MonoSampleFramer(
-                frameLength: frameLength,
-                hopLength: hopLength,
-                sampleRate: sampleRate
-            ),
-            let transform = try? MagnitudeSpectrumAnalyzer.makeTransform(
-                frameLength: frameLength)
-        else { return [] }
-        let spectrumAnalyzer = MagnitudeSpectrumAnalyzer()
         let timbreExtractor = MelTimbreExtractor(
             binWidth: sampleRate / Double(frameLength),
             binCount: frameLength / 2 + 1
         )
         var activeFramesByNote: [Int: [ActiveFrame]] = [:]
 
-        for frameStart in framer.frameStartIndices(forSampleCount: leveled.count) {
-            let frame = framer.frame(from: leveled, startIndex: frameStart)
-            guard
-                let spectrum = try? spectrumAnalyzer.analyze(
-                    frame,
-                    sampleRate: sampleRate,
-                    transform: transform
-                )
-            else { continue }
-            let rms = vDSP.rootMeanSquare(frame.samples)
-            let frameCandidates = candidates(in: spectrum, rms: rms)
-            guard !frameCandidates.isEmpty else { continue }
+        forEachFrame(samples: samples, sampleRate: sampleRate) { frame, spectrum, frameCandidates in
+            guard !frameCandidates.isEmpty else { return }
             // One fingerprint per FRAME, not per note: the feature describes the vocal tract that
             // produced this spectrum, and every note detected in the frame came out of the same
             // spectrum. Notes are told apart by which frames they span, plus their stem.
@@ -484,6 +463,57 @@ struct VocalHarmonyAnalyzer: Sendable {
                 hopDuration: Double(hopLength) / sampleRate
             )
         )
+    }
+
+    /// The strongest pitch candidate per analysis frame (nil = no voiced candidate), stamped at
+    /// the frame's CENTRE. Same spectra and gates as `analyze`; the bucket-note timeline reads
+    /// this so its verdict and the harmony rows never disagree about what was detected.
+    func frameEstimates(samples: [Float], sampleRate: Double) -> [PitchFrameEstimate] {
+        guard sampleRate > 0, samples.count >= frameLength else { return [] }
+        let halfFrame = Double(frameLength) / sampleRate / 2
+        var estimates: [PitchFrameEstimate] = []
+        forEachFrame(samples: samples, sampleRate: sampleRate) { frame, _, frameCandidates in
+            let best = frameCandidates.max { $0.confidence < $1.confidence }
+            estimates.append(
+                PitchFrameEstimate(
+                    time: frame.timestamp + halfFrame,
+                    midiNote: best?.midiNote,
+                    confidence: best?.confidence ?? 0
+                ))
+        }
+        return estimates
+    }
+
+    /// Frames, spectra and per-frame candidates — the shared front half of `analyze` and
+    /// `frameEstimates`.
+    private func forEachFrame(
+        samples: [Float],
+        sampleRate: Double,
+        body: (AudioFrame, MagnitudeSpectrum, [(midiNote: Int, confidence: Float)]) -> Void
+    ) {
+        let leveled = peakNormalized(samples)
+        guard
+            let framer = try? MonoSampleFramer(
+                frameLength: frameLength,
+                hopLength: hopLength,
+                sampleRate: sampleRate
+            ),
+            let transform = try? MagnitudeSpectrumAnalyzer.makeTransform(
+                frameLength: frameLength)
+        else { return }
+        let spectrumAnalyzer = MagnitudeSpectrumAnalyzer()
+        for frameStart in framer.frameStartIndices(forSampleCount: leveled.count) {
+            let frame = framer.frame(from: leveled, startIndex: frameStart)
+            guard
+                let spectrum = try? spectrumAnalyzer.analyze(
+                    frame,
+                    sampleRate: sampleRate,
+                    transform: transform
+                )
+            else { continue }
+            let rms = vDSP.rootMeanSquare(frame.samples)
+            body(frame, spectrum, candidates(in: spectrum, rms: rms))
+        }
     }
 
     /// Assigns each observation its song-level voice, once, over every note in the song. Called at
