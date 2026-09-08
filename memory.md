@@ -348,3 +348,17 @@
   replace their parent in both UIs. Guitar lead/rhythm IDs exist but have no
   registered model yet. Native DrumSep STFT mag packing still needs listening /
   PyTorch-parity validation before calling quality done.
+- 2026-09-05 Eight Miles High chord extraction: intro Em–F#m/E–G/E riff was
+  swallowed by an E drone (classifier 50% E major, F#m/G at 1.3%); verse G–D–C
+  was over-segmented because 897 picking onsets licensed flicker while chroma
+  change-points missed slow harmonic rhythm (1 CP in 32 s of verse 1).
+  `PedalAwareChordRelabeler` recovers upper-structure triads over a pedal;
+  `ChordEvidenceAudit` now ORs stable frame-label changes with change-points
+  and drops sub-beat attack-only markers. Harmony engine v8 + reduce-29. Re-run
+  Analyze on the song (chroma cache will miss).
+- 2026-09-05 karaoke Voice 1/2: anvuew on the vocals stem produced a 0.5% ghost
+  lead. Replaced with UVR MDX-Net Karaoke 2 on the original mix (lead = mix −
+  instrumental, backing = vocals − lead), catalog version `kara2-1`, factory id
+  `karaoke-mdx-kara2-v1`. Quality gate keeps children when both are ≥8% of
+  parent energy (lead-heavy 95/10 is a real split). Re-run Stems after rebuild;
+  anvuew caches are not reused.

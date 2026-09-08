@@ -213,7 +213,100 @@ struct ChordAnalysisPipeline: Sendable {
             throw error
         }
 
-        return results.finished()
+        let finished = results.finished()
+        return FrameAnalysis(
+            observations: PedalAwareChordRelabeler.observations(
+                from: finished.chroma, classifier: classifier),
+            chroma: finished.chroma
+        )
+    }
+}
+
+/// Re-classifies chroma frames that sit on a sustained pedal/drone so the moving upper structure
+/// can win instead of the drone's pitch class.
+///
+/// A 12-string intro that walks F#m and G over an open-E pedal is the motivating case: every
+/// frame's strongest bin is E, `ChordClassifier.rootWeight` (1.6) locks onto E major, and the
+/// decoder then emits one long E for bars at a time. The riff's real changes never appear as
+/// labels, so no amount of downstream Viterbi tuning can recover them.
+///
+/// When a pitch class dominates a local window, that bin is zeroed and the residual is
+/// classified. The residual label is kept only when it is a *different* complete triad — an E5
+/// (E+B, no third) must not become B just because the drone was turned down.
+enum PedalAwareChordRelabeler {
+    /// Share of window-mean chroma a single pitch class must hold to count as a pedal.
+    static let pedalShare: Float = 0.22
+    /// Zero the pedal bin before re-classifying. Down-weighting left enough E that G/E
+    /// classified as Em and F#m/E as F#m7; removing the drone lets the upper triad win.
+    static let pedalDownweight: Float = 0
+    /// Seconds of chroma on either side of the frame used to estimate the pedal.
+    static let windowSeconds: TimeInterval = 2.0
+    /// Minimum energy a residual triad's root, third, and fifth must each carry.
+    static let completeToneFloor: Float = 0.08
+
+    static func observations(
+        from chroma: [ChromaVector],
+        classifier: ChordClassifier
+    ) -> [ChordObservation] {
+        guard !chroma.isEmpty else { return [] }
+        return chroma.indices.map { index in
+            relabel(chroma[index], at: index, in: chroma, classifier: classifier)
+        }
+    }
+
+    private static func relabel(
+        _ frame: ChromaVector,
+        at index: Int,
+        in chroma: [ChromaVector],
+        classifier: ChordClassifier
+    ) -> ChordObservation {
+        let full = classifier.classify(frame)
+        guard let pedal = pedalPitchClass(around: index, in: chroma) else { return full }
+
+        var residualValues = frame.values
+        residualValues[pedal.rawValue] *= pedalDownweight
+        let total = residualValues.reduce(Float.zero, +)
+        guard total > 0 else { return full }
+        residualValues = residualValues.map { $0 / total }
+        let residual = classifier.classify(
+            ChromaVector(timestamp: frame.timestamp, values: residualValues))
+        guard residual.chord.root != pedal,
+            isCompleteTriad(residual.chord, in: residualValues)
+        else { return full }
+        return residual
+    }
+
+    private static func pedalPitchClass(around index: Int, in chroma: [ChromaVector]) -> PitchClass?
+    {
+        let center = chroma[index].timestamp
+        let window = chroma.filter {
+            abs($0.timestamp - center) <= windowSeconds
+        }
+        guard !window.isEmpty else { return nil }
+        var sums = Array(repeating: Float.zero, count: PitchClass.allCases.count)
+        for vector in window {
+            for bin in vector.values.indices {
+                sums[bin] += vector.values[bin]
+            }
+        }
+        let count = Float(window.count)
+        let means = sums.map { $0 / count }
+        let total = means.reduce(Float.zero, +)
+        guard total > 0,
+            let maxBin = means.indices.max(by: { means[$0] < means[$1] })
+        else { return nil }
+        guard means[maxBin] / total >= pedalShare else { return nil }
+        return PitchClass(rawValue: maxBin)
+    }
+
+    private static func isCompleteTriad(_ chord: Chord, in chroma: [Float]) -> Bool {
+        let root = chord.root.rawValue
+        let thirdInterval = (chord.quality == .minor || chord.quality == .minor7) ? 3 : 4
+        let third = (root + thirdInterval) % chroma.count
+        let fifth = (root + 7) % chroma.count
+        return chroma[root] >= completeToneFloor
+            && chroma[third] >= completeToneFloor
+            && chroma[fifth] >= completeToneFloor
     }
 }
 

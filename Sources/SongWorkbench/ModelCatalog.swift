@@ -111,38 +111,31 @@ enum ModelCatalog {
     )
 
     /// Lead/backing vocal refiner for Advanced Desktop. Optional — never blocks onboarding.
-    ///
-    /// Unlike every other entry, this artifact is OUR OWN export (see `tools/karaoke_export/`):
-    /// the upstream weights ship as a PyTorch `.ckpt`, and the community ONNX exports are
-    /// spectrogram/mask-only, which this codebase cannot consume (it has no inverse STFT). The
-    /// export bundles STFT+ISTFT into the graph so it satisfies the waveform contract.
-    ///
-    /// NOT YET HOSTED: `downloadURL` is a placeholder until the artifact is published. Until
-    /// then the package must be installed manually into the model directory. The sha256/size
-    /// below are the real values for the verified export.
+    /// UVR MDX-Net Karaoke 2: karaoke (lead vs instrumental+backing) on a full mix, then
+    /// backing vocals = parent vocals − lead. Spectrogram-in/out ONNX; STFT/ISTFT are native.
     static let karaokeVocals = ModelPackageDescriptor(
         id: "karaoke-bsroformer-onnx",
-        displayName: "Karaoke BS-RoFormer ONNX",
+        displayName: "UVR MDX-Net Karaoke 2",
         purpose: "Vocal refinement: lead and backing vocals",
-        version: "anvuew-1",
+        version: "kara2-1",
         minimumOSVersion: "14.0",
         license: ModelArtifactLicense(
             name: "Unspecified (personal use)",
             attribution:
-                "karaoke_bs_roformer by anvuew; BS-RoFormer architecture by lucidrains/ZFTurbo; "
-                + "waveform ONNX export by this project (tools/karaoke_export)"
+                "UVR_MDXNET_KARA_2 from TRvlvr/model_repo (Ultimate Vocal Remover community models)"
         ),
         source: .files([
             ModelPackageComponent(
-                relativePath: "karaoke_waveform.onnx",
+                relativePath: "UVR_MDXNET_KARA_2.onnx",
                 downloadURL: URL(
-                    string: "https://example.invalid/karaoke_waveform.onnx"
+                    string:
+                        "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR_MDXNET_KARA_2.onnx"
                 )!,
-                expectedSizeBytes: 243_754_698,
-                sha256: "08e67b02a3324191b8564006e5c823c16bc4e712f99e78f92785c172e0c6db63"
+                expectedSizeBytes: 52_786_726,
+                sha256: "bf32e15105a09c0f7dddd2b67346146334d6f3ecb399ed7638eba2ab07cbf5f4"
             )
         ]),
-        entryPointRelativePath: "karaoke_waveform.onnx"
+        entryPointRelativePath: "UVR_MDXNET_KARA_2.onnx"
     )
 
     static let all = [htdemucs, parakeetFastDraft, whisperAccuracy, drumsep, karaokeVocals]

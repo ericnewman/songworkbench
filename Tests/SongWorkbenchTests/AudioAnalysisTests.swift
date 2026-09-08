@@ -151,6 +151,46 @@ final class AudioAnalysisTests: XCTestCase {
         )
     }
 
+    func testEPedalWithFSharpMinorUpperStructureRelabelsAwayFromE() {
+        // Eight Miles High intro shape: open-E drone plus F#m tones. Root-weighted matching
+        // locks onto E; the pedal relabeler must recover F#m.
+        let frames = pedalFrames([
+            .e: 0.70, .fSharp: 0.10, .a: 0.09, .cSharp: 0.08,
+        ])
+        let naive = frames.map { ChordClassifier().classify($0).chord.displayName }
+        XCTAssertTrue(
+            naive.contains("E"),
+            "sanity: the drone wins without pedal handling, got \(Set(naive))")
+        let relabeled = PedalAwareChordRelabeler.observations(
+            from: frames, classifier: ChordClassifier())
+        XCTAssertEqual(Set(relabeled.map { $0.chord.displayName }), ["F#m"])
+    }
+
+    func testEPedalWithGMajorUpperStructureRelabelsToG() {
+        let frames = pedalFrames([
+            .e: 0.70, .g: 0.10, .b: 0.09, .d: 0.08,
+        ])
+        let relabeled = PedalAwareChordRelabeler.observations(
+            from: frames, classifier: ChordClassifier())
+        XCTAssertEqual(Set(relabeled.map { $0.chord.displayName }), ["G"])
+    }
+
+    func testEPowerChordDoesNotBecomeBWhenThePedalIsDownweighted() {
+        // E5 (E+B, no third). Downweighting E leaves B; that leftover must not be promoted
+        // to B major because the third and fifth of B are absent.
+        let frames = pedalFrames([.e: 0.55, .b: 0.40])
+        let relabeled = PedalAwareChordRelabeler.observations(
+            from: frames, classifier: ChordClassifier())
+        XCTAssertEqual(Set(relabeled.map { $0.chord.root }), [.e])
+    }
+
+    func testPlainCMajorWithoutAPedalStaysCMajor() {
+        let frames = pedalFrames([.c: 0.40, .e: 0.30, .g: 0.28])
+        let relabeled = PedalAwareChordRelabeler.observations(
+            from: frames, classifier: ChordClassifier())
+        XCTAssertEqual(Set(relabeled.map { $0.chord.displayName }), ["C"])
+    }
+
     func testBassInformedRefinerRerootsSharedNoteConfusion() {
         // Cm (C-Eb-G) detected, but the bass plays Ab → Ab major (Ab-C-Eb), which shares
         // C+Eb with Cm. The bass is the unambiguous root, so it wins.
@@ -275,6 +315,21 @@ final class AudioAnalysisTests: XCTestCase {
         values[(root.rawValue + third) % values.count] = 1
         values[(root.rawValue + 7) % values.count] = 1
         return values
+    }
+
+    /// Normalized chroma frames with a small floor in unused bins, 100 ms apart.
+    private func pedalFrames(_ energy: [PitchClass: Float], count: Int = 20) -> [ChromaVector] {
+        (0..<count).map { index in
+            var values = Array(repeating: Float(0.01), count: PitchClass.allCases.count)
+            for (pitchClass, value) in energy {
+                values[pitchClass.rawValue] = value
+            }
+            let total = values.reduce(Float.zero, +)
+            return ChromaVector(
+                timestamp: Double(index) * 0.1,
+                values: values.map { $0 / total }
+            )
+        }
     }
 
     private func seventh(root: PitchClass, quality: ChordQuality) -> [Float] {

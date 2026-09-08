@@ -1,3 +1,5 @@
+import AVFoundation
+import Accelerate
 import CryptoKit
 import Darwin
 import Foundation
@@ -257,6 +259,98 @@ struct StemSetManifest: Codable, Equatable, Sendable {
             assets: assets,
             recipeIdentity: recipeIdentity
         )
+    }
+}
+
+/// Drops a karaoke lead/backing pair that did not actually split the parent vocals.
+///
+/// `anvuew/karaoke_bs_roformer` is a vocals-vs-instrumental isolator. Fed an already-separated
+/// vocals stem it often emits a near-silent "lead" and puts the entire parent in the residual
+/// that we label Backing — Voice 1 shows a faint waveform you cannot hear, Voice 2 is all the
+/// singing. Collapse to the parent so the mixer plays one Vocals stem.
+enum VocalSplitQualityGate {
+    /// A child below this is a ghost: visible on the waveform, inaudible next to the other part.
+    /// Lead-heavy karaoke (e.g. 95% lead / 10% backing) is a real split and must be kept —
+    /// only require both parts to be audible, not that neither dominate.
+    static let minimumChildShare = 0.08
+
+    static func keepsChildren(
+        leadParentEnergyRatio: Double,
+        backingParentEnergyRatio: Double
+    ) -> Bool {
+        isAudibleShare(leadParentEnergyRatio) && isAudibleShare(backingParentEnergyRatio)
+    }
+
+    /// Removes `vocals.lead` / `vocals.backing` when the split failed. Leaves the manifest
+    /// unchanged when the children are missing, the files cannot be read, or both parts are
+    /// audible. Fail-open on I/O so drum-piece refiners and test stubs that write non-audio
+    /// placeholders keep their children.
+    static func collapsingFailedSplit(in manifest: StemSetManifest) -> StemSetManifest {
+        let byID = manifest.assetsByID
+        guard
+            let parent = byID[StemKind.vocals.id],
+            let lead = byID[.vocalLead],
+            let backing = byID[.vocalBacking]
+        else { return manifest }
+
+        guard
+            let parentEnergy = try? meanSquareEnergy(url: parent.audioURL),
+            parentEnergy > 1e-12,
+            let leadEnergy = try? meanSquareEnergy(url: lead.audioURL),
+            let backingEnergy = try? meanSquareEnergy(url: backing.audioURL)
+        else { return manifest }
+
+        if keepsChildren(
+            leadParentEnergyRatio: leadEnergy / parentEnergy,
+            backingParentEnergyRatio: backingEnergy / parentEnergy
+        ) {
+            return manifest
+        }
+
+        let dropped: Set<StemID> = [.vocalLead, .vocalBacking]
+        return StemSetManifest(
+            descriptors: manifest.descriptors.filter { !dropped.contains($0.id) },
+            assets: manifest.assets.filter { !dropped.contains($0.id) },
+            recipeIdentity: manifest.recipeIdentity
+        )
+    }
+
+    static func meanSquareEnergy(url: URL) throws -> Double {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { url.stopAccessingSecurityScopedResource() }
+        }
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let capacity: AVAudioFrameCount = 16_384
+        guard
+            format.channelCount > 0,
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity)
+        else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        var sumOfSquares: Double = 0
+        var sampleCount: Double = 0
+        while file.framePosition < file.length {
+            let remaining = file.length - file.framePosition
+            try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
+            let frameCount = Int(buffer.frameLength)
+            guard frameCount > 0, let channels = buffer.floatChannelData else { break }
+            let channelCount = Int(format.channelCount)
+            for channel in 0..<channelCount {
+                var channelSum: Float = 0
+                vDSP_svesq(channels[channel], 1, &channelSum, vDSP_Length(frameCount))
+                sumOfSquares += Double(channelSum)
+            }
+            sampleCount += Double(frameCount * channelCount)
+        }
+        guard sampleCount > 0 else { return 0 }
+        return sumOfSquares / sampleCount
+    }
+
+    private static func isAudibleShare(_ ratio: Double) -> Bool {
+        ratio.isFinite && ratio >= minimumChildShare
     }
 }
 
@@ -896,7 +990,7 @@ struct StemRefinementPipelineEngine: StemSeparationEngine {
             assets: assets,
             recipeIdentity: recipe
         )
-        return manifest
+        return VocalSplitQualityGate.collapsingFailedSplit(in: manifest)
     }
 
     var recipeIdentity: StemRecipeIdentity {

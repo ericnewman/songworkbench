@@ -1,5 +1,26 @@
 # Lessons
 
+- Karaoke lead/backing that puts ~all parent energy on one child is not a
+  split: Voice 1 shows a faint waveform you cannot hear and Voice 2 is the
+  whole vocals stem. Collapse the children back to parent Vocals rather than
+  presenting Voice 1/2. Measure energy ratios against the parent; do not trust
+  reconstruction (lead+backing always equals parent by construction). Keep a
+  lead-heavy split (e.g. 95% / 10%) — only require both children to be audible.
+
+- Karaoke MDX models (`is_karaoke: true`, primary Instrumental) are trained on
+  full mixes. Feeding the already-separated vocals stem is out of distribution
+  and yields a ghost lead. Run KARA_2 on the original mix, take lead = mix −
+  compensated instrumental, then backing = vocals_parent − lead. A catalog
+  version bump is required so anvuew caches are not reused.
+
+- Jangly 12-string / pedal-point songs: chroma change-points miss slow harmonic
+  rhythm (frame-to-frame cosine never spikes under a drone), and picking attacks
+  license every Viterbi flicker. Treat stable frame-label changes as harmonic
+  evidence even when change-points exist, and drop sub-beat attack-only markers.
+  Recover intro riffs that walk F#m/G over an E pedal by classifying residual
+  chroma after downweighting the pedal — Viterbi cannot recover labels the
+  classifier never emitted.
+
 - When two user-facing chart surfaces are expected to have identical typography,
   spacing, highlighting, and playback animation, route both through the same
   renderer with configuration-driven toolbar differences. Parallel renderers

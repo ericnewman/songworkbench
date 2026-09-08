@@ -232,8 +232,8 @@ extension SongHarmonyAnalyzing {
 
 extension AudioFileAnalysisService: SongHarmonyAnalyzing {
     nonisolated var metadata: AnalysisEngineVersion {
-        // v7: more permissive bass clarity gate (tracks quieter intro bass).
-        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "7")
+        // v8: pedal-aware chroma relabel so an E-drone intro does not swallow F#m/G.
+        AnalysisEngineVersion(identifier: "native-vdsp-beat-chroma", version: "8")
     }
 }
 

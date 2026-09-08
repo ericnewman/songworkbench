@@ -29,24 +29,20 @@ enum ChordMarkerEvidence: String, Codable, Equatable, Sendable {
 /// pass:
 /// - **attacks**: `InstrumentOnsetDetector` onsets on the guitar/other/accompaniment stem. These
 ///   are the same onsets `ChordOnsetAligner` snaps to, so a snapped event sits exactly on one.
-/// - **harmonic change**: `SongAudioAnalysis.harmonicChangePoints` — chroma cosine-distance
-///   change-points from `ChromaChangePointDetector`, measured on the pitch content itself rather
-///   than inferred from label flips.
-///
-/// When change-points are unavailable (an analysis cached before they were computed) the audit
-/// falls back to the frame-level `ChordObservation` labels: a label that changes and then *holds*
-/// stands in for a change-point, a label that flickers for a frame or two is treated as a passing
-/// tone. The fallback is measurably coarser — a label flip needs the classifier's winner to change,
-/// so a real move between two chords that share two notes can pass with no flip at all — which is
-/// why it exists only for old cache entries, and why `Verdict.harmonicSource` records which one
-/// decided each marker.
+/// - **harmonic change**: a chroma cosine-distance change-point from
+///   `ChromaChangePointDetector`, **or** a stable frame-label change. Change-points catch
+///   moves the classifier's winner never flips (C → Am sharing C+E). Frame-label stability
+///   catches slow harmonic rhythm that never spikes frame-to-frame distance — a 12-string
+///   verse walking G–D–C under a drone produces one change-point in 30 s while the labels
+///   rotate every bar. Either source is enough; `Verdict.harmonicSource` records which one
+///   fired. A flicker that does not hold still counts as no harmonic change.
 enum ChordEvidenceAudit {
     /// Which evidence decided the harmonic half of a verdict.
     enum HarmonicSource: String, Equatable, Sendable {
         /// A chroma change-point from `ChromaChangePointDetector`. The real measurement.
         case changePoint
-        /// Frame-label change with a stability check — the fallback for analyses cached before
-        /// change-points were computed.
+        /// Frame-label change with a stability check. Used when change-points are unavailable
+        /// *and* when they are present but missed a slow, label-stable move.
         case frameLabels
     }
 
@@ -102,13 +98,10 @@ enum ChordEvidenceAudit {
         }
         let sortedOnsets = attackOnsets.sorted()
         let sortedFrames = frameObservations.sorted { $0.timestamp < $1.timestamp }
-        // An EMPTY change-point array is a real measurement ("this stem's chroma never moves
-        // sharply enough"), not a missing one — only `nil` means unavailable. Falling back on an
-        // empty array would silently re-enable the coarse path for songs the detector genuinely
-        // found nothing in.
+        // `nil` change-points means "never measured" (legacy cache). An empty array means the
+        // detector ran and found no spikes — that is still useful, but it is no longer exclusive:
+        // a stable frame-label change can authorize a marker the cosine-distance detector missed.
         let sortedChangePoints = changePoints?.sorted()
-        let harmonicSource: HarmonicSource =
-            sortedChangePoints == nil ? .frameLabels : .changePoint
 
         var verdicts: [Verdict] = []
         verdicts.reserveCapacity(events.count)
@@ -118,17 +111,18 @@ enum ChordEvidenceAudit {
             let hasAttack = delta.map { abs($0) <= attackTolerance } ?? false
 
             let changeDelta = sortedChangePoints.flatMap { nearestDelta(to: time, in: $0) }
-            let hasHarmonic: Bool
-            if sortedChangePoints != nil {
-                hasHarmonic = changeDelta.map { abs($0) <= changePointTolerance } ?? false
-            } else {
-                hasHarmonic = harmonicChangeHolds(
-                    at: time,
-                    frames: sortedFrames,
-                    window: stabilityWindow,
-                    minimumStableShare: minimumStableShare
-                )
-            }
+            let changePointHit = changeDelta.map { abs($0) <= changePointTolerance } ?? false
+            let frameHit = harmonicChangeHolds(
+                at: time,
+                frames: sortedFrames,
+                window: stabilityWindow,
+                minimumStableShare: minimumStableShare
+            )
+            // Either source is enough. Change-points catch shared-tone moves the winner never
+            // flips; stable labels catch slow G–D–C walks whose frame-to-frame cosine never
+            // spikes. Requiring change-points alone dropped those walks on jangly 12-string.
+            let hasHarmonic = changePointHit || frameHit
+            let harmonicSource: HarmonicSource = changePointHit ? .changePoint : .frameLabels
 
             let evidence: ChordMarkerEvidence
             switch (hasAttack, hasHarmonic) {
@@ -164,10 +158,12 @@ enum ChordEvidenceAudit {
     /// survives regardless — a chart needs a chord to open on, and the song's opening attack is
     /// routinely before the first decoded window.
     ///
-    /// `.attack`-only events are KEPT, not dropped: a transient with no harmonic change is a
-    /// re-strum of the ringing chord, but this audit runs after the decoder has already deduped
-    /// repeated labels, so what reaches here is a genuine label change whose harmonic evidence is
-    /// merely weaker than its transient. Dropping those cost real changes in testing.
+    /// `.attack`-only events shorter than `minimumAttackOnlyDuration` are also dropped: on a
+    /// jangly 12-string every pick licenses a marker, so attack-without-harmonic-change is how
+    /// verse flicker (Bm–E–F#m–A inside a bar of G) reaches the chart. Beat-length attack-only
+    /// events still survive — a real change whose chroma moved too slowly for the 0.4 s
+    /// stability window but lasted a full beat. `minimumAttackOnlyDuration <= 0` keeps the
+    /// historical "keep every attack-only event" behaviour for callers that have no beat grid.
     static func filtered(
         events: [EditableChordEvent],
         frameObservations: [ChordObservation],
@@ -176,7 +172,9 @@ enum ChordEvidenceAudit {
         attackTolerance: TimeInterval = 0.35,
         changePointTolerance: TimeInterval = 0.35,
         stabilityWindow: TimeInterval = 0.4,
-        minimumStableShare: Double = 0.6
+        minimumStableShare: Double = 0.6,
+        sourceDuration: TimeInterval? = nil,
+        minimumAttackOnlyDuration: TimeInterval = 0
     ) -> (events: [EditableChordEvent], audit: Result) {
         let result = audit(
             events: events,
@@ -189,8 +187,21 @@ enum ChordEvidenceAudit {
             minimumStableShare: minimumStableShare
         )
         guard result.evidenceTrusted else { return (events, result) }
-        let kept = events.enumerated().filter { index, _ in
-            index == 0 || result.verdicts[index].evidence != .unsupported
+        let kept = events.enumerated().filter { index, event in
+            if index == 0 { return true }
+            switch result.verdicts[index].evidence {
+            case .unsupported:
+                return false
+            case .attack:
+                guard minimumAttackOnlyDuration > 0 else { return true }
+                let nextTime =
+                    index + 1 < events.count
+                    ? events[index + 1].time
+                    : (sourceDuration ?? event.time + minimumAttackOnlyDuration)
+                return nextTime - event.time >= minimumAttackOnlyDuration
+            case .harmonic, .attackAndHarmonic:
+                return true
+            }
         }.map(\.element)
         return (kept, result)
     }

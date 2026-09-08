@@ -1,44 +1,34 @@
+import AVFoundation
+import Accelerate
 import Foundation
 import OnnxRuntimeBindings
 
-/// Splits a vocals parent stem into lead and backing vocals using our own waveform-in /
-/// waveform-out export of the anvuew karaoke BS-RoFormer (`tools/karaoke_export/`).
+/// Lead/backing split via UVR MDX-Net Karaoke 2.
 ///
-/// Unlike `ONNXDrumPieceSeparationEngine`, this model carries its OWN STFT and inverse STFT
-/// inside the exported graph, so there is no frequency-feature packing here and no
-/// `HybridDemucsFrequencyFeatures` involvement — the predictor hands it raw samples and gets raw
-/// samples back. That was the whole point of exporting it ourselves: the codebase has no ISTFT,
-/// and a hand-rolled one would produce artifacts indistinguishable from model quality problems.
+/// The previous anvuew BS-RoFormer checkpoint was a vocals-vs-instrumental isolator. Fed the
+/// already-separated vocals stem it emitted a ghost "lead" and dumped the parent into backing.
+/// KARA_2 is a karaoke model (`is_karaoke: true`, primary stem Instrumental). It is in-distribution
+/// on a full mix: instrumental = music + backing, residual = lead. Backing vocals are then
+/// `vocals_parent − lead`, which is what `KaraokeVocalRefinementEngine` writes.
 ///
-/// The model emits ONE stem (lead vocals). Backing is derived as `parent - lead`, so the two
-/// children sum back to the parent by construction.
+/// The ONNX graph is spectrogram-in/out `[1, 4, 2048, 256]`. STFT/ISTFT live here — not in
+/// `HybridDemucsFrequencyFeatures`, whose 4096-point Demucs STFT DrumSep depends on.
 ///
-/// Intermediate `StemKind` slots are only a transport mapping for `NativeStemRefinementEngine`:
-/// vocals→lead, other→backing.
+/// Transport slots for the refiner: vocals→lead, other→backing.
 struct ONNXKaraokeVocalSeparationEngine: StemSeparationEngine, Sendable {
-    /// Fixed by the export. The training chunk (640000) OOMs the ONNX tracer, so the graph is
-    /// built at 262144 samples (5.9 s at 44.1 kHz) and the input tensor shape is baked in.
-    static let segmentFrames = 262_144
-    /// Eighth-segment overlap (0.74 s). The base six-stem engine crossfades over 10% of its
-    /// segment; a quarter here bought no audible benefit and cost ~13% more inference, because
-    /// every overlapped frame is predicted twice. Raise it again if seams appear at chunk joins.
-    static let overlapFrames = segmentFrames / 8
+    static let segmentFrames = MDXNetKaraokeSpectrogram.chunkSamples
+    static let overlapFrames = MDXNetKaraokeSpectrogram.nFFT / 2
 
     private let engine: CoreMLStemSeparationEngine
     let metadata: StemSeparationEngineMetadata
 
     static let metadata = StemSeparationEngineMetadata(
-        engineIdentifier: "onnxruntime-cpu-karaoke-bsroformer",
-        // 2: overlap went from segmentFrames/4 to /8. This metadata IS the refiner's cache
-        // identity (StemSeparation.swift cacheIdentity -> StemRecipeIdentity.refiners), so without
-        // the bump every previously separated song would keep serving its quarter-overlap stems
-        // and the two variants would overwrite each other in the same recipe directory.
-        engineVersion: "2",
-        modelIdentifier: "karaoke-bsroformer-onnx",
-        modelVersion: "anvuew-1"
+        engineIdentifier: "onnxruntime-cpu-mdx-kara2",
+        engineVersion: "1",
+        modelIdentifier: "uvr-mdxnet-kara-2",
+        modelVersion: "1"
     )
 
-    /// Transport order: slot 0 carries lead, slot 1 carries backing.
     static let modelOutputOrder: [StemKind] = [.vocals, .other]
 
     static let refinementOutputs: [NativeStemRefinementOutput] = [
@@ -63,8 +53,6 @@ struct ONNXKaraokeVocalSeparationEngine: StemSeparationEngine, Sendable {
             predictor: predictor,
             segmentFrames: Self.segmentFrames,
             overlapFrames: Self.overlapFrames,
-            // The parity-verified export was measured on raw samples; peak-normalising first
-            // would change the signal the model sees.
             normalizesAudio: false,
             metadata: Self.metadata
         )
@@ -78,6 +66,304 @@ struct ONNXKaraokeVocalSeparationEngine: StemSeparationEngine, Sendable {
     }
 }
 
+/// Runs KARA_2 on the original mix (in-distribution), then backing = vocals − lead.
+///
+/// `NativeStemRefinementEngine` feeds only the parent vocals stem. That is the right input for
+/// DrumSep and the wrong input for a karaoke model, which was trained on full mixes.
+struct KaraokeVocalRefinementEngine: StemRefinementEngine {
+    let identifier: String
+    let taxonomyVersion: Int
+    let parentStemID: StemID
+    let outputs: [NativeStemRefinementOutput]
+    let engine: any StemSeparationEngine
+
+    var outputStemIDs: [StemID] { outputs.map(\.id) }
+
+    var cacheIdentity: String {
+        let metadata = engine.metadata
+        return [
+            identifier,
+            metadata.engineIdentifier,
+            metadata.engineVersion,
+            metadata.modelIdentifier ?? "",
+            metadata.modelVersion ?? "",
+        ].joined(separator: "@")
+    }
+
+    init(
+        identifier: String,
+        taxonomyVersion: Int = 1,
+        parentStemID: StemID = StemKind.vocals.id,
+        outputs: [NativeStemRefinementOutput] = ONNXKaraokeVocalSeparationEngine.refinementOutputs,
+        engine: any StemSeparationEngine
+    ) {
+        self.identifier = identifier
+        self.taxonomyVersion = taxonomyVersion
+        self.parentStemID = parentStemID
+        self.outputs = outputs
+        self.engine = engine
+    }
+
+    func refine(
+        request: StemRefinementRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemRefinementResult {
+        guard let parentAsset = request.manifest.assetsByID[parentStemID] else {
+            throw StemRefinementError.missingParentStem(parentStemID)
+        }
+        let modelOutputDirectory = request.outputDirectory.appendingPathComponent(
+            "ModelOutputs",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: modelOutputDirectory,
+            withIntermediateDirectories: true
+        )
+        let modelResult = try await engine.separate(
+            request: StemSeparationRequest(
+                inputURL: request.inputURL,
+                outputDirectory: modelOutputDirectory
+            )
+        ) { progress($0) }
+        let modelAssets = modelResult.stemSet.assetsByID
+        guard let leadAsset = modelAssets[StemKind.vocals.id] else {
+            throw StemRefinementError.missingModelOutput(StemKind.vocals.id)
+        }
+        let backingURL = modelOutputDirectory.appendingPathComponent("other.wav")
+        try KaraokeBackingResidual.write(
+            vocalsURL: parentAsset.audioURL,
+            leadURL: leadAsset.audioURL,
+            outputURL: backingURL
+        )
+        var descriptors: [StemDescriptor] = []
+        var assets: [StemAsset] = []
+        for output in outputs {
+            let audioURL: URL
+            if output.modelOutputID == StemKind.vocals.id {
+                audioURL = leadAsset.audioURL
+            } else if output.modelOutputID == StemKind.other.id {
+                audioURL = backingURL
+            } else {
+                throw StemRefinementError.missingModelOutput(output.modelOutputID)
+            }
+            descriptors.append(
+                StemDescriptor(
+                    id: output.id,
+                    parentID: parentStemID,
+                    role: .refinement,
+                    displayName: output.displayName,
+                    order: output.order
+                )
+            )
+            assets.append(
+                StemAsset(id: output.id, audioURL: audioURL, producerID: identifier)
+            )
+        }
+        return StemRefinementResult(descriptors: descriptors, assets: assets)
+    }
+}
+
+enum KaraokeBackingResidual {
+    static func write(vocalsURL: URL, leadURL: URL, outputURL: URL) throws {
+        let vocals = try loadStereo(vocalsURL)
+        let lead = try loadStereo(leadURL)
+        let frames = min(vocals[0].count, lead[0].count)
+        guard frames > 0, vocals.count == 2, lead.count == 2 else {
+            throw CoreMLStemSeparationError.unsupportedAudio
+        }
+        var backing = [
+            [Float](repeating: 0, count: frames),
+            [Float](repeating: 0, count: frames),
+        ]
+        for channel in 0..<2 {
+            for frame in 0..<frames {
+                backing[channel][frame] = vocals[channel][frame] - lead[channel][frame]
+            }
+        }
+        try writeStereo(backing, to: outputURL)
+    }
+
+    static func loadStereo(_ url: URL) throws -> [[Float]] {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        guard format.channelCount >= 1 else { throw CoreMLStemSeparationError.unsupportedAudio }
+        let capacity = AVAudioFrameCount(file.length)
+        guard
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity)
+        else { throw CoreMLStemSeparationError.unsupportedAudio }
+        try file.read(into: buffer)
+        let frames = Int(buffer.frameLength)
+        guard let channels = buffer.floatChannelData else {
+            throw CoreMLStemSeparationError.unsupportedAudio
+        }
+        let left = Array(UnsafeBufferPointer(start: channels[0], count: frames))
+        if format.channelCount == 1 {
+            return [left, left]
+        }
+        let right = Array(UnsafeBufferPointer(start: channels[1], count: frames))
+        return [left, right]
+    }
+
+    static func writeStereo(_ channels: [[Float]], to url: URL) throws {
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 44_100, channels: 2, interleaved: false)!
+        let frames = AVAudioFrameCount(channels[0].count)
+        let file = try AVAudioFile(
+            forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32,
+            interleaved: false)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        buffer.floatChannelData![0].update(from: channels[0], count: Int(frames))
+        buffer.floatChannelData![1].update(from: channels[1], count: Int(frames))
+        try file.write(from: buffer)
+    }
+}
+
+/// UVR MDX-Net Karaoke 2 spectrogram pack (`n_fft` 5120, hop 1024, dim_f 2048, dim_t 256).
+/// Matches `tools/karaoke_export/probe_kara2.py` / seanghay ConvTDFNet: periodic Hann, zero
+/// center-pad, numpy `rfft` bin layout, NOLA ISTFT.
+enum MDXNetKaraokeSpectrogram {
+    static let nFFT = 5_120
+    static let hopLength = 1_024
+    static let dimF = 2_048
+    static let dimT = 256
+    static let chunkSamples = hopLength * (dimT - 1)
+    static let compensate: Float = 1.065
+    static let channelCount = 4
+    static var packedFloatCount: Int { channelCount * dimF * dimT }
+
+    static func pack(left: [Float], right: [Float]) throws -> [Float] {
+        precondition(left.count == chunkSamples && right.count == chunkSamples)
+        let window = periodicHann(nFFT)
+        var packed = [Float](repeating: 0, count: packedFloatCount)
+        try pack(channel: left, window: window, packed: &packed, pairOffset: 0)
+        try pack(channel: right, window: window, packed: &packed, pairOffset: 2)
+        return packed
+    }
+
+    static func unpack(_ packed: [Float]) throws -> [[Float]] {
+        precondition(packed.count == packedFloatCount)
+        let window = periodicHann(nFFT)
+        return [
+            try unpack(channelPairOffset: 0, packed: packed, window: window),
+            try unpack(channelPairOffset: 2, packed: packed, window: window),
+        ]
+    }
+
+    private static func pack(
+        channel: [Float],
+        window: [Float],
+        packed: inout [Float],
+        pairOffset: Int
+    ) throws {
+        let pad = nFFT / 2
+        var padded = [Float](repeating: 0, count: chunkSamples + 2 * pad)
+        padded.replaceSubrange(pad..<(pad + chunkSamples), with: channel)
+        var real = [Float](repeating: 0, count: nFFT)
+        var imag = [Float](repeating: 0, count: nFFT)
+        var outReal = [Float](repeating: 0, count: nFFT)
+        var outImag = [Float](repeating: 0, count: nFFT)
+        guard let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(nFFT), .FORWARD) else {
+            throw CoreMLStemSeparationError.invalidConfiguration
+        }
+        defer { vDSP_DFT_DestroySetup(setup) }
+        for time in 0..<dimT {
+            let start = time * hopLength
+            for bin in 0..<nFFT {
+                real[bin] = padded[start + bin] * window[bin]
+                imag[bin] = 0
+            }
+            real.withUnsafeBufferPointer { realIn in
+                imag.withUnsafeBufferPointer { imagIn in
+                    outReal.withUnsafeMutableBufferPointer { realOut in
+                        outImag.withUnsafeMutableBufferPointer { imagOut in
+                            vDSP_DFT_Execute(
+                                setup,
+                                realIn.baseAddress!, imagIn.baseAddress!,
+                                realOut.baseAddress!, imagOut.baseAddress!
+                            )
+                        }
+                    }
+                }
+            }
+            for freq in 0..<dimF {
+                packed[index(pair: pairOffset, freq: freq, time: time)] = outReal[freq]
+                packed[index(pair: pairOffset + 1, freq: freq, time: time)] = outImag[freq]
+            }
+        }
+    }
+
+    private static func unpack(
+        channelPairOffset: Int,
+        packed: [Float],
+        window: [Float]
+    ) throws -> [Float] {
+        let pad = nFFT / 2
+        let nBins = nFFT / 2 + 1
+        var acc = [Float](repeating: 0, count: chunkSamples + 2 * pad)
+        var windowSum = [Float](repeating: 0, count: chunkSamples + 2 * pad)
+        var real = [Float](repeating: 0, count: nFFT)
+        var imag = [Float](repeating: 0, count: nFFT)
+        var outReal = [Float](repeating: 0, count: nFFT)
+        var outImag = [Float](repeating: 0, count: nFFT)
+        guard let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(nFFT), .INVERSE) else {
+            throw CoreMLStemSeparationError.invalidConfiguration
+        }
+        defer { vDSP_DFT_DestroySetup(setup) }
+        let scale = Float(nFFT)
+        for time in 0..<dimT {
+            real = [Float](repeating: 0, count: nFFT)
+            imag = [Float](repeating: 0, count: nFFT)
+            for freq in 0..<dimF {
+                real[freq] = packed[index(pair: channelPairOffset, freq: freq, time: time)]
+                imag[freq] = packed[index(pair: channelPairOffset + 1, freq: freq, time: time)]
+            }
+            // Hermitian completion so the inverse DFT yields a real frame.
+            for freq in 1..<nBins where freq < nFFT - freq {
+                real[nFFT - freq] = real[freq]
+                imag[nFFT - freq] = -imag[freq]
+            }
+            real.withUnsafeBufferPointer { realIn in
+                imag.withUnsafeBufferPointer { imagIn in
+                    outReal.withUnsafeMutableBufferPointer { realOut in
+                        outImag.withUnsafeMutableBufferPointer { imagOut in
+                            vDSP_DFT_Execute(
+                                setup,
+                                realIn.baseAddress!, imagIn.baseAddress!,
+                                realOut.baseAddress!, imagOut.baseAddress!
+                            )
+                        }
+                    }
+                }
+            }
+            let start = time * hopLength
+            for bin in 0..<nFFT {
+                let value = (outReal[bin] / scale) * window[bin]
+                acc[start + bin] += value
+                windowSum[start + bin] += window[bin] * window[bin]
+            }
+        }
+        var output = [Float](repeating: 0, count: chunkSamples)
+        for i in 0..<chunkSamples {
+            let denom = max(windowSum[pad + i], 1e-8)
+            output[i] = acc[pad + i] / denom
+        }
+        return output
+    }
+
+    static func index(pair: Int, freq: Int, time: Int) -> Int {
+        (pair * dimF + freq) * dimT + time
+    }
+
+    static func periodicHann(_ length: Int) -> [Float] {
+        (0..<length).map { index in
+            0.5 - 0.5 * cos(2 * Float.pi * Float(index) / Float(length))
+        }
+    }
+}
+
 actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
     let supportedStems = ONNXKaraokeVocalSeparationEngine.modelOutputOrder
     static let threadCountDefaultsKey = "SongWorkbench.karaokeStemRefinementIntraOpThreads"
@@ -86,8 +372,6 @@ actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
     private var session: ORTSession?
     private let frameCount: Int
 
-    /// Drop the onnxruntime session (and its arena) as soon as refinement finishes, so it isn't
-    /// still resident through the later transcription/harmony stages.
     func releaseResources() {
         session = nil
     }
@@ -123,14 +407,8 @@ actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
             return Int32(min(userDefaultValue, available))
         }
         #if os(macOS)
-            // Measured on a 3:36 song (8P+4E, 24 GB): 4 threads took 473 s, 8 took 310 s — 1.53x
-            // for ~1.7 GB more arena. Capped at the performance-core count rather than `available`
-            // so the efficiency cores stay free for the UI; lower it via the env var or defaults
-            // key if a machine feels stalled.
             return Int32(min(available, 8))
         #else
-            // iPad: pinning cores thermally throttles long songs and trips sustained-CPU
-            // diagnostics, and the arena matters far more on 8 GB devices.
             return Int32(min(available, 4))
         #endif
     }
@@ -151,21 +429,22 @@ actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
             throw CoreMLStemSeparationError.invalidPrediction
         }
 
-        let inputData = NSMutableData(length: 2 * frameCount * MemoryLayout<Float>.size)!
-        let inputPointer = inputData.mutableBytes.bindMemory(
-            to: Float.self,
-            capacity: 2 * frameCount
+        let packed = try MDXNetKaraokeSpectrogram.pack(
+            left: chunk.channels[0],
+            right: chunk.channels[1]
         )
-        for channel in 0..<2 {
-            inputPointer.advanced(by: channel * frameCount).update(
-                from: chunk.channels[channel],
-                count: frameCount
-            )
-        }
+        let inputData = NSMutableData(length: packed.count * MemoryLayout<Float>.size)!
+        inputData.mutableBytes.bindMemory(to: Float.self, capacity: packed.count)
+            .update(from: packed, count: packed.count)
         let input = try ORTValue(
             tensorData: inputData,
             elementType: .float,
-            shape: [1, 2, NSNumber(value: frameCount)]
+            shape: [
+                1,
+                NSNumber(value: MDXNetKaraokeSpectrogram.channelCount),
+                NSNumber(value: MDXNetKaraokeSpectrogram.dimF),
+                NSNumber(value: MDXNetKaraokeSpectrogram.dimT),
+            ]
         )
         let outputs = try session.run(
             withInputs: ["input": input],
@@ -176,39 +455,42 @@ actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
             throw CoreMLStemSeparationError.invalidPrediction
         }
         let shape = try output.tensorTypeAndShapeInfo().shape.map(\.intValue)
-        guard shape == [1, 2, frameCount] else {
+        guard
+            shape == [
+                1, MDXNetKaraokeSpectrogram.channelCount, MDXNetKaraokeSpectrogram.dimF,
+                MDXNetKaraokeSpectrogram.dimT,
+            ]
+        else {
             throw CoreMLStemSeparationError.invalidPrediction
         }
         let outputData = try output.tensorData()
-        let expectedFloats = 2 * frameCount
+        let expectedFloats = MDXNetKaraokeSpectrogram.packedFloatCount
         guard outputData.length == expectedFloats * MemoryLayout<Float>.size else {
             throw CoreMLStemSeparationError.invalidPrediction
         }
-        let outputPointer = outputData.bytes.bindMemory(
-            to: Float.self,
-            capacity: expectedFloats
-        )
-
-        var lead = [[Float]]()
-        var backing = [[Float]]()
+        let outputPointer = outputData.bytes.bindMemory(to: Float.self, capacity: expectedFloats)
+        let predicted = Array(UnsafeBufferPointer(start: outputPointer, count: expectedFloats))
+        let instrumental = try MDXNetKaraokeSpectrogram.unpack(predicted)
+        var lead: [[Float]] = []
+        var backing: [[Float]] = []
         lead.reserveCapacity(2)
         backing.reserveCapacity(2)
         for channel in 0..<2 {
-            let offset = channel * frameCount
-            let leadChannel = Array(
-                UnsafeBufferPointer(
-                    start: outputPointer.advanced(by: offset),
-                    count: frameCount
-                ))
-            // Backing is the residual, so lead + backing reconstructs the parent exactly.
-            var backingChannel = [Float](repeating: 0, count: frameCount)
-            let parent = chunk.channels[channel]
+            var primary = instrumental[channel]
             for frame in 0..<frameCount {
-                backingChannel[frame] = parent[frame] - leadChannel[frame]
+                primary[frame] *= MDXNetKaraokeSpectrogram.compensate
+            }
+            var leadChannel = [Float](repeating: 0, count: frameCount)
+            let mix = chunk.channels[channel]
+            for frame in 0..<frameCount {
+                leadChannel[frame] = mix[frame] - primary[frame]
             }
             lead.append(leadChannel)
-            backing.append(backingChannel)
+            backing.append(primary)
         }
+        // On a mix, `.other` is instrumental (music + backing). KaraokeVocalRefinementEngine
+        // overwrites that file with vocals − lead. The predictor still has to emit both slots
+        // so CoreMLStemSeparationEngine will write them.
         return StemChunkPrediction(samplesByStem: [.vocals: lead, .other: backing])
     }
 }

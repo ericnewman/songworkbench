@@ -222,7 +222,7 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
                 wantsDrumPieceSeparation: false
             )
         )
-        XCTAssertEqual(vocalsOnly.map(\.identifier), ["karaoke-bsroformer-v1"])
+        XCTAssertEqual(vocalsOnly.map(\.identifier), ["karaoke-mdx-kara2-v1"])
 
         let drumsOnly = try await StemRefinementEngineFactory.production.engines(
             for: StemRefinementEngineFactory.Context(
@@ -266,7 +266,7 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(refiners.map(\.identifier), ["karaoke-bsroformer-v1"])
+        XCTAssertEqual(refiners.map(\.identifier), ["karaoke-mdx-kara2-v1"])
         XCTAssertEqual(refiners.first?.outputStemIDs, [.vocalLead, .vocalBacking])
     }
 
@@ -302,11 +302,12 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
             .appendingPathComponent(ModelCatalog.karaokeVocals.version, isDirectory: true)
         try FileManager.default.createDirectory(
             at: packageDirectory, withIntermediateDirectories: true)
-        let modelURL = packageDirectory.appendingPathComponent("karaoke_waveform.onnx")
+        let modelURL = packageDirectory.appendingPathComponent(
+            ModelCatalog.karaokeVocals.entryPointRelativePath)
         let payload = Data("fake karaoke onnx".utf8)
         try payload.write(to: modelURL)
         let manifest = """
-            {"files":[{"relativePath":"karaoke_waveform.onnx","sizeBytes":\(payload.count),"sha256":"\(sha256Hex(payload))"}]}
+            {"files":[{"relativePath":"\(ModelCatalog.karaokeVocals.entryPointRelativePath)","sizeBytes":\(payload.count),"sha256":"\(sha256Hex(payload))"}]}
             """
         try Data(manifest.utf8).write(
             to: packageDirectory.appendingPathComponent(".installation-manifest.json")

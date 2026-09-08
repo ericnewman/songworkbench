@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import XCTest
 
@@ -220,6 +221,162 @@ final class StemSeparationTests: XCTestCase {
 
         XCTAssertEqual(decoded.descriptors.map(\.id), [StemKind.guitar.id, childID])
         XCTAssertEqual(decoded.assets.map(\.id), [StemKind.guitar.id, childID])
+    }
+
+    func testVocalSplitGateRejectsGhostLeadAndParentCopyBacking() {
+        // Eight Miles High karaoke outputs: lead energy 0.5% of parent, backing 97.6%.
+        XCTAssertFalse(
+            VocalSplitQualityGate.keepsChildren(
+                leadParentEnergyRatio: 0.005,
+                backingParentEnergyRatio: 0.976
+            ))
+        XCTAssertFalse(
+            VocalSplitQualityGate.keepsChildren(
+                leadParentEnergyRatio: 0.93,
+                backingParentEnergyRatio: 0.02
+            ))
+    }
+
+    func testVocalSplitGateKeepsARealEnergySplit() {
+        XCTAssertTrue(
+            VocalSplitQualityGate.keepsChildren(
+                leadParentEnergyRatio: 0.28,
+                backingParentEnergyRatio: 0.72
+            ))
+        XCTAssertTrue(
+            VocalSplitQualityGate.keepsChildren(
+                leadParentEnergyRatio: 0.946,
+                backingParentEnergyRatio: 0.100
+            ))
+    }
+
+    func testMDXKaraokeSpectrogramMatchesPythonPackingAndRoundtrips() throws {
+        let chunk = MDXNetKaraokeSpectrogram.chunkSamples
+        let left = (0..<chunk).map { index -> Float in
+            0.2 * sin(2 * Float.pi * 440 * Float(index) / 44_100)
+        }
+        let right = (0..<chunk).map { index -> Float in
+            0.1 * sin(2 * Float.pi * 660 * Float(index) / 44_100)
+        }
+        let packed = try MDXNetKaraokeSpectrogram.pack(left: left, right: right)
+        XCTAssertEqual(packed.count, MDXNetKaraokeSpectrogram.packedFloatCount)
+        let t0 = packed[MDXNetKaraokeSpectrogram.index(pair: 0, freq: 0, time: 0)]
+        XCTAssertEqual(t0, 3.189303, accuracy: 0.002)
+        let recon = try MDXNetKaraokeSpectrogram.unpack(packed)
+        var err: Float = 0
+        var energy: Float = 0
+        for i in 0..<chunk {
+            let d = recon[0][i] - left[i]
+            err += d * d
+            energy += left[i] * left[i]
+        }
+        XCTAssertGreaterThan(energy, 0)
+        XCTAssertLessThan(err / energy, 1e-4)
+    }
+
+    func testKaraokeRefinerSeparatesTheOriginalMixThenSubtractsLeadFromVocals() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let mixURL = root.appendingPathComponent("mix.wav")
+        let vocalsURL = root.appendingPathComponent("vocals.wav")
+        try writeConstantWAV(to: mixURL, value: 0.5, frames: 2_048)
+        try writeConstantWAV(to: vocalsURL, value: 0.4, frames: 2_048)
+        let engine = MixRecordingStemEngine()
+        let refiner = KaraokeVocalRefinementEngine(
+            identifier: "karaoke-test",
+            engine: engine
+        )
+        let result = try await refiner.refine(
+            request: StemRefinementRequest(
+                inputURL: mixURL,
+                outputDirectory: root.appendingPathComponent("refined", isDirectory: true),
+                sourceDigest: "digest",
+                manifest: StemSetManifest(
+                    descriptors: [
+                        StemDescriptor(
+                            id: StemKind.vocals.id,
+                            role: .source,
+                            displayName: "Vocals",
+                            order: 0
+                        )
+                    ],
+                    assets: [
+                        StemAsset(
+                            id: StemKind.vocals.id, audioURL: vocalsURL, producerID: "base")
+                    ]
+                )
+            )
+        )
+        let recordedInputURL = await engine.lastInputURL()
+        XCTAssertEqual(recordedInputURL?.lastPathComponent, "mix.wav")
+        XCTAssertEqual(result.descriptors.map(\.id), [.vocalLead, .vocalBacking])
+        let backing = try KaraokeBackingResidual.loadStereo(
+            result.assets.first { $0.id == .vocalBacking }!.audioURL)
+        XCTAssertEqual(backing[0][0], 0.4 - 0.25, accuracy: 0.0001)
+    }
+
+    func testVocalSplitGateCollapsesFailedChildrenOffThePlayingFrontier() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let parentURL = root.appendingPathComponent("vocals.wav")
+        let leadURL = root.appendingPathComponent("lead.wav")
+        let backingURL = root.appendingPathComponent("backing.wav")
+        try writeConstantWAV(to: parentURL, value: 1.0, frames: 2_048)
+        try writeConstantWAV(to: leadURL, value: 0.05, frames: 2_048)
+        try writeConstantWAV(to: backingURL, value: 0.99, frames: 2_048)
+
+        let collapsed = VocalSplitQualityGate.collapsingFailedSplit(
+            in: vocalManifest(parent: parentURL, lead: leadURL, backing: backingURL)
+        )
+        XCTAssertEqual(collapsed.descriptors.map(\.id), [StemKind.vocals.id])
+        XCTAssertEqual(collapsed.assets.map(\.id), [StemKind.vocals.id])
+        XCTAssertEqual(
+            StemMixGraph(manifest: collapsed).activeNodes.map(\.id),
+            [StemKind.vocals.id]
+        )
+    }
+
+    func testVocalSplitGateKeepsAudibleLeadAndBacking() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let parentURL = root.appendingPathComponent("vocals.wav")
+        let leadURL = root.appendingPathComponent("lead.wav")
+        let backingURL = root.appendingPathComponent("backing.wav")
+        try writeConstantWAV(to: parentURL, value: 1.0, frames: 2_048)
+        try writeConstantWAV(to: leadURL, value: 0.5, frames: 2_048)
+        try writeConstantWAV(to: backingURL, value: 0.4, frames: 2_048)
+
+        let kept = VocalSplitQualityGate.collapsingFailedSplit(
+            in: vocalManifest(parent: parentURL, lead: leadURL, backing: backingURL)
+        )
+        XCTAssertEqual(
+            Set(kept.descriptors.map(\.id)),
+            [StemKind.vocals.id, .vocalLead, .vocalBacking]
+        )
+    }
+
+    func testVocalSplitGateLeavesDrumChildrenAndUnreadablePlaceholdersAlone() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let vocalsURL = root.appendingPathComponent("vocals.wav")
+        let leadURL = root.appendingPathComponent("lead.wav")
+        let backingURL = root.appendingPathComponent("backing.wav")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try? Data("not-audio".utf8).write(to: vocalsURL)
+        try? Data("not-audio".utf8).write(to: leadURL)
+        try? Data("not-audio".utf8).write(to: backingURL)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let manifest = vocalManifest(parent: vocalsURL, lead: leadURL, backing: backingURL)
+        let unchanged = VocalSplitQualityGate.collapsingFailedSplit(in: manifest)
+        XCTAssertEqual(unchanged.descriptors.map(\.id), manifest.descriptors.map(\.id))
+        XCTAssertEqual(unchanged.assets.map(\.id), manifest.assets.map(\.id))
     }
 
     func testRefinementPipelineAddsChildrenAndRecipeIdentity() async throws {
@@ -718,6 +875,60 @@ private struct FailingExternalStemRefinementRunner: ExternalStemRefinementComman
     }
 }
 
+/// Writes a constant lead WAV so karaoke residual math can be asserted.
+private actor MixRecordingStemEngine: StemSeparationEngine {
+    nonisolated let metadata = StemSeparationEngineMetadata(
+        engineIdentifier: "mix-test-model",
+        engineVersion: "1",
+        modelIdentifier: "kara-test",
+        modelVersion: "1"
+    )
+    private var inputURL: URL?
+
+    func separate(
+        request: StemSeparationRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemSeparationResult {
+        inputURL = request.inputURL
+        try FileManager.default.createDirectory(
+            at: request.outputDirectory,
+            withIntermediateDirectories: true
+        )
+        let vocalsURL = request.outputDirectory.appendingPathComponent("vocals.wav")
+        let otherURL = request.outputDirectory.appendingPathComponent("other.wav")
+        try Self.writeConstantWAV(to: vocalsURL, value: 0.25, frames: 2_048)
+        try Self.writeConstantWAV(to: otherURL, value: 0.1, frames: 2_048)
+        return StemSeparationResult(
+            stems: StemFiles(
+                vocals: vocalsURL,
+                drums: request.outputDirectory.appendingPathComponent("drums.wav"),
+                bass: request.outputDirectory.appendingPathComponent("bass.wav"),
+                guitar: request.outputDirectory.appendingPathComponent("guitar.wav"),
+                piano: request.outputDirectory.appendingPathComponent("piano.wav"),
+                other: otherURL
+            ),
+            processingDuration: .zero
+        )
+    }
+
+    func lastInputURL() -> URL? { inputURL }
+
+    private static func writeConstantWAV(
+        to url: URL,
+        value: Float,
+        frames: AVAudioFrameCount
+    ) throws {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        for frame in 0..<Int(frames) {
+            buffer.floatChannelData![0][frame] = value
+        }
+        try file.write(from: buffer)
+    }
+}
+
 private actor RecordingNativeStemEngine: StemSeparationEngine {
     nonisolated let metadata = StemSeparationEngineMetadata(
         engineIdentifier: "native-test-model",
@@ -861,5 +1072,55 @@ private struct StubStemRefiner: StemRefinementEngine {
             )
         }
         return StemRefinementResult(descriptors: descriptors, assets: assets)
+    }
+}
+
+extension StemSeparationTests {
+    fileprivate func vocalManifest(parent: URL, lead: URL, backing: URL) -> StemSetManifest {
+        StemSetManifest(
+            descriptors: [
+                StemDescriptor(
+                    id: StemKind.vocals.id,
+                    role: .source,
+                    displayName: "Vocals",
+                    order: 0
+                ),
+                StemDescriptor(
+                    id: .vocalLead,
+                    parentID: StemKind.vocals.id,
+                    role: .refinement,
+                    displayName: "Lead Vocals",
+                    order: 200
+                ),
+                StemDescriptor(
+                    id: .vocalBacking,
+                    parentID: StemKind.vocals.id,
+                    role: .refinement,
+                    displayName: "Backing Vocals",
+                    order: 201
+                ),
+            ],
+            assets: [
+                StemAsset(id: StemKind.vocals.id, audioURL: parent, producerID: "base"),
+                StemAsset(id: .vocalLead, audioURL: lead, producerID: "karaoke"),
+                StemAsset(id: .vocalBacking, audioURL: backing, producerID: "karaoke"),
+            ]
+        )
+    }
+
+    fileprivate func writeConstantWAV(
+        to url: URL,
+        value: Float,
+        frames: AVAudioFrameCount,
+        sampleRate: Double = 44_100
+    ) throws {
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        for frame in 0..<Int(frames) {
+            buffer.floatChannelData![0][frame] = value
+        }
+        try file.write(from: buffer)
     }
 }

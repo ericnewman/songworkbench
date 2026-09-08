@@ -3184,6 +3184,144 @@ Acceptance criteria:
       them from the generated chart, click track, and included count.
 - [x] Run focused tests plus formatting and whitespace checks.
 
-Review: `swift test --jobs 1 --filter 'AppModelTests|ChordProDraftBuilderTests|
-SongAnalysisDocumentReconciliationTests'` completed, then the five added regressions passed
-explicitly. `make format-check` and `git diff --check` passed.
+---
+
+## 2026-09-05 — Eight Miles High intro gaps and verse flicker
+
+The latest extraction of *The Byrds - Eight Miles High* missed the intro's Em–F#m/E–G/E
+riff (long stretches of E) and filled verse 1 with extra Bm/E/F#m/A around the real G–D–C.
+
+Acceptance criteria:
+
+- [x] Pedal/drone frames whose upper structure is a complete different triad relabel to that
+      triad (F#m and G over an E pedal), and an E5 does not become B.
+- [x] Evidence audit treats a stable frame-label change as harmonic even when chroma
+      change-points exist or are empty.
+- [x] Sub-beat attack-only markers drop; beat-length attack-only changes stay.
+- [x] Harmony engine version 8 and reduce-29 so existing songs re-chroma / re-reduce.
+- [x] Focused tests plus format/whitespace checks.
+
+Review:
+
+- Cached frames for this song were 50% E major in the intro (F#m and G at 1.3% each) and
+  verse 1 had 1 change-point in 32 s against 897 picking onsets — attacks licensed flicker
+  the cosine-distance detector never authorized.
+- `PedalAwareChordRelabeler` zeros a window-dominant pitch class before classifying.
+- `ChordEvidenceAudit` ORs change-points with `harmonicChangeHolds`, and
+  `filtered` drops `.attack` events shorter than one beat.
+- Verification: `swift test --jobs 1 --filter ChordEvidenceAuditTests` (19) plus pedal
+  cases in `AudioAnalysisTests` (7) passed. `xcrun swift-format lint --strict` on the
+  touched Swift files and `git diff --check` passed. Re-analyze the song in the app so
+  harmony engine v8 recomputes chroma.
+
+---
+
+## 2026-09-05 — Karaoke Voice 1 empty, Voice 2 is all the vocals
+
+On *Eight Miles High* the expanded Vocals group showed three strips: the group
+(no meter), Voice 1 (faint waveform, inaudible), Voice 2 (the entire vocal
+performance).
+
+Acceptance criteria:
+
+- [x] A lead/backing pair where one child is a ghost (<8% of parent energy) or a
+      parent-copy (>90%) is not presented as Voice 1/2; the parent Vocals stem
+      plays instead.
+- [x] A real split (both children in 8–90% of parent energy) keeps Voice 1/2.
+- [x] Unreadable placeholder children (drum-piece test stubs) stay in the
+      manifest (fail-open).
+- [x] Already-separated songs pick this up on load without re-running karaoke.
+- [x] Focused tests plus format/whitespace checks.
+
+Review:
+
+- Measured karaoke outputs: lead RMS −48 dB, energy 0.5% of parent, corr 0.20;
+  backing RMS −25 dB, energy 97.6%, corr 0.998 with parent. Reconstruction is
+  exact (lead+backing = parent) so the residual math is not the bug — the
+  checkpoint emitted almost nothing as "lead".
+- `VocalSplitQualityGate` drops `vocals.lead` / `vocals.backing` from the
+  playing frontier. Applied at refiner merge (new analyses, including harmony
+  sources) and when loading a saved stem set.
+- Verification: `swift test --jobs 1 --filter 'StemSeparationTests/testVocalSplit|StemSeparationTests/testRefinementPipelineAddsChildren'`
+  — 6 tests, 0 failures. `xcrun swift-format lint --strict` and `git diff --check`
+  passed on touched Swift files. Rebuild and reopen the song; mixer/waveform should
+  show a single Vocals stem. Review harmony rows stay until re-analyze.
+
+---
+
+## 2026-09-05 — Real lead/backing vocal split (replace anvuew)
+
+The karaoke refiner is wired and cached, but `anvuew/karaoke_bs_roformer` is a
+vocals-vs-instrumental isolator. On Eight Miles High it emitted a 0.5% ghost as
+Voice 1 and the whole vocals stem as Voice 2. The quality gate now hides that
+fake split; this track replaces the checkpoint so Voice 1/2 are a real split.
+
+**Model:** `UVR_MDXNET_KARA_2.onnx` (52,786,726 bytes, sha256 `bf32e151…`). UVR
+marks it `is_karaoke: true`, primary stem Instrumental, n_fft 5120 / dim_f 2048 /
+dim_t 256 / hop 1024 / compensate 1.065.
+
+Running it on the Demucs vocals stem is out of distribution (lead ~94% / backing
+~3%). The working path is: KARA_2 on the **original mix**, lead = mix −
+compensated instrumental, backing = vocals_parent − lead. 90 s of Eight Miles
+High scored lead/vocals 0.777, backing/vocals 0.234, corr(lead, backing) −0.013.
+
+Rejected for this pass: becruily Mel-Band RoFormer karaoke (1.7 GB, same
+Vocals/Instrumental labels until a discriminator passes) and a 1.7 GB waveform
+export. KARA_2 was already contract-probed in B2; the only missing piece is
+ISTFT, which this pass adds with a Python golden test so artifacts are not
+confused with model quality.
+
+Acceptance criteria:
+
+- [x] KARA_2 runs on the original mix (not the vocals parent). Lead = mix −
+      compensated instrumental; backing = vocals_parent − lead.
+- [ ] Cheap discriminator on Eight Miles High after re-run Stems: both children
+      ≥8% of parent energy (lead-heavy 95/10 is kept), lead≠backing.
+- [x] Catalog/engine version bump so existing anvuew children are not reused
+      (`kara2-1` / `karaoke-mdx-kara2-v1`).
+- [x] `VocalSplitQualityGate` still drops a failed split (either child <8%).
+- [x] Golden STFT/ISTFT parity test against the Python probe so listening
+      judges the model, not the DSP.
+- [ ] Rebuild + re-run Stems on Eight Miles High (Xcode; app is currently
+      running from an older Debug build).
+
+Review:
+
+- Factory now injects `KaraokeVocalRefinementEngine` (`karaoke-mdx-kara2-v1`)
+  instead of `NativeStemRefinementEngine` / `karaoke-bsroformer-v1`.
+- `ModelCatalog.karaokeVocals` version `kara2-1`, file `UVR_MDXNET_KARA_2.onnx`,
+  hosted GitHub URL. Package copied into the sandbox Models directory.
+- Quality gate is min-share only (≥8% both children); 94.6%/10% lead-heavy
+  karaoke is kept; 0.5%/97.6% anvuew ghost is still dropped.
+- Verification: `swift test --jobs 1 --filter 'StemSeparationTests/testVocalSplit|StemSeparationTests/testMDXKaraoke|StemSeparationTests/testKaraokeRefiner|StemSeparationTests/testRefinementPipelineAddsChildren|SongAnalysisPipelineFactoryTests|ModelPackageManagerTests/testEveryCatalog|ModelPackageManagerTests/testProductionCatalog'`
+  — 15 tests, 0 failures. STFT golden matched Python DC 3.1893 and round-tripped
+  at <1e-4 relative error. `swift-format lint --strict` and `git diff --check`
+  passed on touched Swift files.
+
+Notes:
+
+- B2 blocked KARA_2 as spectrogram-in/out. DrumSep is not a precedent for ISTFT
+  (it gets waveform out). New DSP lives in its own helper, not in
+  `HybridDemucsFrequencyFeatures` (n_fft 4096, DrumSep depends on it).
+- Download URL is GitHub `TRvlvr/model_repo` release `all_public_uvr_models`.
+
+
+## 2026-09-08 — Metronome toggle for the beat click
+Decisions (Eric): toggle = rigid grid vs. detected beats; lives in the Clk mixer strip; grid tempo =
+estimatedBPM, phase = barGrid downbeat (beatTimes[barPhase]). Gain faders unchanged.
+- [x] StemPlaybackService: `metronomeEnabled` (@Published, UserDefaults-backed), keep the last
+      beat source (beatTimes/bpm/barGrid) so the toggle rebuilds the channel without a caller;
+      `metronomeGrid(bpm:anchor:duration:)`; OFF = beatTimes verbatim; fallback to median-IBI
+      grid when bpm is missing.
+- [x] AppModel: both `loadClickTrack` call sites pass `bpm: estimatedBPM, barGrid: barGrid`.
+- [x] WorkspaceEditorsView `slimClickStrip`: metronome / metronome.fill toggle in the pan-knob
+      stand-in slot; help text per state.
+- [x] Tests: grid period = 60/bpm, anchored at barPhase beat, covers [0, duration], fallback.
+- [x] Verify: `swift build --build-tests` clean; `swift test --filter StemPlaybackServiceTests` 13/13.
+- [ ] Verify in the .app: BLOCKED 2026-09-08 — xcodebuild hangs in NSFileCoordinator on the
+      .xcodeproj; Documents is iCloud-managed, disk 97% full, 12,864 dataless files under .git
+      (git log bus-errors, git status 36 s, swift-build's git describe stalled 3+ min). Needs disk
+      freed / .git rehydrated (`brctl download .git` only queues) before the app can be rebuilt.
+Review: no new Swift files, so no `tuist generate`. Default metronome ON (UserDefaults
+`clickMetronomeEnabled`). Period = 60/estimatedBPM; a BPM off by 0.5 drifts ~1 s over 4 min —
+that is the metronome telling the truth about the estimate, not a bug to smooth away.

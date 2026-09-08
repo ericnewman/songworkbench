@@ -127,18 +127,18 @@ final class ChordEvidenceAuditTests: XCTestCase {
         XCTAssertEqual(audit.verdicts[0].evidence, .unsupported)
     }
 
-    func testEmptyChangePointArrayIsAMeasurementNotAMissingOne() {
-        // A stem whose chroma never moves sharply enough to fire the detector. The frames DO show
-        // a stable label change, but an empty (non-nil) array means the real measurement found
-        // nothing — falling back here would quietly restore the coarse path.
+    func testEmptyChangePointArrayStillAcceptsAStableFrameLabelChange() {
+        // The cosine-distance detector found no spike, but the classifier's winner moved and
+        // held. That is the slow G–D–C walk a 12-string drone never spikes: labels are the
+        // harmonic evidence the distance curve missed.
         let audit = ChordEvidenceAudit.audit(
             events: [event(2, .g)],
             frameObservations: frames([(0, 2, .c), (2, 4, .g)]),
             attackOnsets: [],
             changePoints: []
         )
-        XCTAssertEqual(audit.verdicts[0].evidence, .unsupported)
-        XCTAssertEqual(audit.verdicts[0].harmonicSource, .changePoint)
+        XCTAssertEqual(audit.verdicts[0].evidence, .harmonic)
+        XCTAssertEqual(audit.verdicts[0].harmonicSource, .frameLabels)
     }
 
     func testNilChangePointsFallBackToFrameLabels() {
@@ -173,6 +173,40 @@ final class ChordEvidenceAuditTests: XCTestCase {
             changePoints: [2.0]
         )
         XCTAssertEqual(measured.verdicts[0].evidence, .harmonic, "the change-point catches it")
+        XCTAssertEqual(measured.verdicts[0].harmonicSource, .changePoint)
+    }
+
+    func testStableFrameChangeAuthorizesAMarkerChangePointsMissed() {
+        // Verse G–D with dense picking attacks and a change-point nowhere nearby. Labels
+        // hold; that is enough harmonic evidence even though the distance detector slept.
+        let audit = ChordEvidenceAudit.audit(
+            events: [event(0, .g), event(2, .d)],
+            frameObservations: frames([(0, 2, .g), (2, 4, .d)]),
+            attackOnsets: [0, 0.5, 1.0, 1.5, 2.0, 2.5],
+            changePoints: [10.0]
+        )
+        XCTAssertEqual(audit.verdicts[1].evidence, .attackAndHarmonic)
+        XCTAssertEqual(audit.verdicts[1].harmonicSource, .frameLabels)
+    }
+
+    func testFilteringDropsShortAttackOnlyFlickerButKeepsABeatLengthChange() {
+        // Jangly picking licenses every sliver. Sub-beat Bm/E/F#m inside a G bar must go;
+        // a beat of G with only attack evidence (stability window didn't catch it) stays.
+        let events = [
+            event(0, .g),
+            event(0.15, "Bm"),
+            event(0.30, .e),
+            event(0.55, .d),
+        ]
+        let result = ChordEvidenceAudit.filtered(
+            events: events,
+            frameObservations: frames([(0, 0.55, .g), (0.55, 3, .d)]),
+            attackOnsets: [0, 0.15, 0.30, 0.55],
+            changePoints: [],
+            sourceDuration: 3,
+            minimumAttackOnlyDuration: 0.5
+        )
+        XCTAssertEqual(result.events.map(\.chord), ["G", "D"])
     }
 
     func testChangePointDetectorFeedsTheAuditEndToEnd() {

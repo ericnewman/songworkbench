@@ -3143,7 +3143,11 @@ final class AppModel: ObservableObject {
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
         chordPlacementPicks = analysis.chordPlacementPicks
         stemFiles = analysis.stems?.resolved()
-        stemSet = analysis.stemSet?.resolved() ?? stemFiles?.stemSetManifest
+        if let resolved = analysis.stemSet?.resolved() ?? stemFiles?.stemSetManifest {
+            stemSet = VocalSplitQualityGate.collapsingFailedSplit(in: resolved)
+        } else {
+            stemSet = nil
+        }
         stemMixer = analysis.stemMixer
         lyricReviewState = analysis.lyricReviewState
         chordReviewState = analysis.chordReviewState

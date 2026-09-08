@@ -275,10 +275,8 @@ struct StemRefinementEngineFactory: Sendable {
                     try ONNXKaraokeVocalSeparationEngine(modelURL: package.entryPointURL)
                 }
                 engines.append(
-                    NativeStemRefinementEngine(
-                        identifier: "karaoke-bsroformer-v1",
-                        parentStemID: StemKind.vocals.id,
-                        outputs: ONNXKaraokeVocalSeparationEngine.refinementOutputs,
+                    KaraokeVocalRefinementEngine(
+                        identifier: "karaoke-mdx-kara2-v1",
                         engine: deferred
                     )
                 )

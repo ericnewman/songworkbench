@@ -18,6 +18,10 @@ SongWorkbench.xcodeproj/project.xcworkspace/xcuserdata/
 tools/demucs_export/*.onnx
 tools/demucs_export/*.onnx.data
 
+# Karaoke / MDX probe weights and venv (not source)
+tools/karaoke_export/models/
+tools/karaoke_export/.probevenv/
+
 # iPad-bundled short-segment stem model (regenerate via tools/demucs_export)
 BundledModels/*.onnx
 .scratch/

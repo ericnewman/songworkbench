@@ -658,7 +658,11 @@ final class StemSourceChordAccuracyTests: XCTestCase {
                         events: events,
                         frameObservations: analysis.chords,
                         attackOnsets: instrumentOnsets,
-                        changePoints: analysis.harmonicChangePoints
+                        changePoints: analysis.harmonicChangePoints,
+                        sourceDuration: sourceDuration,
+                        minimumAttackOnlyDuration:
+                            MetricalLevelReconciler.medianBeatLength(
+                                beatTimes: resolvedBeatTimes, bpm: referenceBPM) ?? 0
                     ).events
                 events =
                     ChordQualityAudit.corrected(

@@ -908,6 +908,11 @@ struct HarmonyStage: AnalysisStageRunning {
                         // vocal stem, then subdivided by timbre) and persisted, instead of being
                         // re-clustered inside every lyric-line window at display time.
                         + "|reduce-28-song-level-voices"
+                        // reduce-29: evidence audit treats stable frame-label changes as
+                        // harmonic even when chroma change-points exist (slow G–D–C walks
+                        // never spike frame-to-frame cosine), and drops sub-beat
+                        // attack-only markers licensed by jangly picking.
+                        + "|reduce-29-label-harmonic-and-attack-sliver"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1020,9 +1025,11 @@ struct HarmonyStage: AnalysisStageRunning {
             // snapping, the duration filter, and everything the chart draws.
             // Cover audio before the first drum hit: the drum-locked grid starts at the first
             // hit, so a solo-guitar intro had no decode windows and produced no chords at all.
+            let beatLength =
+                MetricalLevelReconciler.medianBeatLength(
+                    beatTimes: resolvedBeatTimes, bpm: estimatedBPM ?? 0) ?? 0
             let decodeSubdivision = HarmonyDecodeResolution.subdivision(
-                beatLength: MetricalLevelReconciler.medianBeatLength(
-                    beatTimes: resolvedBeatTimes, bpm: estimatedBPM ?? 0) ?? 0)
+                beatLength: beatLength)
             let decodeBeatTimes = ChordTimelineDecoder.subdivided(
                 ChordTimelineDecoder.extendedBackward(
                     resolvedBeatTimes,
@@ -1104,7 +1111,9 @@ struct HarmonyStage: AnalysisStageRunning {
                 events: chords,
                 frameObservations: result.chords,
                 attackOnsets: instrumentOnsets,
-                changePoints: result.harmonicChangePoints
+                changePoints: result.harmonicChangePoints,
+                sourceDuration: context.document.sourceDuration,
+                minimumAttackOnlyDuration: beatLength
             )
             chords = evidence.events
             // Quality audit: the frame-level classifier read the third straight from chroma with

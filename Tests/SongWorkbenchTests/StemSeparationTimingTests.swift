@@ -93,11 +93,10 @@ final class StemSeparationTimingTests: XCTestCase {
         }
     }
 
-    /// B8: runs the karaoke refiner over a real vocals stem and writes lead/backing.
+    /// B8: runs KARA_2 over a mix (or vocals) and writes lead/instrumental slots.
     ///
-    /// Segmentation and overlap-add are NOT reimplemented here — the engine reuses
-    /// `CoreMLStemSeparationEngine`, the same windowing the base six-stem engine uses, so the
-    /// fixed 262144-sample graph works on full-length songs.
+    /// Segmentation and overlap-add come from `CoreMLStemSeparationEngine`. The ONNX graph is
+    /// spectrogram-in/out (`[1,4,2048,256]`); STFT/ISTFT live in `MDXNetKaraokeSpectrogram`.
     func testKaraokeRefineVocalsStem() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["SW_KARAOKE"] == "1" else {

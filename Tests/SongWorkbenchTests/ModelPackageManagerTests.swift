@@ -232,15 +232,8 @@ final class ModelPackageManagerTests: XCTestCase {
         )
     }
 
-    /// A package whose artifact is not published yet must not advertise itself as downloadable:
-    /// the Models UI offers Install only for hosted packages, because the placeholder URL can
-    /// only produce a network error the user then has to hunt for a way to clear.
-    func testUnhostedPackageIsNotOfferedForDownload() {
-        XCTAssertFalse(
-            ModelCatalog.karaokeVocals.isHosted,
-            "The karaoke export is still a placeholder URL; if it is now hosted, update this test "
-                + "along with the descriptor.")
-        for descriptor in ModelCatalog.all where descriptor.id != ModelCatalog.karaokeVocals.id {
+    func testEveryCatalogPackageIsHosted() {
+        for descriptor in ModelCatalog.all {
             XCTAssertTrue(descriptor.isHosted, "\(descriptor.displayName) should be downloadable")
         }
     }
