@@ -101,8 +101,10 @@ let project = Project(
             sources: ["Sources/SongWorkbench/**"],
             // BundledModels (iPad only): the shorter-segment 6-stem HTDemucs export, shipped in
             // the app so stem separation fits memory without a 246MB download. macOS downloads
-            // the full 7.8s model instead, so it does NOT bundle this.
-            resources: ["Resources/**", "BundledModels/**"],
+            // the full 7.8s model instead, so it does NOT bundle this. `*.onnx` only: the
+            // macOS-side HTDemucs6S_FP16.mlpackage (gitignored, copied by a shell phase) also
+            // lives here, and a `.mlpackage` in a resource glob makes `tuist generate` fail.
+            resources: ["Resources/**", "BundledModels/*.onnx"],
             // iOS entitlements: increased-memory-limit so HTDemucs stem separation isn't
             // jetsam-killed at the default per-process ceiling on 4GB iPads.
             entitlements: .file(path: "SongWorkbenchiPad.entitlements"),

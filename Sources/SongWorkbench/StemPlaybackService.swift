@@ -183,7 +183,7 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     /// Builds the beat click and connects it. Call after `load`. An empty `beatTimes` leaves the
     /// channel silent. Safe to call while playing. `bpm`/`barGrid` are the analysis's reconciled
     /// tempo and bar grid; they decide the metronome's period and downbeat anchor (see
-    /// `metronomeGrid`) and are ignored when `metronomeEnabled` is off.
+    /// `MetronomeGrid.clickTimes`) and are ignored when `metronomeEnabled` is off.
     func loadClickTrack(beatTimes: [TimeInterval], bpm: Double? = nil, barGrid: SongBarGrid? = nil)
     {
         beatClickSource = BeatClickSource(beatTimes: beatTimes, bpm: bpm, barGrid: barGrid)
@@ -203,13 +203,13 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         for source: BeatClickSource, metronome: Bool, duration: TimeInterval
     ) -> [TimeInterval] {
         guard metronome else { return source.beatTimes.sorted() }
-        return metronomeGrid(
+        return MetronomeGrid.clickTimes(
             beatTimes: source.beatTimes, bpm: source.bpm, barGrid: source.barGrid,
             duration: duration)
     }
 
     /// Builds the chord click from wherever the chords are CURRENTLY placed. Unlike the beat
-    /// click these times are used verbatim — no `uniformBeatGrid` — because their irregularity is
+    /// click these times are used verbatim — no `MetronomeGrid` — because their irregularity is
     /// the entire thing under test: regularising them would erase the difference between the
     /// placement variants being compared. Safe to call while playing, which is what makes an A/B
     /// possible without stopping the music.
@@ -315,55 +315,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             channel[offset] = Float(sin(2 * Double.pi * frequency * seconds) * envelope * 0.6)
         }
         return buffer
-    }
-
-    /// A metronome: one rigid period extended both directions over [0, duration], never nudged
-    /// by the recording's content. Period is `60 / bpm` — the analysis's reconciled tempo, the same
-    /// number the chart shows — and the phase anchor is the detected beat the bar grid calls the
-    /// first downbeat (`beatTimes[barPhase]`), so beat 1 of the click is beat 1 of the chart.
-    /// Without a usable BPM the period falls back to the median inter-beat interval of the
-    /// detected beats (`uniformBeatGrid`); with fewer than two beats there is nothing to fit and
-    /// the input is returned as-is.
-    static func metronomeGrid(
-        beatTimes: [TimeInterval], bpm: Double?, barGrid: SongBarGrid?, duration: TimeInterval
-    ) -> [TimeInterval] {
-        let sorted = beatTimes.sorted()
-        guard let first = sorted.first else { return [] }
-        let anchorIndex = min(max(barGrid?.barPhase ?? 0, 0), sorted.count - 1)
-        let anchor = sorted[anchorIndex]
-        if let bpm, bpm.isFinite, bpm > 0 {
-            let period = 60 / bpm
-            guard period > 0.05 else { return sorted }
-            return periodicGrid(period: period, anchor: anchor, duration: duration)
-        }
-        // No tempo: fit the period from the beats themselves, keeping the downbeat anchor.
-        return uniformBeatGrid(from: sorted, anchor: anchor, duration: duration) ?? [first]
-    }
-
-    /// Median inter-beat interval of `sorted` as the period, phase-anchored at `anchor`. `nil`
-    /// when there aren't enough beats (or they are degenerately spaced) to estimate a period.
-    static func uniformBeatGrid(
-        from sorted: [TimeInterval], anchor: TimeInterval, duration: TimeInterval
-    ) -> [TimeInterval]? {
-        guard sorted.count >= 2 else { return nil }
-        var intervals: [TimeInterval] = []
-        for index in 1..<sorted.count { intervals.append(sorted[index] - sorted[index - 1]) }
-        intervals.sort()
-        let period = intervals[intervals.count / 2]  // median
-        guard period > 0.05 else { return nil }  // sanity: ignore degenerate spacing
-        return periodicGrid(period: period, anchor: anchor, duration: duration)
-    }
-
-    /// `anchor + k·period` for every integer k that lands in [0, duration], ascending. Computed by
-    /// index rather than by repeated addition so a 4-minute grid does not accumulate float drift.
-    static func periodicGrid(
-        period: TimeInterval, anchor: TimeInterval, duration: TimeInterval
-    ) -> [TimeInterval] {
-        guard period > 0, duration >= 0 else { return [] }
-        let firstIndex = Int(ceil(-anchor / period))
-        let lastIndex = Int(floor((duration - anchor) / period))
-        guard lastIndex >= firstIndex else { return [] }
-        return (firstIndex...lastIndex).map { anchor + Double($0) * period }
     }
 
     private func scheduleClick(from time: TimeInterval) {

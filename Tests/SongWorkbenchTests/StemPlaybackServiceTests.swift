@@ -140,7 +140,7 @@ final class StemPlaybackServiceTests: XCTestCase {
         beatsPerBar: 4, barPhase: 1, confidence: 0.5, phaseSource: .drumAccents)
 
     func testMetronomeGridIsRigidAtBPMAndAnchoredToBarGridDownbeat() {
-        let grid = StemPlaybackService.metronomeGrid(
+        let grid = MetronomeGrid.clickTimes(
             beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne, duration: 6)
 
         // Period is exactly 60/bpm — none of the input jitter survives.
@@ -156,7 +156,7 @@ final class StemPlaybackServiceTests: XCTestCase {
     }
 
     func testMetronomeGridFallsBackToMedianIntervalWithoutBPM() throws {
-        let grid = StemPlaybackService.metronomeGrid(
+        let grid = MetronomeGrid.clickTimes(
             beatTimes: jitteredBeats, bpm: nil, barGrid: downbeatAtIndexOne, duration: 4)
 
         let intervals = zip(grid.dropFirst(), grid).map { $0 - $1 }
@@ -170,16 +170,16 @@ final class StemPlaybackServiceTests: XCTestCase {
         // barPhase past the end must not crash; it clamps to the last beat.
         let outOfRange = SongBarGrid(
             beatsPerBar: 4, barPhase: 99, confidence: 0, phaseSource: .anchoredToFirstBeat)
-        let grid = StemPlaybackService.metronomeGrid(
+        let grid = MetronomeGrid.clickTimes(
             beatTimes: [0.5, 1.0], bpm: 120, barGrid: outOfRange, duration: 2)
         XCTAssertTrue(grid.contains { abs($0 - 1.0) < 1e-9 })
 
         XCTAssertEqual(
-            StemPlaybackService.metronomeGrid(beatTimes: [], bpm: 120, barGrid: nil, duration: 2),
+            MetronomeGrid.clickTimes(beatTimes: [], bpm: 120, barGrid: nil, duration: 2),
             [])
         // One beat and no tempo: nothing to fit, so that beat is the whole grid.
         XCTAssertEqual(
-            StemPlaybackService.metronomeGrid(
+            MetronomeGrid.clickTimes(
                 beatTimes: [0.7], bpm: nil, barGrid: nil, duration: 2),
             [0.7])
     }
@@ -193,14 +193,14 @@ final class StemPlaybackServiceTests: XCTestCase {
             jitteredBeats)
         XCTAssertEqual(
             StemPlaybackService.beatClickTimes(for: source, metronome: true, duration: 6),
-            StemPlaybackService.metronomeGrid(
+            MetronomeGrid.clickTimes(
                 beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne, duration: 6))
     }
 
     func testPeriodicGridDoesNotDriftOverALongSong() {
         // 4 minutes at 127 BPM: index arithmetic keeps the last beat on the exact multiple.
         let period = 60.0 / 127
-        let grid = StemPlaybackService.periodicGrid(period: period, anchor: 0.3, duration: 240)
+        let grid = MetronomeGrid.periodicGrid(period: period, anchor: 0.3, duration: 240)
         let lastIndex = Double(grid.count - 1)
         XCTAssertEqual(grid.last!, grid.first! + lastIndex * period, accuracy: 1e-9)
         XCTAssertGreaterThanOrEqual(grid.first!, 0)
