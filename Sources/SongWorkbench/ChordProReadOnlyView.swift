@@ -514,6 +514,84 @@ enum BucketNoteRowFormatter {
     }
 }
 
+/// One 16th of a solo tab block: the six strings' two-character cells, high e first, and the
+/// song time the column sits at so the view can place it on the row's ruler.
+struct SoloTabColumn: Equatable, Sendable {
+    let time: TimeInterval
+    let cells: [String]
+}
+
+/// A solo passage's tab inside one chart line's window.
+struct SoloTabBlock: Equatable, Sendable {
+    let stemID: StemID
+    let label: String
+    let columns: [SoloTabColumn]
+
+    /// The six tab strings as text (high e first) — the monospace rendering and what tests read.
+    var lines: [String] {
+        SoloTabRowFormatter.stringLabels.indices.map { row in
+            columns.map { $0.cells[row] }.joined()
+        }
+    }
+}
+
+/// Formats a `SoloTranscriptionTimeline` as guitar tab for the Review chart. Non-view, like
+/// `BucketNoteRowFormatter`. Every 16th is one fixed two-character column ("5-", "12", "--") so
+/// two-digit frets never shift later columns off their beat. Tab is NOT transposed with the
+/// chart: frets are where the recorded player's fingers were.
+enum SoloTabRowFormatter {
+    /// Top to bottom, as tab is written.
+    static let stringLabels = ["e", "B", "G", "D", "A", "E"]
+    static let columnWidth = 2
+    static let rest = "--"
+
+    /// One block per passage whose 16ths fall in `window`, in timeline order; a passage that
+    /// merely overlaps the window contributes only the columns inside it.
+    static func blocks(
+        timeline: SoloTranscriptionTimeline, inWindow window: ClosedRange<TimeInterval>
+    ) -> [SoloTabBlock] {
+        timeline.transcriptions.compactMap { transcription in
+            let columns = columns(for: transcription, timeline: timeline)
+                .filter { window.contains($0.time) }
+            guard !columns.isEmpty else { return nil }
+            return SoloTabBlock(
+                stemID: transcription.stemID,
+                label: BucketNoteRowFormatter.label(for: transcription.stemID),
+                columns: columns)
+        }
+    }
+
+    /// Every 16th of the passage as a column: a note's first 16th shows its fret on its string,
+    /// its held 16ths and rests show dashes.
+    static func columns(for transcription: SoloTranscription, timeline: SoloTranscriptionTimeline)
+        -> [SoloTabColumn]
+    {
+        let passage = transcription.passage
+        let count = (passage.endBucket - passage.startBucket + 1) * 4
+        guard count > 0 else { return [] }
+        var cells = [[String]](
+            repeating: [String](repeating: rest, count: stringLabels.count), count: count)
+        for note in transcription.notes {
+            guard cells.indices.contains(note.startSixteenth),
+                (0..<stringLabels.count).contains(note.string)
+            else { continue }
+            let row = stringLabels.count - 1 - note.string
+            cells[note.startSixteenth][row] = fretText(note.fret)
+        }
+        return (0..<count).compactMap { sixteenth in
+            guard let time = timeline.time(ofSixteenth: sixteenth, in: passage) else { return nil }
+            return SoloTabColumn(time: time, cells: cells[sixteenth])
+        }
+    }
+
+    static func fretText(_ fret: Int) -> String {
+        let digits = String(max(fret, 0))
+        return digits.count >= columnWidth
+            ? String(digits.prefix(columnWidth))
+            : digits + String(repeating: "-", count: columnWidth - digits.count)
+    }
+}
+
 /// The ChordPro tab: the shared toolbar (transpose, export, JustChords) over the playback chart.
 /// It reuses Review's timeline-aware renderer for bouncing balls, while
 /// `ChordProTabConfig.chordProPlayback` disables Review-only affordances.

@@ -241,6 +241,66 @@ final class SoloTranscriptionTests: XCTestCase {
         XCTAssertFalse(SoloTranscriptionAnalyzer.isMelodicStem(StemID(.drums)))
     }
 
+    // MARK: - Tab formatting
+
+    func testFormatterProducesSixStringsWithTwoCharacterColumns() {
+        // One 2-bucket passage at 120 BPM: 8 sixteenths of 0.125 s from t = 1.
+        let clicks = MetronomeGrid.periodicGrid(period: 0.5, anchor: 0, duration: 4)
+        let passage = SoloPassage(
+            stemID: .guitarLead, startBucket: 2, endBucket: 3, startTime: 1, endTime: 2,
+            confidence: 1)
+        let transcription = SoloTranscription(
+            stemID: .guitarLead, passage: passage,
+            notes: [
+                // G3 on the D string fret 5, held two 16ths; rest; then C5 at fret 12 on the
+                // high e held to the end.
+                SoloNote(
+                    startSixteenth: 0, lengthSixteenths: 2, midiNote: 55, confidence: 1, string: 2,
+                    fret: 5),
+                SoloNote(
+                    startSixteenth: 3, lengthSixteenths: 5, midiNote: 76, confidence: 1, string: 5,
+                    fret: 12),
+            ])
+        let timeline = SoloTranscriptionTimeline(
+            gridKey: BucketGridKey(bpm: 120, anchor: 0, duration: 4), clickTimes: clicks,
+            transcriptions: [transcription])
+
+        let blocks = SoloTabRowFormatter.blocks(timeline: timeline, inWindow: 0...4)
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].label, "GL")
+        XCTAssertEqual(blocks[0].columns.count, 8)
+        XCTAssertEqual(
+            blocks[0].columns.map(\.time), (0..<8).map { 1 + Double($0) * 0.125 })
+        XCTAssertEqual(
+            blocks[0].lines,
+            [
+                "------12--------",  // e
+                "----------------",  // B
+                "----------------",  // G
+                "5---------------",  // D
+                "----------------",  // A
+                "----------------",  // E
+            ])
+        for column in blocks[0].columns {
+            XCTAssertEqual(column.cells.count, 6)
+            for cell in column.cells { XCTAssertEqual(cell.count, 2) }
+        }
+
+        // A window covering only the second bucket gets the last four columns.
+        let tail = SoloTabRowFormatter.blocks(timeline: timeline, inWindow: 1.5...2.0)
+        XCTAssertEqual(tail[0].columns.count, 4)
+        XCTAssertEqual(tail[0].lines[0], "--------")
+        // A window elsewhere gets nothing.
+        XCTAssertTrue(SoloTabRowFormatter.blocks(timeline: timeline, inWindow: 2.5...3.5).isEmpty)
+    }
+
+    func testFretTextPadsToTwoColumns() {
+        XCTAssertEqual(SoloTabRowFormatter.fretText(0), "0-")
+        XCTAssertEqual(SoloTabRowFormatter.fretText(7), "7-")
+        XCTAssertEqual(SoloTabRowFormatter.fretText(12), "12")
+        XCTAssertEqual(SoloTabRowFormatter.fretText(22), "22")
+    }
+
     // MARK: - Helpers
 
     private func tone(frequency: Double, duration: TimeInterval, amplitude: Float = 0.5) -> [Float]

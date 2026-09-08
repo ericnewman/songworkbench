@@ -1301,6 +1301,8 @@ struct ChordProTabEditor: View {
     /// Per-stem rows of what each instrument plays inside every metronome bucket
     /// (`BucketNoteTimeline`). Off by default like the other optional rows.
     @AppStorage("reviewShowBucketNotes") private var showBucketNotes = false
+    /// Solo passages as guitar tab under each line (`SoloTranscriptionTimeline`).
+    @AppStorage("reviewShowSoloTab") private var showSoloTab = false
     /// Stems whose bucket row is hidden, as a comma-joined list of stem IDs (AppStorage can't
     /// hold a Set). Everything present is shown until the user hides it.
     @AppStorage("reviewHiddenBucketStems") private var hiddenBucketStemsStorage = ""
@@ -1475,6 +1477,8 @@ struct ChordProTabEditor: View {
                             bucketNotes: config.showsReviewAffordances && showBucketNotes
                                 && model.isBucketTimelineCurrent ? model.bucketNotes : nil,
                             hiddenBucketStems: hiddenBucketStems,
+                            soloTranscriptions: config.showsReviewAffordances && showSoloTab
+                                && model.isSoloTimelineCurrent ? model.soloTranscriptions : nil,
                             showChordTimeLabels: config.showsReviewAffordances
                                 && showChordTimeLabels,
                             songChordTimes: model.placedChordTimes,
@@ -1650,6 +1654,20 @@ struct ChordProTabEditor: View {
                             model.computeBucketNotes()
                         }
                         .disabled(!model.canComputeBucketNotes)
+                        Toggle("Solo Tab", isOn: $showSoloTab)
+                            .disabled(model.soloTranscriptions == nil)
+                        Button(
+                            model.isComputingSolos
+                                ? "Computing Solo Tab…"
+                                : model.soloTranscriptions == nil
+                                    ? "Compute Solo Tab"
+                                    : model.isSoloTimelineCurrent
+                                        ? "Recompute Solo Tab"
+                                        : "Recompute Solo Tab (grid changed)"
+                        ) {
+                            model.computeSolos()
+                        }
+                        .disabled(!model.canComputeSolos)
                         Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
                     }
                     Picker("Beats per Row", selection: $beatsPerRow) {
@@ -2483,6 +2501,8 @@ struct ChordProAppPreview: View {
     /// nil = toggle off or the timeline is stale for the current grid.
     var bucketNotes: BucketNoteTimeline?
     var hiddenBucketStems: Set<StemID> = []
+    /// Solo passages as guitar tab under each line. nil = toggle off or stale timeline.
+    var soloTranscriptions: SoloTranscriptionTimeline?
     /// Shows the raw `{x_chord_times: ...}` directive text (View menu's "Chord Time Labels"
     /// toggle) instead of hiding it — off by default.
     var showChordTimeLabels = false
@@ -2597,6 +2617,13 @@ struct ChordProAppPreview: View {
         return BucketNoteRowFormatter.rows(
             timeline: bucketNotes, hiddenStems: hiddenBucketStems,
             inWindow: lyricLineWindows[ordinal], transposedBy: transpose)
+    }
+
+    private func soloBlocks(forLyricOrdinal ordinal: Int?) -> [SoloTabBlock] {
+        guard let soloTranscriptions, let ordinal, lyricLineWindows.indices.contains(ordinal)
+        else { return [] }
+        return SoloTabRowFormatter.blocks(
+            timeline: soloTranscriptions, inWindow: lyricLineWindows[ordinal])
     }
 
     /// Beats per bar: the song's shared `SongBarGrid` when supplied (it always is from the app
@@ -3079,6 +3106,7 @@ struct ChordProAppPreview: View {
         let itemRowHarmonyParts = timedHarmonyParts(
             forLyricOrdinal: item.lyricOrdinal)
         let itemBucketRows = bucketRows(forLyricOrdinal: item.lyricOrdinal)
+        let itemSoloBlocks = soloBlocks(forLyricOrdinal: item.lyricOrdinal)
         ChordProPreviewBlockView(
             block: item.block,
             scale: rowScale,
@@ -3112,6 +3140,7 @@ struct ChordProAppPreview: View {
             bassLabel: itemBassLabel,
             rowBassNotes: itemRowBassNotes,
             rowBucketRows: itemBucketRows,
+            rowSoloBlocks: itemSoloBlocks,
             harmonyLabels: itemHarmonyLabels,
             rowHarmonyParts: itemRowHarmonyParts,
             showChordTimeLabels: showChordTimeLabels,
@@ -3833,6 +3862,7 @@ private struct ChordProPreviewBlockView: View {
     /// The same bass notes with onset times, for rhythmic mode's positioned per-note row.
     var rowBassNotes: [TimedBassNoteLabel] = []
     var rowBucketRows: [BucketNoteRow] = []
+    var rowSoloBlocks: [SoloTabBlock] = []
     /// Detected vocal harmony parts in this row's window, as flush-left fallback labels.
     var harmonyLabels: [String] = []
     /// The same harmony parts with onset times, for rhythmic mode's positioned per-part rows.
@@ -3986,6 +4016,7 @@ private struct ChordProPreviewBlockView: View {
                         overrideText: lyricSegment?.overrideText,
                         rowBassNotes: rowBassNotes,
                         rowBucketRows: rowBucketRows,
+                        rowSoloBlocks: rowSoloBlocks,
                         rowHarmonyParts: rowHarmonyParts)
                 }
                 if showsReviewAffordances, line.hasSungText, let lyricSegment {
@@ -4279,6 +4310,7 @@ private struct ChordProPreviewLineView: View {
     /// a single flush-left label, which read as "clustered against the start of the line".
     var rowBassNotes: [TimedBassNoteLabel] = []
     var rowBucketRows: [BucketNoteRow] = []
+    var rowSoloBlocks: [SoloTabBlock] = []
     var rowHarmonyParts: [TimedVocalHarmonyPart] = []
 
     /// Extra row height reserved above the chords for the positioned bass notes.
@@ -4310,6 +4342,8 @@ private struct ChordProPreviewLineView: View {
     private var bassRowReserve: CGFloat { scale.scaled(Self.baseBassRowReserve) }
     private var harmonyRowReserve: CGFloat { scale.scaled(Self.baseHarmonyRowReserve) }
     private var bucketRowReserve: CGFloat { scale.scaled(Self.baseBassRowReserve) }
+    /// One tab string's height; a block is six of them.
+    private var soloStringReserve: CGFloat { scale.scaled(11) }
 
     /// Vertical drop from the top of a row's content to its lyric band — zero when the row has no
     /// chords above the words.
@@ -4344,6 +4378,16 @@ private struct ChordProPreviewLineView: View {
         guard !rowBucketRows.isEmpty, !rhythmicWords.isEmpty else { return [] }
         return rowBucketRows.map { row in
             (row: row, xs: row.cells.map { rhythmicX(forTime: $0.time) })
+        }
+    }
+
+    /// Solo tab blocks with each 16th column at its own x. Columns are placed individually
+    /// rather than as one monospaced string so the tab stays on the beat even where the row's
+    /// ruler is not perfectly linear.
+    private var rhythmicSoloBlocks: [(block: SoloTabBlock, xs: [CGFloat])] {
+        guard !rowSoloBlocks.isEmpty, !rhythmicWords.isEmpty else { return [] }
+        return rowSoloBlocks.map { block in
+            (block: block, xs: block.columns.map { rhythmicX(forTime: $0.time) })
         }
     }
 
@@ -4917,6 +4961,7 @@ private struct ChordProPreviewLineView: View {
         let bassXs = rhythmicBassXs
         let harmonyRows = rhythmicHarmonyRows
         let bucketRows = rhythmicBucketRows
+        let soloBlocks = rhythmicSoloBlocks
         let ball = rhythmicBallPosition
         let chordBall = rhythmicChordBallPosition
         // Reserve space above the content: the full ball reserve when either ball is shown,
@@ -4930,10 +4975,15 @@ private struct ChordProPreviewLineView: View {
             harmonyRows.isEmpty ? 0 : harmonyRowReserve * CGFloat(harmonyRows.count)
         // Bucket rows (one per stem) sit between the harmony rows and the bass-onset row.
         let bucketReserve: CGFloat = bucketRowReserve * CGFloat(bucketRows.count)
+        // Solo tab (six strings per block) sits between the bucket rows and the bass-onset row.
+        let soloReserve: CGFloat =
+            soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
+            * CGFloat(soloBlocks.count)
         let bassReserve: CGFloat = bassXs.isEmpty ? 0 : bassRowReserve
         let totalWidth = rhythmicFrameWidth
         let contentHeight =
-            contentBandHeight + topReserve + harmonyReserve + bucketReserve + bassReserve
+            contentBandHeight + topReserve + harmonyReserve + bucketReserve + soloReserve
+            + bassReserve
         let dotSize = scale.scaled(3.5)
         return ZStack(alignment: .topLeading) {
             // The phrase frame: one phrase period wide, anchored at this row's own downbeat.
@@ -4978,7 +5028,31 @@ private struct ChordProPreviewLineView: View {
                 Text(rowBassNotes[index].name)
                     .font(ChordProChartTypography.chord(size: scale.chordSize))
                     .foregroundStyle(Color.swMint)
-                    .offset(x: x, y: topReserve + harmonyReserve + bucketReserve)
+                    .offset(x: x, y: topReserve + harmonyReserve + bucketReserve + soloReserve)
+            }
+            ForEach(Array(soloBlocks.enumerated()), id: \.offset) { blockIndex, entry in
+                let blockY =
+                    topReserve + harmonyReserve + bucketReserve
+                    + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
+                    * CGFloat(blockIndex)
+                ForEach(Array(SoloTabRowFormatter.stringLabels.enumerated()), id: \.offset) {
+                    row, label in
+                    Text(label)
+                        .font(.swDisplay(scale.scaled(8), weight: .semibold))
+                        .foregroundStyle(Color.swCoral.opacity(0.85))
+                        .offset(x: 0, y: blockY + soloStringReserve * CGFloat(row))
+                }
+                ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
+                    ForEach(Array(column.cells.enumerated()), id: \.offset) { row, cell in
+                        Text(cell)
+                            .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
+                            .foregroundStyle(
+                                Color.swCoral.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
+                            )
+                            .offset(
+                                x: entry.xs[index], y: blockY + soloStringReserve * CGFloat(row))
+                    }
+                }
             }
             ForEach(Array(bucketRows.enumerated()), id: \.offset) { rowIndex, entry in
                 let rowY = topReserve + harmonyReserve + bucketRowReserve * CGFloat(rowIndex)
@@ -5025,7 +5099,7 @@ private struct ChordProPreviewLineView: View {
                     .offset(
                         x: xs[index],
                         y: lyricBandOffset + topReserve + harmonyReserve + bucketReserve
-                            + bassReserve)
+                            + soloReserve + bassReserve)
             }
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
@@ -5041,7 +5115,7 @@ private struct ChordProPreviewLineView: View {
                     .overlay(chordConfidenceOutline(at: index))
                     .offset(
                         x: chordXs[index],
-                        y: topReserve + harmonyReserve + bucketReserve + bassReserve
+                        y: topReserve + harmonyReserve + bucketReserve + soloReserve + bassReserve
                     )
                     // Free-timestamp drag (no snapping); a tap opens the correction popover —
                     // rhythmic mode has a true, uniform time axis (`pixelsPerSecond`), so
@@ -5066,7 +5140,7 @@ private struct ChordProPreviewLineView: View {
                     .offset(
                         x: lastX + rhythmicWordWidth(at: words.count - 1) + scale.scaled(10),
                         y: lyricBandOffset + topReserve + harmonyReserve + bucketReserve
-                            + bassReserve
+                            + soloReserve + bassReserve
                     )
                     .help(
                         "\(restBeats)-beat rest: the voice stops here before the next line")
