@@ -6016,10 +6016,30 @@ struct StemMixSidebar: View {
 
     private var slimClickStrip: some View {
         VStack(spacing: 4) {
-            // Stand-ins for the L/R meter + pan knob so the click fader aligns with the
-            // stem strips (the click is a mono centered reference — no pan).
+            // Stand-in for the L/R meter so the click fader aligns with the stem strips (the
+            // click is a mono centered reference — no meter, no pan).
             Color.clear.frame(height: HorizontalLRMeter.totalHeight)
-            Color.clear.frame(height: PanKnob.defaultSize)
+            // The metronome toggle sits in the pan-knob slot, same height, so the fader below
+            // still lines up with the stem strips.
+            Button {
+                stemPlayback.metronomeEnabled.toggle()
+            } label: {
+                Image(systemName: stemPlayback.metronomeEnabled ? "metronome.fill" : "metronome")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(stemPlayback.metronomeEnabled ? Color.accentColor : .secondary)
+                    .frame(width: PanKnob.defaultSize, height: PanKnob.defaultSize)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Metronome")
+            .accessibilityValue(stemPlayback.metronomeEnabled ? "on" : "off")
+            .help(
+                stemPlayback.metronomeEnabled
+                    ? "Metronome on: rigid click at the detected tempo, locked to beat 1 — "
+                        + "the reference the detected beats are judged against. Click for detected beats."
+                    : "Metronome off: click on each detected beat as the tracker placed it. "
+                        + "Click for a rigid metronome."
+            )
 
             HStack(spacing: 2) {
                 VerticalFader(
@@ -6035,7 +6055,10 @@ struct StemMixSidebar: View {
                 Color.clear.frame(width: 11)
             }
             .frame(maxHeight: .infinity)
-            .help("Metronome click on each detected beat; 0% is off")
+            .help(
+                stemPlayback.metronomeEnabled
+                    ? "Beat click volume (metronome grid); 0% is off"
+                    : "Beat click volume (detected beats); 0% is off")
 
             HStack(spacing: 2) {
                 VerticalFader(

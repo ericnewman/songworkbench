@@ -131,6 +131,103 @@ final class StemPlaybackServiceTests: XCTestCase {
         XCTAssertLessThan(sample.frameCapacity, 2_000)
     }
 
+    // MARK: - Beat click: metronome grid vs. detected beats
+
+    /// Drum-snapped beats with ±20 ms jitter around a 120 BPM grid whose beat 0 is a pickup:
+    /// beat 1 (the bar grid's first downbeat) is index 1 at 1.0 s.
+    private let jitteredBeats: [TimeInterval] = [0.51, 1.0, 1.48, 2.02, 2.49, 3.01, 3.52, 3.98]
+    private let downbeatAtIndexOne = SongBarGrid(
+        beatsPerBar: 4, barPhase: 1, confidence: 0.5, phaseSource: .drumAccents)
+
+    func testMetronomeGridIsRigidAtBPMAndAnchoredToBarGridDownbeat() {
+        let grid = StemPlaybackService.metronomeGrid(
+            beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne, duration: 6)
+
+        // Period is exactly 60/bpm — none of the input jitter survives.
+        for index in 1..<grid.count {
+            XCTAssertEqual(grid[index] - grid[index - 1], 0.5, accuracy: 1e-9)
+        }
+        // Phase: the downbeat beat (index 1 → 1.0 s) is ON the grid, exactly.
+        XCTAssertTrue(grid.contains { abs($0 - 1.0) < 1e-9 })
+        // Covers the whole song, both directions from the anchor.
+        XCTAssertEqual(grid.first!, 0.0, accuracy: 1e-9)
+        XCTAssertEqual(grid.last!, 6.0, accuracy: 1e-9)
+        XCTAssertEqual(grid.count, 13)
+    }
+
+    func testMetronomeGridFallsBackToMedianIntervalWithoutBPM() throws {
+        let grid = StemPlaybackService.metronomeGrid(
+            beatTimes: jitteredBeats, bpm: nil, barGrid: downbeatAtIndexOne, duration: 4)
+
+        let intervals = zip(grid.dropFirst(), grid).map { $0 - $1 }
+        let period = try XCTUnwrap(intervals.first)
+        XCTAssertEqual(period, 0.5, accuracy: 0.03)  // median of the jittered IBIs
+        for interval in intervals { XCTAssertEqual(interval, period, accuracy: 1e-9) }
+        XCTAssertTrue(grid.contains { abs($0 - 1.0) < 1e-9 })  // still anchored on beat 1
+    }
+
+    func testMetronomeGridClampsAnchorIndexAndHandlesDegenerateInput() {
+        // barPhase past the end must not crash; it clamps to the last beat.
+        let outOfRange = SongBarGrid(
+            beatsPerBar: 4, barPhase: 99, confidence: 0, phaseSource: .anchoredToFirstBeat)
+        let grid = StemPlaybackService.metronomeGrid(
+            beatTimes: [0.5, 1.0], bpm: 120, barGrid: outOfRange, duration: 2)
+        XCTAssertTrue(grid.contains { abs($0 - 1.0) < 1e-9 })
+
+        XCTAssertEqual(
+            StemPlaybackService.metronomeGrid(beatTimes: [], bpm: 120, barGrid: nil, duration: 2),
+            [])
+        // One beat and no tempo: nothing to fit, so that beat is the whole grid.
+        XCTAssertEqual(
+            StemPlaybackService.metronomeGrid(
+                beatTimes: [0.7], bpm: nil, barGrid: nil, duration: 2),
+            [0.7])
+    }
+
+    func testBeatClickTimesUseDetectedBeatsVerbatimWhenMetronomeIsOff() {
+        let source = StemPlaybackService.BeatClickSource(
+            beatTimes: jitteredBeats.reversed(), bpm: 120, barGrid: downbeatAtIndexOne)
+
+        XCTAssertEqual(
+            StemPlaybackService.beatClickTimes(for: source, metronome: false, duration: 6),
+            jitteredBeats)
+        XCTAssertEqual(
+            StemPlaybackService.beatClickTimes(for: source, metronome: true, duration: 6),
+            StemPlaybackService.metronomeGrid(
+                beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne, duration: 6))
+    }
+
+    func testPeriodicGridDoesNotDriftOverALongSong() {
+        // 4 minutes at 127 BPM: index arithmetic keeps the last beat on the exact multiple.
+        let period = 60.0 / 127
+        let grid = StemPlaybackService.periodicGrid(period: period, anchor: 0.3, duration: 240)
+        let lastIndex = Double(grid.count - 1)
+        XCTAssertEqual(grid.last!, grid.first! + lastIndex * period, accuracy: 1e-9)
+        XCTAssertGreaterThanOrEqual(grid.first!, 0)
+        XCTAssertLessThanOrEqual(grid.last!, 240)
+    }
+
+    func testMetronomeToggleRebuildsClickAndPersists() throws {
+        let key = StemPlaybackService.metronomeDefaultsKey
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(previous, forKey: key) }
+        UserDefaults.standard.set(true, forKey: key)
+
+        let service = StemPlaybackService()
+        XCTAssertTrue(service.metronomeEnabled)
+        service.loadClickTrack(beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne)
+        XCTAssertEqual(
+            service.beatClickSource,
+            .init(beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne))
+
+        service.metronomeEnabled = false
+        XCTAssertEqual(UserDefaults.standard.bool(forKey: key), false)
+        // The source survives the toggle — that is what lets the toggle rebuild by itself.
+        XCTAssertNotNil(service.beatClickSource)
+        service.unload()
+        XCTAssertNil(service.beatClickSource)
+    }
+
     private func makeStemFiles(in directory: URL, sampleValue: Float = 0) throws -> StemFiles {
         var urls: [StemKind: URL] = [:]
         for kind in StemKind.allCases {

@@ -2747,7 +2747,7 @@ final class AppModel: ObservableObject {
         stemSet = stemFiles?.stemSetManifest
         if let stemFiles {
             try stemPlayback.load(stemFiles, mixer: stemMixer)
-            stemPlayback.loadClickTrack(beatTimes: beatTimes)
+            stemPlayback.loadClickTrack(beatTimes: beatTimes, bpm: estimatedBPM, barGrid: barGrid)
             refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
@@ -3169,7 +3169,7 @@ final class AppModel: ObservableObject {
             } else {
                 try? stemPlayback.load(stemFiles, mixer: stemMixer)
             }
-            stemPlayback.loadClickTrack(beatTimes: beatTimes)
+            stemPlayback.loadClickTrack(beatTimes: beatTimes, bpm: estimatedBPM, barGrid: barGrid)
             refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
