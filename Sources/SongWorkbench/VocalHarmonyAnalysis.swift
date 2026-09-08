@@ -402,16 +402,28 @@ struct VocalHarmonyAnalyzer: Sendable {
 
     private let frameLength = 4_096
     private let hopLength = 2_048
-    private let minimumMidiNote = 48
-    private let maximumMidiNote = 84
+    private let minimumMidiNote: Int
+    private let maximumMidiNote: Int
     private let maximumNotesPerFrame: Int
     private let minimumFrameConfidence: Float = 0.08
     private let minimumSegmentDuration: TimeInterval = 0.16
     private let detectionTargetPeak: Float = 0.7
 
-    init(maximumNotesPerFrame: Int = VocalHarmonyPreferences.defaultMaximumVoices) {
+    /// C3–C6: where sung melody lives. The candidate picker scores every semitone in the range,
+    /// so widening it also widens what a spurious low/high partial can be mistaken for.
+    static let vocalMidiRange = 48...84
+    /// Standard-tuned guitar, open low E to the 22nd fret of the high E. Shared by the solo
+    /// transcriber so its pitch frames and the fretboard it maps onto agree on the range.
+    static let guitarMidiRange = 40...86
+
+    init(
+        maximumNotesPerFrame: Int = VocalHarmonyPreferences.defaultMaximumVoices,
+        midiRange: ClosedRange<Int> = VocalHarmonyAnalyzer.vocalMidiRange
+    ) {
         self.maximumNotesPerFrame = VocalHarmonyPreferences.clampedMaximumVoices(
             maximumNotesPerFrame)
+        self.minimumMidiNote = midiRange.lowerBound
+        self.maximumMidiNote = midiRange.upperBound
     }
 
     func analyze(url: URL, sourceID: StemID? = nil, voiceIndex: Int? = nil) throws
