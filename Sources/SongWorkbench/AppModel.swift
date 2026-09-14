@@ -876,6 +876,7 @@ final class AppModel: ObservableObject {
         let packageManager = modelPackageManager
         let harmonyEngine = audioAnalysisService
         let cache = analysisCache
+        let usesBundledModel = storageRoot == nil
         analysisCoordinator = SongAnalysisCoordinator(
             makePipeline: {
                 var factory = SongAnalysisPipelineFactory(
@@ -885,6 +886,7 @@ final class AppModel: ObservableObject {
                 )
                 factory.capabilityProfile = AnalysisCapabilityProfile.current
                 factory.stemRefinementEngineFactory = .production
+                if !usesBundledModel { factory.nativeModelURL = nil }
                 return try await factory.makePipeline()
             }
         )

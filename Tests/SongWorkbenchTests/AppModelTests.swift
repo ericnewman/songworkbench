@@ -1243,11 +1243,13 @@ final class AppModelTests: XCTestCase {
             drums: Bool = true,
             lowMemory: Bool = false
         ) -> TimeInterval {
+            // Pinned to ONNX: the default follows whether the app bundle carries the Core ML model.
             AppModel.estimatedAnalysisSeconds(
                 forDuration: duration,
                 vocalVoiceSeparation: vocals,
                 drumPieceSeparation: drums,
-                lowMemorySeparation: lowMemory)
+                lowMemorySeparation: lowMemory,
+                nativeCoreMLSeparation: false)
         }
 
         // The ONNX fallback: 58 + 73 + 172 + 100 s of work.

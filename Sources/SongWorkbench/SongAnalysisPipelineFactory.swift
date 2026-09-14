@@ -43,6 +43,10 @@ struct SongAnalysisPipelineFactory: Sendable {
     let cache: AnalysisResultDiskCache
     var capabilityProfile: AnalysisCapabilityProfile = .current
     var stemRefinementEngineFactory: StemRefinementEngineFactory = .empty
+    /// The native Core ML model this factory may use; nil forces the ONNX path. Defaults to the
+    /// env override or the app-bundled copy, and an isolated `AppModel` (tests) clears it so the
+    /// bundled model cannot bypass its storage root.
+    var nativeModelURL: URL? = Self.nativeSixStemModelURL
 
     struct Assembly: Sendable {
         let pipeline: SongAnalysisPipeline
@@ -98,7 +102,7 @@ struct SongAnalysisPipelineFactory: Sendable {
             baseStemPackage = nil
         } else if capabilityProfile.stemSeparationTier == .fullSixStem
             || capabilityProfile.stemSeparationTier == .advancedDesktop,
-            let nativeURL = Self.nativeSixStemModelURL
+            let nativeURL = nativeModelURL
         {
             // Native Core ML six-stem engine: same model as the ONNX path, on the GPU — 37s vs
             // 49s for a full song with 54+ dB stem parity (Benchmarks/STEM_SEPARATION.md,

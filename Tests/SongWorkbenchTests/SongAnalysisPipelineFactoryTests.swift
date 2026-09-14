@@ -31,6 +31,8 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
             cache: AnalysisResultDiskCache(directoryURL: root.appendingPathComponent("cache"))
         )
         factory.capabilityProfile = .desktopAdvanced
+        // The recipe below names the ONNX engine; keep an app-bundled Core ML model out of it.
+        factory.nativeModelURL = nil
         factory.stemRefinementEngineFactory = StemRefinementEngineFactory { context in
             await recorder.makeEngines(context: context)
         }
