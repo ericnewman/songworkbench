@@ -584,6 +584,14 @@ final class StemSeparationTests: XCTestCase {
         XCTAssertEqual(result.descriptors.map(\.parentID), [StemKind.drums.id, StemKind.drums.id])
         XCTAssertEqual(
             result.assets.map(\.producerID), ["native-drum-pieces", "native-drum-pieces"])
+        // Files are named for the stem they hold, not the model's transport slot (the real
+        // drum-piece model writes kick into a slot named "vocals").
+        XCTAssertEqual(
+            result.assets.map(\.audioURL.lastPathComponent), ["drums.kick.wav", "drums.snare.wav"])
+        XCTAssertEqual(
+            try String(contentsOf: result.assets[0].audioURL, encoding: .utf8), "drums.wav")
+        XCTAssertEqual(
+            try String(contentsOf: result.assets[1].audioURL, encoding: .utf8), "other.wav")
         XCTAssertTrue(engine.cacheIdentity.contains("native-test-model"))
         XCTAssertTrue(engine.cacheIdentity.contains("model-v2"))
     }
