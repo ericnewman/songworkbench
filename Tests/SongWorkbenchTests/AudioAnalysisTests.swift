@@ -1757,6 +1757,51 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(out2[0].words[2].start, 48.85, accuracy: 1e-9)
     }
 
+    // MARK: - LineTailSustainExtender (line-final held notes)
+
+    private func heldTailLines() -> [TimedLyricSegment] {
+        [
+            TimedLyricSegment(
+                start: 10.0, end: 11.0, text: "one two",
+                words: [
+                    TimedLyricWord(text: "one", start: 10.0, end: 10.4, characterRange: 0..<3),
+                    TimedLyricWord(text: "two", start: 10.5, end: 11.0, characterRange: 4..<7),
+                ]),
+            TimedLyricSegment(
+                start: 14.0, end: 15.0, text: "three",
+                words: [
+                    TimedLyricWord(text: "three", start: 14.0, end: 15.0, characterRange: 0..<5)
+                ]),
+        ]
+    }
+
+    func testLineTailSustainExtendsHeldLastWordToEndOfSungInterval() {
+        // Whisper ended the held "two" at 11.0 while the voice sings on to 12.6.
+        let out = LineTailSustainExtender.extended(
+            heldTailLines(), sungIntervals: [9.9...12.6, 13.9...15.2])
+        XCTAssertEqual(out[0].words[1].end, 12.6, accuracy: 1e-9)
+        XCTAssertEqual(out[0].end, 12.6, accuracy: 1e-9)
+        XCTAssertEqual(out[0].words[1].start, 10.5, accuracy: 1e-9)
+        XCTAssertEqual(out[1].words[0].end, 15.2, accuracy: 1e-9)
+    }
+
+    func testLineTailSustainStopsBeforeNextLineAndAtMaximum() {
+        // One sung interval runs into the next line: stop just short of its first word.
+        let out = LineTailSustainExtender.extended(heldTailLines(), sungIntervals: [9.9...20.0])
+        XCTAssertEqual(out[0].words[1].end, 13.95, accuracy: 1e-9)
+        // The last line has no next line; the maximum extension bounds it instead.
+        XCTAssertEqual(out[1].words[0].end, 19.0, accuracy: 1e-9)
+    }
+
+    func testLineTailSustainLeavesUnsungTailsAlone() {
+        let lines = heldTailLines()
+        // The voice stopped before the word's end.
+        XCTAssertEqual(LineTailSustainExtender.extended(lines, sungIntervals: [9.9...10.9]), lines)
+        // The voice re-enters after a real pause; that later interval is not the held note.
+        XCTAssertEqual(LineTailSustainExtender.extended(lines, sungIntervals: [11.3...12.0]), lines)
+        XCTAssertEqual(LineTailSustainExtender.extended(lines, sungIntervals: []), lines)
+    }
+
     // MARK: - TranscriptionVoicedCoverage (whisper decode-collapse detection)
 
     private func coverageResult(_ spans: [(Double, Double)]) -> TranscriptionResult {

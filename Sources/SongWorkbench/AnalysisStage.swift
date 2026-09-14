@@ -478,6 +478,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                         + "|grouping-50-torn-continuation-rejoin"
                         + "|blend-row-overlap-merge"
                         + "|untranscribed-2-pitch-salience"
+                        + "|line-tail-sustain-1"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
                 modelIdentifier: result.engine.modelName,
@@ -608,7 +609,7 @@ struct TranscriptionStage: AnalysisStageRunning {
             // inter-word gaps and pull late ASR onsets back to the voiced re-entry edge, so
             // held notes stop rendering as phantom mid-line pauses. Runs LAST, on the final
             // word timings. No-op when strict VAD is unavailable.
-            let normalizedLyrics = VocalWordSpanNormalizer.normalized(
+            let spanNormalizedLyrics = VocalWordSpanNormalizer.normalized(
                 alignedLyrics, voicedIntervals: strictVoiced)
             // NOTE: `LyricConfidencePlaceholder` is deliberately NOT applied here. The document
             // stores the transcriber's actual words plus each word's confidence; blanking is a
@@ -631,6 +632,14 @@ struct TranscriptionStage: AnalysisStageRunning {
                 hasStems
                 ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
                 : strictVoiced
+            // Line-final held notes: extend each line's last word through the sung note it ends
+            // inside. Stems only — on a full mix everything is voiced, so every line would
+            // stretch into the instrumental after it.
+            let normalizedLyrics =
+                hasStems
+                ? LineTailSustainExtender.extended(
+                    spanNormalizedLyrics, sungIntervals: sungEvidence)
+                : spanNormalizedLyrics
             let untranscribed = UntranscribedVocalRegionDetector.regions(
                 voicedIntervals: sungEvidence, lyrics: normalizedLyrics)
             return AnalysisStageOutcome { document in

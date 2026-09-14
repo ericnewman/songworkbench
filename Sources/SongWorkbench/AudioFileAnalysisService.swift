@@ -1414,6 +1414,41 @@ enum VocalWordSpanNormalizer {
     }
 }
 
+/// Extends line-final held notes (Back to New Orleans, 2026-09-14): Whisper ends a sustained last
+/// word near its onset, so 8 of 40 lines stopped 0.5–2.9 s before the voice did.
+/// `VocalWordSpanNormalizer` only bridges gaps INSIDE a line; this stretches each line's last word
+/// through the sung interval it ends inside, never into the next line and never by more than
+/// `maximumExtension`. Line starts are left alone: voice before a line's first word is as likely an
+/// untranscribed pickup as a late onset, and stretching the word over it would mistime it.
+enum LineTailSustainExtender {
+    static func extended(
+        _ segments: [TimedLyricSegment],
+        sungIntervals: [ClosedRange<TimeInterval>],
+        maximumExtension: TimeInterval = 4,
+        nextLineMargin: TimeInterval = 0.05
+    ) -> [TimedLyricSegment] {
+        guard !sungIntervals.isEmpty else { return segments }
+        var result = segments
+        for index in result.indices {
+            guard let last = result[index].words.last,
+                // ponytail: linear scan per line; a song has tens of lines and intervals.
+                let held = sungIntervals.first(where: {
+                    $0.lowerBound <= last.end && $0.upperBound > last.end
+                })
+            else { continue }
+            var limit = min(held.upperBound, last.end + maximumExtension)
+            if index + 1 < result.count {
+                let next = result[index + 1]
+                limit = min(limit, (next.words.first?.start ?? next.start) - nextLineMargin)
+            }
+            guard limit > last.end else { continue }
+            result[index].words[result[index].words.count - 1].end = limit
+            result[index].end = max(result[index].end, limit)
+        }
+        return result
+    }
+}
+
 /// Monotonic, one-to-one assignment between ASR words and detected vocal attacks.
 ///
 /// Independent nearest-neighbour matching lets one energy burst "support" several adjacent words.
