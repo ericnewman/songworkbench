@@ -1283,6 +1283,14 @@ struct ChordProTabEditor: View {
     /// Switched off on 2026-08-20 and back on on 2026-08-21, so it is a stored preference now
     /// rather than a compile-time `let` — the machinery it gates never went anywhere.
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
+    /// The amber ball travelling chord onset to chord onset along the row.
+    @AppStorage("chordBallEnabled") private var chordBallEnabled = true
+    /// The amber ball parked over the sounding chord, popping at each onset.
+    @AppStorage("chordPopBallEnabled") private var chordPopBallEnabled = true
+    private var ballVisibility: BouncingBallVisibility {
+        BouncingBallVisibility(
+            word: bouncingBallEnabled, chord: chordBallEnabled, chordPop: chordPopBallEnabled)
+    }
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     /// Beats per chart row; 0 = automatic from the measured phrase period.
     @AppStorage("chordProBeatsPerRow") private var beatsPerRow = 0
@@ -1429,6 +1437,7 @@ struct ChordProTabEditor: View {
                                 ? highlightContext(style: config.highlightStyle) : nil,
                             beatBall: config.showsPlaybackControls ? beatBallInput : nil,
                             beatDots: config.showsReviewAffordances ? beatDotContext : nil,
+                            ballVisibility: ballVisibility,
                             rhythmicSpacing: rhythmicSpacing,
                             lyricLineWords: sortedLyricLineWords,
                             showWaveform: config.showsReviewAffordances && showWaveform,
@@ -1670,6 +1679,11 @@ struct ChordProTabEditor: View {
                         .disabled(!model.canComputeSolos)
                         Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
                     }
+                    Section("Bouncing Balls") {
+                        Toggle("Word Ball", isOn: $bouncingBallEnabled)
+                        Toggle("Chord Ball", isOn: $chordBallEnabled)
+                        Toggle("Chord Pop", isOn: $chordPopBallEnabled)
+                    }
                     Picker("Beats per Row", selection: $beatsPerRow) {
                         Text("Auto").tag(0)
                         Text("4").tag(4)
@@ -1686,7 +1700,7 @@ struct ChordProTabEditor: View {
                         ? "Show/hide beat dots, measure barlines, the per-line waveform, "
                             + "the detected bass note row, "
                             + "and each chord's raw detected timestamp"
-                        : "Choose the chart row length")
+                        : "Choose which bouncing balls show and the chart row length")
             }
             if config.showsReviewAffordances {
                 // Chord-placement A/B. A chord change is an inference, but WHERE it sits is a
@@ -2097,7 +2111,8 @@ struct ChordProTabEditor: View {
     }
 
     private var beatBallInput: BeatBallInput? {
-        guard bouncingBallEnabled else { return nil }
+        // Both travelling balls ride this input; each row gates its own ball on `ballVisibility`.
+        guard bouncingBallEnabled || chordBallEnabled else { return nil }
         let bpm = model.estimatedBPM
         let beatTimes = model.beatTimes
         // Need either explicit beats or a usable BPM to synthesize them.
@@ -2440,6 +2455,7 @@ struct ChordProAppPreview: View {
     var highlightContext: ChordProPlaybackHighlightContext?
     var beatBall: BeatBallInput?
     var beatDots: BeatDotContext?
+    var ballVisibility = BouncingBallVisibility()
     var rhythmicSpacing = false
     /// Per-lyric-line word timings, indexed by lyric ordinal (same order the highlight/ball use),
     /// for rhythmic spacing — available regardless of playback.
@@ -3118,6 +3134,7 @@ struct ChordProAppPreview: View {
             playheadTime: highlightContext?.currentTime,
             beatBall: itemBeatBall,
             beatDots: itemBeatDots,
+            ballVisibility: ballVisibility,
             rhythmicSpacing: rhythmicSpacing,
             rhythmicWordTimings: lineWords,
             vocalPeaks: strip.peaks,
@@ -3824,6 +3841,7 @@ private struct ChordProPreviewBlockView: View {
     var playheadTime: TimeInterval?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
+    var ballVisibility = BouncingBallVisibility()
     var rhythmicSpacing = false
     var rhythmicWordTimings: [TimedLyricWord] = []
     var vocalPeaks: [Float] = []
@@ -3954,14 +3972,11 @@ private struct ChordProPreviewBlockView: View {
                     }
                 }
                 if let bassLabel, !rendersPositionedBassNotes {
-                    // Flush-left fallback (monospace mode / overridden lines). Same size as the
-                    // chord glyphs (13pt monospaced) and a bright green — Eric: "Bass note names
-                    // should be the same size as chords, and be in bright green" — rather than
-                    // the smaller 10pt `StemKind.bass.laneColor` (blue) used elsewhere, which
-                    // read as secondary metadata next to the chart's chords.
+                    // Flush-left fallback (monospace mode / overridden lines). Keep its color
+                    // aligned with the bass waveform and mixer lane.
                     Text(bassLabel)
                         .font(ChordProChartTypography.chord(size: scale.chordSize))
-                        .foregroundStyle(Color.swMint)
+                        .foregroundStyle(StemKind.bass.laneColor)
                 }
                 blockContent
                 if hasUntranscribedVocals {
@@ -4010,7 +4025,7 @@ private struct ChordProPreviewBlockView: View {
                         line: line, scale: scale,
                         songChordTimes: songChordTimes,
                         highlight: highlight, playheadTime: playheadTime,
-                        beatBall: beatBall, beatDots: beatDots,
+                        beatBall: beatBall, beatDots: beatDots, ballVisibility: ballVisibility,
                         rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
                         vocalPeaks: vocalPeaks, lineDuration: lineDuration,
                         rowStartTime: rowStartTime, stripColor: stripColor,
@@ -4247,6 +4262,7 @@ private struct ChordProPreviewLineView: View {
     var playheadTime: TimeInterval?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
+    var ballVisibility = BouncingBallVisibility()
     /// When true (and real word timings are available), words are spaced by their onset time
     /// instead of one monospace space apart, so the layout reflects the sung rhythm.
     var rhythmicSpacing = false
@@ -4434,14 +4450,15 @@ private struct ChordProPreviewLineView: View {
     ) -> some View {
         ForEach(Array(bucketRows.enumerated()), id: \.offset) { rowIndex, entry in
             let rowY = baseY + bucketRowReserve * CGFloat(rowIndex)
+            let rowColor = entry.row.stemID.laneColor
             Text(entry.row.label)
                 .font(.swDisplay(scale.scaled(9), weight: .semibold))
-                .foregroundStyle(Color.swViolet.opacity(0.85))
+                .foregroundStyle(rowColor.opacity(0.85))
                 .offset(x: 0, y: rowY)
             ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
                 Text(cell.text)
                     .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
-                    .foregroundStyle(Color.swViolet.opacity(cell.isDim ? 0.45 : 1))
+                    .foregroundStyle(rowColor.opacity(cell.isDim ? 0.45 : 1))
                     .offset(x: entry.xs[index], y: rowY)
             }
         }
@@ -4450,11 +4467,12 @@ private struct ChordProPreviewLineView: View {
                 baseY + bucketRowReserve * CGFloat(bucketRows.count)
                 + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
                 * CGFloat(blockIndex)
+            let tabColor = entry.block.stemID.laneColor
             ForEach(Array(SoloTabRowFormatter.stringLabels.enumerated()), id: \.offset) {
                 row, label in
                 Text(label)
                     .font(.swDisplay(scale.scaled(8), weight: .semibold))
-                    .foregroundStyle(Color.swCoral.opacity(0.85))
+                    .foregroundStyle(tabColor.opacity(0.85))
                     .offset(x: 0, y: blockY + soloStringReserve * CGFloat(row))
             }
             ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
@@ -4462,7 +4480,7 @@ private struct ChordProPreviewLineView: View {
                     Text(cell)
                         .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
                         .foregroundStyle(
-                            Color.swCoral.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
+                            tabColor.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
                         )
                         .offset(x: entry.xs[index], y: blockY + soloStringReserve * CGFloat(row))
                 }
@@ -4636,7 +4654,7 @@ private struct ChordProPreviewLineView: View {
     /// chord x array for whichever layout mode is asking.
     @ViewBuilder
     private func soundingChordBall(chordXs xs: [CGFloat]) -> some View {
-        if let index = soundingChordIndex, xs.indices.contains(index) {
+        if ballVisibility.chordPop, let index = soundingChordIndex, xs.indices.contains(index) {
             let labelHalfWidth =
                 CGFloat(max(line.chords[index].name.count, 1)) * characterWidth / 2
             let lift = chordOnsetIntensity(at: index)
@@ -5102,11 +5120,10 @@ private struct ChordProPreviewLineView: View {
                     .position(x: x, y: scale.scaled(4))
             }
             ForEach(Array(bassXs.enumerated()), id: \.offset) { index, x in
-                // Same size as the chord glyphs and bright green (Eric: "Bass note names
-                // should be the same size as chords, and be in bright green").
+                // Same size as chord glyphs, using the bass waveform/mixer lane color.
                 Text(rowBassNotes[index].name)
                     .font(ChordProChartTypography.chord(size: scale.chordSize))
-                    .foregroundStyle(Color.swMint)
+                    .foregroundStyle(StemKind.bass.laneColor)
                     .offset(x: x, y: topReserve + harmonyReserve + bucketReserve + soloReserve)
             }
             stemRows(
@@ -5114,14 +5131,14 @@ private struct ChordProPreviewLineView: View {
             ForEach(Array(harmonyRows.enumerated()), id: \.offset) { rowIndex, row in
                 Text(row.part.displayName)
                     .font(.swDisplay(scale.scaled(9), weight: .semibold))
-                    .foregroundStyle(Color.swAmber.opacity(0.85))
+                    .foregroundStyle(StemKind.vocals.laneColor.opacity(0.85))
                     .offset(
                         x: 0,
                         y: topReserve + harmonyRowReserve * CGFloat(rowIndex))
                 ForEach(Array(row.labels.enumerated()), id: \.offset) { _, item in
                     Text(item.label.name)
                         .font(ChordProChartTypography.chord(size: scale.chordSize))
-                        .foregroundStyle(Color.swAmber)
+                        .foregroundStyle(StemKind.vocals.laneColor)
                         .offset(
                             x: item.x,
                             y: topReserve + harmonyRowReserve * CGFloat(rowIndex))
@@ -5309,7 +5326,7 @@ private struct ChordProPreviewLineView: View {
     /// (mirrors `ballPosition` but maps each beat to the rhythmic word being sung). `nil` when no
     /// ball should draw.
     private var rhythmicBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall else { return nil }
+        guard ballVisibility.word, let beatBall else { return nil }
         let words = rhythmicWords
         guard beatBall.isWaiting || !words.isEmpty else { return nil }
         let ballModel: BouncingBall
@@ -5739,7 +5756,7 @@ private struct ChordProPreviewLineView: View {
     // glyphs, and it is exact at both ends — it leaves a chord at its onset and reaches the next
     // chord's drawn position at that chord's onset, which is the requirement.
     private var rhythmicChordBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall, !rhythmicWords.isEmpty else { return nil }
+        guard ballVisibility.chord, let beatBall, !rhythmicWords.isEmpty else { return nil }
         let xs = rhythmicChordXs
         let times = rowChordTimes
         guard xs.count == times.count, !times.isEmpty else { return nil }
@@ -5800,7 +5817,7 @@ private struct ChordProPreviewLineView: View {
     }
 
     private var ballPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall else { return nil }
+        guard ballVisibility.word, let beatBall else { return nil }
         // The ball pulses on the detected beats (BPM-synthesized when no beat
         // times are available); at each beat it sits over the word being sung
         // then — from real word timings when present, else an interpolated
