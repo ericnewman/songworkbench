@@ -11,28 +11,33 @@ struct AnalysisWorkspaceView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Button {
-                    withAnimation(.snappy) { isExpanded.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.swTextSecondary)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        Label("Song Analysis", systemImage: "waveform.badge.magnifyingglass")
-                            .font(.swDisplay(15, weight: .semibold))
-                            .foregroundStyle(Color.swTextPrimary)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Button {
+                        withAnimation(.snappy) { isExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.swTextSecondary)
+                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            Label("Song Analysis", systemImage: "waveform.badge.magnifyingglass")
+                                .font(.swDisplay(15, weight: .semibold))
+                                .foregroundStyle(Color.swTextPrimary)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .help(isExpanded ? "Collapse Song Analysis" : "Expand Song Analysis")
+                    Spacer()
+                    ModelPackagesView(model: model)
                 }
-                .buttonStyle(.plain)
-                .help(isExpanded ? "Collapse Song Analysis" : "Expand Song Analysis")
                 // Always-visible activity indicator so a long background run (stem separation
                 // can take minutes on iPad) never looks stalled — shows even when the card is
-                // collapsed.
+                // collapsed. On its own line and truncating, so a long stage message never widens
+                // the column (Eric, 2026-09-14).
                 if model.isSongAnalysisRunning, let p = model.songAnalysisProgress {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.mini)
@@ -43,12 +48,9 @@ struct AnalysisWorkspaceView: View {
                         .font(.swMono(11, weight: .medium))
                         .foregroundStyle(Color.swMint)
                         .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .truncationMode(.middle)
                     }
-                    .padding(.leading, 8)
                 }
-                Spacer()
-                ModelPackagesView(model: model)
             }
 
             if isExpanded {

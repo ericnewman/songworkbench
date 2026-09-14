@@ -3518,3 +3518,36 @@ zero row.
 - [x] `lineStartTime` = the strip window's start (`rowStartTime`) for all three uses.
 - [x] Full suite.
 - [ ] Eric's on-screen check. No unit seam: the mapping lives in a SwiftUI `Canvas`.
+
+## 2026-09-14 — Commit through the lint hook; instrument energy option
+
+- [x] The pre-commit hook (`swift format lint --strict`) rejected every commit on main: 67 lint errors,
+      64 from this session's earlier plumbing commits that skipped the hook. Formatting-only fix
+      commit 266149d, then the three commits (404a4ff, 654d235, 2c7c4b5) on
+      `review-chart-timing-fixes` through the hook. Not merged into main.
+- [x] Review instrument energy (Eric): the purple was only the guitar stem (guitar first, piano only
+      without guitar). Now View menu › Instrument Energy: Combined (every non-vocal stem summed, gray
+      fill) or Per Instrument (one lane-colored outline per stem, shared scale, Energy Stems submenu to
+      hide stems). Instruments draw across the whole row, under the vocals, on every row kind.
+      `InstrumentEnergyLanes` (StemMixerModel.swift) + `StemMixerTests` test.
+- [x] Full suite.
+- [ ] Eric's on-screen check of both modes.
+
+Review: branch tip 2c7c4b5 built and tested in the isolated worktree: 1108 run, 4 failures —
+LyricGroupingDiagnosticTests (Doc Holiday cache missing), two PhrasePeriodLineRecutterTests, and
+SongAnalysisPipelineFactoryTests refiner recipe. All 4 also fail on main b0f8036 alone, so none come
+from these commits (the checkout passes them with other sessions' uncommitted edits). Checkout with
+the energy option and the lint fixes applied: 1120 run, 30 skipped, 0 failures; lint clean except 4
+errors inside other sessions' uncommitted hunks (AnalysisStage.swift, AppModelTests.swift).
+Energy option not committed.
+
+### Follow-up — rows the same length again (Eric's screenshot, 13:14)
+
+The per-row gutter shifted each fixed row's frame by 0–2 beats, and instrument energy ran up to 2
+beats past the frame. Eric chose one margin per song, sized to its longest pickup:
+`fixedPeriodGutterSeconds(for:)` takes the largest `ChartPickupGutter` beats over the rows once per
+render and passes it to every row; energy on fixed rows now ends at the frame's right edge (downbeat
++ one period on the measured grid). Quiet instrument lanes (under 0.02 peak or 15% of the row's
+loudest) are suppressed per row; per-instrument lanes stack in bands with a gap. Full suite 1121/0,
+lint clean. No unit seam for the row alignment (SwiftUI layout); needs Eric's on-screen check. Not
+committed.

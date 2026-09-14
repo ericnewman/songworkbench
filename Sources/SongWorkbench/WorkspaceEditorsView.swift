@@ -1298,6 +1298,19 @@ struct ChordProTabEditor: View {
     /// Kept as a `let` rather than deleting every `rhythmicSpacing` reference throughout this file.
     private let rhythmicSpacing = true
     @AppStorage("chordProShowWaveform") private var showWaveform = false
+    /// Instrument energy under each Review row: every non-vocal stem summed into one gray line
+    /// (the default), or one colored outline per stem that isn't hidden.
+    @AppStorage("reviewInstrumentEnergyPerStem") private var instrumentEnergyPerStem = false
+    /// Stems left out of per-instrument energy, as a comma-joined list of stem IDs.
+    @AppStorage("reviewHiddenEnergyStems") private var hiddenEnergyStemsStorage = ""
+    private var hiddenEnergyStems: Set<StemID> {
+        Set(hiddenEnergyStemsStorage.split(separator: ",").map { StemID(rawValue: String($0)) })
+    }
+    private func setEnergyStemHidden(_ stemID: StemID, _ hidden: Bool) {
+        var stems = hiddenEnergyStems
+        if hidden { stems.insert(stemID) } else { stems.remove(stemID) }
+        hiddenEnergyStemsStorage = stems.map(\.rawValue).sorted().joined(separator: ",")
+    }
     /// Shows a bass-note row above each lyric line in the chart (backlog #15 Phase 2
     /// consolidation) — replaces the removed standalone Bass Notes tab and the old
     /// Review-tab bottom panel's bass toggle. Off by default: most songs won't have bass
@@ -1466,10 +1479,11 @@ struct ChordProTabEditor: View {
                             audioEnvelope: config.showsReviewAffordances
                                 ? (model.vocalWaveform ?? model.waveform) : nil,
                             audioEnvelopeIsVocals: model.vocalWaveform != nil,
-                            guitarEnvelope: config.showsReviewAffordances
-                                ? model.stemWaveformEnvelope(for: .guitar) : nil,
-                            pianoEnvelope: config.showsReviewAffordances
-                                ? model.stemWaveformEnvelope(for: .piano) : nil,
+                            instrumentLanes: config.showsReviewAffordances
+                                ? InstrumentEnergyLanes.lanes(
+                                    from: model.stemWaveforms, perStem: instrumentEnergyPerStem,
+                                    hidden: hiddenEnergyStems) : [],
+                            instrumentEnergyPerStem: instrumentEnergyPerStem,
                             drumsEnvelope: config.showsReviewAffordances
                                 ? model.stemWaveformEnvelope(for: .drums) : nil,
                             bassEnvelope: config.showsReviewAffordances
@@ -1653,6 +1667,25 @@ struct ChordProTabEditor: View {
                     if config.showsReviewAffordances {
                         Toggle("Beat dots", isOn: $beatDotsEnabled)
                         Toggle("Waveform", isOn: $showWaveform)
+                        Picker("Instrument Energy", selection: $instrumentEnergyPerStem) {
+                            Text("Combined").tag(false)
+                            Text("Per Instrument").tag(true)
+                        }
+                        .disabled(!showWaveform)
+                        Menu("Energy Stems") {
+                            ForEach(
+                                InstrumentEnergyLanes.lanes(
+                                    from: model.stemWaveforms, perStem: true, hidden: []),
+                                id: \.id
+                            ) { lane in
+                                Toggle(
+                                    lane.displayName,
+                                    isOn: Binding(
+                                        get: { !hiddenEnergyStems.contains(lane.id) },
+                                        set: { setEnergyStemHidden(lane.id, !$0) }))
+                            }
+                        }
+                        .disabled(!showWaveform || !instrumentEnergyPerStem)
                         Toggle("Show Bass Notes", isOn: $showBassNotes)
                             .disabled(model.bassNotes.isEmpty)
                         Toggle("Harmonies", isOn: $showHarmonies)
@@ -2439,9 +2472,12 @@ struct ChordProAppPreview: View {
         in document: ChordProPreviewDocument, availableWidth: CGFloat
     ) -> some View {
         let rowScale = fittedScale(availableWidth: availableWidth)
+        let songGutterSeconds = fixedPeriodGutterSeconds(for: document)
         ForEach(indexedBlocks(for: document), id: \.offset) { item in
-            blockRow(for: item, in: document, scale: rowScale)
-                .id(item.offset)
+            blockRow(
+                for: item, in: document, scale: rowScale, songGutterSeconds: songGutterSeconds
+            )
+            .id(item.offset)
         }
     }
 
@@ -2502,10 +2538,11 @@ struct ChordProAppPreview: View {
     /// Whether `audioEnvelope` is the isolated vocals stem (mint) rather than the full-mix
     /// fallback. Drives lyric-line strip color so a full-mix strip isn't mislabeled as vocal.
     var audioEnvelopeIsVocals = true
-    /// Guitar stem waveform — primary anchor for instrumental (chord-only) lines.
-    var guitarEnvelope: WaveformEnvelope?
-    /// Piano stem waveform — fallback anchor for instrumental lines when no guitar is present.
-    var pianoEnvelope: WaveformEnvelope?
+    /// Instrument energy drawn under every row (`InstrumentEnergyLanes`): one summed lane, or one
+    /// lane per shown stem.
+    var instrumentLanes: [StemWaveformLaneModel] = []
+    /// Per-instrument lanes draw as colored outlines on a shared scale; the summed lane fills.
+    var instrumentEnergyPerStem = false
     /// Drums stem waveform — primary accent cue for detecting the bar downbeat (kick lands on 1).
     var drumsEnvelope: WaveformEnvelope?
     /// Bass stem waveform — secondary downbeat accent cue (bass root usually on beat 1).
@@ -2860,53 +2897,28 @@ struct ChordProAppPreview: View {
         return grid.nearestDownbeatTime(toTime: onset)
     }
 
-    /// Guitar/melody-stem peaks (and lane color) filling a row's leading region — from the row's
-    /// own x = 0 (its downbeat minus the pickup gutter) all the way to where the row's own audio
-    /// begins — so EVERY row opens flush with audio at its left edge. The music is continuous;
-    /// an empty gutter or pickup indent read as gaps in it (Eric: "this is a continuous piece of
+    /// Instrument energy under a row, across the row's whole drawn span — from its left edge (the
+    /// downbeat minus its pickup gutter) to `end` — so every row opens flush with audio and the
+    /// instruments also show beneath the vocals (Eric, 2026-09-14). The music is continuous; an
+    /// empty gutter or pickup indent read as gaps in it (Eric: "this is a continuous piece of
     /// music. There should be no gaps at the start of lines"). Clamped only at the song start.
-    /// Applies to every row kind: on an instrumental continuation row this shows the previous
-    /// row's last two beats, which is exactly what the ear hears there.
     ///
-    /// `gutterSeconds` is the ROW's own gutter, not a song constant: the fill has to start where
-    /// the row's left edge actually is, or a row with no pickup would draw two beats of peaks that
-    /// its ruler then clamps on top of each other at x = 0.
-    private func leadingMelodyFill(
-        upTo onset: TimeInterval?, rowDownbeat: TimeInterval?, gutterSeconds: TimeInterval
-    ) -> (peaks: [Float], color: Color, seconds: TimeInterval) {
-        guard let onset, let lane = instrumentalLane else {
-            return ([], .swViolet, 0)
+    /// `gutterSeconds` is the ROW's own gutter, not a song constant: the energy has to start where
+    /// the row's left edge actually is, or a row with no pickup would draw peaks that its ruler
+    /// then clamps on top of each other at x = 0.
+    private func instrumentEnergy(
+        rowAnchor: TimeInterval?, rowDownbeat: TimeInterval?, gutterSeconds: TimeInterval,
+        end: TimeInterval
+    ) -> (series: [ChordProRowEnergySeries], start: TimeInterval, seconds: TimeInterval) {
+        guard let rowAnchor else { return ([], 0, 0) }
+        let start = max((rowDownbeat ?? rowAnchor) - gutterSeconds, 0)
+        guard end - start > 0.05 else { return ([], start, 0) }
+        let lanePeaks = instrumentLanes.map { peaks(in: (start, end), from: $0.envelope) }
+        // An instrument that is essentially quiet in this row draws no line (or band) here.
+        let series = InstrumentEnergyLanes.audibleLaneIndices(lanePeaks).map {
+            ChordProRowEnergySeries(peaks: lanePeaks[$0], color: instrumentLanes[$0].id.laneColor)
         }
-        let rowZeroTime = (rowDownbeat ?? onset) - gutterSeconds
-        let start = max(rowZeroTime, 0)
-        let seconds = onset - start
-        guard seconds > 0.05 else { return ([], lane.color, 0) }
-        return (peaks(in: (start, onset), from: lane.envelope), lane.color, seconds)
-    }
-
-    /// Guitar/melody-stem peaks for the instrumental tail AFTER a line's last word — the
-    /// symmetric end-of-line counterpart to `leadingMelodyFill`, and like it always the full
-    /// ~2 beats so every row's tail reads the same. Empty only without a melody stem.
-    private func trailingMelodyFill(
-        lastWordEnd: TimeInterval?
-    ) -> (peaks: [Float], seconds: TimeInterval) {
-        guard let end = lastWordEnd, let lane = instrumentalLane else { return ([], 0) }
-        let stop = end + melodyTailSeconds
-        let seconds = max(0, stop - end)
-        guard seconds > 0.05 else { return ([], 0) }
-        return (peaks(in: (end, stop), from: lane.envelope), seconds)
-    }
-
-    /// The instrumental anchor for chord-only lines: guitar first, then piano. The color matches
-    /// the stem's lane color in the waveform panel (guitar = amber, piano = primary text).
-    private var instrumentalLane: (envelope: WaveformEnvelope, color: Color)? {
-        if let g = guitarEnvelope, g.duration > 0, !g.peaks.isEmpty {
-            return (g, StemKind.guitar.laneColor)
-        }
-        if let p = pianoEnvelope, p.duration > 0, !p.peaks.isEmpty {
-            return (p, StemKind.piano.laneColor)
-        }
-        return nil
+        return (series, start, end - start)
     }
 
     /// Peaks for an arbitrary [start, end] window sliced from an envelope (for chord-only lines,
@@ -2925,8 +2937,8 @@ struct ChordProAppPreview: View {
     }
 
     /// The audio strip (peaks, window duration, color) to draw beneath a rendered line:
-    /// vocals (mint) for lyric lines; guitar→piano (amber/primary) for instrumental chord-only
-    /// lines; empty for everything else.
+    /// vocals for lyric lines; no peaks (only the window) for instrumental chord-only lines, whose
+    /// energy is the row's instrument energy (`instrumentEnergy`); empty for everything else.
     private func lineStrip(
         for item: ChordProPreviewIndexedBlock,
         in document: ChordProPreviewDocument
@@ -2946,7 +2958,7 @@ struct ChordProAppPreview: View {
         // The row's real time window (hence its rhythmic-mode WIDTH, and where each of its chords
         // falls within that width) must not depend on whether there's a guitar/piano envelope to
         // draw as a waveform strip underneath it — those are separate concerns. Gating `duration`
-        // behind `instrumentalLane` meant a song with no guitar/piano stem (or one not yet loaded
+        // behind the old guitar/piano lane meant a song with no guitar/piano stem (or one not yet loaded
         // at this call site) silently reported duration 0 for every instrumental row, which fell
         // through `instrumentalTimeWidth`'s `lineDuration > 0` guard straight to the old
         // character-count sizing — no amount of fixing that width formula could show through when
@@ -2957,11 +2969,7 @@ struct ChordProAppPreview: View {
         guard case .lyric(let line) = item.block, !line.chords.isEmpty, !line.hasSungText,
             let window = chordOnlyLineWindow(for: item, in: document)
         else { return ([], 0, 0, .swTextSecondary) }
-        let duration = max(0, window.end - window.start)
-        guard let lane = instrumentalLane else {
-            return ([], duration, window.start, .swTextSecondary)
-        }
-        return (peaks(in: window, from: lane.envelope), duration, window.start, lane.color)
+        return ([], max(0, window.end - window.start), window.start, .swTextSecondary)
     }
 
     private func wordTimings(forLyricOrdinal ordinal: Int?) -> [TimedLyricWord] {
@@ -3112,6 +3120,29 @@ struct ChordProAppPreview: View {
         .onChange(of: gridDependencyKey, initial: true) { _, _ in refreshGrid() }
     }
 
+    /// On fixed-period rows, ONE pickup gutter for the whole song: the largest whole-beat pickup any
+    /// row needs (`ChartPickupGutter`), so every row's downbeat column — and so its frame — sits at
+    /// the same x and all rows render the same length (Eric, 2026-09-14). nil on other charts,
+    /// whose rows keep their own gutter. Computed once per render and passed to every row; as a
+    /// per-row property it would cost rows × rows on every playback tick.
+    private func fixedPeriodGutterSeconds(for document: ChordProPreviewDocument) -> TimeInterval? {
+        guard fixedPeriodBeats != nil, rhythmicSpacing else { return nil }
+        let beats =
+            indexedBlocks(for: document).map { item -> Int in
+                guard let origin = item.displayLineNumber.flatMap({ rowOriginsByLine[$0] }) else {
+                    return 0
+                }
+                let earliest = [
+                    wordTimings(forLyricOrdinal: item.lyricOrdinal).first?.start,
+                    chordRowData(for: item).effectiveTimes.min(),
+                ].compactMap { $0 }.min()
+                return ChartPickupGutter.beats(
+                    downbeat: origin, earliestContent: earliest,
+                    beatLengthSeconds: beatLengthSeconds)
+            }.max() ?? 0
+        return Double(beats) * beatLengthSeconds
+    }
+
     /// One rendered chart row (title/metadata/section/lyric/chord-only line), fully configured.
     /// Pulled out of the `ForEach` above as its OWN function (backlog #15 Phase 2 remainder,
     /// chart interactivity): the closure was already large before this task added several more
@@ -3121,7 +3152,7 @@ struct ChordProAppPreview: View {
     @ViewBuilder
     private func blockRow(
         for item: ChordProPreviewIndexedBlock, in document: ChordProPreviewDocument,
-        scale rowScale: ChordProChartScale
+        scale rowScale: ChordProChartScale, songGutterSeconds: TimeInterval?
     ) -> some View {
         let strip = lineStrip(for: item, in: document)
         let lineWords = wordTimings(
@@ -3159,9 +3190,9 @@ struct ChordProAppPreview: View {
             earliestContent: [lineWords.first?.start, chordRow.effectiveTimes.min()]
                 .compactMap { $0 }.min(),
             beatLengthSeconds: beatLengthSeconds)
-        // Fixed-period rows use the same per-row gutter: a row with no pickup opens on its downbeat
-        // (Eric, 2026-09-14: a flat two beats on every row read as silence the track doesn't have).
-        let rowGutterSeconds = pickupGutterSeconds
+        // Fixed-period rows share the song's gutter (its longest pickup), so all rows line up and
+        // render the same length; other charts size each row's gutter to its own pickup.
+        let rowGutterSeconds = songGutterSeconds ?? pickupGutterSeconds
         let itemContinues = item.lyricOrdinal.map(continuingLyricOrdinals.contains) ?? false
         let itemRowSources: [TimedLyricSegment.ID]? = item.lyricOrdinal.flatMap { ordinal in
             lyricRowSourceIDs.indices.contains(ordinal) ? lyricRowSourceIDs[ordinal] : nil
@@ -3170,11 +3201,21 @@ struct ChordProAppPreview: View {
             item.lyricOrdinal.map { ordinal in
                 lyricRowEditable.indices.contains(ordinal) ? lyricRowEditable[ordinal] : true
             } ?? true
-        let leadingMelody = leadingMelodyFill(
-            upTo: rowAnchorTime, rowDownbeat: rowDownbeat, gutterSeconds: rowGutterSeconds)
-        let trailingMelody = trailingMelodyFill(
-            lastWordEnd: lineWords.last?.end
-                ?? (strip.duration > 0 ? strip.start + strip.duration : nil))
+        // Instruments span the row from its left edge to two beats past its last word (or window)
+        // — on fixed-period rows exactly to the frame's right edge, one period past the downbeat,
+        // so every row's strip ends where its frame does.
+        let stripEnd: TimeInterval? = strip.duration > 0 ? strip.start + strip.duration : nil
+        let tailEnd: TimeInterval? = (lineWords.last?.end ?? stripEnd).map {
+            $0 + melodyTailSeconds
+        }
+        let frameEnd: TimeInterval? = fixedPeriodBeats.flatMap { period in
+            guard let rowDownbeat, let grid = measureGrid else { return nil }
+            return grid.time(atBeatIndex: grid.beatIndex(atTime: rowDownbeat) + Double(period))
+        }
+        let energyEnd: TimeInterval = frameEnd ?? [stripEnd, tailEnd].compactMap { $0 }.max() ?? 0
+        let rowEnergy = instrumentEnergy(
+            rowAnchor: rowAnchorTime, rowDownbeat: rowDownbeat, gutterSeconds: rowGutterSeconds,
+            end: energyEnd)
         // Every argument below is pre-computed into its own `let`
         // (rather than inlined as an expression in the call) —
         // this view's `ChordProPreviewBlockView(...)` call has
@@ -3237,11 +3278,10 @@ struct ChordProAppPreview: View {
             gridBeatTimes: beatTimes,
             showBarlines: itemShowBarlines,
             chordOnsetTimes: chordOnsetTimes,
-            leadingMelodyPeaks: leadingMelody.peaks,
-            melodyColor: leadingMelody.color,
-            leadingMelodySeconds: leadingMelody.seconds,
-            trailingMelodyPeaks: trailingMelody.peaks,
-            trailingMelodySeconds: trailingMelody.seconds,
+            instrumentEnergy: rowEnergy.series,
+            instrumentEnergyStart: rowEnergy.start,
+            instrumentEnergySeconds: rowEnergy.seconds,
+            instrumentEnergyOutlined: instrumentEnergyPerStem,
             lineNumber: item.displayLineNumber,
             trailingRestSeconds: itemTrailingRest,
             hasUntranscribedVocals: itemHasUntranscribed,
@@ -3563,9 +3603,8 @@ struct ChordProAppPreview: View {
             }
             after += 1
         }
-        let envelopeDurations = [audioEnvelope, guitarEnvelope, pianoEnvelope].compactMap {
-            $0?.duration
-        }
+        let envelopeDurations =
+            [audioEnvelope?.duration].compactMap { $0 } + instrumentLanes.map(\.envelope.duration)
         return ChordProPreviewLineWindowResolver.chordOnlyLineWindow(
             items: items,
             index: index,
@@ -3963,17 +4002,13 @@ private struct ChordProPreviewBlockView: View {
     var showBarlines = false
     /// Detected chord onset times (sorted) so each chord sits at its true impulse onset.
     var chordOnsetTimes: [TimeInterval] = []
-    /// Guitar/melody peaks for the pre-vocal instrumental gap, drawn before the vocal enters.
-    var leadingMelodyPeaks: [Float] = []
-    /// Color for the melody fill (guitar/piano lane color).
-    var melodyColor: Color = .swViolet
-    /// Seconds of real instrumental gap the melody fill spans (≤ the indent; bounded by the
-    /// previous line's end so it doesn't overrun into the line above).
-    var leadingMelodySeconds: TimeInterval = 0
-    /// Guitar/melody peaks for the post-vocal instrumental tail, drawn after the last word.
-    var trailingMelodyPeaks: [Float] = []
-    /// Seconds of real instrumental gap the trailing melody spans (bounded by the next line's start).
-    var trailingMelodySeconds: TimeInterval = 0
+    /// Instrument energy under this row (`ChordProAppPreview.instrumentEnergy`): one series per
+    /// lane over `instrumentEnergyStart` + `instrumentEnergySeconds`.
+    var instrumentEnergy: [ChordProRowEnergySeries] = []
+    var instrumentEnergyStart: TimeInterval = 0
+    var instrumentEnergySeconds: TimeInterval = 0
+    /// Per-instrument lanes draw as outlines over the vocals; the summed lane fills behind them.
+    var instrumentEnergyOutlined = false
     /// 1-based number shown in a left gutter for lyric lines, so they can be referenced ("line 7").
     var lineNumber: Int?
     /// Seconds of true silence after this line's last word (< 4 bars) — rendered as a rest
@@ -4132,10 +4167,10 @@ private struct ChordProPreviewBlockView: View {
                         gridBeatTimes: gridBeatTimes,
                         showBarlines: showBarlines,
                         chordOnsetTimes: chordOnsetTimes,
-                        leadingMelodyPeaks: leadingMelodyPeaks, melodyColor: melodyColor,
-                        leadingMelodySeconds: leadingMelodySeconds,
-                        trailingMelodyPeaks: trailingMelodyPeaks,
-                        trailingMelodySeconds: trailingMelodySeconds,
+                        instrumentEnergy: instrumentEnergy,
+                        instrumentEnergyStart: instrumentEnergyStart,
+                        instrumentEnergySeconds: instrumentEnergySeconds,
+                        instrumentEnergyOutlined: instrumentEnergyOutlined,
                         trailingRestSeconds: trailingRestSeconds,
                         rowChordTimes: rowChordTimes,
                         rowChordEvents: rowChordEvents,
@@ -4333,6 +4368,12 @@ enum ChordProPreviewLineLayout {
     }
 }
 
+/// One instrument lane's peaks under a chart row, in its lane color.
+struct ChordProRowEnergySeries: Equatable {
+    var peaks: [Float]
+    var color: Color
+}
+
 private struct ChordProPreviewLineView: View {
     /// Every constant below is authored at 1× (a 15 pt body) and read through the instance
     /// properties further down, which multiply by `scale.factor`. Nothing in this view may use a
@@ -4423,21 +4464,13 @@ private struct ChordProPreviewLineView: View {
     /// All detected chord-change onset times (sorted), used to place each chord's leading edge at
     /// its true impulse onset rather than the beat or the word it's typeset over.
     var chordOnsetTimes: [TimeInterval] = []
-    /// Guitar/melody-stem peaks covering the real instrumental gap before this line's first word,
-    /// drawn in the leading space so the "waiting for the vocal" gap shows the instrument sounding.
-    var leadingMelodyPeaks: [Float] = []
-    /// Color of the melody fill (the guitar/piano stem lane color).
-    var melodyColor: Color = .swViolet
-    /// Duration (seconds) the melody fill spans, ending at the first word — ≤ the indent, bounded so
-    /// it never reaches back into the previous line's time.
-    var leadingMelodySeconds: TimeInterval = 0
-    /// Guitar/melody-stem peaks covering the real instrumental gap AFTER this line's last word,
-    /// drawn to the right of the last word so the "end of line" instrumental tail shows the
-    /// instrument still sounding. Empty when there's no trailing gap or no melody stem.
-    var trailingMelodyPeaks: [Float] = []
-    /// Duration (seconds) the trailing melody fill spans, starting at the last word's end — bounded
-    /// so it never reaches into the NEXT line's first word.
-    var trailingMelodySeconds: TimeInterval = 0
+    /// Instrument energy under this row (`ChordProAppPreview.instrumentEnergy`): one series per
+    /// lane over `instrumentEnergyStart` + `instrumentEnergySeconds`.
+    var instrumentEnergy: [ChordProRowEnergySeries] = []
+    var instrumentEnergyStart: TimeInterval = 0
+    var instrumentEnergySeconds: TimeInterval = 0
+    /// Per-instrument lanes draw as outlines over the vocals; the summed lane fills behind them.
+    var instrumentEnergyOutlined = false
     /// Seconds of TRUE vocal silence after this line's last word (≥ 2 beats, < 4 bars) —
     /// drawn as a rest marker so short real breaks are visible (audit RC-4). 0 = none.
     var trailingRestSeconds: TimeInterval = 0
@@ -4918,7 +4951,7 @@ private struct ChordProPreviewLineView: View {
             } else {
                 rhythmicContent
             }
-            if !vocalPeaks.isEmpty {
+            if !vocalPeaks.isEmpty || !instrumentEnergy.isEmpty {
                 waveformStrip
             }
         }
@@ -5081,80 +5114,87 @@ private struct ChordProPreviewLineView: View {
         // line shouldn't fool the spacing algorithm — these lines represent time — and everything
         // else needs to align to this time-based reference").
         //
-        // `trailingEndX` stays in: the trailing melody is real song time beyond the last word, not
+        // `energyEndX` stays in: the instruments' tail is real song time beyond the last word, not
         // text. If words now crowd, the answer is `pixelsPerSecond`, not a wider row.
         let endX = rhythmicX(forTime: lineStartTime + lineDuration)
-        let trailingEndX =
-            trailingMelodySeconds > 0
-            ? rhythmicX(
-                forTime: (rhythmicWords.last?.end ?? (lineStartTime + lineDuration))
-                    + trailingMelodySeconds)
-            : 0
-        return max(1, max(endX, trailingEndX))
+        let energyEndX =
+            instrumentEnergySeconds > 0
+            ? rhythmicX(forTime: instrumentEnergyStart + instrumentEnergySeconds) : 0
+        return max(1, max(endX, energyEndX))
     }
 
     /// A thin vocal-stem audio strip for this line, drawn through the words' actual x-axis so energy
     /// at time t sits under the word at time t.
     private var waveformStrip: some View {
         Canvas { context, size in
-            let count = vocalPeaks.count
-            guard count > 0 else { return }
-            // Normalize to the line's own peak so quiet lines still show their energy shape (it's
-            // the WHERE of the energy, not its absolute level, that reveals word alignment).
-            let maxPeak = max(vocalPeaks.max() ?? 1, 0.0001)
             // Any rhythmic row with a real window draws its energy at ruler positions —
             // `rhythmicX` needs no words now, so untimed lines are on the shared axis too.
-            if rhythmicSpacing, lineDuration > 0 {
-                let start = lineStartTime
-                // Melody (guitar) fill in the pre-vocal gap: the time [firstWord − seconds, firstWord]
-                // maps through rhythmicX to the left of the first word, showing the instrument
-                // sounding before the vocal enters.
-                if leadingMelodySeconds > 0.02, !leadingMelodyPeaks.isEmpty {
-                    let mCount = leadingMelodyPeaks.count
-                    let mMax = max(leadingMelodyPeaks.max() ?? 1, 0.0001)
-                    let mStart = start - leadingMelodySeconds
-                    for (index, peak) in leadingMelodyPeaks.enumerated() {
-                        let t0 = mStart + leadingMelodySeconds * Double(index) / Double(mCount)
-                        let t1 = mStart + leadingMelodySeconds * Double(index + 1) / Double(mCount)
-                        let x0 = rhythmicX(forTime: t0)
-                        let x1 = rhythmicX(forTime: t1)
-                        let height = max(CGFloat(peak / mMax) * size.height, 1)
-                        let rect = CGRect(
-                            x: x0, y: size.height - height, width: max(x1 - x0, 1), height: height)
-                        context.fill(Path(rect), with: .color(melodyColor.opacity(0.7)))
+            if rhythmicSpacing, lineDuration > 0 || instrumentEnergySeconds > 0 {
+                func bars(
+                    _ peaks: [Float], from start: TimeInterval, seconds: TimeInterval,
+                    scale peakScale: Float, baseline: CGFloat? = nil, bandHeight: CGFloat? = nil
+                ) -> [CGRect] {
+                    let bottom = baseline ?? size.height
+                    let band = bandHeight ?? size.height
+                    return peaks.indices.map { index in
+                        let count = Double(peaks.count)
+                        let x0 = rhythmicX(forTime: start + seconds * Double(index) / count)
+                        let x1 = rhythmicX(forTime: start + seconds * Double(index + 1) / count)
+                        let height = max(CGFloat(peaks[index] / peakScale) * band, 1)
+                        return CGRect(
+                            x: x0, y: bottom - height, width: max(x1 - x0, 1), height: height)
                     }
                 }
-                for (index, peak) in vocalPeaks.enumerated() {
-                    let t0 = start + lineDuration * Double(index) / Double(count)
-                    let t1 = start + lineDuration * Double(index + 1) / Double(count)
-                    let x0 = rhythmicX(forTime: t0)
-                    let x1 = rhythmicX(forTime: t1)
-                    let height = max(CGFloat(peak / maxPeak) * size.height, 1)
-                    let rect = CGRect(
-                        x: x0, y: size.height - height, width: max(x1 - x0, 1), height: height)
-                    context.fill(Path(rect), with: .color(stripColor.opacity(0.7)))
-                }
-                // Melody (guitar) fill in the post-vocal tail: [lastWord.end, +trailingSeconds]
-                // maps to x right of the last word, showing the instrument still sounding.
-                // Wordless (instrumental) rows tail from their window's end instead.
-                if trailingMelodySeconds > 0.02, !trailingMelodyPeaks.isEmpty {
-                    let lastEnd = rhythmicWords.last?.end ?? (start + lineDuration)
-                    let tCount = trailingMelodyPeaks.count
-                    let tMax = max(trailingMelodyPeaks.max() ?? 1, 0.0001)
-                    for (index, peak) in trailingMelodyPeaks.enumerated() {
-                        let t0 = lastEnd + trailingMelodySeconds * Double(index) / Double(tCount)
-                        let t1 =
-                            lastEnd + trailingMelodySeconds * Double(index + 1) / Double(tCount)
-                        let x0 = rhythmicX(forTime: t0)
-                        let x1 = rhythmicX(forTime: t1)
-                        let height = max(CGFloat(peak / tMax) * size.height, 1)
-                        let rect = CGRect(
-                            x: x0, y: size.height - height, width: max(x1 - x0, 1), height: height)
-                        context.fill(Path(rect), with: .color(melodyColor.opacity(0.7)))
+                // Instruments share one scale across lanes, so a quiet stem stays visibly quieter
+                // than a loud one. The summed lane fills behind the vocals; per-stem lanes are
+                // outlines drawn over them.
+                let energyScale = max(instrumentEnergy.flatMap(\.peaks).max() ?? 1, 0.0001)
+                if !instrumentEnergyOutlined, instrumentEnergySeconds > 0 {
+                    for series in instrumentEnergy {
+                        for rect in bars(
+                            series.peaks, from: instrumentEnergyStart,
+                            seconds: instrumentEnergySeconds, scale: energyScale)
+                        {
+                            context.fill(Path(rect), with: .color(series.color.opacity(0.45)))
+                        }
                     }
                 }
-            } else {
-                let step = size.width / CGFloat(count)
+                if !vocalPeaks.isEmpty, lineDuration > 0 {
+                    // Normalize to the line's own peak so quiet lines still show their energy shape
+                    // (it's the WHERE of the energy, not its level, that reveals word alignment).
+                    let vocalScale = max(vocalPeaks.max() ?? 1, 0.0001)
+                    for rect in bars(
+                        vocalPeaks, from: lineStartTime, seconds: lineDuration, scale: vocalScale)
+                    {
+                        context.fill(Path(rect), with: .color(stripColor.opacity(0.7)))
+                    }
+                }
+                if instrumentEnergyOutlined, instrumentEnergySeconds > 0 {
+                    // Each stem gets its own band, stacked up from the bottom with a gap, so the
+                    // outlines never overlap (Eric, 2026-09-14).
+                    let gap = energyLaneGap
+                    let laneCount = CGFloat(instrumentEnergy.count)
+                    let band = (size.height - gap * (laneCount - 1)) / laneCount
+                    for (lane, series) in instrumentEnergy.enumerated() {
+                        var outline = Path()
+                        let rects = bars(
+                            series.peaks, from: instrumentEnergyStart,
+                            seconds: instrumentEnergySeconds, scale: energyScale,
+                            baseline: size.height - CGFloat(lane) * (band + gap), bandHeight: band)
+                        for (index, rect) in rects.enumerated() {
+                            let top = CGPoint(x: rect.midX, y: rect.minY)
+                            if index == 0 {
+                                outline.move(to: top)
+                            } else {
+                                outline.addLine(to: top)
+                            }
+                        }
+                        context.stroke(outline, with: .color(series.color), lineWidth: 1.2)
+                    }
+                }
+            } else if !vocalPeaks.isEmpty {
+                let maxPeak = max(vocalPeaks.max() ?? 1, 0.0001)
+                let step = size.width / CGFloat(vocalPeaks.count)
                 for (index, peak) in vocalPeaks.enumerated() {
                     let x = CGFloat(index) * step
                     let height = max(CGFloat(peak / maxPeak) * size.height, 1)
@@ -5164,7 +5204,18 @@ private struct ChordProPreviewLineView: View {
                 }
             }
         }
-        .frame(width: max(1, stripWidth), height: scale.scaled(18))
+        .frame(width: max(1, stripWidth), height: stripHeight)
+    }
+
+    /// Gap between stacked per-instrument energy bands.
+    private var energyLaneGap: CGFloat { scale.scaled(3) }
+
+    /// The strip is 18 pt, or tall enough for a 10 pt band per stem when per-instrument outlines
+    /// stack more than one.
+    private var stripHeight: CGFloat {
+        let lanes = CGFloat(instrumentEnergyOutlined ? instrumentEnergy.count : 0)
+        guard lanes > 1 else { return scale.scaled(18) }
+        return max(scale.scaled(18), lanes * scale.scaled(10) + (lanes - 1) * energyLaneGap)
     }
 
     /// Words positioned by their onset time (clamped so they never overlap), with each chord
