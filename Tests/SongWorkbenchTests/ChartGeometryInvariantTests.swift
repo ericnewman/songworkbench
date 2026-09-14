@@ -484,4 +484,53 @@ final class ChartGeometryInvariantTests: XCTestCase {
             lyricFrame, accuracy: 0.001,
             "a one-period chord-only row renders at a different width from a one-period lyric row")
     }
+
+    /// Playback on fixed-period rows: at every playhead time, the sung row the highlight (and so
+    /// the auto-scroll) follows is the timeline row the ball follows — at a row's downbeat before its
+    /// first word, and while a pickup is sung just ahead of the next row's downbeat. The second
+    /// input shifts every line half a beat late so first words land after their downbeats.
+    func testTheHighlightFollowsTheTimelineRowOnFixedPeriodRows() {
+        let base = makeFixedPeriodInput()
+        func shifted(_ seconds: TimeInterval) -> ChordProDraftInput {
+            let lyrics = base.lyrics.map { line -> TimedLyricSegment in
+                var moved = line
+                moved.start += seconds
+                moved.end += seconds
+                moved.words = line.words.map { word in
+                    var w = word
+                    w.start += seconds
+                    w.end += seconds
+                    return w
+                }
+                return moved
+            }
+            var input = ChordProDraftInput(
+                title: base.title, tempo: base.tempo, lyrics: lyrics, chords: base.chords,
+                beatTimes: base.beatTimes, sourceDuration: base.sourceDuration)
+            input.barGrid = base.barGrid
+            return input
+        }
+        for (label, input) in [("fixture", base), ("half a beat late", shifted(0.25))] {
+            let result = ChordProDraftBuilder().buildResult(input)
+            let deriver = ChordProHighlightDeriver(
+                lyricSegments: result.chartLines.map(\.segment), chordEvents: input.chords,
+                confidenceThreshold: input.confidenceThreshold)
+            var disagreements: [String] = []
+            for step in 0..<800 {
+                let time = Double(step) * 0.1
+                guard let row = result.timeline.row(at: time), case .lyric(let ordinal) = row.kind
+                else { continue }
+                let highlighted = deriver.lyricOrdinal(at: time)
+                if highlighted != ordinal {
+                    disagreements.append(
+                        String(
+                            format: "t=%.1f row %d (ordinal %d) highlight %@", time, row.number,
+                            ordinal, highlighted.map(String.init) ?? "nil"))
+                }
+            }
+            XCTAssertEqual(
+                disagreements.count, 0,
+                "\(label): the highlight must follow the timeline row: \(disagreements.prefix(4))")
+        }
+    }
 }

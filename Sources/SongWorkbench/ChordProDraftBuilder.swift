@@ -571,6 +571,7 @@ struct ChordProDraftBuilder: Sendable {
         var openSection: SongStructureAnalyzer.SectionKind?
         var openedSources = Set<TimedLyricSegment.ID>()
         var lyricOrdinal = 0
+        var rowLines: [ChartLyricLine] = []
         var index = 0
         while index < spans.count {
             if let line = spans[index].line {
@@ -616,6 +617,17 @@ struct ChordProDraftBuilder: Sendable {
                 if let silentFrom = span.silentFrom {
                     gapComment(from: min(silentFrom, line.segment.end), to: span.end, intro: false)
                 }
+                // The row's line spans its row window: the playback highlight switches lines at
+                // line starts, so it now turns exactly when the ball's timeline row does — at the
+                // downbeat before the first word, and not on a pickup sung ahead of the next row.
+                var rowSegment = line.segment
+                rowSegment.start = span.start
+                rowSegment.end = span.end
+                rowLines.append(
+                    ChartLyricLine(
+                        windowIndex: line.windowIndex, segment: rowSegment, sourceIDs: line.sourceIDs,
+                        continuesOnNextRow: line.continuesOnNextRow,
+                        isWholeSourceLine: line.isWholeSourceLine))
                 lyricOrdinal += 1
                 index += 1
                 continue
@@ -665,7 +677,8 @@ struct ChordProDraftBuilder: Sendable {
             index = runEnd + 1
         }
         if let openSection { lines.append(sectionDirective(closing: openSection)) }
-        return (lines, rows, chartLines, origins)
+        // Rows as emitted, so lyric ordinal N is always `rowLines[N]`.
+        return (lines, rows, rowLines, origins)
     }
 
     /// The full song duration for timeline bounds: prefer the transcribed audio length, else beats,
