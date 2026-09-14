@@ -270,7 +270,8 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         // unless a preferred root (the bass, or the strongest class) names the set.
         XCTAssertEqual(BucketChordNaming.name(pitchClasses: [0, 4, 8]), "Caug")
         XCTAssertEqual(BucketChordNaming.name(pitchClasses: [0, 2, 7]), "Csus2")
-        XCTAssertEqual(BucketChordNaming.name(pitchClasses: [0, 2, 7], preferredRoots: [7]), "Gsus4")
+        XCTAssertEqual(
+            BucketChordNaming.name(pitchClasses: [0, 2, 7], preferredRoots: [7]), "Gsus4")
         // Two classes are an interval; a stray class spells nothing.
         XCTAssertNil(BucketChordNaming.name(pitchClasses: [0, 4]))
         XCTAssertNil(BucketChordNaming.name(pitchClasses: [0, 4, 7, 2]))

@@ -284,11 +284,13 @@ final class ChordProDraftBuilderTests: XCTestCase {
         let result = ChordProDraftBuilder().buildResult(input)
         let rows = result.timeline.rows
         XCTAssertEqual(
-            rows.map(\.kind), [.lyric(ordinal: 0), .instrumental(role: .interlude), .lyric(ordinal: 1)])
+            rows.map(\.kind),
+            [.lyric(ordinal: 0), .instrumental(role: .interlude), .lyric(ordinal: 1)])
         XCTAssertEqual(rows[0].chordTimes, [2.2])
         XCTAssertEqual(rows[1].start, 4.0, accuracy: 0.001)
         XCTAssertEqual(rows[2].start, 8.0, accuracy: 0.001)
-        XCTAssertEqual(rows[2].chordTimes, [8.0, 9.5], "both gap chords sit in the row holding them")
+        XCTAssertEqual(
+            rows[2].chordTimes, [8.0, 9.5], "both gap chords sit in the row holding them")
         XCTAssertTrue(result.source.contains("| [C] | [C] |"), result.source)
     }
 

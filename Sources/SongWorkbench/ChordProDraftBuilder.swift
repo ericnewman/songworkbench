@@ -482,10 +482,12 @@ struct ChordProDraftBuilder: Sendable {
         }
         func clamped(_ window: Int) -> Int { min(max(window, firstWindow), lastWindow) }
         let lineByWindow = Dictionary(
-            chartLines.map { (clamped($0.windowIndex), $0) }, uniquingKeysWith: { first, _ in first })
+            chartLines.map { (clamped($0.windowIndex), $0) },
+            uniquingKeysWith: { first, _ in first })
         var chordsByWindow: [Int: [RenderableChordEvent]] = [:]
         for chord in chords {
-            chordsByWindow[clamped(rowGrid.windowIndex(forTime: chord.time)), default: []].append(chord)
+            chordsByWindow[clamped(rowGrid.windowIndex(forTime: chord.time)), default: []].append(
+                chord)
         }
         let contentWindows = Set(lineByWindow.keys).union(chordsByWindow.keys)
         guard let firstContent = contentWindows.min(), let lastContent = contentWindows.max() else {
@@ -517,7 +519,8 @@ struct ChordProDraftBuilder: Sendable {
                 continue
             }
             if silent, !spans.isEmpty {
-                spans[spans.count - 1].silentFrom = spans[spans.count - 1].silentFrom ?? window.start
+                spans[spans.count - 1].silentFrom =
+                    spans[spans.count - 1].silentFrom ?? window.start
                 spans[spans.count - 1].end = window.end
                 continue
             }
@@ -576,7 +579,9 @@ struct ChordProDraftBuilder: Sendable {
         while index < spans.count {
             if let line = spans[index].line {
                 let span = spans[index]
-                if index == 0, let firstSound = line.segment.words.first?.start ?? Optional(line.segment.start),
+                if index == 0,
+                    let firstSound = line.segment.words.first?.start
+                        ?? Optional(line.segment.start),
                     firstSound > span.start
                 {
                     gapComment(from: span.start, to: firstSound, intro: true)
@@ -625,7 +630,8 @@ struct ChordProDraftBuilder: Sendable {
                 rowSegment.end = span.end
                 rowLines.append(
                     ChartLyricLine(
-                        windowIndex: line.windowIndex, segment: rowSegment, sourceIDs: line.sourceIDs,
+                        windowIndex: line.windowIndex, segment: rowSegment,
+                        sourceIDs: line.sourceIDs,
                         continuesOnNextRow: line.continuesOnNextRow,
                         isWholeSourceLine: line.isWholeSourceLine))
                 lyricOrdinal += 1
@@ -659,7 +665,8 @@ struct ChordProDraftBuilder: Sendable {
             } else if runBars >= 4 {
                 let missed = UntranscribedVocalRegionResolver.overlaps(
                     input.untranscribedVocalRegions, start: runStart, end: runStop)
-                let label = missed ? "Vocals not transcribed" : (role == .intro ? "Intro" : "Instrumental")
+                let label =
+                    missed ? "Vocals not transcribed" : (role == .intro ? "Intro" : "Instrumental")
                 lines.append("{comment: \(directiveValue("\(label) · \(barCount(runBars)) bars"))}")
             }
             for span in spans[index...runEnd] {
@@ -668,7 +675,8 @@ struct ChordProDraftBuilder: Sendable {
                     rowChords = [sustained]
                 }
                 if !rowChords.isEmpty { lines.append(chordTimeDirective(for: rowChords)) }
-                lines.append(chordOnlyLine(rowChords, start: span.start, end: span.end, grid: measure))
+                lines.append(
+                    chordOnlyLine(rowChords, start: span.start, end: span.end, grid: measure))
                 appendRow(
                     kind: .instrumental(role: role), window: span.window, start: span.start,
                     end: span.end,
