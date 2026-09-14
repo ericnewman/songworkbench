@@ -508,6 +508,84 @@ final class LyricBlendRowBuilderTests: XCTestCase {
         XCTAssertEqual(corroborated[0].selectedMode, .accuracy)
     }
 
+    /// Back to New Orleans line 9: accuracy ends the row with "belong", the drafts open the
+    /// NEXT row with it. Row 0's words corroborate the draft, row 1's corroborate accuracy.
+    private func boundaryWordRows(nextRowDraftOnBursts: Bool) -> [LyricBlendRow] {
+        func candidate(_ mode: TranscriptionMode, _ text: String, _ starts: [TimeInterval])
+            -> LyricBlendCandidate
+        {
+            var offset = 0
+            var words: [TimedLyricWord] = []
+            for (token, start) in zip(text.split(separator: " "), starts) {
+                words.append(
+                    TimedLyricWord(
+                        text: String(token), start: start, end: start + 0.3,
+                        characterRange: offset..<(offset + token.count)))
+                offset += token.count + 1
+            }
+            return LyricBlendCandidate(mode: mode, text: text, words: words)
+        }
+        return [
+            LyricBlendRow(
+                start: 10, end: 14,
+                candidates: [
+                    candidate(
+                        .accuracy, "one two three four belong", [10.3, 10.8, 11.3, 11.8, 13.3]),
+                    candidate(.fastDraft, "one two three four", [10.0, 10.5, 11.0, 11.5]),
+                ]),
+            LyricBlendRow(
+                start: 16, end: 18,
+                candidates: [
+                    candidate(
+                        .accuracy, "five six seven",
+                        nextRowDraftOnBursts ? [16.3, 16.8, 17.3] : [16.0, 16.5, 17.0]),
+                    candidate(.fastDraft, "belong five six seven", [13.3, 16.0, 16.5, 17.0]),
+                ]),
+        ]
+    }
+
+    private func belongCount(_ rows: [LyricBlendRow]) -> Int {
+        LyricBlendRowBuilder.effectiveLyrics(from: rows)
+            .flatMap { $0.text.split(separator: " ") }
+            .filter { $0 == "belong" }.count
+    }
+
+    func testEffectiveLyricsRestoresAWordBothPicksPlaceInTheOtherRow() {
+        // A saved pick (automatic or the user's) takes the draft here; the next row keeps
+        // accuracy. Each pick alone is reasonable; together they drop "belong".
+        var rows = boundaryWordRows(nextRowDraftOnBursts: false)
+        rows[0].selectedMode = .fastDraft
+
+        let lyrics = LyricBlendRowBuilder.effectiveLyrics(from: rows)
+
+        XCTAssertEqual(belongCount(rows), 1)
+        XCTAssertEqual(lyrics[0].text, "one two three four belong")
+        XCTAssertEqual(lyrics[0].words.map(\.start), [10.0, 10.5, 11.0, 11.5, 13.3])
+        XCTAssertEqual(lyrics[0].words.last?.characterRange, 19..<25)
+        XCTAssertEqual(lyrics[0].end, 13.6, accuracy: 1e-9)
+        XCTAssertEqual(lyrics[1].text, "five six seven")
+    }
+
+    func testOnsetPicksKeepTheBoundaryWord() {
+        let rows = boundaryWordRows(nextRowDraftOnBursts: false)
+        let onsets: [TimeInterval] = [10.0, 10.5, 11.0, 11.5, 16.0, 16.5, 17.0]
+
+        let corroborated = LyricBlendRowBuilder.onsetCorroborated(rows, vocalOnsets: onsets)
+
+        XCTAssertEqual(corroborated.map(\.selectedMode), [.fastDraft, nil])
+        XCTAssertEqual(belongCount(corroborated), 1)
+    }
+
+    func testBoundaryWordIsNotDuplicatedWhenBothRowsUseTheSameMode() {
+        let rows = boundaryWordRows(nextRowDraftOnBursts: true)
+        let onsets: [TimeInterval] = [10.0, 10.5, 11.0, 11.5, 13.3, 16.0, 16.5, 17.0]
+
+        let corroborated = LyricBlendRowBuilder.onsetCorroborated(rows, vocalOnsets: onsets)
+
+        XCTAssertEqual(corroborated.map(\.selectedMode), [.fastDraft, .fastDraft])
+        XCTAssertEqual(belongCount(corroborated), 1)
+    }
+
     func testOnsetPreferredModeKeepsDefaultWithinMargin() {
         // Both candidates half-corroborated: no clear winner, default (accuracy) stands.
         let row = LyricBlendRow(
