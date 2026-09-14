@@ -1014,7 +1014,8 @@ final class AppModel: ObservableObject {
                     beatTimes: beatTimes,
                     sourceDuration: sourceDuration,
                     untranscribedVocalRegions: untranscribedVocalRegions,
-                    barGrid: barGrid
+                    barGrid: barGrid,
+                    beatsPerRowOverride: chartBeatsPerRowOverride
                 ),
                 comment: ChordProDraftBuilder.bassNoteDraftComment,
                 chordLabel: { $0.chord }
@@ -1030,7 +1031,8 @@ final class AppModel: ObservableObject {
                 beatTimes: beatTimes,
                 sourceDuration: sourceDuration,
                 untranscribedVocalRegions: untranscribedVocalRegions,
-                barGrid: barGrid
+                barGrid: barGrid,
+                beatsPerRowOverride: chartBeatsPerRowOverride
             ),
             comment: ChordProDraftBuilder.bassNoteDraftComment,
             chordLabel: { BassNote(chordSymbol: $0.chord)?.label }
@@ -1711,7 +1713,8 @@ final class AppModel: ObservableObject {
                         untranscribedVocalRegions: updated.untranscribedVocalRegions,
                         estimatedKey: updated.estimatedKey,
                         barGrid: updated.barGrid,
-                        bassNotes: updated.bassNotes
+                        bassNotes: updated.bassNotes,
+                        beatsPerRowOverride: chartBeatsPerRowOverride
                     ))
             }
             self.analysisBySongID[songID] = updated
@@ -1954,6 +1957,15 @@ final class AppModel: ObservableObject {
     func toggleLyricAccepted(id: TimedLyricSegment.ID) {
         guard let index = lyricSegments.firstIndex(where: { $0.id == id }) else { return }
         lyricSegments[index].accepted.toggle()
+    }
+
+    /// Sets every listed stored line to one accepted state — how a fixed-period chart row shared
+    /// by several stored lines is accepted (or un-accepted) as a unit.
+    func setLyricsAccepted(ids: [TimedLyricSegment.ID], accepted: Bool) {
+        let targets = Set(ids)
+        for index in lyricSegments.indices where targets.contains(lyricSegments[index].id) {
+            lyricSegments[index].accepted = accepted
+        }
     }
 
     /// Records a manual correction typed directly into the Review chart for one lyric line, by
@@ -3398,7 +3410,7 @@ final class AppModel: ObservableObject {
     /// Validity is proven, not assumed: the timeline is used only when rebuilding the draft from
     /// the current analysis reproduces `chordProSource` byte-for-byte, so timeline row N is
     /// exactly the preview's numbered musical line N (audit RC-2's single alignment routine).
-    private var timelineCache: (input: ChordProDraftInput, source: String, timeline: SongTimeline)?
+    private var timelineCache: (input: ChordProDraftInput, source: String, result: ChordProDraftResult)?
     func songTimelineForPreview() -> SongTimeline? {
         guard !chordProSource.isEmpty else { return nil }
         guard let song = selectedSong else { return nil }
@@ -3413,20 +3425,21 @@ final class AppModel: ObservableObject {
             untranscribedVocalRegions: untranscribedVocalRegions,
             estimatedKey: estimatedKey,
             barGrid: barGrid,
-            bassNotes: bassNotes
+            bassNotes: bassNotes,
+            beatsPerRowOverride: chartBeatsPerRowOverride
         )
         if let cached = timelineCache,
             cached.source == chordProSource,
             cached.input == input
         {
-            return cached.timeline
+            return cached.result.timeline
         }
         let result = chordProBuilder.buildResult(input)
         guard result.source == chordProSource else {
             timelineCache = nil
             return nil
         }
-        timelineCache = (input, chordProSource, result.timeline)
+        timelineCache = (input, chordProSource, result)
         return result.timeline
     }
 
@@ -3449,7 +3462,8 @@ final class AppModel: ObservableObject {
             untranscribedVocalRegions: untranscribedVocalRegions,
             estimatedKey: estimatedKey,
             barGrid: barGrid,
-            bassNotes: bassNotes
+            bassNotes: bassNotes,
+            beatsPerRowOverride: chartBeatsPerRowOverride
         )
         if let cached = structureOverviewCache, cached.input == input {
             return cached.overview
@@ -3457,6 +3471,26 @@ final class AppModel: ObservableObject {
         let overview = SongStructureOverviewBuilder().build(input)
         structureOverviewCache = (input, overview)
         return overview
+    }
+
+    /// The View menu's Beats per Row (0 = derive from the phrasing), shared with the chart view.
+    private var chartBeatsPerRowOverride: Int {
+        UserDefaults.standard.integer(forKey: "chordProBeatsPerRow")
+    }
+
+    /// The fixed-period layout behind the previewed chart — its cut lyric lines, row period and row
+    /// origins — or nil when the previewed source isn't the current generated draft or the song has
+    /// no beat grid (the chart then renders the stored lyric lines as rows).
+    func chartLayoutForPreview() -> ChordProDraftResult? {
+        guard songTimelineForPreview() != nil, let result = timelineCache?.result,
+            !result.chartLines.isEmpty
+        else { return nil }
+        return result
+    }
+
+    /// Beats per Row changed in the View menu: re-cut a generated (non-reviewed) chart on it.
+    func chartBeatsPerRowChanged() {
+        rebuildGeneratedChordProDraft()
     }
 
     private func rebuildGeneratedChordProDraft() {
@@ -3489,7 +3523,8 @@ final class AppModel: ObservableObject {
                 untranscribedVocalRegions: untranscribedVocalRegions,
                 estimatedKey: estimatedKey,
                 barGrid: barGrid,
-                bassNotes: bassNotes
+                bassNotes: bassNotes,
+                beatsPerRowOverride: chartBeatsPerRowOverride
             ))
         if var record = analysisStageRecords[.chordPro], var provenance = record.provenance {
             provenance.configurationIdentifier = chordProConfigurationIdentifier

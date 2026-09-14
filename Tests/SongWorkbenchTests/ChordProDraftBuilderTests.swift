@@ -260,13 +260,13 @@ final class ChordProDraftBuilderTests: XCTestCase {
             "row span must be a whole number of bars")
     }
 
-    func testGapChordsEarlierThanTheGutterStayInThePreviousLinesTail() {
-        // 120 BPM (0.5 s beats, 2 s bars). Two lines with a 6 s gap (12 beats, 3 bars — short
-        // of the 4-bar instrumental threshold). Gap chords at 4 beats and 1 beat before the
-        // next line: only the 1-beat one is a renderable anticipation (the pickup gutter is
-        // 2 beats); the 4-beat-early one must stay in the previous line's tail, or it renders
-        // clamp-piled at the next row's left edge with any neighbours ("3 chords basically on
-        // a single beat").
+    func testGapChordsBelongToTheRowWhoseWindowHoldsThem() {
+        // 120 BPM (0.5 s beats, 2 s bars), fixed-period rows of two bars (4 s). Two lines with a
+        // 6 s gap and gap chords 4 beats and 1 beat before the second line. On fixed rows no chord
+        // is folded into a neighbouring line: each belongs to the row whose window holds its onset
+        // (both late chords land in the second line's [8, 12) row, at their true times, so nothing
+        // piles against a row edge), and the silent-but-held window between the lines is its own
+        // chord-only row sustaining the first line's chord.
         let input = ChordProDraftInput(
             title: "Attachment",
             tempo: 120,
@@ -282,20 +282,14 @@ final class ChordProDraftBuilderTests: XCTestCase {
             beatTimes: stride(from: 0.0, through: 16.0, by: 0.5).map { $0 }
         )
         let result = ChordProDraftBuilder().buildResult(input)
-        let lyricRows = result.timeline.rows.filter(\.isLyric)
-        XCTAssertEqual(lyricRows.count, 2)
-        // F (2.0 s = 4 beats early) belongs to line 1's tail; G (0.5 s = 1 beat early) leads
-        // line 2.
-        XCTAssertTrue(
-            lyricRows[0].chordTimes.contains(where: { abs($0 - 8.0) < 0.001 }),
-            "4-beat-early chord must stay in the previous line's tail, "
-                + "got \(lyricRows[0].chordTimes)")
-        XCTAssertFalse(
-            lyricRows[1].chordTimes.contains(where: { abs($0 - 8.0) < 0.001 }),
-            "4-beat-early chord must not lead the next line")
-        XCTAssertTrue(
-            lyricRows[1].chordTimes.contains(where: { abs($0 - 9.5) < 0.001 }),
-            "1-beat-early chord is a true anticipation and leads the next line")
+        let rows = result.timeline.rows
+        XCTAssertEqual(
+            rows.map(\.kind), [.lyric(ordinal: 0), .instrumental(role: .interlude), .lyric(ordinal: 1)])
+        XCTAssertEqual(rows[0].chordTimes, [2.2])
+        XCTAssertEqual(rows[1].start, 4.0, accuracy: 0.001)
+        XCTAssertEqual(rows[2].start, 8.0, accuracy: 0.001)
+        XCTAssertEqual(rows[2].chordTimes, [8.0, 9.5], "both gap chords sit in the row holding them")
+        XCTAssertTrue(result.source.contains("| [C] | [C] |"), result.source)
     }
 
     func testStaleChartDetectionByAlgorithmTag() {
@@ -360,10 +354,11 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertFalse(document.contains("[C]Warm"), document)
     }
 
-    func testShortIntervalChordFoldsIntoPreviousLineNotOwnLine() {
+    func testShortIntervalChordStaysOnASungRowNotItsOwnLine() {
         // 120 BPM, 4/4 → 1 bar = 2s. The [2, 3] gap is 1s ≈ 0.5 bar — a brief musical breath
         // between sung lines, NOT an instrumental section. Its passing C#m must not become a
-        // standalone chord-only line; it belongs to the tail of the previous sung line.
+        // standalone chord-only line. On fixed-period rows (two bars) both short lines sing inside
+        // one row, so they share it with their chords in time order.
         let input = ChordProDraftInput(
             title: "Breath Song",
             tempo: 120,
@@ -395,12 +390,14 @@ final class ChordProDraftBuilderTests: XCTestCase {
                 "Unexpected chord-only line: \(line)\n\(document)")
         }
 
-        // The C#m is carried onto the previous sung line; the next line still gets its own A.
-        let ratherLine = contentLines.first { $0.contains("rather") }
-        XCTAssertTrue(ratherLine?.contains("[C#m]") ?? false, document)
-        let laughterLine = contentLines.first { $0.contains("Laughter") }
-        XCTAssertTrue(laughterLine?.contains("[A]") ?? false, document)
-        XCTAssertFalse(laughterLine?.contains("[C#m]") ?? true, document)
+        // Both lines share one row; the C#m still sounds before the A.
+        XCTAssertEqual(contentLines.count, 1, document)
+        let row = contentLines.first ?? ""
+        XCTAssertTrue(row.contains("rather") && row.contains("Laughter"), document)
+        guard let sharp = row.range(of: "[C#m]"), let major = row.range(of: "[A]") else {
+            return XCTFail("both chords must render on the shared row:\n\(document)")
+        }
+        XCTAssertLessThan(sharp.lowerBound, major.lowerBound, document)
     }
 
     func testLyricSectionDeriverMarksIntroInstrumentalAndOutro() {
@@ -632,8 +629,11 @@ final class ChordProDraftBuilderTests: XCTestCase {
         )
         let document = ChordProDraftBuilder().build(input)
         // Each chord sits alone on its own bar's downbeat with nothing else in the bar, so every
-        // bar renders as a bare symbol — no continuation dots, matching `| C# | F# | Ab | C# |`.
-        XCTAssertTrue(document.contains("| [C] | [F] | [G] | [C] |"), document)
+        // bar renders as a bare symbol — no continuation dots. On fixed-period rows (two bars when
+        // the phrasing gives no period) the four-bar outro wraps onto two rows of two bars.
+        XCTAssertTrue(document.contains("| [C] | [F] |"), document)
+        XCTAssertTrue(document.contains("| [G] | [C] |"), document)
+        XCTAssertFalse(document.contains("| [C] | [F] | [G] |"), document)
     }
 
     func testChordOnlyRowUsesEstimatedBeatsPerBarFromLyricSpacing() {
