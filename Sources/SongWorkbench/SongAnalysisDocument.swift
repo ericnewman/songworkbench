@@ -569,7 +569,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var lyricReviewState = AnalysisReviewState.draft
     var chordReviewState = AnalysisReviewState.draft
     var chordProReviewState = AnalysisReviewState.draft
-    var stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:]
+    @SortedKeyPairs var stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:]
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion

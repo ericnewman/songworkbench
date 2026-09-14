@@ -33,6 +33,26 @@ let project = Project(
             sources: ["Sources/SongWorkbench/**"],
             resources: ["Resources/**"],
             entitlements: .file(path: "SongWorkbench.entitlements"),
+            scripts: [
+                // The native Core ML six-stem model is gitignored (172 MB), so it can't be a
+                // declared resource. Without it the app silently falls back to ONNX separation.
+                // This phase was hand-added to the pbxproj once and lost on regeneration; keep it
+                // here so `tuist generate` preserves it.
+                .post(
+                    script: """
+                        if [ -d "$SRCROOT/BundledModels/HTDemucs6S_FP16.mlpackage" ]; then
+                          rsync -a --delete "$SRCROOT/BundledModels/HTDemucs6S_FP16.mlpackage" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/"
+                        else
+                          echo "warning: HTDemucs6S_FP16.mlpackage not present; app will use the ONNX separation path"
+                        fi
+                        """,
+                    name: "Copy Bundled CoreML Model",
+                    outputPaths: [
+                        "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/HTDemucs6S_FP16.mlpackage"
+                    ],
+                    basedOnDependencyAnalysis: false
+                )
+            ],
             dependencies: [
                 .package(product: "FluidAudio"),
                 .package(product: "onnxruntime"),

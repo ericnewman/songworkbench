@@ -38,13 +38,43 @@ struct StemMixState: Codable, Equatable, Sendable {
     }
 }
 
+/// Codes a dictionary with a String-backed non-String key in the same alternating
+/// `[key, value, …]` array `JSONEncoder` already writes for such keys, but sorted by key. The
+/// unsorted form follows the per-process hash seed (`.sortedKeys` never reaches inside those
+/// arrays), so every launch re-encoded every manifest to new bytes and `SplitProjectStore`'s
+/// byte-diff rewrote them all. The on-disk format is unchanged, so existing manifests decode as
+/// before.
+@propertyWrapper
+struct SortedKeyPairs<
+    Key: Codable & Hashable & Sendable & RawRepresentable,
+    Value: Codable & Equatable & Sendable
+>: Codable, Equatable, Sendable where Key.RawValue == String {
+    var wrappedValue: [Key: Value]
+
+    init(wrappedValue: [Key: Value]) {
+        self.wrappedValue = wrappedValue
+    }
+
+    init(from decoder: Decoder) throws {
+        wrappedValue = try [Key: Value](from: decoder)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var pairs = encoder.unkeyedContainer()
+        for (key, value) in wrappedValue.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            try pairs.encode(key)
+            try pairs.encode(value)
+        }
+    }
+}
+
 struct StemMixerModel: Codable, Equatable, Sendable {
     /// Upper bound for the master fader. Unlike a per-stem `gain`, the master sits downstream
     /// of every stem's own headroom, driving `AVAudioMixerNode.outputVolume` directly — which
     /// is only valid in 0...1 — so there's no +6 dB boost room here, just attenuation.
     static let maximumMasterGain: Float = 1
 
-    private var states: [StemID: StemMixState]
+    @SortedKeyPairs private var states: [StemID: StemMixState]
     /// Overall output level, applied downstream of every stem (and the click). Always
     /// available regardless of which stems are loaded — it isn't gated by per-stem state the
     /// way `effectiveGain(for:)` is.
@@ -76,7 +106,7 @@ struct StemMixerModel: Codable, Equatable, Sendable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(states, forKey: .states)
+        try container.encode(_states, forKey: .states)
         try container.encode(masterGain, forKey: .masterGain)
     }
 
