@@ -800,6 +800,7 @@
 				91E392321D723F55A72ACF75 /* Resources */,
 				2304050BCBE816BBB6F81479 /* Frameworks */,
 				626E17B8AD1FEDE224397B14 /* Embed Frameworks */,
+				F0C0DE000000000000000031 /* Copy Bundled CoreML Model */,
 			);
 			buildRules = (
 			);
@@ -892,6 +893,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		F0C0DE000000000000000031 /* Copy Bundled CoreML Model */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Bundled CoreML Model";
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/HTDemucs6S_FP16.mlpackage",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ -d \"$SRCROOT/BundledModels/HTDemucs6S_FP16.mlpackage\" ]; then\n  rsync -a --delete \"$SRCROOT/BundledModels/HTDemucs6S_FP16.mlpackage\" \"$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/\"\nelse\n  echo \"warning: HTDemucs6S_FP16.mlpackage not present; app will use the ONNX separation path\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		684056F6ED55644C954042DF /* Sources */ = {
