@@ -110,7 +110,8 @@ final class SongTimelineTests: XCTestCase {
         // sung rows on either side of it.
         let firstInterlude = try XCTUnwrap(interludes.first)
         let lastInterlude = try XCTUnwrap(interludes.last)
-        let before = try XCTUnwrap(rows.last { $0.isLyric && $0.end <= firstInterlude.start + 1e-9 })
+        let before = try XCTUnwrap(
+            rows.last { $0.isLyric && $0.end <= firstInterlude.start + 1e-9 })
         let after = try XCTUnwrap(rows.first { $0.isLyric && $0.start >= lastInterlude.end - 1e-9 })
         XCTAssertEqual(firstInterlude.start, before.end, accuracy: 1e-9)
         XCTAssertEqual(lastInterlude.end, after.start, accuracy: 1e-9)

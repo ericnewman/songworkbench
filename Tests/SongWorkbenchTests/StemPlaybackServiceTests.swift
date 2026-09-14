@@ -30,13 +30,20 @@ final class StemPlaybackServiceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let service = StemPlaybackService()
-        try service.load(try makeStemFiles(in: directory), mixer: StemMixerModel())
+        try service.load(
+            try makeStemFiles(in: directory, seconds: liveFixtureSeconds), mixer: StemMixerModel())
+        let started = Date()
         service.play()
-        try await Task.sleep(for: .milliseconds(180))
+        let progressed = await waitUntil { service.currentTime > 0.05 }
         service.pause()
+        let wallClock = Date().timeIntervalSince(started)
 
+        XCTAssertTrue(progressed, "playhead never advanced")
         XCTAssertGreaterThan(service.currentTime, 0.05)
         XCTAssertLessThan(service.currentTime, service.duration)
+        // The playhead follows rendered audio, so it cannot run ahead of real time by more than
+        // an output buffer.
+        XCTAssertLessThan(service.currentTime, wallClock + 0.25)
     }
 
     func testMeterLevelUsesRootMeanSquareAcrossChannels() throws {
@@ -60,11 +67,16 @@ final class StemPlaybackServiceTests: XCTestCase {
 
         let service = StemPlaybackService()
         try service.load(
-            try makeStemFiles(in: directory, sampleValue: 0.4), mixer: StemMixerModel())
+            try makeStemFiles(in: directory, sampleValue: 0.4, seconds: liveFixtureSeconds),
+            mixer: StemMixerModel())
         service.play()
-        try await Task.sleep(for: .milliseconds(180))
+        let metered = await waitUntil {
+            (service.stemLevels[StemKind.vocals.id] ?? 0) > 0.05
+                && (service.stemLevels[StemKind.drums.id] ?? 0) > 0.05
+        }
 
-        XCTAssertGreaterThan(service.stemLevels[StemKind.vocals.id] ?? 0, 0.05)
+        XCTAssertTrue(metered, "stem meters never rose above 0.05")
+        XCTAssertTrue(service.isPlaying)
 
         service.pause()
 
@@ -80,9 +92,10 @@ final class StemPlaybackServiceTests: XCTestCase {
 
         let service = StemPlaybackService()
         try service.load(
-            try makeStemFiles(in: directory, sampleValue: 0.4), mixer: StemMixerModel())
+            try makeStemFiles(in: directory, sampleValue: 0.4, seconds: liveFixtureSeconds),
+            mixer: StemMixerModel())
         service.play()
-        try await Task.sleep(for: .milliseconds(180))
+        _ = await waitUntil { (service.stemLevels[StemKind.vocals.id] ?? 0) > 0.05 }
         let fullLevel = service.stemLevels[StemKind.vocals.id] ?? 0
         XCTAssertGreaterThan(fullLevel, 0.05)
 
@@ -92,8 +105,11 @@ final class StemPlaybackServiceTests: XCTestCase {
         var halved = StemMixerModel()
         halved.setMasterGain(0.5)
         service.apply(halved)
-        try await Task.sleep(for: .milliseconds(180))
+        // The fixture is a constant signal, so the level only changes when a meter tick reads the
+        // new master gain (or playback stops, which `isPlaying` below catches).
+        _ = await waitUntil { (service.stemLevels[StemKind.vocals.id] ?? 0) != fullLevel }
         let halvedLevel = service.stemLevels[StemKind.vocals.id] ?? 0
+        XCTAssertTrue(service.isPlaying)
         service.pause()
 
         XCTAssertEqual(halvedLevel, fullLevel * 0.5, accuracy: 0.05)
@@ -184,19 +200,6 @@ final class StemPlaybackServiceTests: XCTestCase {
             [0.7])
     }
 
-    func testBeatClickTimesUseDetectedBeatsVerbatimWhenMetronomeIsOff() {
-        let source = StemPlaybackService.BeatClickSource(
-            beatTimes: jitteredBeats.reversed(), bpm: 120, barGrid: downbeatAtIndexOne)
-
-        XCTAssertEqual(
-            StemPlaybackService.beatClickTimes(for: source, metronome: false, duration: 6),
-            jitteredBeats)
-        XCTAssertEqual(
-            StemPlaybackService.beatClickTimes(for: source, metronome: true, duration: 6),
-            MetronomeGrid.clickTimes(
-                beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne, duration: 6))
-    }
-
     func testPeriodicGridDoesNotDriftOverALongSong() {
         // 4 minutes at 127 BPM: index arithmetic keeps the last beat on the exact multiple.
         let period = 60.0 / 127
@@ -207,32 +210,47 @@ final class StemPlaybackServiceTests: XCTestCase {
         XCTAssertLessThanOrEqual(grid.last!, 240)
     }
 
-    func testMetronomeToggleRebuildsClickAndPersists() throws {
-        let key = StemPlaybackService.metronomeDefaultsKey
-        let previous = UserDefaults.standard.object(forKey: key)
-        defer { UserDefaults.standard.set(previous, forKey: key) }
-        UserDefaults.standard.set(true, forKey: key)
+    func testBeatClickIsAlwaysTheMetronomeGrid() throws {
+        // The detected-beat click is gone: whatever beats go in, the grid comes out. Jittered
+        // input is the discriminator — verbatim beats would reproduce the jitter, the metronome
+        // replaces it with one rigid period.
+        let grid = MetronomeGrid.clickTimes(
+            beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne, duration: 6)
+        XCTAssertNotEqual(grid, jitteredBeats)
+        let intervals = zip(grid, grid.dropFirst()).map { $1 - $0 }
+        for interval in intervals { XCTAssertEqual(interval, 0.5, accuracy: 1e-9) }
 
+        // Sanity: the service accepts the same inputs without an engine loaded (empty click).
         let service = StemPlaybackService()
-        XCTAssertTrue(service.metronomeEnabled)
         service.loadClickTrack(beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne)
-        XCTAssertEqual(
-            service.beatClickSource,
-            .init(beatTimes: jitteredBeats, bpm: 120, barGrid: downbeatAtIndexOne))
-
-        service.metronomeEnabled = false
-        XCTAssertEqual(UserDefaults.standard.bool(forKey: key), false)
-        // The source survives the toggle — that is what lets the toggle rebuild by itself.
-        XCTAssertNotNil(service.beatClickSource)
         service.unload()
-        XCTAssertNil(service.beatClickSource)
     }
 
-    private func makeStemFiles(in directory: URL, sampleValue: Float = 0) throws -> StemFiles {
+    /// Live-engine fixtures run far longer than the tests wait. The test host gets late wakeups
+    /// (a 180 ms sleep measured up to ~1 s, and a whole test up to 4.5 s), and a 1 s fixture then
+    /// finished playing mid-test: `currentTime` snapped to `duration` and the meters reset to 0.
+    private let liveFixtureSeconds: TimeInterval = 20
+
+    /// Polls published state instead of sleeping a fixed time, so wall-clock jitter changes how
+    /// long a test takes but not what it observes.
+    private func waitUntil(
+        timeout: Duration = .seconds(5), _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
+    }
+
+    private func makeStemFiles(
+        in directory: URL, sampleValue: Float = 0, seconds: TimeInterval = 1
+    ) throws -> StemFiles {
         var urls: [StemKind: URL] = [:]
         for kind in StemKind.allCases {
             let url = directory.appendingPathComponent("\(kind.rawValue).wav")
-            try writeWAV(to: url, sampleValue: sampleValue)
+            try writeWAV(to: url, sampleValue: sampleValue, seconds: seconds)
             urls[kind] = url
         }
         return StemFiles(
@@ -245,18 +263,17 @@ final class StemPlaybackServiceTests: XCTestCase {
         )
     }
 
-    private func writeWAV(to url: URL, sampleValue: Float) throws {
+    private func writeWAV(to url: URL, sampleValue: Float, seconds: TimeInterval) throws {
         let format = AVAudioFormat(
             standardFormatWithSampleRate: 44_100,
             channels: 2
         )!
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44_100)!
-        buffer.frameLength = 44_100
+        let frames = AVAudioFrameCount(format.sampleRate * seconds)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
         for channel in 0..<Int(format.channelCount) {
-            for frame in 0..<Int(buffer.frameLength) {
-                buffer.floatChannelData![channel][frame] = sampleValue
-            }
+            buffer.floatChannelData![channel].update(repeating: sampleValue, count: Int(frames))
         }
         try file.write(from: buffer)
     }

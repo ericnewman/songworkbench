@@ -1109,3 +1109,119 @@ private actor RecordingTranscriptionEngine: TranscriptionEngine {
         cancelledIDs.append(requestID)
     }
 }
+
+final class StretchedWordRetimerTests: XCTestCase {
+    /// "Flowing from that warm Louisiana breeze" in Back to New Orleans: "breeze" glued to the end
+    /// of "Louisiana" and stretched to the next line; the vocals attack it at ~58.47 s.
+    private func breezeLine(breezeStart: TimeInterval = 57.77, breezeEnd: TimeInterval = 60.65)
+        -> TimedLyricSegment
+    {
+        TimedLyricSegment(
+            start: 56.74, end: breezeEnd, text: "Louisiana breeze",
+            words: [
+                TimedLyricWord(text: "Louisiana", start: 56.74, end: 57.76, characterRange: 0..<9),
+                TimedLyricWord(
+                    text: "breeze", start: breezeStart, end: breezeEnd, characterRange: 10..<16),
+            ])
+    }
+
+    /// Steady singing at -10 dB, with a 30 ms dip to -25 dB just before each `attack` — so the
+    /// voice rises 15 dB into it.
+    private func singing(attacks: [TimeInterval]) -> VocalAttackEnvelope {
+        var decibels = [Float](repeating: -10, count: 6_200)
+        for attack in attacks {
+            let frame = Int((attack / 0.01).rounded())
+            for dip in (frame - 3)..<frame { decibels[dip] = -25 }
+        }
+        return VocalAttackEnvelope(decibels: decibels, hopSeconds: 0.01)
+    }
+
+    func testAStretchedWordMovesToTheAttackInsideItAndThePreviousWordMeetsIt() {
+        let attacks = singing(attacks: [58.47])
+        let (segments, findings) = StretchedWordRetimer.retimed(
+            [breezeLine()], attacks: attacks, beatLength: 0.5728)
+        let words = segments[0].words
+        XCTAssertEqual(words[1].start, 58.45, accuracy: 0.02)
+        XCTAssertEqual(words[1].end, 60.65, accuracy: 1e-9, "the end is left as transcribed")
+        XCTAssertEqual(words[0].end, words[1].start, accuracy: 1e-9, "the voice never stopped")
+        XCTAssertEqual(findings.map(\.kind), [.retimed])
+        XCTAssertEqual(findings.first?.transcribedStart ?? 0, 57.77, accuracy: 1e-9)
+
+        let again = StretchedWordRetimer.retimed(segments, attacks: attacks, beatLength: 0.5728)
+        XCTAssertEqual(again.segments, segments, "a second run changes nothing")
+        XCTAssertEqual(again.findings, [])
+    }
+
+    func testWordsTheVocalsAlreadySupportAreLeftAlone() {
+        // A strong attack at the transcribed start.
+        XCTAssertEqual(
+            StretchedWordRetimer.retimed(
+                [breezeLine()], attacks: singing(attacks: [57.77, 58.47]), beatLength: 0.5728
+            ).findings, [])
+        // Not glued: a real gap before the word.
+        XCTAssertEqual(
+            StretchedWordRetimer.retimed(
+                [breezeLine(breezeStart: 58.10)], attacks: singing(attacks: [58.9]),
+                beatLength: 0.5728
+            ).findings, [])
+        // Too short to be stretched (under 2 beats).
+        XCTAssertEqual(
+            StretchedWordRetimer.retimed(
+                [breezeLine(breezeEnd: 58.70)], attacks: singing(attacks: [58.30]),
+                beatLength: 0.5728
+            ).findings, [])
+    }
+
+    /// Vague vocals (only weak attacks inside) resolve toward the bar position where the word's
+    /// rhyme lands: a later "breeze" starts on beat 1, so this one moves to its beat-1 attack.
+    func testVagueVocalsFollowTheRhymeTiming() {
+        // 120 BPM, 4/4 from 0 s: beat 1 of a bar every 2 s.
+        let grid = MeasureGrid(
+            beatTimes: (0..<200).map { Double($0) * 0.5 }, bpm: 120, beatsPerBar: 4, barPhase: 0)
+        let stretched = TimedLyricSegment(
+            start: 10, end: 13.4, text: "cool summer breeze",
+            words: [
+                TimedLyricWord(text: "cool", start: 10, end: 10.4, characterRange: 0..<4),
+                TimedLyricWord(text: "summer", start: 10.4, end: 11, characterRange: 5..<11),
+                TimedLyricWord(text: "breeze", start: 11, end: 13.4, characterRange: 12..<18),
+            ])
+        let rhyme = TimedLyricSegment(
+            start: 19, end: 20.6, text: "feel the breeze",
+            words: [
+                TimedLyricWord(text: "feel", start: 19, end: 19.4, characterRange: 0..<4),
+                TimedLyricWord(text: "the", start: 19.4, end: 19.7, characterRange: 5..<8),
+                TimedLyricWord(text: "breeze", start: 20, end: 20.6, characterRange: 9..<15),
+            ])
+        // Weak attacks inside "breeze": 11.5 s (beat 4) and 12.0 s (beat 1).
+        var decibels = [Float](repeating: -10, count: 3_000)
+        for attack in [11.5, 12.0] {
+            let frame = Int((attack / 0.01).rounded())
+            for dip in (frame - 3)..<frame { decibels[dip] = -14 }
+        }
+        let attacks = VocalAttackEnvelope(decibels: decibels, hopSeconds: 0.01)
+        let detector = RhymeDetector(table: ["breeze": "IY1 Z"])
+
+        let (segments, findings) = StretchedWordRetimer.retimed(
+            [stretched, rhyme], attacks: attacks, beatLength: 0.5, grid: grid, rhymes: detector)
+        XCTAssertEqual(segments[0].words[2].start, 11.98, accuracy: 0.03)
+        XCTAssertEqual(findings.map(\.kind), [.rhymeAligned])
+
+        let withoutRhymes = StretchedWordRetimer.retimed(
+            [stretched, rhyme], attacks: attacks, beatLength: 0.5, grid: nil, rhymes: nil)
+        XCTAssertEqual(
+            withoutRhymes.findings.map(\.kind), [.suspect], "no rhyme evidence: flag only")
+    }
+
+    func testAStretchedWordWithNoClearAttackInsideIsOnlyFlagged() {
+        let line = breezeLine()
+        let (segments, findings) = StretchedWordRetimer.retimed(
+            [line], attacks: singing(attacks: []), beatLength: 0.5728)
+        XCTAssertEqual(segments, [line], "no timing changes without evidence")
+        XCTAssertEqual(
+            findings,
+            [
+                WordTimingFinding(
+                    kind: .suspect, text: "breeze", start: 57.77, transcribedStart: 57.77)
+            ])
+    }
+}

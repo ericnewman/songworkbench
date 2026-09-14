@@ -10,6 +10,13 @@ final class PhrasePeriodLineRecutterTests: XCTestCase {
     private let step = 0.45
     private let wordLength = 0.25
 
+    /// The fixtures below name words `b0`, `b15`, `a3_2`… and `RhymeDetector.normalize` strips
+    /// every non-letter, so those all collapse to the single token "b" / "a" — both of which ARE
+    /// in `cmudict_rhyme.tsv` ("b" -> IY, "a" -> AH). With the shared detector every interior word
+    /// therefore "rhymes" with the line ending and the rhyme licence fires. These tests are about
+    /// the GAP rule, so they pin an empty table and let the rhyme tests own that path.
+    private let noRhyme = RhymeDetector(table: [:])
+
     private func beats(duration: TimeInterval) -> [TimeInterval] {
         Array(stride(from: 0.0, through: duration, by: 60.0 / bpm))
     }
@@ -104,7 +111,8 @@ final class PhrasePeriodLineRecutterTests: XCTestCase {
     func testDoesNotCutWhenNoRealGapSitsNearTheBoundary() {
         let lines = songWithOneDoubleLengthLine(gapAfter: nil)
         XCTAssertEqual(
-            PhrasePeriodLineRecutter.recut(lines, beatTimes: beats(duration: 60), tempo: bpm),
+            PhrasePeriodLineRecutter.recut(
+                lines, beatTimes: beats(duration: 60), tempo: bpm, detector: noRhyme),
             lines)
     }
 
@@ -112,7 +120,8 @@ final class PhrasePeriodLineRecutterTests: XCTestCase {
     func testDoesNotCutAtAGapFarFromTheBoundary() {
         let lines = songWithOneDoubleLengthLine(gapAfter: 2)
         XCTAssertEqual(
-            PhrasePeriodLineRecutter.recut(lines, beatTimes: beats(duration: 60), tempo: bpm),
+            PhrasePeriodLineRecutter.recut(
+                lines, beatTimes: beats(duration: 60), tempo: bpm, detector: noRhyme),
             lines)
     }
 

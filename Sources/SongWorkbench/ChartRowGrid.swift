@@ -125,7 +125,9 @@ enum ChartLyricLineCutter {
             guard !line.words.isEmpty, !hasOverride else {
                 let window = grid.windowIndex(forTime: line.words.first?.start ?? line.start)
                 pieces.append(
-                    Piece(window: window, source: line, words: line.words, isWhole: true, continues: false))
+                    Piece(
+                        window: window, source: line, words: line.words, isWhole: true,
+                        continues: false))
                 continue
             }
             var windows = line.words.map { grid.windowIndex(forTime: $0.start) }
@@ -171,9 +173,11 @@ enum ChartLyricLineCutter {
                     .nilIfEmpty ?? piece.source.text
                 let pieceWords =
                     piece.words.isEmpty
-                    ? [TimedLyricWord(
-                        text: displayText, start: piece.source.start, end: piece.source.end,
-                        characterRange: 0..<0)]
+                    ? [
+                        TimedLyricWord(
+                            text: displayText, start: piece.source.start, end: piece.source.end,
+                            characterRange: 0..<0)
+                    ]
                     : piece.words
                 for word in pieceWords {
                     if !text.isEmpty { text += " " }
@@ -204,6 +208,6 @@ enum ChartLyricLineCutter {
     }
 }
 
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
+extension String {
+    fileprivate var nilIfEmpty: String? { isEmpty ? nil : self }
 }

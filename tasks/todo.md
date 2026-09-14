@@ -2359,7 +2359,7 @@ On iPad, the app crashes shortly after prompting to install a missing model.
   crash → the crash is an unguarded failure path upstream in the install flow
   (try!, force-unwrap, or unchecked continuation) OR earlier in download handling.
 - The old SongWorkbench-ipad worktree is GONE; iPad support now lives in main
-  (repo /Users/ericnewman/Documents/SongWorkbench, HEAD fe8dade).
+  (repo /Users/ericnewman/Developer/SongWorkbench, HEAD fe8dade).
 - No SongWorkbench crash logs in ~/Library/Logs/DiagnosticReports (device crash;
   user asked to pull the .ips from iPad Settings > Privacy & Security >
   Analytics Data, or via Xcode's Devices window).
@@ -3345,3 +3345,518 @@ that is the metronome telling the truth about the estimate, not a bug to smooth 
 - [x] Stage e: bucket rows + solo block on instrumental rows (row-window fallback, shared
       `stemRows` drawing in both line paths)
 - [ ] Verify in the .app; lead/rhythm stem split
+
+## 2026-09-08 — Xcode registration repair for Basic Pitch notes
+
+Acceptance criteria:
+
+- [x] Reproduce the Xcode-only `NoteEventTimeline` compile failure and pin the missing-source
+      registration with `XcodeProjectRegistrationTests`.
+- [x] Regenerate the Tuist project so `BasicPitchNoteTranscriber.swift` and `nmp.onnx` are part
+      of the macOS app target without altering their implementation.
+- [x] Rebuild the Xcode workspace and run focused Basic Pitch/document/registration tests.
+
+Review: `XcodeProjectRegistrationTests` (2), `BasicPitchNoteTranscriberTests` (9), and an
+isolated Xcode macOS build pass. The shared `/Volumes/SSD/XCODE-BUILD-SCRAPS` build database was
+stale/locked, so verification used a fresh temporary build root without changing the shared scratch
+directory.
+
+## 2026-09-08 — Project move and library preservation
+
+- [x] Updated repository documentation references to
+      `/Users/ericnewman/Developer/SongWorkbench`.
+- [x] Merged the old 24-song library with the current 16-song sandboxed library, preserving 38
+      unique songs and all old song titles, settings, and reviewed analysis fields. One pair
+      recovered to the same cached source and was compacted as a duplicate.
+- [x] Preserved the old source library and 5.2 GB stem cache in place; copied the imported source
+      caches required by the sandboxed app and created a pre-migration manifest/song-record backup.
+- [x] Launch-tested the rebuilt app, quit it cleanly, and verified its persisted library still has
+      38 unique songs.
+
+Review: Three imported-source records received new stable IDs when the app recovered their source
+paths inside the sandbox. Two records recovered to the same source; `restoreProjects()` now keeps
+the first so it cannot serialize a duplicate ID. The app retained settings, titles, ChordPro text,
+lyrics, and chord data; the old library remains untouched as recovery storage.
+
+## 2026-09-08 — Clear stale SongWorkbench Xcode scraps
+
+- [x] Remove only SongWorkbench-named build products, derived indexes, and the stale build
+      database from the shared `/Volumes/SSD/XCODE-BUILD-SCRAPS` location.
+- [x] Rebuild in the normal scratch location to verify the stale lock is gone.
+
+Review: No compiler/build process owned `XCBuildData/build.db`. Removed the SongWorkbench app,
+module, build/intermediate and derived-index directories plus the stale 144 MB database; left
+MailAgent, VibraScope, and shared dependency caches in place. Normal Xcode macOS build succeeds
+and recreated the database without locking.
+
+## 2026-09-08 — Analyze-song stems remain stale
+
+- [x] Reproduce the stale-stems state from the latest persisted song analysis and capture the
+      failed-stage provenance/cache facts that drive it.
+- [x] Add a regression test at the separation freshness seam and correct the desktop ONNX segment
+      selection.
+- [x] Rebuild and retry the failed separation stage in the fresh app; verify it reaches
+      `Stems Succeeded` and removes the stale message.
+
+Review: the desktop `demucsv4.onnx` graph has a fixed 343,980-frame input, but the global
+low-memory setting selected the iPad's 110,250-frame segment. ONNX rejected the fresh run, leaving
+the prior stems in place and therefore stale. macOS now always uses the compatible desktop segment;
+the incompatible Low-memory control is disabled with an explanation. `SeparationCachingPolicyTests`
+(31 tests) and the macOS Xcode build pass. A live retry on Beach Weather completed at 2:45 PM and
+shows `Stems Succeeded onnxruntime-cpu-htdemucs-6s+refiners 3`.
+
+## 2026-09-08 — Replace stale app copies
+
+- [x] Moved the downloaded SongWorkbench app to Trash and removed the prior generated debug app.
+- [x] Built and launched a fresh macOS debug app from the active checkout.
+
+Review: Fresh app is running from `/Volumes/SSD/XCODE-BUILD-SCRAPS/Debug/SongWorkbench.app`.
+
+## 2026-09-08 — Preview note colors follow stem lanes
+
+- [x] Render each optional Preview note row using its source stem's canonical lane color.
+- [x] Verify base and refined stem color mapping, build the macOS app, and inspect the Preview.
+
+Review: Bucket-note labels/cells now derive from their `StemID`; bass notes use the bass lane;
+solo tab uses its guitar stem lane; harmony rows explicitly use the vocals lane. `StemMixerTests`
+(21 tests) and `swift build --build-tests` pass. The macOS Xcode build passed, and the rebuilt
+Review Preview was inspected with visible vocal, guitar, piano, other, and bass bucket rows.
+
+## 2026-09-08 — Metronome follows a stable kick-derived grid
+
+- [ ] Reproduce the unstable live click path and distinguish beat, chord-click, tempo, and
+      scheduling causes.
+- [ ] Prefer a validated separated kick grid (or its musically valid metrical multiple) for the
+      metronome; retain a deterministic fallback when no kick stem is available.
+- [ ] Add a regression test, rebuild the macOS app, and verify steady click playback.
+
+Review: in progress.
+
+## Playback lag + one metronome (2026-09-08)
+
+Reported: bouncing ball and lyric highlight fall further behind the audio the
+longer stems play; two click tracks where one metronome is wanted.
+
+- [x] Beat click is always the metronome. Removed the detected-beat (verbatim)
+      mode, its `metronomeEnabled` toggle, its `clickMetronomeEnabled` default,
+      `BeatClickSource`, and the mixer toggle button. `loadClickTrack` now goes
+      straight to `MetronomeGrid.clickTimes`. The chord click is untouched — it
+      marks chord PLACEMENT, not beats, and is the audible half of the A/B.
+- [x] Stopped the chart re-deriving playhead-independent data on every 30 Hz
+      tick (`ChordProAppPreview.derivationCache`):
+      - `previewResult` re-tokenized the whole ChordPro source, re-transposed
+        every chord, and rebuilt every preview block — a full parse of the chart
+        30×/s to produce the identical document. Now memoized on
+        `(source, transpose)`.
+      - `indexedBlocks(for:)` (O(blocks), with a `hasSungText` scan per block)
+        ran once for the `ForEach` and again per row from `lineStrip` →
+        `chordOnlyLineWindow` and the legacy ball path — O(blocks × rows) per
+        tick. Now memoized on the document.
+      - `phraseBeats` runs a song-wide median + dyadic fit
+        (`SongBeatsPerLine.rowBeats`) and is read once per ROW
+        (`beatsPerLine:`) — rows × 30 estimations a second, growing as more rows
+        are realized. Now memoized on its real inputs.
+      Same reasoning as the existing `beatStrengths`/`refreshGrid()` cache; the
+      new one is a reference box rather than `@State` + `.onChange` because
+      `body` reads `previewResult` before any `onChange` could fill a cache.
+
+### Verification
+
+- `xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench
+  -destination 'platform=macOS' build` — BUILD SUCCEEDED.
+- `swift test --jobs 4` — 1091 tests, 30 skipped, 0 failures.
+- Fixed alongside: `LyricGroupingDiagnosticTests`
+  `testOverlappingSegmentBoundarySurvivesGrouping` used `XCTUnwrap` on a local
+  Whisper cache lookup, so it FAILED on a machine without the app's container.
+  Its own doc comment says it "Skips (does not fail) when the cache is absent".
+  Now `throw XCTSkip(...)`, the idiom the other diagnostic tests already use.
+- `swift format lint --strict` — only the three pre-existing errors in
+  `AnalysisStage.swift` and `AppModelTests.swift`.
+- NOT measured in the running app: the per-tick work removed was identified by
+  reading the render path, not by a profile. If the ball still drifts, profile
+  next — the remaining suspects are the per-row window scans
+  (`bucketRows`/`soloBlocks`/harmony/bass formatters, each O(song) per row) and
+  `scrollTo`'s cost growing with row index in the `LazyVStack`.
+
+### Environment notes
+
+- `/Users/ericnewman/Documents/SongWorkbench/SongWorkbench.xcodeproj` has no
+  `project.pbxproj` — a hollow project shell, not this repo. The real project is
+  `/Users/ericnewman/Developer/SongWorkbench`.
+- `xcodebuild test` fails before running anything: the `SongWorkbenchTests`
+  bundle and the host app are signed with different Team IDs. `swift test` is
+  unaffected.
+- The data volume was at 99% during this work; SwiftPM hit ENOSPC repeatedly.
+
+## Test-bundle Team ID + the two recutter failures it exposed (2026-09-09)
+
+### Team ID mismatch
+
+`xcodebuild test` loaded no tests at all. dyld:
+`mapping process and mapped file (non-platform) have different Team IDs`.
+The test target set `CODE_SIGNING_ALLOWED = NO` and `CODE_SIGN_IDENTITY = "-"`,
+so the bundle was ad-hoc signed while the host app is `Apple Development` /
+team `65FBMF6CMD`. Both test configs (Debug and Release) now match the app:
+`CODE_SIGNING_ALLOWED = YES`, `CODE_SIGN_IDENTITY = "Apple Development"`,
+`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = 65FBMF6CMD`.
+
+### The two PhrasePeriodLineRecutterTests failures this uncovered
+
+Not a production bug — a FIXTURE bug that only `xcodebuild` could see.
+
+`RhymeDetector.normalize` strips every non-letter, so the fixtures' `b0`…`b15`
+all collapse to the single token `"b"`, and `a3_2` to `"a"`. Both are real
+entries in `Resources/cmudict_rhyme.tsv` (`b -> IY`, `a -> AH`). So every
+interior word "rhymes" with its line ending, the rhyme licence in `cutIndex`
+fires, and a cut lands where the gap rule alone refuses — exactly what
+`testDoesNotCutWhenNoRealGapSitsNearTheBoundary` and
+`testDoesNotCutAtAGapFarFromTheBoundary` assert must not happen.
+
+Invisible under `swift test`: there `Bundle.main` is the test runner, the TSV
+is not found, `RhymeDetector.shared` falls back to an EMPTY table, and the
+licence can never fire. The docs on `recutReporting` warn about precisely this;
+these two tests just didn't take the advice.
+
+Fix: both tests pin `RhymeDetector(table: [:])`, which is what "no gap => no
+cut" actually means. Proven by probe — same fixtures, empty detector, green;
+shared detector, red.
+
+STILL OPEN: every other test in that file (prefixes `a`, `x`, `y` — all in the
+table) silently depends on whether the bundle resource is present. They pass
+today under both runners, but the dependency is real and undeclared.
+
+### Verification
+
+- `xcodebuild test -only-testing:...PhrasePeriodLineRecutterTests` — 14 tests,
+  0 failures (was 2).
+- `swift test` — 1091 tests, 0 failures.
+- Full `xcodebuild test` — 1091 run, Team ID errors 0.
+
+### Two environment findings
+
+- The repo is at `/Volumes/SSD/Developer/SongWorkbench`.
+  `/Users/ericnewman/Developer` no longer exists; SwiftPM's `.build` held that
+  dead path in 456 files and `swift package resolve` would not clear it.
+  Rewrote them and dropped the stale clang ModuleCache; `swift test` works
+  again from the real path.
+- `AppModelTests.testImportDuringRestoreIsMergedInsteadOfDiscarded` is FLAKY:
+  3 failed assertions in the full suite, but passes 3/3 in isolation, and
+  passed in two earlier full runs. Order/shared-state dependent. NOT diagnosed.
+
+## 2026-09-14 — Bucket rows: stem colors, chord names; bouncing-ball toggles
+
+- [ ] Bucket rows draw in their stem's lane color (per-stem `laneColor`; committed HEAD drew every
+      row `swViolet`, the per-stem change from 2026-09-08 was never committed).
+- [ ] A polyphonic bucket cell whose pitch classes exactly spell a chord shows it: `C·E·G (C)`.
+- [ ] The chord a whole bucket makes across the visible rows is appended to the lowest sounding
+      row's cell (bass when it plays): `C (C)`; not repeated when that cell already names it.
+- [ ] Chord vocabulary: maj, m, dim, aug, sus2, sus4, 7, maj7, m7, m7b5, dim7; exact sets only,
+      sharp spelling, transposed with the chart; no slash chords.
+- [ ] View menu "Bouncing Balls": Word Ball, Chord Ball, Chord Pop toggles on both ChordPro
+      surfaces; the word ball no longer switches off the chord ball.
+- [ ] Unit tests for chord naming and the bucket row suffixes; build; screenshot the Review chart.
+
+Committed 2026-09-14 as 70a70be on branch `bucket-chords-ball-toggles` (Eric checked the UI):
+bucket/ball edits plus the 2026-09-08 stem-color hunks and `StemMixerTests` color test; the
+chart-caching and metronome hunks in `WorkspaceEditorsView.swift` stay uncommitted.
+Isolated check: 70a70be alone in a temporary worktree (Tuist `Derived/` copied in, cloned
+packages reused) builds, and `BucketNoteAnalyzerTests` + `StemMixerTests` pass 35/0.
+
+Review (partial): `BucketNoteAnalyzerTests` 14/0 under `xcodebuild test` (app + tests compiled, so
+the ball-toggle plumbing builds). New `testBucketChordAcrossRowsEndsOnTheBassCellAndSkipsHiddenStems`
+fails when `combinedChordNames` returns nothing (mutation restored). Rebuilt Debug app relaunched (binary 10:11:25); screen-control access was declined, so the Review chart has NOT been inspected yet — awaiting Eric's visual check.
+
+## 2026-09-14 — Fixed-period chart rows (spec-fixed-period-rows.md) — PLAN, awaiting decisions
+
+Goal (Eric): every Review row the same visual width with consistent beat and bar spacing.
+Chosen over padding/stretching. Beats already share one px/beat; rows differ because they span
+2–26 beats.
+
+Design (from planning pass, premises verified 2026-09-14):
+- New pure `ChartRowGrid`: windows cut in BEAT-INDEX space (`MeasureGrid.time(atBeatIndex:)`,
+  anchor = bar phase, period P = `SongBeatsPerLine.rowBeats` or the Beats-per-Row override), not a
+  fixed 60/bpm grid (would drift off measured beats).
+- Derived in `ChordProDraftBuilder.buildResult` only; never persisted (fa9986c feedback loop).
+  Words/chords assigned by onset; empty windows become P-beat chord-only rows; chord folding into
+  neighbouring lines removed; `algorithmVersion` 6 → 7. Untimed songs keep today's path.
+- Preview: row origin = timeline row start; one fixed frame width for every row kind; furniture
+  clamped; width math extracted into a pure geometry type.
+- Later: retire `PhrasePeriodLineRecutter` (`timing-3`).
+
+Steps:
+- [x] 1. `ChartRowGrid` + unit tests (period, anchor, pickups before first beat, drift).
+      Evidence: `ChartRowGridTests` + `XcodeProjectRegistrationTests` 7/0; the drift test fails when
+      boundaries use a rigid 60/bpm clock (mutation restored). Override is resolved by the caller
+      (step 3), which passes `phraseBeats`.
+- [x] 2. Red invariants in `ChartGeometryInvariantTests` (fixture `makeFixedPeriodInput`: 8-beat
+      phrase, a 14-beat line, a pickup line, two between-line chords). RED on current code, recorded
+      2026-09-14: tiling/period 13 failed assertions (gaps 27.5→28.5 s…); downbeat starts 2 (rows at
+      beat 87, 102); chord-in-owning-row 2 (no row holds 27.9 s / 43.7 s); equal frame width 2
+      (overhang widens 1000→1300 pt; one-period chord-only row 800 vs 1000 pt). The 7 pre-existing
+      invariant tests still pass. These four stay red until steps 3 and 5.
+- [ ] 3. Builder cut + `lyricLines` + chord-only empty windows + alg7; update builder/timeline tests.
+      Approach (2026-09-14): `ChartLyricLineCutter` cuts sorted lyric lines into per-window chart
+      lines that KEEP their source segment IDs (split halves share one ID; merged short lines list
+      every source ID). The builder emits one sung line per chart line, so the preview's
+      `lyricOrdinal` indexes chart lines and its 39 ordinal lookups stay as they are; only the
+      lyric list feeding them switches (sortedLyricSegments, highlightContext, timelineBeatBall,
+      beatDotContext). Accept/override keep going through segment IDs.
+      Progress: `ChartLyricLineCutter` + 5 tests landed in `ChartRowGrid.swift` /
+      `ChartRowGridTests.swift` (ChartRowGridTests 10/0): whole lines keep identity, long lines
+      split at the boundary with `continuesOnNextRow`, pickups within 2 beats move forward, short
+      lines in one row merge (accepted only together), hand-corrected and untimed lines never split.
+      Cutter mutation: `testAPickupJustBeforeARowMovesIntoIt` fails when pickups never move (restored).
+      Builder: `ChordProDraftBuilder.buildResult` takes a fixed-period path for timed songs with
+      lyrics (`fixedPeriodGrid` + `fixedPeriodBody`), `ChordProDraftInput.beatsPerRowOverride`,
+      `ChordProDraftResult.chartLines`, alg7. Full suite 1114 run: 3 of 4 fixed-period invariants
+      now GREEN (tiling/period, downbeat starts, chord-in-owning-row); frame width stays red for
+      step 5. 10 builder/timeline tests failed; triage:
+      - Old-row expectations, updated to fixed-row semantics: `testChordOnlyRowRendersOneChordPerBar`
+        (outro wraps onto two 2-bar rows), `testGapChordsBelongToTheRowWhoseWindowHoldsThem` (was
+        ...EarlierThanTheGutterStayInThePreviousLinesTail — chord folding removed by design),
+        `testShortIntervalChordStaysOnASungRowNotItsOwnLine` (two short lines share one row), and
+        the three `SongTimelineTests` window assertions (rows now start/end on grid windows).
+      - Regression fixed in the builder: a chordless silent stretch merged into a sung row lost its
+        "Instrumental · N bars" / "Vocals not transcribed" comment (and a silent intro its "Intro"
+        comment). Covered by the unchanged interlude, missed-vocals and section-across-gap tests.
+      Known limitation: silent windows before any chord has sounded (e.g. a song with no detected
+      chords) still merge into the neighbouring row, so that row is wider than one period — the
+      preview cannot yet show a row with neither chords nor lyrics without renumbering lines.
+      After the fix and test updates: ChordProDraftBuilderTests 46/0, SongTimelineTests 6/0,
+      ChartRowGridTests 10/0, ChartGeometryInvariantTests 10 pass + the frame-width invariant still
+      red (step 5). Full suite not yet re-run after the fix.
+- [ ] 4. AppModel: override input, chart lyric lines, accept/override mapped to source lines.
+      Done so far (2026-09-14): all 6 `ChordProDraftInput` builds read the View-menu Beats per Row
+      (`chartBeatsPerRowOverride`); the timeline cache keeps the whole `ChordProDraftResult`;
+      `chartLayoutForPreview()` exposes chart lines, `periodBeats` and `rowOrigins`;
+      `chartBeatsPerRowChanged()` rebuilds generated charts when the menu value changes.
+      Decision (Eric): on a row shared by several stored lines, Accept accepts all of them; text
+      editing is only offered on a row made from one whole stored line.
+- [ ] 5. Preview: chart lines, fixed frame, geometry extraction; invariants green.
+      Done so far: the editor's four lyric lists read chart lines; rows use the builder's period,
+      their window origin and the full 2-beat gutter; `fixedRowFrameWidth` fixes the frame for
+      lyric, instrumental and monospace rows (overhanging labels no longer widen a row); "→" marks
+      a row whose line continues. Shared rows: Accept sets every source line together
+      (`AppModel.setLyricsAccepted`); the pencil is hidden unless the row is one whole stored line
+      (`ChartLyricLine.isWholeSourceLine`).
+      Evidence (2026-09-14): full `xcodebuild test` 1117 run, 30 skipped, 0 failures; all four
+      fixed-period invariants GREEN (they were red on the old code, recorded under step 2).
+      Pending: visual check of the Review chart in the rebuilt app (Eric), then step 6.
+      Committed 2026-09-14 as 008f2d4 on branch `fixed-period-rows` (based on 70a70be); alone in a
+      temporary worktree it builds and 121 tests pass (row grid, invariants, builder, timeline,
+      AppModel, project registration).
+      Bug (Eric, after relaunch): at playback start the highlighted row, auto-scroll and ball
+      position disagreed. Loop: a replay comparing, every 0.1 s, the ball's timeline row with the
+      highlight's lyric ordinal — red on the fixture (5) and on all 19 library songs at 8 beats
+      per row (119–346 disagreements each). Confirmed cause (H1): `ChordProHighlightDeriver`
+      switches lines at a line's start (first word / pickup) while the timeline row starts on the
+      window's downbeat; auto-scroll follows the highlight. Ruled out: ordinal order (H2), text vs
+      timeline numbering (H3). Fix: the builder gives each sung row's chart line its row window's
+      start/end and returns lines as emitted. Regression test
+      `testTheHighlightFollowsTheTimelineRowOnFixedPeriodRows` (fixture + half-beat-late copy) was
+      red (5 and 20) and is green; the library replay is 0 on all 19 songs. Ball position within a
+      row (H4) is not separately verified — needs the on-screen check.
+- [ ] 6. Remove recutter (`timing-3`); real-library audits (≥95% rows exactly P) + rendered PNGs.
+
+Decisions (Eric, 2026-09-14):
+- Low bar-phase confidence: fixed rows anyway (no fallback to variable rows).
+- A line continuing onto the next row ends its row with "→"; pickup words move into the next
+  row's gutter.
+- A hand-corrected (`overrideText`) line is never split: it stays on one row even if that row
+  runs long (accepted exception to equal widths).
+- P rounds UP to whole bars, so rows start and end on bar lines.
+Defaults (not asked): one-window breaths get their own chord-only row; one pickup gutter width on
+every row so bar columns align; Beats per Row stays a View preference that rebuilds generated (not
+reviewed) charts.
+
+## 2026-09-14 — One click track; scroll to top on playback start
+
+- [x] Merged `fixed-period-rows` into `main` (b0f8036, with the bucket/ball commits); working-tree
+      changes restored byte-identical (29 files compared).
+- [x] Remove the chord click (Eric: the metronome replaces the click track): the chord-click channel,
+      `chordClickGain`, `loadChordClickTrack`, `AppModel.refreshChordClickTrack` and its callers,
+      the mixer's second fader; strip label "Clk" → "Met"; Chord Placement help no longer points
+      at a chord-click fader. The chord-placement A/B stays (chart, highlight and ball follow the
+      auditioned placement).
+- [x] Review/ChordPro chart scrolls to its top when playback starts with the playhead still in
+      the first row (Eric: only from the beginning; resuming later keeps following the row).
+- [x] Build and full suite.
+- [ ] Eric's on-screen check (one fader in the mixer, scroll to top from the start).
+
+Review: no chord-click references left in Sources/Tests; full `xcodebuild test` 1118 run, 30 skipped,
+0 failures (app built 11:48:50). The scroll-to-top wiring has no unit seam (SwiftUI ScrollViewReader);
+it needs the on-screen check. Not committed.
+
+## 2026-09-14 — Bar grid after a tempo retune; per-row gutter on fixed rows
+
+Eric: pauses seemed to add too many beats of silence. Verified against the audio (Back to New
+Orleans): rows tile 0–281.86 s = the track, and the vocals stem is silent in every lyric gap, so no
+time is added. The extra beats came from (1) a 3/4 bar grid — the tracker's default anchored 4/4 at
+139.7 BPM rescaled by the ×3/4 retune to 104.8 BPM — making 8-beat rows round up to 9, and (2) the
+flat 2-beat gutter every fixed-period row reserved even without a pickup.
+
+- [x] Regression test (red first: 6 ≠ 4): an anchored bar grid is re-estimated after a retune.
+- [x] `AnalysisTimingPostPasses.apply`: only a `.drumAccents` grid is rescaled; anchored grids are
+      re-estimated on the final beats. `versionTag` → `timing-3` so stored songs re-derive.
+- [x] Fixed-period rows use the per-row `ChartPickupGutter` (0 when no pickup) for both the row's
+      downbeat and its frame, like variable rows already did.
+- [x] Full suite; real-song check of the re-derived grid.
+- [ ] Eric's on-screen check.
+Skipped: `{time: 4/4}` stays hard-coded (the non-fixed chart's bar math is 4/4).
+
+### Follow-up — vocal energy drawn right of its words (Eric's screenshot, 12:32)
+
+Cause (from 65d16cf, not the bar-grid/gutter change): a fixed-period lyric row's window now starts
+on its downbeat, and its vocal peaks are cut from that window, but `waveformStrip` drew them from
+the first word's onset. Each row's energy shifted right by its lead-in. Confirmed on Back to New
+Orleans: predicted shifts (first word − window start) for rows 7–12 were 3.9/1.0/3.6/0.1/2.0/7.3
+beats; the screenshot measured about 3.0/0.8/2.9/0.1/1.7/5.9, a constant ~0.8 scale with the same
+zero row.
+- [x] `lineStartTime` = the strip window's start (`rowStartTime`) for all three uses.
+- [x] Full suite.
+- [ ] Eric's on-screen check. No unit seam: the mapping lives in a SwiftUI `Canvas`.
+
+## 2026-09-14 — Commit through the lint hook; instrument energy option
+
+- [x] The pre-commit hook (`swift format lint --strict`) rejected every commit on main: 67 lint errors,
+      64 from this session's earlier plumbing commits that skipped the hook. Formatting-only fix
+      commit 266149d, then the three commits (404a4ff, 654d235, 2c7c4b5) on
+      `review-chart-timing-fixes` through the hook. Not merged into main.
+- [x] Review instrument energy (Eric): the purple was only the guitar stem (guitar first, piano only
+      without guitar). Now View menu › Instrument Energy: Combined (every non-vocal stem summed, gray
+      fill) or Per Instrument (one lane-colored outline per stem, shared scale, Energy Stems submenu to
+      hide stems). Instruments draw across the whole row, under the vocals, on every row kind.
+      `InstrumentEnergyLanes` (StemMixerModel.swift) + `StemMixerTests` test.
+- [x] Full suite.
+- [ ] Eric's on-screen check of both modes.
+
+Review: branch tip 2c7c4b5 built and tested in the isolated worktree: 1108 run, 4 failures —
+LyricGroupingDiagnosticTests (Doc Holiday cache missing), two PhrasePeriodLineRecutterTests, and
+SongAnalysisPipelineFactoryTests refiner recipe. All 4 also fail on main b0f8036 alone, so none come
+from these commits (the checkout passes them with other sessions' uncommitted edits). Checkout with
+the energy option and the lint fixes applied: 1120 run, 30 skipped, 0 failures; lint clean except 4
+errors inside other sessions' uncommitted hunks (AnalysisStage.swift, AppModelTests.swift).
+Energy option not committed.
+
+### Follow-up — rows the same length again (Eric's screenshot, 13:14)
+
+The per-row gutter shifted each fixed row's frame by 0–2 beats, and instrument energy ran up to 2
+beats past the frame. Eric chose one margin per song, sized to its longest pickup:
+`fixedPeriodGutterSeconds(for:)` takes the largest `ChartPickupGutter` beats over the rows once per
+render and passes it to every row; energy on fixed rows now ends at the frame's right edge (downbeat
++ one period on the measured grid). Quiet instrument lanes (under 0.02 peak or 15% of the row's
+loudest) are suppressed per row; per-instrument lanes stack in bands with a gap. Full suite 1121/0,
+lint clean. No unit seam for the row alignment (SwiftUI layout); needs Eric's on-screen check. Not
+committed.
+
+### Follow-up — "line lengths got worse" (Eric's screenshot, 13:30); vocal fill dimmed
+
+Not a layout regression. Eric's re-analysis of Back to New Orleans (running at 13:06) was cancelled
+when I quit the Debug app to relaunch it (13:10, 13:19): the song's `chordPro` and `separation`
+stage records are `cancelled`. `rebuildGeneratedChordProDraft` only rebuilds after a succeeded
+chordPro stage, so the stored chart (171 lines, a 12-bar intro comment built on a 3:4 mixed grid)
+no longer reproduces from the current analysis (139.7 BPM, 61 lines) at either Beats per Row
+setting; `songTimelineForPreview()` returns nil and the Review chart falls back to variable rows.
+A rebuild at 8 beats per row gives fixed rows (52 chart lines, period 8). Verified with a temporary
+render (every row's gutter 2 beats, 265 px) and a stored-vs-rebuilt source comparison; both removed.
+- [ ] Eric: re-run Analyze on the song and let it finish.
+- [x] Vocal fill opacity 0.7 → 0.35 whenever instrument energy is drawn, so instrument lines show
+      through. Full suite 1121/0, lint clean. Not committed.
+- [x] Committed eb2723b (energy option, quiet lanes, stacked bands, shared margin, header) on
+      `review-chart-timing-fixes`; branch suite 1110 run, only the 4 failures that also fail on main.
+
+## 2026-09-14 — Held words read as silence ("…Louisiana breeze" → "I'm going back")
+
+Evidence (Back to New Orleans, after Eric's re-analysis finished): the vocals are continuous from
+"Flowing" (55.0 s) to ~60.15 s, then "I'm" enters at 60.70 s — under 1 beat of silence. The chart
+showed ~6 beats of apparent blank: "breeze" is a held word (ASR 57.77–60.65, start glued to the end of
+"Louisiana"; the vocals show an attack near 58.60), labels mark only word STARTS, and row 14 opened
+with the 2-beat shared margin. `VocalWordOnsetAligner` only snaps within 0.15 s and
+`VocalWordSpanNormalizer` only pulls LATE onsets earlier, so an early, stretched start survives.
+
+Eric chose all three: hold lines, correct word starts, smaller margin; and asked for a mechanism
+that detects these timing errors.
+- [x] Hold lines: `ChordProPreviewLineLayout.holdLineSpans` (tested) — a thin extender from past the
+      label to the word's end, stopping before the next label and at the frame edge; ≥ 1 beat only.
+- [x] Shared fixed-row margin capped at 1 beat (`fixedRowMaximumGutterBeats`).
+- [x] Library audit (rough script, 20 songs with vocals stems): 68 stretched words (start glued to
+      the previous word's end, ≥ 1 s and ≥ 2 beats); 30 show a clear vocal attack inside the word and
+      none at its start (Back to New Orleans: breeze +0.70 s, Hall +0.89, breeze. +0.96, old +0.93).
+- Eric (2026-09-14): fix and mark; run on new analyses AND existing songs.
+- Design: one app-side pass (the pipeline's transcription stage runs before tempo exists, and
+  `AnalysisStage.swift`/`SongAnalysisDocument.swift` carry another session's edits):
+  - [ ] `StretchedWordRetimer` (pure, AudioFileAnalysisService.swift): glued start + long duration →
+        move the start to the first vocal attack inside (none within 0.15 s of the start), extend the
+        previous word to meet it; no attack → flag as suspect. Tests incl. the breeze case.
+  - [ ] Findings persisted at song level (`wordTimingFindings`, `wordTimingCheckTag`), matched to
+        words by start + text — per-word fields would be dropped by passes that rebuild words.
+  - [ ] AppModel: after any analysis load, if the tag is stale and a vocals stem exists, compute
+        vocal onsets off the main actor, retime, store findings + tag, rebuild the generated chart,
+        persist. Skip (retry next load) if the song or lyrics changed meanwhile.
+  - [ ] Review chart marks retimed words (mint dotted underline) and suspect words (coral).
+  - [ ] Verify on Back to New Orleans (breeze → ~58.5 s), full suite, lint, Eric's check.
+- Real-song finding: with the app's onset detector the first rule missed "breeze" — the pipeline's
+  `VocalWordOnsetAligner` had already snapped it onto a weak onset at its transcribed start. Switched
+  to attack STRENGTH (`VocalAttackEnvelope`, dB rise over 30 ms): clear inside attack ≥ 6 dB and
+  ≥ 3 dB above the start's → move; start with a ≥ 6 dB attack → leave.
+- Library calibration (20 songs with vocals stems): margin 3 dB → 26 moved / 24 flagged; margin 2 dB
+  → 31 / 19. Kept 3 dB. Back to New Orleans: Hall +0.87 s, breeze. +0.28 s, old +0.90 s moved;
+  "breeze" (start rise 5.4 dB, inside 8.0 dB at 58.59) flagged, not moved.
+- Eric: use the rhyme structure when detections are vague ("err on the side of the rhyme timing").
+  Added pass 2: a vague line-final word takes the bar position where most rhyming/identical
+  line-final words start, and moves to the SUNG attack (≥ 3 dB rise, within 15 dB of the word's
+  loudest) nearest it. First version moved "breeze" to 60.40 s — noise rising out of the silence
+  before "I'm" — so the sung-level guard was added. Its partner positions disagree ("breeze." 0.50
+  by the vocal rule vs 1.69 from the audit; the "breeze" attack sits at 1.32), so it stays flagged.
+  Library: 26 moved by vocals, 0 by rhyme, 23 flagged.
+
+## 2026-09-14 — Chords per instrument, in instrument colors (planning)
+
+Eric: chord names on a piano song still come from guitar. Today `HarmonyStemMix` blends guitar (1.0)
+and piano (0.6) after leveling each stem, so a bleed-heavy guitar stem outvotes a real piano part and
+no chord knows its instrument. Eric chose: detect chords separately per instrument and show each
+instrument's chords in its color (both when they differ), and give piano a distinct color everywhere.
+- [x] Map (explore agent): chords come from one blended signal (`HarmonyStage` → `analyze(weighted:)` →
+      `ChordAnalysisPipeline` → `ChordTimelineDecoder` → refiners → `ChorusChordConsensus`); nothing
+      records an instrument. `analyze(url:)` already takes a single stem (it re-runs beat tracking).
+      `chordEvents` drives the ChordPro text, `SongTimeline` chord times, balls, editing and export.
+      `BucketNotePass` is the per-stem pass pattern (versionTag + stem-set check, on-demand compute).
+      Chart chord labels: `chordLabelStyle` (sounding amber, else `.tint`); the bass-note row is the
+      template for an extra per-instrument row. Piano's lane color (`swTextPrimary`) isn't relied on;
+      mint/amber/coral are taken by review states.
+- Proposed plan (pending Eric's choices):
+  - [ ] `InstrumentChordPass`: for each of guitar/piano whose stem clears the leakage gate, chord
+        frames on that stem alone (reusing the song's beat grid, not re-tracking), decoded with the
+        same decoder/refiners; stored per stem with a version tag and stem-set check; cached.
+  - [ ] Blended chords stay the chart's main chord list unless Eric chooses otherwise.
+  - [ ] Review chart: each main chord name colored by the instrument whose chord agrees; where the
+        instruments differ, the other instrument's chord shown in its color (row like bass notes).
+  - [ ] Piano gets a distinct palette color everywhere `laneColor` is used.
+- Eric's choices (14:38): show BOTH instruments' chords on separate lines tied to the Bucket Notes
+  rows, with the user choosing which to see; color chord names by the agreeing instrument and add a
+  row where they differ; piano teal #22B8CF everywhere; existing songs on demand (View menu, like
+  Bucket Notes), new analyses automatically.
+- Built (14:40–15:00, not committed):
+  - [x] `InstrumentChordPass` (HarmonyStemMix.swift): the harmony stage's chord chain per guitar/piano
+        stem on the song's own beat grid, leakage-gated; `InstrumentChordTimeline` on the document
+        (grid-key staleness like Bucket Notes); runs after Solo Tab in the pipeline; on demand via
+        View menu › Compute Instrument Chords (`AppModel.computeInstrumentChords`).
+  - [x] Review chart: "GtC"/"PnC" chord lines under their bucket-note lines (dimmed carried chord,
+        transposed), View menu › Instrument Chords toggle + Instrument Chord Stems submenu; chart
+        chord names take the color of the ONE instrument playing them (`InstrumentChordAgreement`).
+  - [x] Piano lane color is teal `swTeal` #22B8CF everywhere `laneColor` is used.
+  - [x] Tests: stem colors distinct, agreement, pass on synthetic piano + bleed guitar, row formatter.
+        Full suite 1130/0.
+  - [ ] Real-song check (Back to New Orleans: compute, compare GtC vs PnC), Eric's on-screen check.
+  - [ ] Tests: pass on synthetic stems, agreement/coloring, color distinctness; real-song check on
+        Back to New Orleans; ground-truth harness (`StemSourceChordAccuracyTests`) if charts exist.
+- [ ] Full suite, Eric's on-screen check, commit.
+
+### 2026-09-14 14:16 — The other session stopped; we own its uncommitted work
+
+Eric: the other session is killed; absorb its changes and treat the whole checkout as ours. Its
+uncommitted work (metronome toggle removal, chart derivation cache, low-memory separation gate,
+duplicate-song restore fix, Basic Pitch transcriber + `noteEvents`, AnalysisStage/BeatTracking and
+test edits) has not been reviewed or fully verified here. Before committing it: full suite, lint
+(it carried 4 lint errors in AnalysisStage.swift and AppModelTests.swift), and the 4 tests that fail
+on main without it (LyricGroupingDiagnostic, 2× PhrasePeriodLineRecutter, SongAnalysisPipelineFactory).

@@ -46,53 +46,20 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     private var scheduledStartTime: TimeInterval = 0
     private var timer: Timer?
 
-    // Synthetic click channels: one short reusable sample scheduled at each of a list of times.
-    // Neither is a separated stem and their memory use does not scale with song duration.
-    // `beatClick` marks the tempo grid; `chordClick`, at a higher pitch so the two never blur
-    // together, marks where the chords are currently PLACED — the audible half of the
-    // chord-placement A/B, since a click that lands with or against the recording's own chord
-    // change is far easier to judge than a highlight moving on screen.
+    // The synthetic metronome channel: one short reusable sample scheduled on the tempo grid. Not a
+    // separated stem, and its memory use does not scale with song duration. (The chord click that
+    // once marked chord placement alongside it was removed 2026-09-14: the metronome is the one
+    // click track.)
     private let beatClick = ClickChannel(frequency: 1000)
-    private let chordClick = ClickChannel(frequency: 1600)
     @Published var clickGain: Float = 0 {
         didSet { beatClick.gain = clickGain }
     }
-    @Published var chordClickGain: Float = 0 {
-        didSet { chordClick.gain = chordClickGain }
-    }
-
-    /// What the beat click marks. ON: a metronome — one rigid period (`60 / bpm`) phase-locked to
-    /// the bar grid's first downbeat and never nudged by the recording's content; the reference
-    /// every detected beat is judged against. OFF: each detected beat time verbatim, so the
-    /// tracker's own answer (drum-snapped, jitter and all) is what you hear. Persisted so the
-    /// choice survives relaunch like the beat-dots toggle does.
-    @Published var metronomeEnabled: Bool = StemPlaybackService.storedMetronomeEnabled {
-        didSet {
-            guard metronomeEnabled != oldValue else { return }
-            UserDefaults.standard.set(metronomeEnabled, forKey: Self.metronomeDefaultsKey)
-            rebuildBeatClick()
-        }
-    }
-    static let metronomeDefaultsKey = "clickMetronomeEnabled"
-    private static var storedMetronomeEnabled: Bool {
-        UserDefaults.standard.object(forKey: metronomeDefaultsKey) as? Bool ?? true
-    }
-
-    /// The last beat-click inputs, kept so flipping `metronomeEnabled` can rebuild the channel
-    /// without the caller having to re-supply them.
-    struct BeatClickSource: Equatable {
-        var beatTimes: [TimeInterval]
-        var bpm: Double?
-        var barGrid: SongBarGrid?
-    }
-    private(set) var beatClickSource: BeatClickSource?
 
     init() {
         for player in players.values {
             engine.attach(player)
         }
         engine.attach(beatClick.player)
-        engine.attach(chordClick.player)
         engine.attach(stemMixerNode)
         engine.attach(timePitch)
         engine.connect(stemMixerNode, to: timePitch, format: nil)
@@ -183,38 +150,18 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     /// Builds the beat click and connects it. Call after `load`. An empty `beatTimes` leaves the
     /// channel silent. Safe to call while playing. `bpm`/`barGrid` are the analysis's reconciled
     /// tempo and bar grid; they decide the metronome's period and downbeat anchor (see
-    /// `MetronomeGrid.clickTimes`) and are ignored when `metronomeEnabled` is off.
+    /// `MetronomeGrid.clickTimes`).
+    ///
+    /// The beat click is ALWAYS the metronome: one rigid period phase-locked to the bar grid's
+    /// first downbeat, never nudged by the recording's content. The older mode that played each
+    /// detected beat time verbatim is gone — it was a second, jittery click competing with the
+    /// grid the analysis actually measures against.
     func loadClickTrack(beatTimes: [TimeInterval], bpm: Double? = nil, barGrid: SongBarGrid? = nil)
     {
-        beatClickSource = BeatClickSource(beatTimes: beatTimes, bpm: bpm, barGrid: barGrid)
-        rebuildBeatClick()
-    }
-
-    private func rebuildBeatClick() {
-        guard let source = beatClickSource else { return }
-        let times = Self.beatClickTimes(
-            for: source, metronome: metronomeEnabled, duration: duration)
-        load(beatClick, times: times)
-    }
-
-    /// The times the beat click fires at for a given source and mode. Pure, so the
-    /// metronome/verbatim contract is testable without an audio engine.
-    static func beatClickTimes(
-        for source: BeatClickSource, metronome: Bool, duration: TimeInterval
-    ) -> [TimeInterval] {
-        guard metronome else { return source.beatTimes.sorted() }
-        return MetronomeGrid.clickTimes(
-            beatTimes: source.beatTimes, bpm: source.bpm, barGrid: source.barGrid,
-            duration: duration)
-    }
-
-    /// Builds the chord click from wherever the chords are CURRENTLY placed. Unlike the beat
-    /// click these times are used verbatim — no `MetronomeGrid` — because their irregularity is
-    /// the entire thing under test: regularising them would erase the difference between the
-    /// placement variants being compared. Safe to call while playing, which is what makes an A/B
-    /// possible without stopping the music.
-    func loadChordClickTrack(times: [TimeInterval]) {
-        load(chordClick, times: times.sorted())
+        load(
+            beatClick,
+            times: MetronomeGrid.clickTimes(
+                beatTimes: beatTimes, bpm: bpm, barGrid: barGrid, duration: duration))
     }
 
     private func load(_ channel: ClickChannel, times: [TimeInterval]) {
@@ -319,7 +266,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
 
     private func scheduleClick(from time: TimeInterval) {
         beatClick.schedule(from: time, duration: duration)
-        chordClick.schedule(from: time, duration: duration)
     }
 
     func togglePlayback() {
@@ -344,7 +290,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
                 players[id]?.play()
             }
             beatClick.play()
-            chordClick.play()
             isPlaying = true
             startTimer()
         } catch {
@@ -359,7 +304,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             player.pause()
         }
         beatClick.pause()
-        chordClick.pause()
         isPlaying = false
         stopTimer()
         resetStemLevels()
@@ -372,7 +316,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             player.stop()
         }
         beatClick.stop()
-        chordClick.stop()
         stopTimer()
         isScheduled = false
         currentTime = min(max(time, 0), duration)
@@ -382,7 +325,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
                 players[id]?.play()
             }
             beatClick.play()
-            chordClick.play()
             startTimer()
         } else if !isScheduled {
             isPlaying = false
@@ -411,9 +353,7 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         duration = 0
         referenceID = nil
         isLoaded = false
-        beatClickSource = nil
         beatClick.disconnect(from: engine)
-        chordClick.disconnect(from: engine)
         releaseSecurityScopes()
     }
 
@@ -423,7 +363,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             player.stop()
         }
         beatClick.stop()
-        chordClick.stop()
         engine.stop()
         isPlaying = false
         isScheduled = false

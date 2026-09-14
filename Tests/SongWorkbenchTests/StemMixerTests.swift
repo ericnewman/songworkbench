@@ -309,6 +309,43 @@ final class StemMixerTests: XCTestCase {
         XCTAssertEqual(StemID.guitarRhythm.laneColor, StemKind.guitar.laneColor)
     }
 
+    func testInstrumentEnergyLeavesOutVocalsAndSumsTheRestOnOneTimeline() {
+        func lane(_ id: StemID, _ peaks: [Float]) -> StemWaveformLaneModel {
+            StemWaveformLaneModel(
+                id: id, displayName: id.rawValue,
+                envelope: WaveformEnvelope(peaks: peaks, duration: 4))
+        }
+        let stems = [
+            lane(StemID(.vocals), [9, 9, 9, 9]), lane(.vocalLead, [9, 9, 9, 9]),
+            lane(StemID(.guitar), [1, 0, 0, 1]), lane(StemID(.piano), [0, 2, 2, 0]),
+            // Two samples over the same 4 s: each is read at the time of two guitar samples.
+            lane(StemID(.bass), [1, 1]),
+        ]
+
+        let combined = InstrumentEnergyLanes.lanes(from: stems, perStem: false, hidden: [])
+        XCTAssertEqual(combined.map(\.id), [InstrumentEnergyLanes.combinedID])
+        XCTAssertEqual(combined.first?.envelope.peaks, [2, 3, 3, 2])
+        XCTAssertEqual(combined.first?.envelope.duration, 4)
+        XCTAssertEqual(InstrumentEnergyLanes.combinedID.laneColor, StemKind.other.laneColor)
+
+        let perStem = InstrumentEnergyLanes.lanes(
+            from: stems, perStem: true, hidden: [StemID(.bass)])
+        XCTAssertEqual(perStem.map(\.id), [StemID(.guitar), StemID(.piano)])
+        XCTAssertEqual(
+            InstrumentEnergyLanes.lanes(from: Array(stems.prefix(2)), perStem: false, hidden: []),
+            [], "vocals alone have no instrument energy")
+    }
+
+    func testQuietInstrumentLanesAreSuppressedInARow() {
+        // Loud piano, bleed-level guitar, a real but softer bass part, and a lane with no data.
+        let lanes: [[Float]] = [[0.5, 0.2], [0.01, 0.015], [0.1, 0.04], []]
+        XCTAssertEqual(InstrumentEnergyLanes.audibleLaneIndices(lanes), [0, 2])
+        // A lane under 15% of the loudest is dropped even above the absolute floor.
+        XCTAssertEqual(InstrumentEnergyLanes.audibleLaneIndices([[0.8], [0.1]]), [0])
+        // A row where everything is near silent draws no instrument lines at all.
+        XCTAssertEqual(InstrumentEnergyLanes.audibleLaneIndices([[0.01], [0.005]]), [])
+    }
+
     func testWaveformLaneTargetsUseNumberedVocalChildNames() {
         let root = URL(fileURLWithPath: "/tmp/refined-vocal-waveforms")
         let manifest = StemSetManifest(

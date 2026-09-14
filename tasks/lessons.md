@@ -937,3 +937,20 @@ but omitted the concurrently implemented Review confidence slider and compact co
 **Rule:** When resuming uncommitted UI work, summarize every user-visible surface from the working
 diff before asking what to do next; do not collapse related controls into the most recently edited
 interaction.
+
+## 2026-09-08 — Confirm the active checkout before changing project references
+
+**Mistake:** I initially treated the former Documents checkout as active after the repository had
+moved to `/Users/ericnewman/Developer/SongWorkbench`.
+
+**Rule:** Before compiling, regenerating project files, or updating path references after a move,
+confirm the active checkout with `pwd`, Git status, and the configured project path; update all
+repository documentation references in the same change.
+
+## 2026-09-08 — Preview note colors must reflect their audio source
+
+**Mistake:** The Preview's optional note rows used decorative fixed colors rather than the stem
+lane palette, so a note's color could disagree with the corresponding waveform and mixer channel.
+
+**Rule:** Render source-derived note and tab rows with `StemID.laneColor`; do not introduce
+per-view color constants for a stem-backed artifact.

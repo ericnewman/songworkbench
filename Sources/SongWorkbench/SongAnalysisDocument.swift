@@ -558,6 +558,11 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// Lead-line passages on the melodic stems as guitar tab (`SoloTranscriptionPass`). Same
     /// staleness contract as `bucketNotes`.
     var soloTranscriptions: SoloTranscriptionTimeline?
+    /// Basic Pitch note events per pitched stem (`NoteTranscriptionPass`), the shared front end
+    /// the bucket and solo passes read. `nil` for documents analysed before this existed; stale
+    /// when a timeline's `versionTag` is old or the stem set has changed — see
+    /// `NoteTranscriptionPass.isCurrent(for:)`.
+    var noteEvents: [NoteEventTimeline]?
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
     /// Listener verdicts from the chord-placement A/B, newest last. A later pick overlapping an
@@ -570,6 +575,13 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var chordReviewState = AnalysisReviewState.draft
     var chordProReviewState = AnalysisReviewState.draft
     @SortedKeyPairs var stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:]
+    /// Stretched word timings the stretched-word check retimed or flagged, for the Review chart to
+    /// mark (`StretchedWordRetimer`), and the version of that check that last ran on `lyrics`.
+    var wordTimingFindings: [WordTimingFinding] = []
+    var wordTimingCheckTag: String?
+    /// Each chordal instrument's own chords (`InstrumentChordPass`). `nil` until computed; may be
+    /// stale — check `isCurrent(for:)` against the current grid key before showing it.
+    var instrumentChords: InstrumentChordTimeline?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -593,6 +605,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case vocalHarmonyNotes
         case bucketNotes
         case soloTranscriptions
+        case noteEvents
         case estimatedKey
         case chordConfidenceThreshold
         case chordPlacementPicks
@@ -603,6 +616,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case chordReviewState
         case chordProReviewState
         case stageRecords
+        case wordTimingFindings
+        case wordTimingCheckTag
+        case instrumentChords
     }
 
     init(
@@ -627,6 +643,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         vocalHarmonyNotes: [VocalHarmonyObservation] = [],
         bucketNotes: BucketNoteTimeline? = nil,
         soloTranscriptions: SoloTranscriptionTimeline? = nil,
+        noteEvents: [NoteEventTimeline]? = nil,
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
         chordPlacementPicks: [ChordPlacementPick] = [],
@@ -636,7 +653,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         lyricReviewState: AnalysisReviewState = .draft,
         chordReviewState: AnalysisReviewState = .draft,
         chordProReviewState: AnalysisReviewState = .draft,
-        stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:]
+        stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:],
+        wordTimingFindings: [WordTimingFinding] = [],
+        wordTimingCheckTag: String? = nil,
+        instrumentChords: InstrumentChordTimeline? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.lyrics = lyrics
@@ -659,6 +679,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.vocalHarmonyNotes = vocalHarmonyNotes
         self.bucketNotes = bucketNotes
         self.soloTranscriptions = soloTranscriptions
+        self.noteEvents = noteEvents
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
         self.chordPlacementPicks = chordPlacementPicks
@@ -669,6 +690,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.chordReviewState = chordReviewState
         self.chordProReviewState = chordProReviewState
         self.stageRecords = stageRecords
+        self.wordTimingFindings = wordTimingFindings
+        self.wordTimingCheckTag = wordTimingCheckTag
+        self.instrumentChords = instrumentChords
     }
 
     init(from decoder: Decoder) throws {
@@ -711,6 +735,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         bucketNotes = try container.decodeIfPresent(BucketNoteTimeline.self, forKey: .bucketNotes)
         soloTranscriptions = try container.decodeIfPresent(
             SoloTranscriptionTimeline.self, forKey: .soloTranscriptions)
+        noteEvents = try container.decodeIfPresent([NoteEventTimeline].self, forKey: .noteEvents)
         estimatedKey =
             try container.decodeIfPresent(MusicalKey.self, forKey: .estimatedKey)
             ?? MusicalKeyEstimator().estimate(from: chords)
@@ -745,6 +770,12 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
                 [SongAnalysisStage: AnalysisStageRecord].self,
                 forKey: .stageRecords
             ) ?? [:]
+        wordTimingFindings =
+            try container.decodeIfPresent([WordTimingFinding].self, forKey: .wordTimingFindings)
+            ?? []
+        wordTimingCheckTag = try container.decodeIfPresent(String.self, forKey: .wordTimingCheckTag)
+        instrumentChords = try container.decodeIfPresent(
+            InstrumentChordTimeline.self, forKey: .instrumentChords)
     }
 }
 

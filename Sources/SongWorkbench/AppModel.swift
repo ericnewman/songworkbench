@@ -205,9 +205,7 @@ final class AppModel: ObservableObject {
     /// the document's own times. TRANSIENT BY DESIGN — not persisted, and deliberately NOT routed
     /// through `chordEvents`, whose `didSet` writes the document and drops `chordReviewState` to
     /// `.draft`. Auditioning is listening, not editing: it must never dirty a reviewed chart.
-    @Published var auditionedPlacement: ChordPlacementVariant? {
-        didSet { refreshChordClickTrack() }
-    }
+    @Published var auditionedPlacement: ChordPlacementVariant?
     /// Listener verdicts about chord placement. These ARE edits, so they persist — but they don't
     /// touch `chordReviewState`, because picking where a chord sits is a separate judgement from
     /// reviewing which chord it is.
@@ -246,6 +244,11 @@ final class AppModel: ObservableObject {
     /// `AnalysisTimingPostPasses` stamp. See `PreReconciliationTiming`.
     private var preReconciliationTiming: PreReconciliationTiming?
     private var timingPostPassTag: String?
+    /// Word timings the stretched-word check retimed or flagged, and the check version that last
+    /// ran on the current lyrics (`StretchedWordRetimer`).
+    @Published private(set) var wordTimingFindings: [WordTimingFinding] = []
+    private var wordTimingCheckTag: String?
+    private var wordTimingCheckTask: Task<Void, Never>?
     /// Full audio duration from transcription (seconds), for intro/outro timeline bounds.
     @Published var sourceDuration: TimeInterval? {
         didSet { persistSelectedAnalysis() }
@@ -267,6 +270,12 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published private(set) var isComputingBucketNotes = false
+    /// Each chordal instrument's own chords, mirrored from the document; same staleness rule as
+    /// `bucketNotes` — Review checks `isInstrumentChordTimelineCurrent` before drawing.
+    @Published private(set) var instrumentChords: InstrumentChordTimeline? {
+        didSet { persistSelectedAnalysis() }
+    }
+    @Published private(set) var isComputingInstrumentChords = false
     /// Solo passages as guitar tab, mirrored from the document; same staleness rule as
     /// `bucketNotes` — Review checks `isSoloTimelineCurrent` before drawing.
     @Published private(set) var soloTranscriptions: SoloTranscriptionTimeline? {
@@ -569,12 +578,18 @@ final class AppModel: ObservableObject {
     }
 
     /// Opt-in Advanced Desktop stem refinement (DrumSep children, future guitar parts).
-    /// Smaller separation segment: much less memory, weaker stems. See
-    /// `AnalysisCapabilityProfile.prefersLowMemorySeparation`.
+    /// A shorter segment is unavailable until macOS has a matching short-segment model export.
+    var lowMemorySeparationAvailable: Bool {
+        ONNXSixStemSeparationEngine.supportsLowMemorySeparationOnCurrentPlatform
+    }
+
     var lowMemorySeparationEnabled: Bool {
-        get { AnalysisCapabilityProfile.prefersLowMemorySeparation }
+        get {
+            lowMemorySeparationAvailable && AnalysisCapabilityProfile.prefersLowMemorySeparation
+        }
         set {
-            AnalysisCapabilityProfile.prefersLowMemorySeparation = newValue
+            AnalysisCapabilityProfile.prefersLowMemorySeparation =
+                lowMemorySeparationAvailable && newValue
             objectWillChange.send()
         }
     }
@@ -1817,12 +1832,11 @@ final class AppModel: ObservableObject {
         chordEvents[index].chord = trimmed
         chordProReviewState = .draft
         rebuildGeneratedChordProDraft()
-        refreshChordClickTrack()
     }
 
     /// Hides or un-hides a chord: it stays in the event list (and survives re-analysis) but
-    /// leaves the chart, the click, and the included count, exactly like falling below the
-    /// confidence threshold.
+    /// leaves the chart and the included count, exactly like falling below the confidence
+    /// threshold.
     func setChordHidden(id: EditableChordEvent.ID, hidden: Bool) {
         guard let index = chordEvents.firstIndex(where: { $0.id == id }),
             chordEvents[index].hidden != hidden
@@ -1830,7 +1844,6 @@ final class AppModel: ObservableObject {
         chordEvents[index].hidden = hidden
         chordProReviewState = .draft
         rebuildGeneratedChordProDraft()
-        refreshChordClickTrack()
     }
 
     func toggleChordAccepted(id: EditableChordEvent.ID) {
@@ -1840,9 +1853,6 @@ final class AppModel: ObservableObject {
 
     /// Sets (or clears, when `nil`) a chord event's dragged Review-chart position. Deliberately a
     /// FREE timestamp with no snapping — see `EditableChordEvent.manualTime`'s doc comment.
-    /// Re-points the chord click at wherever the chords currently sit. Called whenever the
-    /// audition changes so switching variants re-schedules the clicks against the SAME audio
-    /// without stopping playback — that continuity is what makes the comparison judgeable.
     /// The grid key the selected song's CURRENT timing produces (nil = no usable tempo grid).
     var bucketGridKey: BucketGridKey? {
         guard let selectedSongID, let document = analysisBySongID[selectedSongID] else {
@@ -1929,8 +1939,42 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refreshChordClickTrack() {
-        stemPlayback.loadChordClickTrack(times: placedChordTimes)
+    /// True when `instrumentChords` was detected on the grid the chart currently shows.
+    var isInstrumentChordTimelineCurrent: Bool {
+        instrumentChords?.isCurrent(for: bucketGridKey) ?? false
+    }
+
+    /// Whether "Compute Instrument Chords" can do anything: guitar/piano stems and a tempo grid.
+    var canComputeInstrumentChords: Bool {
+        guard !isComputingInstrumentChords, !isSongAnalysisRunning, let selectedSongID,
+            let document = analysisBySongID[selectedSongID]
+        else { return false }
+        return BucketNotePass.gridKey(for: document) != nil
+            && !InstrumentChordPass.stemAudio(for: document).isEmpty
+    }
+
+    /// Same shape as `computeBucketNotes`: the pipeline's pass, run detached, stored on the song
+    /// it was computed for even if the user has since switched.
+    func computeInstrumentChords() {
+        guard canComputeInstrumentChords, let songID = selectedSongID,
+            let document = analysisBySongID[songID]
+        else { return }
+        isComputingInstrumentChords = true
+        Task { [weak self] in
+            let timeline = await Task.detached(priority: .userInitiated) {
+                InstrumentChordPass.timeline(for: document)
+            }.value
+            guard let self else { return }
+            self.isComputingInstrumentChords = false
+            guard self.selectedSongID == songID else {
+                if let timeline {
+                    self.analysisBySongID[songID]?.instrumentChords = timeline
+                    self.scheduleSave()
+                }
+                return
+            }
+            if let timeline { self.instrumentChords = timeline }
+        }
     }
 
     /// This model's current placement resolution for `event` — see
@@ -2636,10 +2680,14 @@ final class AppModel: ObservableObject {
         bassNotes = []
         vocalHarmonyNotes = []
         bucketNotes = nil
+        instrumentChords = nil
         soloTranscriptions = nil
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
         chordPlacementPicks = []
+        wordTimingCheckTask?.cancel()
+        wordTimingFindings = []
+        wordTimingCheckTag = nil
         auditionedPlacement = nil
         stemFiles = nil
         stemSet = nil
@@ -2868,7 +2916,6 @@ final class AppModel: ObservableObject {
         if let stemFiles {
             try stemPlayback.load(stemFiles, mixer: stemMixer)
             stemPlayback.loadClickTrack(beatTimes: beatTimes, bpm: estimatedBPM, barGrid: barGrid)
-            refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         }
@@ -3151,26 +3198,32 @@ final class AppModel: ObservableObject {
                     stored.lastOpenedAt
                 )
             }
+            // Different persisted paths can recover to the same local source cache after a
+            // library move. Keep the first manifest entry (the current library precedes imported
+            // records) so one recovered song cannot appear twice or produce duplicate stable IDs
+            // on the next save.
+            var restoredIDs = Set<Song.ID>()
+            let uniqueRestored = restored.filter { restoredIDs.insert($0.0.id).inserted }
             let currentSongs = songs
             let currentIDs = Set(currentSongs.map(\.id))
             // Persisted order IS the user's order — `SplitProjectStore` round-trips `library.json`'s
             // ordered manifest faithfully. Re-sorting here used to throw that away on every launch,
             // which is why a manual order could never have survived a restart.
-            songs = currentSongs + restored.map(\.0).filter { !currentIDs.contains($0.id) }
+            songs = currentSongs + uniqueRestored.map(\.0).filter { !currentIDs.contains($0.id) }
             var restoredSettings = Dictionary(
-                restored.map { ($0.0.id, $0.1) },
+                uniqueRestored.map { ($0.0.id, $0.1) },
                 uniquingKeysWith: { _, latest in latest }
             )
             restoredSettings.merge(settingsBySongID) { _, current in current }
             settingsBySongID = restoredSettings
             var restoredAnalysis = Dictionary(
-                restored.map { ($0.0.id, $0.2) },
+                uniqueRestored.map { ($0.0.id, $0.2) },
                 uniquingKeysWith: { _, latest in latest }
             )
             restoredAnalysis.merge(analysisBySongID) { _, current in current }
             analysisBySongID = restoredAnalysis
             var restoredRecency = Dictionary(
-                restored.compactMap { item in item.3.map { (item.0.id, $0) } },
+                uniqueRestored.compactMap { item in item.3.map { (item.0.id, $0) } },
                 uniquingKeysWith: { _, latest in latest }
             )
             restoredRecency.merge(lastOpenedBySongID) { _, current in current }
@@ -3252,6 +3305,8 @@ final class AppModel: ObservableObject {
         barGrid = analysis.barGrid
         preReconciliationTiming = analysis.preReconciliationTiming
         timingPostPassTag = analysis.timingPostPassTag
+        wordTimingFindings = analysis.wordTimingFindings
+        wordTimingCheckTag = analysis.wordTimingCheckTag
         harmonicChangePoints = analysis.harmonicChangePoints
         frameChordObservations = analysis.frameChordObservations
         estimatedBPM = analysis.estimatedBPM
@@ -3261,6 +3316,7 @@ final class AppModel: ObservableObject {
         bassNotes = analysis.bassNotes
         vocalHarmonyNotes = analysis.vocalHarmonyNotes
         bucketNotes = analysis.bucketNotes
+        instrumentChords = analysis.instrumentChords
         soloTranscriptions = analysis.soloTranscriptions
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
@@ -3297,7 +3353,6 @@ final class AppModel: ObservableObject {
                 try? stemPlayback.load(stemFiles, mixer: stemMixer)
             }
             stemPlayback.loadClickTrack(beatTimes: beatTimes, bpm: estimatedBPM, barGrid: barGrid)
-            refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         } else {
@@ -3308,6 +3363,7 @@ final class AppModel: ObservableObject {
         // Persist once when the load ran the timing migration or refreshed the generated chart.
         // A stamped document loads without either, so routine loads write nothing.
         if timingMigrated || chordProRebuilt { persistSelectedAnalysis() }
+        scheduleWordTimingCheck()
     }
 
     private var separationCachingPolicy: SeparationCachingPolicy {
@@ -3338,6 +3394,48 @@ final class AppModel: ObservableObject {
         return stemFiles.availableKinds.allSatisfy { kind in
             guard let url = stemFiles[kind] else { return false }
             return FileManager.default.fileExists(atPath: url.path)
+        }
+    }
+
+    /// The stretched-word check (Eric, 2026-09-14): once per song per `StretchedWordRetimer`
+    /// version, after an analysis loads — new analyses and existing songs alike. Reads the vocals
+    /// stem off the main actor; if the song or its lyrics change meanwhile it gives up, and the
+    /// next load tries again. A retiming is a timing correction, not a lyric edit, so it keeps the
+    /// review states and rebuilds only a generated chart.
+    private func scheduleWordTimingCheck() {
+        guard wordTimingCheckTag != StretchedWordRetimer.versionTag, let songID = selectedSongID,
+            let vocalsURL = stemFiles?.vocals, !lyricSegments.isEmpty
+        else { return }
+        let lyrics = lyricSegments
+        let beatLength = estimatedBPM.flatMap { $0 > 0 ? 60 / $0 : nil }
+        let grid: MeasureGrid? =
+            estimatedBPM.flatMap { bpm in
+                bpm > 0 && !beatTimes.isEmpty
+                    ? MeasureGrid(
+                        beatTimes: beatTimes, bpm: bpm, beatsPerBar: barGrid?.beatsPerBar ?? 4,
+                        barPhase: barGrid?.barPhase ?? 0)
+                    : nil
+            }
+        wordTimingCheckTask?.cancel()
+        wordTimingCheckTask = Task { [weak self] in
+            let attacks = await Task.detached(priority: .utility) {
+                try? VocalAttackEnvelope.load(url: vocalsURL)
+            }.value
+            guard let self, !Task.isCancelled, let attacks, !attacks.decibels.isEmpty,
+                self.selectedSongID == songID, self.lyricSegments == lyrics
+            else { return }
+            let checked = StretchedWordRetimer.retimed(
+                lyrics, attacks: attacks, beatLength: beatLength, grid: grid,
+                rhymes: RhymeDetector.shared)
+            self.wordTimingFindings = checked.findings
+            self.wordTimingCheckTag = StretchedWordRetimer.versionTag
+            if checked.segments != lyrics {
+                self.isApplyingAnalysis = true
+                self.lyricSegments = checked.segments
+                self.isApplyingAnalysis = false
+                self.rebuildGeneratedChordProDraft()
+            }
+            self.persistSelectedAnalysis()
         }
     }
 
@@ -3377,7 +3475,10 @@ final class AppModel: ObservableObject {
             lyricReviewState: lyricReviewState,
             chordReviewState: chordReviewState,
             chordProReviewState: chordProReviewState,
-            stageRecords: analysisStageRecords
+            stageRecords: analysisStageRecords,
+            wordTimingFindings: wordTimingFindings,
+            wordTimingCheckTag: wordTimingCheckTag,
+            instrumentChords: instrumentChords
         )
         scheduleSave()
     }
@@ -3410,7 +3511,8 @@ final class AppModel: ObservableObject {
     /// Validity is proven, not assumed: the timeline is used only when rebuilding the draft from
     /// the current analysis reproduces `chordProSource` byte-for-byte, so timeline row N is
     /// exactly the preview's numbered musical line N (audit RC-2's single alignment routine).
-    private var timelineCache: (input: ChordProDraftInput, source: String, result: ChordProDraftResult)?
+    private var timelineCache:
+        (input: ChordProDraftInput, source: String, result: ChordProDraftResult)?
     func songTimelineForPreview() -> SongTimeline? {
         guard !chordProSource.isEmpty else { return nil }
         guard let song = selectedSong else { return nil }
@@ -3570,10 +3672,11 @@ final class AppModel: ObservableObject {
         let identifier = SHA256.hash(data: Data(songID.path.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return supportDirectory
-        .appendingPathComponent("Analysis", isDirectory: true)
-        .appendingPathComponent("Stems", isDirectory: true)
-        .appendingPathComponent(identifier, isDirectory: true)
+        return
+            supportDirectory
+            .appendingPathComponent("Analysis", isDirectory: true)
+            .appendingPathComponent("Stems", isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
     }
 
     /// Computes vocal-activity intervals from the current song's vocals stem (off the main actor)

@@ -53,10 +53,25 @@ struct ONNXSixStemSeparationEngine: StemSeparationEngine, Sendable {
     /// factory and the staleness check read, so they cannot drift apart.
     static var currentSegmentFrames: Int {
         #if os(macOS)
-            AnalysisCapabilityProfile.prefersLowMemorySeparation
-                ? iPadSegmentFrames : defaultSegmentFrames
+            // The downloaded desktop `demucsv4.onnx` graph has a fixed 343_980-frame input.
+            // Passing the iPad export's 110_250-frame length makes ONNX reject the run before it
+            // produces any stems, leaving the previous (stale) stem record on screen. A desktop
+            // low-memory mode needs its own short-segment export; until that model exists, keep
+            // the stock graph's required shape.
+            defaultSegmentFrames
         #else
             iPadSegmentFrames
+        #endif
+    }
+
+    /// macOS currently ships/downloads only the fixed-length desktop ONNX graph. The 2.5-second
+    /// export is an iPad-only bundled artifact, so exposing the desktop toggle would promise an
+    /// analysis mode that cannot run.
+    static var supportsLowMemorySeparationOnCurrentPlatform: Bool {
+        #if os(macOS)
+            false
+        #else
+            false
         #endif
     }
 

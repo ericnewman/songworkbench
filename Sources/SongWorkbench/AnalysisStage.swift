@@ -922,6 +922,10 @@ struct HarmonyStage: AnalysisStageRunning {
                         // never spike frame-to-frame cosine), and drops sub-beat
                         // attack-only markers licensed by jangly picking.
                         + "|reduce-29-label-harmonic-and-attack-sliver"
+                        // reduce-30: a refined kick (when available) phase-locks the steady beat
+                        // grid. Mixed drums contain fills and cymbal attacks that must not make
+                        // the practice metronome wander from beat to beat.
+                        + "|reduce-30-kick-steady-grid"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -934,14 +938,18 @@ struct HarmonyStage: AnalysisStageRunning {
             )
             let estimatedBPM: Double? = result.beat?.bpm
             let beatTimes = result.beat?.beatTimes ?? []
-            // Make the click track follow the song's REAL beats: keep the estimated tempo as a
-            // spacing prior, but phase-lock the grid to the DRUMS stem's onsets and snap each beat
-            // onto the nearest actual drum hit. Best-effort & non-destructive — any failure (no drum
-            // stem, unreadable file, no onsets, bad BPM, empty result) keeps the uniform beatTimes.
+            // Phase-lock the steady practice grid to the refined kick when available. A kick may
+            // mark every second or fourth beat, so the analysis BPM remains the tempo authority;
+            // the kick only chooses phase. The mixed-drums fallback retains compatibility for
+            // six-stem analyses that have no drum-piece refinement.
             var drumBeatTimes = beatTimes
-            if let drumsURL = context.document.stems?.resolved().drums,
+            let timingStemURL =
+                context.document.stemSet?.resolved().assetsByID[.drumKick]?.audioURL
+                ?? context.document.stems?.resolved().drums
+            if let timingStemURL,
                 let bpm = estimatedBPM, bpm > 0,
-                let onsets = try? InstrumentOnsetDetector.onsets(url: drumsURL), !onsets.isEmpty
+                let onsets = try? InstrumentOnsetDetector.onsets(url: timingStemURL),
+                !onsets.isEmpty
             {
                 let duration = max(onsets.last ?? 0, beatTimes.last ?? 0)
                 let derived = DrumBeatGrid.beatTimes(onsets: onsets, bpm: bpm, duration: duration)

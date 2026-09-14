@@ -121,3 +121,108 @@ final class HarmonyStemMixTests: XCTestCase {
         XCTAssertLessThanOrEqual(mix.samples.map(abs).max() ?? 0, 1.0)
     }
 }
+
+final class InstrumentChordPassTests: XCTestCase {
+    func testEveryStemHasItsOwnColorAndPianoIsNoLongerTextColored() {
+        XCTAssertEqual(Set(StemKind.allCases.map(\.laneColor)).count, StemKind.allCases.count)
+        XCTAssertEqual(StemKind.piano.laneColor, .swTeal)
+    }
+
+    func testAChordBelongsToTheOneInstrumentPlayingIt() {
+        func track(_ id: StemID, _ chords: [(TimeInterval, String)]) -> InstrumentChordTrack {
+            InstrumentChordTrack(
+                stemID: id, chords: chords.map { EditableChordEvent(time: $0.0, chord: $0.1) })
+        }
+        let guitar = track(StemID(.guitar), [(0, "C"), (4, "G")])
+        let piano = track(StemID(.piano), [(0, "C"), (4, "Am")])
+        let tracks = [guitar, piano]
+        XCTAssertEqual(
+            InstrumentChordAgreement.instrument(forChord: "G", at: 4.1, tracks: tracks),
+            StemID(.guitar))
+        XCTAssertEqual(
+            InstrumentChordAgreement.instrument(forChord: "Am", at: 3.9, tracks: tracks),
+            StemID(.piano), "a change just after the chart chord still counts")
+        XCTAssertNil(
+            InstrumentChordAgreement.instrument(forChord: "C", at: 1, tracks: tracks),
+            "a chord both instruments play belongs to neither")
+        XCTAssertNil(InstrumentChordAgreement.instrument(forChord: "F", at: 1, tracks: tracks))
+        let refined = [
+            track(.guitarLead, [(0, "C")]), track(.guitarRhythm, [(0, "C")]),
+            track(StemID(.piano), [(0, "F")]),
+        ]
+        XCTAssertEqual(
+            InstrumentChordAgreement.instrument(forChord: "C", at: 1, tracks: refined),
+            .guitarLead, "lead and rhythm guitar are one instrument")
+    }
+
+    /// A piano stem playing C then G, and a guitar stem that is only faint bleed: the piano gets
+    /// a track with those chords, and the bleed stem gets none.
+    func testEachChordalStemGetsItsOwnChordsAndBleedIsSkipped() throws {
+        let sampleRate = 22_050.0
+        func tone(_ midi: [Int], seconds: Double, amplitude: Float) -> [Float] {
+            (0..<Int(seconds * sampleRate)).map { index in
+                let t = Double(index) / sampleRate
+                return midi.reduce(Float(0)) { sum, note in
+                    let frequency = 440 * pow(2, Double(note - 69) / 12)
+                    return sum + amplitude * Float(sin(2 * .pi * frequency * t))
+                }
+            }
+        }
+        let piano =
+            tone([48, 60, 64, 67], seconds: 6, amplitude: 0.15)
+            + tone([43, 55, 59, 62], seconds: 6, amplitude: 0.15)
+        let bleed = piano.map { $0 * 0.01 }
+        var document = SongAnalysisDocument()
+        document.estimatedBPM = 120
+        document.beatTimes = (0..<24).map { Double($0) * 0.5 }
+        document.sourceDuration = 12
+
+        let tracks = InstrumentChordPass.tracks(
+            for: [
+                (StemID(.guitar), bleed, sampleRate), (StemID(.piano), piano, sampleRate),
+            ], document: document)
+        XCTAssertEqual(tracks.map(\.stemID), [StemID(.piano)], "the bleed stem is gated out")
+        let chords = try XCTUnwrap(tracks.first?.chords)
+        XCTAssertEqual(
+            InstrumentChordAgreement.sounding(in: tracks[0], at: 3)?.chord.prefix(1), "C",
+            "chords: \(chords.map { "\($0.chord)@\($0.time)" })")
+        XCTAssertEqual(
+            InstrumentChordAgreement.sounding(in: tracks[0], at: 9)?.chord.prefix(1), "G",
+            "chords: \(chords.map { "\($0.chord)@\($0.time)" })")
+    }
+
+    func testInstrumentChordRowsSitUnderTheirNoteRowsAndNameTheCarriedChord() {
+        let timeline = InstrumentChordTimeline(
+            gridKey: BucketGridKey(bpm: 120, anchor: 0, duration: 20),
+            tracks: [
+                InstrumentChordTrack(
+                    stemID: StemID(.piano),
+                    chords: [
+                        EditableChordEvent(time: 1, chord: "C"),
+                        EditableChordEvent(time: 5, chord: "G"),
+                    ]),
+                InstrumentChordTrack(
+                    stemID: StemID(.guitar), chords: [EditableChordEvent(time: 2, chord: "Am")]),
+            ])
+        let rows = InstrumentChordRowFormatter.rows(timeline: timeline, inWindow: 4...8)
+        XCTAssertEqual(
+            rows.map(\.label), ["GtC", "PnC"], "guitar before piano, like the note rows")
+        XCTAssertEqual(rows[0].cells.map(\.text), ["Am"], "still sounding from 2 s")
+        XCTAssertEqual(rows[0].cells.map(\.isDim), [true])
+        XCTAssertEqual(rows[1].cells.map(\.text), ["C", "G"])
+        XCTAssertEqual(rows[1].cells.map(\.isDim), [true, false])
+
+        let transposed = InstrumentChordRowFormatter.rows(
+            timeline: timeline, hiddenStems: [StemID(.guitar)], inWindow: 4...8, transposedBy: 2)
+        XCTAssertEqual(transposed.map(\.label), ["PnC"])
+        XCTAssertEqual(transposed[0].cells.map(\.text), ["D", "A"])
+
+        func noteRow(_ id: StemID) -> BucketNoteRow {
+            BucketNoteRow(stemID: id, label: "n", cells: [])
+        }
+        let merged = InstrumentChordRowFormatter.interleaved(
+            noteRows: [noteRow(StemID(.guitar)), noteRow(StemID(.piano)), noteRow(StemID(.bass))],
+            chordRows: rows)
+        XCTAssertEqual(merged.map(\.label), ["n", "GtC", "n", "PnC", "n"])
+    }
+}

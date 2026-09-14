@@ -85,6 +85,9 @@ extension Color {
     static let swAmber = Color(hex: 0xFFC107)
     /// Violet — used for a stem lane that needs to stay distinct from amber/mint/blue.
     static let swViolet = Color(hex: 0xCC5DE8)
+    /// Teal — the piano stem's color, clear of the guitar violet and of the review states' mint,
+    /// amber and coral (Eric, 2026-09-14: near-white piano read as uncolored next to lyric text).
+    static let swTeal = Color(hex: 0x22B8CF)
     /// Primary text.
     static let swTextPrimary = Color(hex: 0xE9ECEF)
     /// Secondary / muted text.
@@ -94,14 +97,14 @@ extension Color {
 extension StemKind {
     /// The lane color for this stem in the waveform panel. Single source of truth so the ChordPro
     /// per-line audio strip matches the stem it's drawn from (vocals = amber, guitar = violet,
-    /// piano = white, …) and the two can't drift apart.
+    /// piano = teal, …) and the two can't drift apart.
     var laneColor: Color {
         switch self {
         case .vocals: .swAmber
         case .drums: .swCoral
         case .bass: .swAccent
         case .guitar: .swViolet
-        case .piano: .swTextPrimary
+        case .piano: .swTeal
         case .other: .swTextSecondary
         }
     }

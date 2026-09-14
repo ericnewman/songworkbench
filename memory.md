@@ -1,7 +1,7 @@
 # Project Memory
 
 - This standalone app repository lives at
-  `/Users/ericnewman/Documents/SongWorkbench`. Older catalog notes below refer
+  `/Users/ericnewman/Developer/SongWorkbench`. Older catalog notes below refer
   to the previous wrapper workspace, not to files expected in this repo.
 - ChordPro charts in this folder use concert-key metadata plus practical guitar
   shapes when a capo improves playability.
@@ -38,7 +38,7 @@
   Regenerate them with `python3 scripts/export_lyrics.py`; the exporter prefers
   reviewed concert charts and removes chords, directives, instrumental cues,
   transcript placeholders, and live-stage banter.
-- The native macOS app repo root is `/Users/ericnewman/Documents/SongWorkbench`.
+- The native macOS app repo root is `/Users/ericnewman/Developer/SongWorkbench`.
   It is a macOS 14 SwiftUI package with a dependency-free AVAudioEngine playback slice: audio
   import, song selection, play/pause, seeking, and -12...+12 semitone pitch
   shifting. `PLAN.md` records the architecture and library evaluation plan;
@@ -164,7 +164,7 @@
   under `.scratch/` until a remote issue tracker is configured.
 - `.swift-format` establishes the package's four-space style;
   strict lint is clean after the initial mechanical formatting pass.
-- `/Users/ericnewman/Documents/SongWorkbench` is now its own Git repository.
+- `/Users/ericnewman/Developer/SongWorkbench` is now its own Git repository.
   Root verification is app-only: `make verify` runs diff whitespace checks,
   Python compile checks for `scripts` and `Benchmarks/Tools`, strict Swift
   format lint, SwiftPM tests, and a release build from the repo root.
@@ -282,7 +282,7 @@
   imported charts). BassChordReconciler: borderline fractional pitches (±0.35
   of the boundary) snap to the concurrent chord's tone post-decode; obs schema
   gains optional `pitch` (fractional MIDI). Stage tag reduce-14-bass-snap.
-  iPad worktree: /Users/ericnewman/Documents/SongWorkbench-ipad branch
+  iPad worktree: /Users/ericnewman/Developer/SongWorkbench-ipad branch
   ipad-support, commit 318b0a9 — iOS Simulator build SUCCEEDS; plan in
   docs/ipad-port-plan.md; blockers = UI adaptation, htdemucs on-device
   viability, in-process unzip for model installs.
@@ -362,3 +362,8 @@
   `karaoke-mdx-kara2-v1`. Quality gate keeps children when both are ≥8% of
   parent energy (lead-heavy 95/10 is a real split). Re-run Stems after rebuild;
   anvuew caches are not reused.
+- 2026-09-14: The metronome (`StemPlaybackService.beatClick`, `clickGain`) is the only click
+  track. The chord click that marked chord placement was removed at Eric's request; the
+  chord-placement A/B is judged by eye (highlight, ball) against the recording.
+- 2026-09-14: A tempo retune (`AnalysisTimingPostPasses`, `timing-3`) rescales only a MEASURED (`.drumAccents`) bar grid; an anchored grid is a guess and is re-estimated on the retuned beats (rescaling turned a default 4/4 into 3/4 and 9-beat rows). Fixed-period chart rows use the per-row whole-beat `ChartPickupGutter` (0 without a pickup), not a flat 2-beat gutter.
+- 2026-09-14: Review-chart instrument energy comes from `InstrumentEnergyLanes` (all non-vocal stems summed, or per stem with a hidden list in `reviewHiddenEnergyStems`), drawn across each whole row under the vocals. The old guitar-first `instrumentalLane` and leading/trailing melody fills are gone. The pre-commit hook lints strictly with `swift format` (toolchain), not standalone `swift-format`; plumbing commits (`commit-tree`) skip it.

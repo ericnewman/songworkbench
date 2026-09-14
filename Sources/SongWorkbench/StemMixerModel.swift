@@ -290,6 +290,59 @@ struct StemWaveformLaneModel: Identifiable, Equatable, Sendable {
     let envelope: WaveformEnvelope
 }
 
+/// The instrument energy the Review chart draws under each row: every non-vocal stem summed into
+/// one line, or one line per stem the user hasn't hidden (Eric, 2026-09-14 — a single guitar lane
+/// read as "all guitar" on a piano song).
+enum InstrumentEnergyLanes {
+    /// The summed lane's ID. It is not a stem kind, so its lane color falls back to neutral gray.
+    static let combinedID: StemID = "instruments"
+
+    /// A lane whose loudest peak in a row is under this absolute level (about −34 dBFS) is
+    /// separation bleed, not playing.
+    static let quietFloor: Float = 0.02
+    /// A lane under this share of the row's loudest lane is suppressed too.
+    static let quietShareOfLoudest: Float = 0.15
+
+    /// Indices of the lanes worth drawing in one row (Eric, 2026-09-14: an essentially quiet
+    /// instrument's line is suppressed). `lanePeaks` holds each lane's peaks for the row.
+    static func audibleLaneIndices(_ lanePeaks: [[Float]]) -> [Int] {
+        let loudest = lanePeaks.compactMap { $0.max() }.max() ?? 0
+        let threshold = max(quietFloor, quietShareOfLoudest * loudest)
+        return lanePeaks.indices.filter { (lanePeaks[$0].max() ?? 0) >= threshold }
+    }
+
+    static func lanes(
+        from stems: [StemWaveformLaneModel], perStem: Bool, hidden: Set<StemID>
+    ) -> [StemWaveformLaneModel] {
+        let vocalPrefix = StemKind.vocals.rawValue + "."
+        let instruments = stems.filter {
+            $0.id != StemKind.vocals.id && !$0.id.rawValue.hasPrefix(vocalPrefix)
+                && $0.envelope.duration > 0 && !$0.envelope.peaks.isEmpty
+        }
+        if perStem { return instruments.filter { !hidden.contains($0.id) } }
+        guard
+            let grid = instruments.max(by: { $0.envelope.duration < $1.envelope.duration })?
+                .envelope
+        else { return [] }
+        // Sum on the longest stem's sample grid, reading every stem at the same song time.
+        let count = grid.peaks.count
+        let summed = (0..<count).map { index -> Float in
+            let time = (Double(index) + 0.5) / Double(count) * grid.duration
+            return instruments.reduce(0) { total, stem in
+                let envelope = stem.envelope
+                guard time < envelope.duration else { return total }
+                let sample = Int(time / envelope.duration * Double(envelope.peaks.count))
+                return total + envelope.peaks[min(sample, envelope.peaks.count - 1)]
+            }
+        }
+        return [
+            StemWaveformLaneModel(
+                id: combinedID, displayName: "Instruments",
+                envelope: WaveformEnvelope(peaks: summed, duration: grid.duration))
+        ]
+    }
+}
+
 enum StemWaveformLaneProjector {
     struct Target: Equatable, Sendable {
         let id: StemID

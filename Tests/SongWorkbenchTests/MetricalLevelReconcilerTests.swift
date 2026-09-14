@@ -217,6 +217,21 @@ final class MetricalLevelReconcilerTests: XCTestCase {
         XCTAssertEqual(document.preReconciliationTiming?.barGrid?.barPhase, 2)
     }
 
+    /// Field case, Back to New Orleans (2026-09-14): the tracker's 139.7 BPM grid carried only the
+    /// default anchored 4/4. The x3/4 retune to 104.8 BPM rescaled that guess into 3/4, so rows
+    /// of 8 beats rounded up to 9 and every row gained a beat of false silence. An anchored grid
+    /// has no measured bar length to preserve: it must be re-estimated on the retuned beats.
+    func testPostPassesReestimateAnAnchoredBarGridInsteadOfRescalingIt() {
+        var document = documentNeedingRetune()
+        document.barGrid = SongBarGrid(
+            beatsPerBar: 4, barPhase: 0, confidence: 0.05, phaseSource: .anchoredToFirstBeat)
+        AnalysisTimingPostPasses.apply(to: &document)
+        XCTAssertEqual(document.estimatedBPM!, 152.0, accuracy: 0.5, "the fixture must retune")
+        XCTAssertEqual(document.barGrid?.beatsPerBar, 4, "a guessed 4/4 must not rescale to 6")
+        XCTAssertEqual(document.barGrid?.phaseSource, .anchoredToFirstBeat)
+        XCTAssertEqual(document.preReconciliationTiming?.barGrid?.beatsPerBar, 4)
+    }
+
     // MARK: The gates
 
     func testBrokenSegmentationDeclinesToRetune() {

@@ -449,7 +449,9 @@ enum BucketChordNaming {
         let preferred = preferredRoots.lazy.compactMap { root in
             matches.first { $0.root == (root % 12 + 12) % 12 }
         }.first
-        guard let pick = preferred ?? matches.min(by: { ($0.quality, $0.root) < ($1.quality, $1.root) })
+        guard
+            let pick = preferred
+                ?? matches.min(by: { ($0.quality, $0.root) < ($1.quality, $1.root) })
         else { return nil }
         return BassNoteNaming.name(forMidiNote: pick.root) + qualities[pick.quality].suffix
     }
@@ -477,7 +479,8 @@ enum BucketNoteRowFormatter {
             .sorted { displayOrder($0.stemID) < displayOrder($1.stemID) }
         var rows: [(stemID: StemID, cells: [(bucket: Int, cell: BucketNoteRowCell)])] =
             visible.compactMap { stem in
-                let cells = stem.notes.compactMap { note -> (bucket: Int, cell: BucketNoteRowCell)? in
+                let cells = stem.notes.compactMap {
+                    note -> (bucket: Int, cell: BucketNoteRowCell)? in
                     guard clicks.indices.contains(note.bucketIndex),
                         window.contains(clicks[note.bucketIndex])
                     else { return nil }
@@ -504,7 +507,8 @@ enum BucketNoteRowFormatter {
                 time: cell.time, text: cell.text + suffix, isDim: cell.isDim)
         }
         return rows.map {
-            BucketNoteRow(stemID: $0.stemID, label: label(for: $0.stemID), cells: $0.cells.map(\.cell))
+            BucketNoteRow(
+                stemID: $0.stemID, label: label(for: $0.stemID), cells: $0.cells.map(\.cell))
         }
     }
 
@@ -537,12 +541,15 @@ enum BucketNoteRowFormatter {
             for note in stem.notes {
                 let pitches = note.midiNote.map { [$0] } ?? note.pitchClasses
                 classes[note.bucketIndex, default: []] += pitches.map { $0 + semitones }
-                if isBass, let midi = note.midiNote { bassNotes[note.bucketIndex] = midi + semitones }
+                if isBass, let midi = note.midiNote {
+                    bassNotes[note.bucketIndex] = midi + semitones
+                }
             }
         }
         return classes.reduce(into: [:]) { names, entry in
             let preferred = bassNotes[entry.key].map { [$0] } ?? []
-            names[entry.key] = BucketChordNaming.name(pitchClasses: entry.value, preferredRoots: preferred)
+            names[entry.key] = BucketChordNaming.name(
+                pitchClasses: entry.value, preferredRoots: preferred)
         }
     }
 
