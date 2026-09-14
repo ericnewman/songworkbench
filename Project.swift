@@ -64,6 +64,10 @@ let project = Project(
                 "SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER": "com.local.SongWorkbench",
                 "CODE_SIGN_STYLE": "Automatic",
                 "CURRENT_PROJECT_VERSION": "1",
+                // The Copy Bundled CoreML Model phase rsyncs a whole .mlpackage directory; Xcode's
+                // script sandbox only grants the literal declared paths, never their contents.
+                // It is this target's only script phase.
+                "ENABLE_USER_SCRIPT_SANDBOXING": "NO",
                 "GENERATE_INFOPLIST_FILE": "YES",
                 "MARKETING_VERSION": "1.0",
                 "SWIFT_VERSION": "6.0",
