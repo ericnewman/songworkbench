@@ -358,7 +358,9 @@ actor ModelArtifactManager {
         var hasher = SHA256()
         // Each chunk is autoreleased; drain per chunk or the whole file accumulates in memory.
         while try autoreleasepool(invoking: {
-            guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { return false }
+            guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else {
+                return false
+            }
             hasher.update(data: data)
             return true
         }) {}
