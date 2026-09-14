@@ -73,9 +73,13 @@ final class LyricGroupingDiagnosticTests: XCTestCase {
     /// app's container.
     func testOverlappingSegmentBoundarySurvivesGrouping() throws {
         let caches = (try? loadTranscriptionCaches()) ?? []
-        let docHoliday = try XCTUnwrap(
-            caches.first { abs($0.value.sourceDuration - 298.9695625) < 0.01 },
-            "Doc Holiday's cached Whisper transcription not found")
+        guard
+            let docHoliday = caches.first(where: {
+                abs($0.value.sourceDuration - 298.9695625) < 0.01
+            })
+        else {
+            throw XCTSkip("Doc Holiday's cached Whisper transcription not found")
+        }
 
         let onsets = TimedLyricSegmentGrouper.lineStartOnsets(of: docHoliday.value.segments)
         XCTAssertTrue(

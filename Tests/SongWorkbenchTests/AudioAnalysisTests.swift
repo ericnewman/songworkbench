@@ -1349,6 +1349,18 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertTrue(beats.contains(where: { abs($0 - 2.0) <= 0.05 }))
     }
 
+    func testDrumBeatGridKeepsTheMetronomeRigidWhenKickHitsAreJitteredAndSparse() {
+        // A kick often supplies every other beat. Its onsets are useful phase evidence, but
+        // must never pull individual metronome ticks early or late.
+        let kicks: [TimeInterval] = [0.51, 1.47, 2.53, 3.48]
+        let beats = DrumBeatGrid.beatTimes(onsets: kicks, bpm: 120, duration: 4)
+
+        XCTAssertGreaterThan(beats.count, 5)
+        for (previous, next) in zip(beats, beats.dropFirst()) {
+            XCTAssertEqual(next - previous, 0.5, accuracy: 1e-9)
+        }
+    }
+
     func testDrumBeatGridReturnsEmptyForDegenerateInput() {
         XCTAssertTrue(DrumBeatGrid.beatTimes(onsets: [], bpm: 120, duration: 2.5).isEmpty)
         XCTAssertTrue(DrumBeatGrid.beatTimes(onsets: [0.5, 1.0], bpm: 0, duration: 2.5).isEmpty)

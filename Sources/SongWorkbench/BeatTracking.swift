@@ -7,20 +7,20 @@ struct BeatEstimate: Codable, Equatable, Sendable {
     let confidence: Float
 }
 
-/// Builds beat times that follow a song's REAL beats by phase-locking a tempo grid to drum onsets
-/// and snapping each grid beat onto the nearest actual drum hit. This fixes the two failure modes of
-/// a purely uniform grid: a wrong phase (grid offset relative to the music) and accumulating drift
-/// (any BPM error compounds over the song). Pure & deterministic — no I/O.
+/// Builds a metronome grid whose phase follows drum onsets while its tempo stays rigid. A kick can
+/// establish the pulse even when it only sounds every second or fourth beat; it must never pull an
+/// individual click early or late. Pure & deterministic — no I/O.
 enum DrumBeatGrid {
-    /// Returns beat times locked to the drum onsets.
+    /// Returns a phase-locked, constant-period beat grid.
     ///
     /// - Keeps the supplied tempo (`bpm`) as the spacing prior.
     /// - PHASE: picks the grid offset φ in `[0, interval)` whose uniform grid best lines up with the
     ///   onsets, via a histogram of each onset's residual `onset mod interval` (densest bin, refined
     ///   to that bin's mean).
-    /// - SNAP: each grid beat moves to the nearest onset within ±(interval * 0.25); beats with no
-    ///   nearby onset keep their uniform-grid time (so a missing/quiet hit still yields a beat).
-    /// - Result is sorted, strictly increasing (near-equal beats deduped), within `[0, duration]`.
+    /// - TEMPO: every returned beat is exactly `60 / bpm` seconds after the preceding one. Onsets
+    ///   are phase evidence only — this remains correct when a kick marks a metrical multiple.
+    /// - Result starts with the first grid point near the drum entrance and remains within
+    ///   `[0, duration]`.
     ///
     /// Degenerate input (`bpm <= 0`, no onsets, or `duration <= 0`) returns `[]`.
     static func beatTimes(
@@ -34,39 +34,16 @@ enum DrumBeatGrid {
 
         let phase = bestPhase(onsets: onsets, interval: interval)
 
-        // Build the uniform grid from φ across [0, duration].
-        var grid: [TimeInterval] = []
-        var time = phase
-        // φ is already in [0, interval); the first grid beat at/after 0 is φ itself.
-        while time <= duration + 1e-9 {
-            if time >= -1e-9 { grid.append(max(time, 0)) }
-            time += interval
-        }
-        guard !grid.isEmpty else { return [] }
-
-        // SNAP each grid beat to the nearest onset within tolerance; else keep the grid time.
+        // Keep the same late-start policy as the former onset-snapped grid: no beat is invented
+        // far ahead of the first drum hit. Once it starts, index arithmetic keeps every interval
+        // exactly rigid (and avoids accumulated addition drift).
         let tolerance = interval * 0.25
         let sortedOnsets = onsets.sorted()
-        var snapped: [TimeInterval] = grid.map { beat in
-            guard let nearest = nearestOnset(to: beat, in: sortedOnsets),
-                abs(nearest - beat) <= tolerance
-            else { return beat }
-            return nearest
-        }
-
-        // Keep results sorted & strictly increasing (dedupe near-equal beats that snapping may have
-        // collapsed onto the same onset). Drop grid beats in the silent lead-in BEFORE the first
-        // drum onset: the drums (and thus the beat) haven't started yet, so a phase of 0 must not
-        // invent a beat at 0.0 ahead of the first hit.
-        snapped.sort()
         let firstBeat = (sortedOnsets.first ?? 0) - tolerance
-        var result: [TimeInterval] = []
-        let dedupeEpsilon = max(interval * 0.01, 1e-6)
-        for beat in snapped where beat >= firstBeat && beat <= duration + 1e-9 {
-            if let last = result.last, beat - last <= dedupeEpsilon { continue }
-            result.append(beat)
-        }
-        return result
+        let firstIndex = Int(ceil((max(firstBeat, 0) - phase) / interval))
+        let lastIndex = Int(floor((duration - phase) / interval))
+        guard lastIndex >= firstIndex else { return [] }
+        return (firstIndex...lastIndex).map { phase + Double($0) * interval }
     }
 
     /// Chooses the phase offset φ in `[0, interval)` that best aligns a uniform grid to the onsets.
@@ -118,26 +95,6 @@ enum DrumBeatGrid {
         return phase
     }
 
-    /// The onset nearest to `time` in a pre-sorted onset array (binary search), or `nil` if empty.
-    private static func nearestOnset(to time: TimeInterval, in sortedOnsets: [TimeInterval])
-        -> TimeInterval?
-    {
-        guard !sortedOnsets.isEmpty else { return nil }
-        var low = 0
-        var high = sortedOnsets.count - 1
-        if time <= sortedOnsets[low] { return sortedOnsets[low] }
-        if time >= sortedOnsets[high] { return sortedOnsets[high] }
-        while low <= high {
-            let mid = (low + high) / 2
-            let value = sortedOnsets[mid]
-            if value == time { return value }
-            if value < time { low = mid + 1 } else { high = mid - 1 }
-        }
-        // low is the first element > time, high is the last element < time.
-        let below = sortedOnsets[high]
-        let above = sortedOnsets[low]
-        return (time - below) <= (above - time) ? below : above
-    }
 }
 
 struct BeatTracker: Sendable {

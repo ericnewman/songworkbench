@@ -477,6 +477,19 @@ final class SeparationCachingPolicyTests: XCTestCase {
             expected.engineIdentifier)
     }
 
+    func testDesktopStockModelDoesNotUseTheIPadShortSegmentWhenLowMemoryIsEnabled() {
+        #if os(macOS)
+            let previous = AnalysisCapabilityProfile.prefersLowMemorySeparation
+            defer { AnalysisCapabilityProfile.prefersLowMemorySeparation = previous }
+            AnalysisCapabilityProfile.prefersLowMemorySeparation = true
+
+            XCTAssertEqual(
+                ONNXSixStemSeparationEngine.currentSegmentFrames,
+                ONNXSixStemSeparationEngine.defaultSegmentFrames
+            )
+        #endif
+    }
+
     /// A record written by the engine this build actually uses must read as current, so nothing
     /// re-marks it stale on the next launch.
     func testFreshlySeparatedRecordIsNotStale() {

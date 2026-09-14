@@ -98,6 +98,38 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.selectedSong?.url.standardizedFileURL, cachedURL.standardizedFileURL)
     }
 
+    func testRestoreDeduplicatesRecordsThatRecoverToTheSameSourceCache() async throws {
+        let firstMissingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("Moved Song.wav")
+        let secondMissingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("Moved Song.wav")
+        let cacheRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cachedURL = cacheRoot.appendingPathComponent("Moved Song.wav")
+        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        _ = try writeSilentWAV(to: cachedURL, frameCount: 800)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+
+        let firstSettings = PracticeSettings(pitchSemitones: 2)
+        let secondSettings = PracticeSettings(pitchSemitones: -3)
+        let store = DelayedProjectStore(
+            document: ProjectLibraryDocument(songs: [
+                StoredSongProject(url: firstMissingURL, settings: firstSettings),
+                StoredSongProject(url: secondMissingURL, settings: secondSettings),
+            ]))
+        let model = AppModel(
+            store: store, sourceRecoveryDirectories: [cacheRoot], storageRoot: makeTestStorageRoot()
+        )
+
+        await model.restoreProjects()
+
+        XCTAssertEqual(
+            model.songs.map { $0.url.standardizedFileURL }, [cachedURL.standardizedFileURL])
+        XCTAssertEqual(model.pitchSemitones, firstSettings.pitchSemitones)
+    }
+
     func testBassNoteSourcePrefersDetectedBassNotes() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }

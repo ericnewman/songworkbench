@@ -2763,15 +2763,25 @@ struct ChordProAppPreview: View {
     /// looks no different from a correct one. PERIOD only — the frame is anchored to each row's
     /// OWN measured downbeat, never to an absolute slot boundary, because downbeat phase was
     /// measured unrecoverable (see `SongBeatsPerLine`).
+    ///
+    /// MEMOIZED (`derivationCache`): this is read once per ROW — `beatsPerLine:` on every
+    /// `ChordProPreviewBlockView` — so an uncached song-wide fit ran rows × 30 times a second
+    /// during playback, and the cost grew as more rows were realized.
     private var phraseBeats: Int? {
         // Fixed-period rows were cut on the builder's whole-bar period; frame them at exactly that.
         if let fixedPeriodBeats { return fixedPeriodBeats }
         if beatsPerRowOverride > 0 { return beatsPerRowOverride }
+        let key = PhraseKey(
+            override: beatsPerRowOverride, beatTimes: beatTimes, bpm: bpm,
+            lineOnsets: lyricSegments.map(SongBeatsPerLine.lineOnset))
+        if derivationCache.phraseKey == key { return derivationCache.phraseBeats }
         // The SAME rule (and the same onsets) the pipeline recut the rows on — see
         // `SongBeatsPerLine.rowBeats`; anything else frames rows at a period they were not cut to.
-        return SongBeatsPerLine.rowBeats(
-            beatTimes: beatTimes, bpm: bpm ?? 0,
-            lineOnsets: lyricSegments.map(SongBeatsPerLine.lineOnset))
+        let beats = SongBeatsPerLine.rowBeats(
+            beatTimes: beatTimes, bpm: bpm ?? 0, lineOnsets: key.lineOnsets)
+        derivationCache.phraseKey = key
+        derivationCache.phraseBeats = beats
+        return beats
     }
 
     /// Seconds per beat (60/bpm), or 0 without a tempo.
@@ -3307,18 +3317,67 @@ struct ChordProAppPreview: View {
         )
     }
 
+    /// Cross-render memo for the chart derivations that depend only on STATIC inputs, never on
+    /// the playhead. Same reason as `beatStrengths`/`refreshGrid()` (see their comments), but for
+    /// the two hottest ones, which were still recomputing on every 30 Hz playback tick:
+    ///
+    /// - `previewResult` re-tokenized the WHOLE ChordPro source, re-transposed every chord, and
+    ///   rebuilt every preview block — a full parse of the chart, 30 times a second, to produce
+    ///   the byte-identical document it produced on the previous tick.
+    /// - `indexedBlocks(for:)` walks every block (with a per-block `hasSungText` string scan). It
+    ///   is called once for the `ForEach`, then AGAIN per row from `lineStrip`'s
+    ///   `chordOnlyLineWindow` and from the legacy ball path — O(blocks) work repeated O(rows)
+    ///   times per tick.
+    ///
+    /// A reference box (not `@State` values + `.onChange`) so the FIRST render is already served
+    /// from it: `body` reads `previewResult` before any `onChange` could have filled a cache.
+    /// Nothing here is `@Published`/`@State`-observed, so writing to it during `body` cannot
+    /// re-enter SwiftUI.
+    private final class ChartDerivationCache {
+        var source: String?
+        var transpose: Int?
+        var preview: Result<ChordProPreviewDocument, Error>?
+        var blocksDocument: ChordProPreviewDocument?
+        var blocks: [ChordProPreviewIndexedBlock] = []
+        var phraseKey: PhraseKey?
+        var phraseBeats: Int?
+    }
+
+    /// Everything `phraseBeats` reads. Comparing it is array equality (a memcmp that short-circuits
+    /// on shared storage); recomputing `phraseBeats` is a song-wide median + dyadic fit.
+    private struct PhraseKey: Equatable {
+        let override: Int
+        let beatTimes: [TimeInterval]
+        let bpm: Double?
+        let lineOnsets: [TimeInterval]
+    }
+    @State private var derivationCache = ChartDerivationCache()
+
     private var previewResult: Result<ChordProPreviewDocument, Error> {
-        Result {
+        if derivationCache.source == source, derivationCache.transpose == transpose,
+            let cached = derivationCache.preview
+        {
+            return cached
+        }
+        let result = Result {
             let document = try ChordProDocument(parsing: source)
             return ChordProPreviewDocument(document: document.transposed(by: transpose))
         }
+        derivationCache.source = source
+        derivationCache.transpose = transpose
+        derivationCache.preview = result
+        return result
     }
 
     private func indexedBlocks(
         for document: ChordProPreviewDocument
     ) -> [ChordProPreviewIndexedBlock] {
+        if derivationCache.blocksDocument == document { return derivationCache.blocks }
         // Shared with the Lyric Blend window so both surfaces agree on line numbers.
-        ChordProPreviewIndexing.indexedBlocks(for: document)
+        let blocks = ChordProPreviewIndexing.indexedBlocks(for: document)
+        derivationCache.blocksDocument = document
+        derivationCache.blocks = blocks
+        return blocks
     }
 
     private func blockOffset(
@@ -6472,27 +6531,18 @@ struct StemMixSidebar: View {
             // Stand-in for the L/R meter so the click fader aligns with the stem strips (the
             // click is a mono centered reference — no meter, no pan).
             Color.clear.frame(height: HorizontalLRMeter.totalHeight)
-            // The metronome toggle sits in the pan-knob slot, same height, so the fader below
-            // still lines up with the stem strips.
-            Button {
-                stemPlayback.metronomeEnabled.toggle()
-            } label: {
-                Image(systemName: stemPlayback.metronomeEnabled ? "metronome.fill" : "metronome")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(stemPlayback.metronomeEnabled ? Color.accentColor : .secondary)
-                    .frame(width: PanKnob.defaultSize, height: PanKnob.defaultSize)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Metronome")
-            .accessibilityValue(stemPlayback.metronomeEnabled ? "on" : "off")
-            .help(
-                stemPlayback.metronomeEnabled
-                    ? "Metronome on: rigid click at the detected tempo, locked to beat 1 — "
-                        + "the reference the detected beats are judged against. Click for detected beats."
-                    : "Metronome off: click on each detected beat as the tracker placed it. "
-                        + "Click for a rigid metronome."
-            )
+            // The metronome badge sits in the pan-knob slot, same height, so the fader below
+            // still lines up with the stem strips. Not a toggle: the beat click is always the
+            // metronome now, so there is no second mode to switch to.
+            Image(systemName: "metronome.fill")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: PanKnob.defaultSize, height: PanKnob.defaultSize)
+                .accessibilityLabel("Metronome")
+                .help(
+                    "Rigid click at the detected tempo, locked to beat 1 — the reference the "
+                        + "detected beats are judged against."
+                )
 
             HStack(spacing: 2) {
                 VerticalFader(
@@ -6508,10 +6558,7 @@ struct StemMixSidebar: View {
                 Color.clear.frame(width: 11)
             }
             .frame(maxHeight: .infinity)
-            .help(
-                stemPlayback.metronomeEnabled
-                    ? "Beat click volume (metronome grid); 0% is off"
-                    : "Beat click volume (detected beats); 0% is off")
+            .help("Metronome volume; 0% is off")
 
             // Stand-in for the M/S buttons so the scribble strips align.
             Color.clear.frame(height: 14 * 2 + 2)

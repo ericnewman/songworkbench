@@ -558,6 +558,11 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// Lead-line passages on the melodic stems as guitar tab (`SoloTranscriptionPass`). Same
     /// staleness contract as `bucketNotes`.
     var soloTranscriptions: SoloTranscriptionTimeline?
+    /// Basic Pitch note events per pitched stem (`NoteTranscriptionPass`), the shared front end
+    /// the bucket and solo passes read. `nil` for documents analysed before this existed; stale
+    /// when a timeline's `versionTag` is old or the stem set has changed — see
+    /// `NoteTranscriptionPass.isCurrent(for:)`.
+    var noteEvents: [NoteEventTimeline]?
     var estimatedKey: MusicalKey?
     var chordConfidenceThreshold: Float = 0.5
     /// Listener verdicts from the chord-placement A/B, newest last. A later pick overlapping an
@@ -593,6 +598,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case vocalHarmonyNotes
         case bucketNotes
         case soloTranscriptions
+        case noteEvents
         case estimatedKey
         case chordConfidenceThreshold
         case chordPlacementPicks
@@ -627,6 +633,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         vocalHarmonyNotes: [VocalHarmonyObservation] = [],
         bucketNotes: BucketNoteTimeline? = nil,
         soloTranscriptions: SoloTranscriptionTimeline? = nil,
+        noteEvents: [NoteEventTimeline]? = nil,
         estimatedKey: MusicalKey? = nil,
         chordConfidenceThreshold: Float = 0.5,
         chordPlacementPicks: [ChordPlacementPick] = [],
@@ -659,6 +666,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.vocalHarmonyNotes = vocalHarmonyNotes
         self.bucketNotes = bucketNotes
         self.soloTranscriptions = soloTranscriptions
+        self.noteEvents = noteEvents
         self.estimatedKey = estimatedKey
         self.chordConfidenceThreshold = min(max(chordConfidenceThreshold, 0), 1)
         self.chordPlacementPicks = chordPlacementPicks
@@ -711,6 +719,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         bucketNotes = try container.decodeIfPresent(BucketNoteTimeline.self, forKey: .bucketNotes)
         soloTranscriptions = try container.decodeIfPresent(
             SoloTranscriptionTimeline.self, forKey: .soloTranscriptions)
+        noteEvents = try container.decodeIfPresent([NoteEventTimeline].self, forKey: .noteEvents)
         estimatedKey =
             try container.decodeIfPresent(MusicalKey.self, forKey: .estimatedKey)
             ?? MusicalKeyEstimator().estimate(from: chords)

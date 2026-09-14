@@ -567,12 +567,18 @@ final class AppModel: ObservableObject {
     }
 
     /// Opt-in Advanced Desktop stem refinement (DrumSep children, future guitar parts).
-    /// Smaller separation segment: much less memory, weaker stems. See
-    /// `AnalysisCapabilityProfile.prefersLowMemorySeparation`.
+    /// A shorter segment is unavailable until macOS has a matching short-segment model export.
+    var lowMemorySeparationAvailable: Bool {
+        ONNXSixStemSeparationEngine.supportsLowMemorySeparationOnCurrentPlatform
+    }
+
     var lowMemorySeparationEnabled: Bool {
-        get { AnalysisCapabilityProfile.prefersLowMemorySeparation }
+        get {
+            lowMemorySeparationAvailable && AnalysisCapabilityProfile.prefersLowMemorySeparation
+        }
         set {
-            AnalysisCapabilityProfile.prefersLowMemorySeparation = newValue
+            AnalysisCapabilityProfile.prefersLowMemorySeparation =
+                lowMemorySeparationAvailable && newValue
             objectWillChange.send()
         }
     }
@@ -3139,26 +3145,32 @@ final class AppModel: ObservableObject {
                     stored.lastOpenedAt
                 )
             }
+            // Different persisted paths can recover to the same local source cache after a
+            // library move. Keep the first manifest entry (the current library precedes imported
+            // records) so one recovered song cannot appear twice or produce duplicate stable IDs
+            // on the next save.
+            var restoredIDs = Set<Song.ID>()
+            let uniqueRestored = restored.filter { restoredIDs.insert($0.0.id).inserted }
             let currentSongs = songs
             let currentIDs = Set(currentSongs.map(\.id))
             // Persisted order IS the user's order — `SplitProjectStore` round-trips `library.json`'s
             // ordered manifest faithfully. Re-sorting here used to throw that away on every launch,
             // which is why a manual order could never have survived a restart.
-            songs = currentSongs + restored.map(\.0).filter { !currentIDs.contains($0.id) }
+            songs = currentSongs + uniqueRestored.map(\.0).filter { !currentIDs.contains($0.id) }
             var restoredSettings = Dictionary(
-                restored.map { ($0.0.id, $0.1) },
+                uniqueRestored.map { ($0.0.id, $0.1) },
                 uniquingKeysWith: { _, latest in latest }
             )
             restoredSettings.merge(settingsBySongID) { _, current in current }
             settingsBySongID = restoredSettings
             var restoredAnalysis = Dictionary(
-                restored.map { ($0.0.id, $0.2) },
+                uniqueRestored.map { ($0.0.id, $0.2) },
                 uniquingKeysWith: { _, latest in latest }
             )
             restoredAnalysis.merge(analysisBySongID) { _, current in current }
             analysisBySongID = restoredAnalysis
             var restoredRecency = Dictionary(
-                restored.compactMap { item in item.3.map { (item.0.id, $0) } },
+                uniqueRestored.compactMap { item in item.3.map { (item.0.id, $0) } },
                 uniquingKeysWith: { _, latest in latest }
             )
             restoredRecency.merge(lastOpenedBySongID) { _, current in current }

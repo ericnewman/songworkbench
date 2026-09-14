@@ -2359,7 +2359,7 @@ On iPad, the app crashes shortly after prompting to install a missing model.
   crash → the crash is an unguarded failure path upstream in the install flow
   (try!, force-unwrap, or unchecked continuation) OR earlier in download handling.
 - The old SongWorkbench-ipad worktree is GONE; iPad support now lives in main
-  (repo /Users/ericnewman/Documents/SongWorkbench, HEAD fe8dade).
+  (repo /Users/ericnewman/Developer/SongWorkbench, HEAD fe8dade).
 - No SongWorkbench crash logs in ~/Library/Logs/DiagnosticReports (device crash;
   user asked to pull the .ips from iPad Settings > Privacy & Security >
   Analytics Data, or via Xcode's Devices window).
@@ -3345,6 +3345,203 @@ that is the metronome telling the truth about the estimate, not a bug to smooth 
 - [x] Stage e: bucket rows + solo block on instrumental rows (row-window fallback, shared
       `stemRows` drawing in both line paths)
 - [ ] Verify in the .app; lead/rhythm stem split
+
+## 2026-09-08 — Xcode registration repair for Basic Pitch notes
+
+Acceptance criteria:
+
+- [x] Reproduce the Xcode-only `NoteEventTimeline` compile failure and pin the missing-source
+      registration with `XcodeProjectRegistrationTests`.
+- [x] Regenerate the Tuist project so `BasicPitchNoteTranscriber.swift` and `nmp.onnx` are part
+      of the macOS app target without altering their implementation.
+- [x] Rebuild the Xcode workspace and run focused Basic Pitch/document/registration tests.
+
+Review: `XcodeProjectRegistrationTests` (2), `BasicPitchNoteTranscriberTests` (9), and an
+isolated Xcode macOS build pass. The shared `/Volumes/SSD/XCODE-BUILD-SCRAPS` build database was
+stale/locked, so verification used a fresh temporary build root without changing the shared scratch
+directory.
+
+## 2026-09-08 — Project move and library preservation
+
+- [x] Updated repository documentation references to
+      `/Users/ericnewman/Developer/SongWorkbench`.
+- [x] Merged the old 24-song library with the current 16-song sandboxed library, preserving 38
+      unique songs and all old song titles, settings, and reviewed analysis fields. One pair
+      recovered to the same cached source and was compacted as a duplicate.
+- [x] Preserved the old source library and 5.2 GB stem cache in place; copied the imported source
+      caches required by the sandboxed app and created a pre-migration manifest/song-record backup.
+- [x] Launch-tested the rebuilt app, quit it cleanly, and verified its persisted library still has
+      38 unique songs.
+
+Review: Three imported-source records received new stable IDs when the app recovered their source
+paths inside the sandbox. Two records recovered to the same source; `restoreProjects()` now keeps
+the first so it cannot serialize a duplicate ID. The app retained settings, titles, ChordPro text,
+lyrics, and chord data; the old library remains untouched as recovery storage.
+
+## 2026-09-08 — Clear stale SongWorkbench Xcode scraps
+
+- [x] Remove only SongWorkbench-named build products, derived indexes, and the stale build
+      database from the shared `/Volumes/SSD/XCODE-BUILD-SCRAPS` location.
+- [x] Rebuild in the normal scratch location to verify the stale lock is gone.
+
+Review: No compiler/build process owned `XCBuildData/build.db`. Removed the SongWorkbench app,
+module, build/intermediate and derived-index directories plus the stale 144 MB database; left
+MailAgent, VibraScope, and shared dependency caches in place. Normal Xcode macOS build succeeds
+and recreated the database without locking.
+
+## 2026-09-08 — Analyze-song stems remain stale
+
+- [x] Reproduce the stale-stems state from the latest persisted song analysis and capture the
+      failed-stage provenance/cache facts that drive it.
+- [x] Add a regression test at the separation freshness seam and correct the desktop ONNX segment
+      selection.
+- [x] Rebuild and retry the failed separation stage in the fresh app; verify it reaches
+      `Stems Succeeded` and removes the stale message.
+
+Review: the desktop `demucsv4.onnx` graph has a fixed 343,980-frame input, but the global
+low-memory setting selected the iPad's 110,250-frame segment. ONNX rejected the fresh run, leaving
+the prior stems in place and therefore stale. macOS now always uses the compatible desktop segment;
+the incompatible Low-memory control is disabled with an explanation. `SeparationCachingPolicyTests`
+(31 tests) and the macOS Xcode build pass. A live retry on Beach Weather completed at 2:45 PM and
+shows `Stems Succeeded onnxruntime-cpu-htdemucs-6s+refiners 3`.
+
+## 2026-09-08 — Replace stale app copies
+
+- [x] Moved the downloaded SongWorkbench app to Trash and removed the prior generated debug app.
+- [x] Built and launched a fresh macOS debug app from the active checkout.
+
+Review: Fresh app is running from `/Volumes/SSD/XCODE-BUILD-SCRAPS/Debug/SongWorkbench.app`.
+
+## 2026-09-08 — Preview note colors follow stem lanes
+
+- [x] Render each optional Preview note row using its source stem's canonical lane color.
+- [x] Verify base and refined stem color mapping, build the macOS app, and inspect the Preview.
+
+Review: Bucket-note labels/cells now derive from their `StemID`; bass notes use the bass lane;
+solo tab uses its guitar stem lane; harmony rows explicitly use the vocals lane. `StemMixerTests`
+(21 tests) and `swift build --build-tests` pass. The macOS Xcode build passed, and the rebuilt
+Review Preview was inspected with visible vocal, guitar, piano, other, and bass bucket rows.
+
+## 2026-09-08 — Metronome follows a stable kick-derived grid
+
+- [ ] Reproduce the unstable live click path and distinguish beat, chord-click, tempo, and
+      scheduling causes.
+- [ ] Prefer a validated separated kick grid (or its musically valid metrical multiple) for the
+      metronome; retain a deterministic fallback when no kick stem is available.
+- [ ] Add a regression test, rebuild the macOS app, and verify steady click playback.
+
+Review: in progress.
+
+## Playback lag + one metronome (2026-09-08)
+
+Reported: bouncing ball and lyric highlight fall further behind the audio the
+longer stems play; two click tracks where one metronome is wanted.
+
+- [x] Beat click is always the metronome. Removed the detected-beat (verbatim)
+      mode, its `metronomeEnabled` toggle, its `clickMetronomeEnabled` default,
+      `BeatClickSource`, and the mixer toggle button. `loadClickTrack` now goes
+      straight to `MetronomeGrid.clickTimes`. The chord click is untouched — it
+      marks chord PLACEMENT, not beats, and is the audible half of the A/B.
+- [x] Stopped the chart re-deriving playhead-independent data on every 30 Hz
+      tick (`ChordProAppPreview.derivationCache`):
+      - `previewResult` re-tokenized the whole ChordPro source, re-transposed
+        every chord, and rebuilt every preview block — a full parse of the chart
+        30×/s to produce the identical document. Now memoized on
+        `(source, transpose)`.
+      - `indexedBlocks(for:)` (O(blocks), with a `hasSungText` scan per block)
+        ran once for the `ForEach` and again per row from `lineStrip` →
+        `chordOnlyLineWindow` and the legacy ball path — O(blocks × rows) per
+        tick. Now memoized on the document.
+      - `phraseBeats` runs a song-wide median + dyadic fit
+        (`SongBeatsPerLine.rowBeats`) and is read once per ROW
+        (`beatsPerLine:`) — rows × 30 estimations a second, growing as more rows
+        are realized. Now memoized on its real inputs.
+      Same reasoning as the existing `beatStrengths`/`refreshGrid()` cache; the
+      new one is a reference box rather than `@State` + `.onChange` because
+      `body` reads `previewResult` before any `onChange` could fill a cache.
+
+### Verification
+
+- `xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench
+  -destination 'platform=macOS' build` — BUILD SUCCEEDED.
+- `swift test --jobs 4` — 1091 tests, 30 skipped, 0 failures.
+- Fixed alongside: `LyricGroupingDiagnosticTests`
+  `testOverlappingSegmentBoundarySurvivesGrouping` used `XCTUnwrap` on a local
+  Whisper cache lookup, so it FAILED on a machine without the app's container.
+  Its own doc comment says it "Skips (does not fail) when the cache is absent".
+  Now `throw XCTSkip(...)`, the idiom the other diagnostic tests already use.
+- `swift format lint --strict` — only the three pre-existing errors in
+  `AnalysisStage.swift` and `AppModelTests.swift`.
+- NOT measured in the running app: the per-tick work removed was identified by
+  reading the render path, not by a profile. If the ball still drifts, profile
+  next — the remaining suspects are the per-row window scans
+  (`bucketRows`/`soloBlocks`/harmony/bass formatters, each O(song) per row) and
+  `scrollTo`'s cost growing with row index in the `LazyVStack`.
+
+### Environment notes
+
+- `/Users/ericnewman/Documents/SongWorkbench/SongWorkbench.xcodeproj` has no
+  `project.pbxproj` — a hollow project shell, not this repo. The real project is
+  `/Users/ericnewman/Developer/SongWorkbench`.
+- `xcodebuild test` fails before running anything: the `SongWorkbenchTests`
+  bundle and the host app are signed with different Team IDs. `swift test` is
+  unaffected.
+- The data volume was at 99% during this work; SwiftPM hit ENOSPC repeatedly.
+
+## Test-bundle Team ID + the two recutter failures it exposed (2026-09-09)
+
+### Team ID mismatch
+
+`xcodebuild test` loaded no tests at all. dyld:
+`mapping process and mapped file (non-platform) have different Team IDs`.
+The test target set `CODE_SIGNING_ALLOWED = NO` and `CODE_SIGN_IDENTITY = "-"`,
+so the bundle was ad-hoc signed while the host app is `Apple Development` /
+team `65FBMF6CMD`. Both test configs (Debug and Release) now match the app:
+`CODE_SIGNING_ALLOWED = YES`, `CODE_SIGN_IDENTITY = "Apple Development"`,
+`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = 65FBMF6CMD`.
+
+### The two PhrasePeriodLineRecutterTests failures this uncovered
+
+Not a production bug — a FIXTURE bug that only `xcodebuild` could see.
+
+`RhymeDetector.normalize` strips every non-letter, so the fixtures' `b0`…`b15`
+all collapse to the single token `"b"`, and `a3_2` to `"a"`. Both are real
+entries in `Resources/cmudict_rhyme.tsv` (`b -> IY`, `a -> AH`). So every
+interior word "rhymes" with its line ending, the rhyme licence in `cutIndex`
+fires, and a cut lands where the gap rule alone refuses — exactly what
+`testDoesNotCutWhenNoRealGapSitsNearTheBoundary` and
+`testDoesNotCutAtAGapFarFromTheBoundary` assert must not happen.
+
+Invisible under `swift test`: there `Bundle.main` is the test runner, the TSV
+is not found, `RhymeDetector.shared` falls back to an EMPTY table, and the
+licence can never fire. The docs on `recutReporting` warn about precisely this;
+these two tests just didn't take the advice.
+
+Fix: both tests pin `RhymeDetector(table: [:])`, which is what "no gap => no
+cut" actually means. Proven by probe — same fixtures, empty detector, green;
+shared detector, red.
+
+STILL OPEN: every other test in that file (prefixes `a`, `x`, `y` — all in the
+table) silently depends on whether the bundle resource is present. They pass
+today under both runners, but the dependency is real and undeclared.
+
+### Verification
+
+- `xcodebuild test -only-testing:...PhrasePeriodLineRecutterTests` — 14 tests,
+  0 failures (was 2).
+- `swift test` — 1091 tests, 0 failures.
+- Full `xcodebuild test` — 1091 run, Team ID errors 0.
+
+### Two environment findings
+
+- The repo is at `/Volumes/SSD/Developer/SongWorkbench`.
+  `/Users/ericnewman/Developer` no longer exists; SwiftPM's `.build` held that
+  dead path in 456 files and `swift package resolve` would not clear it.
+  Rewrote them and dropped the stale clang ModuleCache; `swift test` works
+  again from the real path.
+- `AppModelTests.testImportDuringRestoreIsMergedInsteadOfDiscarded` is FLAKY:
+  3 failed assertions in the full suite, but passes 3/3 in isolation, and
+  passed in two earlier full runs. Order/shared-state dependent. NOT diagnosed.
 
 ## 2026-09-14 — Bucket rows: stem colors, chord names; bouncing-ball toggles
 

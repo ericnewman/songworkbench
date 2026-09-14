@@ -515,9 +515,17 @@ private struct AnalysisProgressSheet: View {
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 .font(.caption)
+                .disabled(!model.lowMemorySeparationAvailable)
                 .help(
-                    "Separates in 2.5s segments instead of 7.8s: about 2.1GB peak instead of 3.9GB. Use it if analysis crawls or the Mac starts swapping. Stems are weaker — guitar most of all, which is what chord detection listens to — and these separations are cached separately from full-quality ones."
+                    model.lowMemorySeparationAvailable
+                        ? "Separates with the compatible short-segment model."
+                        : "The installed desktop HTDemucs model requires 7.8-second segments; a compatible short-segment model is not installed."
                 )
+                if !model.lowMemorySeparationAvailable {
+                    Text("Requires a compatible short-segment HTDemucs model.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 if !model.advancedStemRefinementEnabled {
                     Text("Analysis runs the six base stems only — the fastest setting.")
                         .font(.caption2)
