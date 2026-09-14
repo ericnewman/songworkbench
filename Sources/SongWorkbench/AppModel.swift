@@ -829,23 +829,30 @@ final class AppModel: ObservableObject {
     private var hasRestoredProjects = false
     private var needsSaveAfterRestore = false
     private let sourceRecoveryDirectories: [URL]?
+    /// `Application Support/SongWorkbench`, or `<storageRoot>/Support` when one was injected.
+    private let supportDirectory: URL
 
     init(
         store: any ProjectStore = SplitProjectStore.standard,
         musicLibrary: (any MusicLibraryProviding)? = nil,
-        sourceRecoveryDirectories: [URL]? = nil
+        sourceRecoveryDirectories: [URL]? = nil,
+        storageRoot: URL? = nil
     ) {
         self.store = store
         self.musicLibrary = musicLibrary ?? DefaultMusicLibrary.make()
         self.sourceRecoveryDirectories = sourceRecoveryDirectories
-        let applicationSupportDirectory = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        let modelDirectory =
-            applicationSupportDirectory
+        // Tests inject a throwaway `storageRoot` so their models, analysis cache, stems and
+        // imported copies never touch the user's library (loading the installed separation
+        // model there cost the suite ~3.7 GB of footprint).
+        let supportDirectory =
+            storageRoot?.appendingPathComponent("Support", isDirectory: true)
+            ?? FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first!
             .appendingPathComponent("SongWorkbench", isDirectory: true)
-            .appendingPathComponent("Models", isDirectory: true)
+        self.supportDirectory = supportDirectory
+        let modelDirectory = supportDirectory.appendingPathComponent("Models", isDirectory: true)
         modelPackageManager = ModelPackageManager(
             directoryURL: modelDirectory,
             downloader: URLSessionModelArtifactDownloader()
@@ -854,14 +861,16 @@ final class AppModel: ObservableObject {
             for: .cachesDirectory,
             in: .userDomainMask
         ).first!
-        Self.migrateLegacyDirectoryIfNeeded(
-            named: "CCSSongWorkbench",
-            to: "SongWorkbench",
-            in: cacheRootDirectory
-        )
+        if storageRoot == nil {
+            Self.migrateLegacyDirectoryIfNeeded(
+                named: "CCSSongWorkbench",
+                to: "SongWorkbench",
+                in: cacheRootDirectory
+            )
+        }
         let cacheDirectory =
-            cacheRootDirectory
-            .appendingPathComponent("SongWorkbench", isDirectory: true)
+            (storageRoot?.appendingPathComponent("Caches", isDirectory: true)
+            ?? cacheRootDirectory.appendingPathComponent("SongWorkbench", isDirectory: true))
             .appendingPathComponent("Analysis", isDirectory: true)
         analysisCache = AnalysisResultDiskCache(directoryURL: cacheDirectory)
         let packageManager = modelPackageManager
@@ -1385,11 +1394,13 @@ final class AppModel: ObservableObject {
             stageFraction: 0, message: "Checking source file")
         let sourceURL = song.url
         let sourceRecoveryDirectories = sourceRecoveryDirectories
+        let localSources = AppModel.localSourcesDirectory(in: supportDirectory)
         analysisPreflightTask = Task { [weak self] in
             let preflight = await Task.detached(priority: .userInitiated) {
                 let recovered =
                     AppModel.recoveredReadableSourceURL(
                         for: sourceURL,
+                        localSourcesDirectory: localSources,
                         additionalDirectories: sourceRecoveryDirectories
                     ) ?? sourceURL
                 return (url: recovered, availability: AppModel.sourceAvailability(of: recovered))
@@ -2045,6 +2056,7 @@ final class AppModel: ObservableObject {
             // and content hash. Bounded rather than unbounded: a wide fan-out of simultaneous
             // iCloud downloads and whole-file copies is slower than a few at a time, not faster.
             let maximumConcurrentImports = 4
+            let sourcesDirectory = AppModel.localSourcesDirectory(in: self.supportDirectory)
             await withTaskGroup(
                 of: (
                     index: Int, song: Song, outcome: LocalizedSourceOutcome,
@@ -2058,7 +2070,8 @@ final class AppModel: ObservableObject {
                     let index = next
                     next += 1
                     group.addTask {
-                        let outcome = await AppModel.localizedSource(for: song.url)
+                        let outcome = await AppModel.localizedSource(
+                            for: song.url, sourcesDirectory: sourcesDirectory)
                         var digest: String?
                         var duplicateOfTitle: String?
                         if case .success(let localURL, _) = outcome {
@@ -2185,16 +2198,8 @@ final class AppModel: ObservableObject {
 
     /// Local directory holding imported source copies, so analysis operates on files the app can
     /// always read regardless of any originating cloud provider.
-    nonisolated private static func localSourcesDirectory() -> URL? {
-        guard
-            let appSupport = try? FileManager.default.url(
-                for: .applicationSupportDirectory, in: .userDomainMask,
-                appropriateFor: nil, create: false)
-        else { return nil }
-        return
-            appSupport
-            .appendingPathComponent("SongWorkbench", isDirectory: true)
-            .appendingPathComponent("Sources", isDirectory: true)
+    nonisolated private static func localSourcesDirectory(in supportDirectory: URL) -> URL {
+        supportDirectory.appendingPathComponent("Sources", isDirectory: true)
     }
 
     nonisolated private static func sandboxContainerSourcesDirectory() -> URL {
@@ -2210,10 +2215,10 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated private static func sourceRecoverySearchDirectories(
+        localSourcesDirectory: URL,
         additionalDirectories: [URL]?
     ) -> [URL] {
-        let defaultDirectories = [localSourcesDirectory(), sandboxContainerSourcesDirectory()]
-            .compactMap(\.self)
+        let defaultDirectories = [localSourcesDirectory, sandboxContainerSourcesDirectory()]
         var seen: Set<String> = []
         return (additionalDirectories ?? defaultDirectories).filter { url in
             let path = url.standardizedFileURL.path
@@ -2239,6 +2244,7 @@ final class AppModel: ObservableObject {
 
     nonisolated private static func recoveredReadableSourceURL(
         for url: URL,
+        localSourcesDirectory: URL,
         additionalDirectories: [URL]? = nil
     ) -> URL? {
         guard !isReadableSourceFile(url) else { return nil }
@@ -2246,6 +2252,7 @@ final class AppModel: ObservableObject {
         let name = url.lastPathComponent
         let identifier = sourceIdentifier(for: url)
         let directories = sourceRecoverySearchDirectories(
+            localSourcesDirectory: localSourcesDirectory,
             additionalDirectories: additionalDirectories)
 
         for directory in directories {
@@ -2283,12 +2290,11 @@ final class AppModel: ObservableObject {
     /// local Sources directory (materializing an iCloud item first) so later analysis never has to
     /// open the original cloud path. Files already inside the local Sources directory are returned
     /// as-is. Runs off the main actor.
-    nonisolated private static func localizedSource(for url: URL) async -> LocalizedSourceOutcome {
+    nonisolated private static func localizedSource(
+        for url: URL, sourcesDirectory: URL
+    ) async -> LocalizedSourceOutcome {
         let fileManager = FileManager.default
         let name = url.lastPathComponent
-        guard let sourcesDirectory = localSourcesDirectory() else {
-            return .failure("Couldn’t locate local storage for imported songs.")
-        }
         // Already a local copy — nothing to do.
         if url.standardizedFileURL.path.hasPrefix(sourcesDirectory.standardizedFileURL.path) {
             return .success(url, refreshed: false)
@@ -3117,6 +3123,7 @@ final class AppModel: ObservableObject {
                 let url =
                     AppModel.recoveredReadableSourceURL(
                         for: resolution.url,
+                        localSourcesDirectory: AppModel.localSourcesDirectory(in: supportDirectory),
                         additionalDirectories: sourceRecoveryDirectories
                     ) ?? resolution.url
                 needsBookmarkRefresh = needsBookmarkRefresh || url != resolution.url
@@ -3526,11 +3533,7 @@ final class AppModel: ObservableObject {
         let identifier = SHA256.hash(data: Data(songID.path.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        .appendingPathComponent("SongWorkbench", isDirectory: true)
+        return supportDirectory
         .appendingPathComponent("Analysis", isDirectory: true)
         .appendingPathComponent("Stems", isDirectory: true)
         .appendingPathComponent(identifier, isDirectory: true)

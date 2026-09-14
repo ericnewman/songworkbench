@@ -72,7 +72,8 @@ final class MusicLibraryAppModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let model = AppModel(
             store: InMemoryProjectStore(),
-            musicLibrary: FakeMusicLibrary(items: [])
+            musicLibrary: FakeMusicLibrary(items: []),
+            storageRoot: makeTestStorageRoot()
         )
         await model.restoreProjects()
 
@@ -98,7 +99,8 @@ final class MusicLibraryAppModelTests: XCTestCase {
     func testOpeningDRMTrackShowsNoticeAndAddsNothing() async throws {
         let model = AppModel(
             store: InMemoryProjectStore(),
-            musicLibrary: FakeMusicLibrary(items: [])
+            musicLibrary: FakeMusicLibrary(items: []),
+            storageRoot: makeTestStorageRoot()
         )
         await model.restoreProjects()
 
@@ -123,7 +125,8 @@ final class MusicLibraryAppModelTests: XCTestCase {
         ]
         let model = AppModel(
             store: InMemoryProjectStore(),
-            musicLibrary: FakeMusicLibrary(items: provided)
+            musicLibrary: FakeMusicLibrary(items: provided),
+            storageRoot: makeTestStorageRoot()
         )
         await model.restoreProjects()
 
@@ -138,7 +141,8 @@ final class MusicLibraryAppModelTests: XCTestCase {
     func testLoadMusicLibrarySurfacesProviderError() async throws {
         let model = AppModel(
             store: InMemoryProjectStore(),
-            musicLibrary: FailingMusicLibrary()
+            musicLibrary: FailingMusicLibrary(),
+            storageRoot: makeTestStorageRoot()
         )
         await model.restoreProjects()
 

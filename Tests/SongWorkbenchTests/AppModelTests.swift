@@ -16,7 +16,7 @@ final class AppModelTests: XCTestCase {
             StoredSongProject(url: restoredURL, settings: PracticeSettings())
         ])
         let store = DelayedProjectStore(document: stored)
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
 
         model.importSongs(from: [importedURL])
         try await waitUntil { model.songs.count >= 2 }
@@ -38,7 +38,7 @@ final class AppModelTests: XCTestCase {
         let sourceURL = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: sourceURL) }
         let store = DelayedProjectStore(document: ProjectLibraryDocument(songs: []))
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
 
         model.importSongs(from: [sourceURL])
 
@@ -57,7 +57,7 @@ final class AppModelTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent("Gone.wav")
         let store = DelayedProjectStore(document: ProjectLibraryDocument(songs: []))
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
 
         model.importSongs(from: [missingURL])
 
@@ -88,7 +88,7 @@ final class AppModelTests: XCTestCase {
             document: ProjectLibraryDocument(songs: [
                 StoredSongProject(url: missingURL, settings: PracticeSettings())
             ]))
-        let model = AppModel(store: store, sourceRecoveryDirectories: [cacheRoot])
+        let model = AppModel(store: store, sourceRecoveryDirectories: [cacheRoot], storageRoot: makeTestStorageRoot())
 
         await model.restoreProjects()
 
@@ -99,7 +99,7 @@ final class AppModelTests: XCTestCase {
     func testBassNoteSourcePrefersDetectedBassNotes() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
         model.importSongs(from: [url])
         try await waitUntil { !model.songs.isEmpty }
@@ -136,7 +136,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [firstURL, secondURL])
         try await waitUntil { model.songs.count >= 2 }
         // `importSongs` always localizes into app storage (see `AppModel.localizedSource`), so
@@ -163,7 +163,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: copyURL)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [firstURL, copyURL])
         try await waitUntil(timeout: .seconds(15)) {
             model.importStatus?.contains("duplicate") == true
@@ -179,7 +179,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [firstURL, secondURL])
         try await waitUntil { model.songs.count >= 2 }
         // See `testRecentSongsFollowSelectionOrder`: match by title, not the pre-localization URL.
@@ -213,7 +213,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [firstURL, secondURL])
         try await waitUntil { model.songs.count >= 2 }
 
@@ -250,7 +250,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: secondURL)
         }
         let store = DelayedProjectStore(document: ProjectLibraryDocument())
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
         model.importSongs(from: [firstURL, secondURL])
         // `importSongs` appends both songs on a background Task — acting on `first`/`second`
@@ -282,6 +282,22 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(saved.songs.contains { Song(url: $0.resolvedURL()).id == second.id })
     }
 
+    func testStorageRootKeepsImportedCopiesOutOfTheUserLibrary() async throws {
+        let url = try makeSilentWAV()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let root = makeTestStorageRoot()
+        let model = AppModel(
+            store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: root)
+
+        model.importSongs(from: [url])
+        try await waitUntil { !model.songs.isEmpty }
+
+        let copy = model.songs[0].url.resolvingSymlinksInPath().path
+        XCTAssertTrue(
+            copy.hasPrefix(root.resolvingSymlinksInPath().path),
+            "imported copy landed outside the injected storage root: \(copy)")
+    }
+
     func testRemovingOnlySongClearsSelectedWorkspaceState() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -290,7 +306,7 @@ final class AppModelTests: XCTestCase {
             document: ProjectLibraryDocument(songs: [
                 StoredSongProject(url: url, settings: PracticeSettings())
             ]))
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
         model.lyricSegments = [TimedLyricSegment(start: 0, end: 1, text: "Lyric")]
         model.chordProSource = "chart"
@@ -308,7 +324,7 @@ final class AppModelTests: XCTestCase {
     func testEditingReviewedLyricsReturnsThemToDraft() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [url])
         try await waitUntil { !model.songs.isEmpty }
 
@@ -325,7 +341,7 @@ final class AppModelTests: XCTestCase {
     // MARK: - Review chart interactivity (backlog #15 Phase 2 remainder)
 
     func testToggleLyricAcceptedFlipsTheMatchingSegmentOnly() {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         let target = TimedLyricSegment(start: 0, end: 1, text: "line one")
         let other = TimedLyricSegment(start: 1, end: 2, text: "line two")
         model.lyricSegments = [target, other]
@@ -340,7 +356,7 @@ final class AppModelTests: XCTestCase {
     }
 
     func testToggleLyricAcceptedIsANoOpForAnUnknownID() {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.lyricSegments = [TimedLyricSegment(start: 0, end: 1, text: "line")]
 
         model.toggleLyricAccepted(id: UUID())
@@ -349,7 +365,7 @@ final class AppModelTests: XCTestCase {
     }
 
     func testSetLyricOverrideTextTrimsAndClearsOnBlank() {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         let segment = TimedLyricSegment(start: 0, end: 1, text: "hallo werld")
         model.lyricSegments = [segment]
 
@@ -362,7 +378,7 @@ final class AppModelTests: XCTestCase {
     }
 
     func testToggleChordAcceptedFlipsTheMatchingEventOnly() {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         let target = EditableChordEvent(time: 4, chord: "C")
         let other = EditableChordEvent(time: 8, chord: "G")
         model.chordEvents = [target, other]
@@ -377,7 +393,7 @@ final class AppModelTests: XCTestCase {
     /// the Chords page's raw binding, they rebuild the generated chart immediately (Eric,
     /// 2026-07-07: edits propagate to every screen).
     func testSetChordNameRewritesTheEventAndTheGeneratedChart() {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.lyricSegments = [TimedLyricSegment(start: 0, end: 4, text: "one two")]
         let chord = EditableChordEvent(time: 0, chord: "Cmaj", confidence: 0.9)
         model.chordEvents = [chord]
@@ -399,7 +415,7 @@ final class AppModelTests: XCTestCase {
     /// Hiding removes the chord from the chart, the included count, and the click times, while
     /// the event itself stays for un-hiding from the Chords page.
     func testSetChordHiddenExcludesFromChartCountAndClick() {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.lyricSegments = [TimedLyricSegment(start: 0, end: 4, text: "one two")]
         let hiddenChord = EditableChordEvent(time: 0, chord: "F#dim", confidence: 0.9)
         let kept = EditableChordEvent(time: 2, chord: "G", confidence: 0.9)
@@ -419,7 +435,7 @@ final class AppModelTests: XCTestCase {
     }
 
     func testSetChordManualTimeSetsAndClearsTheDragOverride() {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         let chord = EditableChordEvent(time: 4, chord: "C")
         model.chordEvents = [chord]
 
@@ -436,7 +452,7 @@ final class AppModelTests: XCTestCase {
         // The whole point of the audition being a separate transient property: listening to an
         // alternative placement must not mutate `chordEvents` (whose didSet writes the document)
         // and must not knock a reviewed chart back to draft.
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         var chord = EditableChordEvent(time: 4, chord: "C")
         chord.placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] = 4
         chord.placementCandidates[ChordPlacementVariant.instrumentOnset.rawValue] = 3.8
@@ -463,7 +479,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: songURL)
             try? FileManager.default.removeItem(at: stemDirectory)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [songURL])
         try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
@@ -497,7 +513,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: songURL)
             try? FileManager.default.removeItem(at: stemDirectory)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [songURL])
         try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
@@ -522,7 +538,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: songURL)
             try? FileManager.default.removeItem(at: stemDirectory)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [songURL])
         try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
@@ -545,7 +561,7 @@ final class AppModelTests: XCTestCase {
     func testSetActivePlaybackSourceIsANoOpForCurrentSourceOrUnloadedStems() async throws {
         let songURL = try makeSilentWAV(frameCount: 16_000)
         defer { try? FileManager.default.removeItem(at: songURL) }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [songURL])
         try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
@@ -573,7 +589,7 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: songURL)
             try? FileManager.default.removeItem(at: stemDirectory)
         }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [songURL])
         try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
@@ -632,7 +648,7 @@ final class AppModelTests: XCTestCase {
             document: ProjectLibraryDocument(songs: [
                 StoredSongProject(url: url, settings: PracticeSettings(), analysis: analysis)
             ]))
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
 
         model.chordConfidenceThreshold = 0.8
@@ -688,7 +704,7 @@ final class AppModelTests: XCTestCase {
             document: ProjectLibraryDocument(songs: [
                 StoredSongProject(url: url, settings: PracticeSettings(), analysis: analysis)
             ]))
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
 
         model.lyricSegments[0] = TimedLyricSegment(start: 0, end: 4, text: "Edited words")
@@ -743,7 +759,7 @@ final class AppModelTests: XCTestCase {
                 StoredSongProject(url: songURL, settings: PracticeSettings(), analysis: analysis)
             ]))
 
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
 
         XCTAssertNotNil(model.stemFiles)
@@ -791,7 +807,7 @@ final class AppModelTests: XCTestCase {
                 StoredSongProject(url: songURL, settings: PracticeSettings(), analysis: analysis)
             ]))
 
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
 
         XCTAssertNotNil(model.stemFiles)
@@ -805,7 +821,7 @@ final class AppModelTests: XCTestCase {
     func testAnalyzeSelectedSongStopsPlayback() async throws {
         let songURL = try makeSilentWAV(frameCount: 16_000)
         defer { try? FileManager.default.removeItem(at: songURL) }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [songURL])
         try await waitUntil { !model.songs.isEmpty }
         let song = try XCTUnwrap(model.songs.first)
@@ -830,7 +846,7 @@ final class AppModelTests: XCTestCase {
     func testReimportOfChangedSourceRefreshesStaleLocalCopy() async throws {
         let sourceURL = try makeSilentWAV(frameCount: 8_000)
         defer { try? FileManager.default.removeItem(at: sourceURL) }
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         model.importSongs(from: [sourceURL])
         // Generous timeouts: imports copy files off-main and dev machines may still be
         // finishing another test's cancelled analysis teardown.
@@ -1212,7 +1228,7 @@ final class AppModelTests: XCTestCase {
 
     /// An idle model shows nothing at all — the status row falls back to "Ready".
     func testBackgroundActivityStatusIsNilWhenIdle() async throws {
-        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()))
+        let model = AppModel(store: DelayedProjectStore(document: ProjectLibraryDocument()), storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
         XCTAssertNil(model.backgroundActivityStatus)
     }
@@ -1285,4 +1301,11 @@ private actor DelayedProjectStore: ProjectStore {
     func lastSavedDocument() -> ProjectLibraryDocument? {
         savedDocuments.last
     }
+}
+
+/// A throwaway storage root, so a test's `AppModel` never loads the user's installed models or
+/// writes into their library. ponytail: left in the temp directory for the OS to clean up.
+func makeTestStorageRoot() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("AppModelTests-\(UUID().uuidString)", isDirectory: true)
 }

@@ -93,7 +93,7 @@ final class LiveCaptureTests: XCTestCase {
         let url = try writeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
         let store = MemoryProjectStore()
-        let model = AppModel(store: store)
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
         model.importSongs(from: [url])
         // `importSongs` localizes each file on its own background Task, so a fixed sleep is a

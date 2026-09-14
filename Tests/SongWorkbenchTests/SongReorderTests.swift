@@ -24,7 +24,7 @@ final class SongReorderTests: XCTestCase {
         }
         let document = ProjectLibraryDocument(
             songs: descending.map { StoredSongProject(url: $0.url, settings: PracticeSettings()) })
-        let model = AppModel(store: ReorderTestStore(document: document))
+        let model = AppModel(store: ReorderTestStore(document: document), storageRoot: makeTestStorageRoot())
 
         await model.restoreProjects()
 
@@ -42,7 +42,7 @@ final class SongReorderTests: XCTestCase {
                 document: ProjectLibraryDocument(
                     songs: ordered.map {
                         StoredSongProject(url: $0.url, settings: PracticeSettings())
-                    })))
+                    })), storageRoot: makeTestStorageRoot())
         await model.restoreProjects()
         let before = model.songs.map(\.title)
         XCTAssertEqual(before.count, 3)
