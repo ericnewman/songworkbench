@@ -46,19 +46,13 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
     private var scheduledStartTime: TimeInterval = 0
     private var timer: Timer?
 
-    // Synthetic click channels: one short reusable sample scheduled at each of a list of times.
-    // Neither is a separated stem and their memory use does not scale with song duration.
-    // `beatClick` marks the tempo grid; `chordClick`, at a higher pitch so the two never blur
-    // together, marks where the chords are currently PLACED — the audible half of the
-    // chord-placement A/B, since a click that lands with or against the recording's own chord
-    // change is far easier to judge than a highlight moving on screen.
+    // The synthetic metronome channel: one short reusable sample scheduled on the tempo grid. Not a
+    // separated stem, and its memory use does not scale with song duration. (The chord click that
+    // once marked chord placement alongside it was removed 2026-09-14: the metronome is the one
+    // click track.)
     private let beatClick = ClickChannel(frequency: 1000)
-    private let chordClick = ClickChannel(frequency: 1600)
     @Published var clickGain: Float = 0 {
         didSet { beatClick.gain = clickGain }
-    }
-    @Published var chordClickGain: Float = 0 {
-        didSet { chordClick.gain = chordClickGain }
     }
 
     /// What the beat click marks. ON: a metronome — one rigid period (`60 / bpm`) phase-locked to
@@ -92,7 +86,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             engine.attach(player)
         }
         engine.attach(beatClick.player)
-        engine.attach(chordClick.player)
         engine.attach(stemMixerNode)
         engine.attach(timePitch)
         engine.connect(stemMixerNode, to: timePitch, format: nil)
@@ -208,15 +201,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             duration: duration)
     }
 
-    /// Builds the chord click from wherever the chords are CURRENTLY placed. Unlike the beat
-    /// click these times are used verbatim — no `MetronomeGrid` — because their irregularity is
-    /// the entire thing under test: regularising them would erase the difference between the
-    /// placement variants being compared. Safe to call while playing, which is what makes an A/B
-    /// possible without stopping the music.
-    func loadChordClickTrack(times: [TimeInterval]) {
-        load(chordClick, times: times.sorted())
-    }
-
     private func load(_ channel: ClickChannel, times: [TimeInterval]) {
         guard let sampleRate = files.values.first?.processingFormat.sampleRate else {
             channel.clear()
@@ -319,7 +303,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
 
     private func scheduleClick(from time: TimeInterval) {
         beatClick.schedule(from: time, duration: duration)
-        chordClick.schedule(from: time, duration: duration)
     }
 
     func togglePlayback() {
@@ -344,7 +327,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
                 players[id]?.play()
             }
             beatClick.play()
-            chordClick.play()
             isPlaying = true
             startTimer()
         } catch {
@@ -359,7 +341,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             player.pause()
         }
         beatClick.pause()
-        chordClick.pause()
         isPlaying = false
         stopTimer()
         resetStemLevels()
@@ -372,7 +353,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             player.stop()
         }
         beatClick.stop()
-        chordClick.stop()
         stopTimer()
         isScheduled = false
         currentTime = min(max(time, 0), duration)
@@ -382,7 +362,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
                 players[id]?.play()
             }
             beatClick.play()
-            chordClick.play()
             startTimer()
         } else if !isScheduled {
             isPlaying = false
@@ -413,7 +392,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
         isLoaded = false
         beatClickSource = nil
         beatClick.disconnect(from: engine)
-        chordClick.disconnect(from: engine)
         releaseSecurityScopes()
     }
 
@@ -423,7 +401,6 @@ final class StemPlaybackService: ObservableObject, PlaybackClock {
             player.stop()
         }
         beatClick.stop()
-        chordClick.stop()
         engine.stop()
         isPlaying = false
         isScheduled = false

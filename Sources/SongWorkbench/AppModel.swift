@@ -205,9 +205,7 @@ final class AppModel: ObservableObject {
     /// the document's own times. TRANSIENT BY DESIGN — not persisted, and deliberately NOT routed
     /// through `chordEvents`, whose `didSet` writes the document and drops `chordReviewState` to
     /// `.draft`. Auditioning is listening, not editing: it must never dirty a reviewed chart.
-    @Published var auditionedPlacement: ChordPlacementVariant? {
-        didSet { refreshChordClickTrack() }
-    }
+    @Published var auditionedPlacement: ChordPlacementVariant?
     /// Listener verdicts about chord placement. These ARE edits, so they persist — but they don't
     /// touch `chordReviewState`, because picking where a chord sits is a separate judgement from
     /// reviewing which chord it is.
@@ -1817,12 +1815,11 @@ final class AppModel: ObservableObject {
         chordEvents[index].chord = trimmed
         chordProReviewState = .draft
         rebuildGeneratedChordProDraft()
-        refreshChordClickTrack()
     }
 
     /// Hides or un-hides a chord: it stays in the event list (and survives re-analysis) but
-    /// leaves the chart, the click, and the included count, exactly like falling below the
-    /// confidence threshold.
+    /// leaves the chart and the included count, exactly like falling below the confidence
+    /// threshold.
     func setChordHidden(id: EditableChordEvent.ID, hidden: Bool) {
         guard let index = chordEvents.firstIndex(where: { $0.id == id }),
             chordEvents[index].hidden != hidden
@@ -1830,7 +1827,6 @@ final class AppModel: ObservableObject {
         chordEvents[index].hidden = hidden
         chordProReviewState = .draft
         rebuildGeneratedChordProDraft()
-        refreshChordClickTrack()
     }
 
     func toggleChordAccepted(id: EditableChordEvent.ID) {
@@ -1840,9 +1836,6 @@ final class AppModel: ObservableObject {
 
     /// Sets (or clears, when `nil`) a chord event's dragged Review-chart position. Deliberately a
     /// FREE timestamp with no snapping — see `EditableChordEvent.manualTime`'s doc comment.
-    /// Re-points the chord click at wherever the chords currently sit. Called whenever the
-    /// audition changes so switching variants re-schedules the clicks against the SAME audio
-    /// without stopping playback — that continuity is what makes the comparison judgeable.
     /// The grid key the selected song's CURRENT timing produces (nil = no usable tempo grid).
     var bucketGridKey: BucketGridKey? {
         guard let selectedSongID, let document = analysisBySongID[selectedSongID] else {
@@ -1927,10 +1920,6 @@ final class AppModel: ObservableObject {
             }
             if let timeline { self.soloTranscriptions = timeline }
         }
-    }
-
-    func refreshChordClickTrack() {
-        stemPlayback.loadChordClickTrack(times: placedChordTimes)
     }
 
     /// This model's current placement resolution for `event` — see
@@ -2868,7 +2857,6 @@ final class AppModel: ObservableObject {
         if let stemFiles {
             try stemPlayback.load(stemFiles, mixer: stemMixer)
             stemPlayback.loadClickTrack(beatTimes: beatTimes, bpm: estimatedBPM, barGrid: barGrid)
-            refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         }
@@ -3297,7 +3285,6 @@ final class AppModel: ObservableObject {
                 try? stemPlayback.load(stemFiles, mixer: stemMixer)
             }
             stemPlayback.loadClickTrack(beatTimes: beatTimes, bpm: estimatedBPM, barGrid: barGrid)
-            refreshChordClickTrack()
             stemPlayback.setPitch(semitones: pitchSemitones)
             stemPlayback.setTempo(rate: tempoRate)
         } else {

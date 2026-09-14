@@ -362,3 +362,6 @@
   `karaoke-mdx-kara2-v1`. Quality gate keeps children when both are ≥8% of
   parent energy (lead-heavy 95/10 is a real split). Re-run Stems after rebuild;
   anvuew caches are not reused.
+- 2026-09-14: The metronome (`StemPlaybackService.beatClick`, `clickGain`) is the only click
+  track. The chord click that marked chord placement was removed at Eric's request; the
+  chord-placement A/B is judged by eye (highlight, ball) against the recording.

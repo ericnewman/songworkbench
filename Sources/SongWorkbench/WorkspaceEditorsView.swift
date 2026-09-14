@@ -1455,6 +1455,8 @@ struct ChordProTabEditor: View {
                             placementPicks: model.chordPlacementPicks,
                             highlightContext: config.showsReviewAffordances
                                 ? highlightContext(style: config.highlightStyle) : nil,
+                            isPlaying: model.isActivePlaybackPlaying,
+                            playheadTime: currentPlaybackTime,
                             beatBall: config.showsPlaybackControls ? beatBallInput : nil,
                             beatDots: config.showsReviewAffordances ? beatDotContext : nil,
                             ballVisibility: ballVisibility,
@@ -1746,10 +1748,10 @@ struct ChordProTabEditor: View {
                 .pickerStyle(.segmented)
                 .fixedSize()
                 .help(
-                    "Audition where chord changes are placed. Turn up the chord click fader in "
-                        + "Stem Mix and switch between these while the song plays — whichever "
-                        + "lands with the recording is the better anchor. Auditioning never "
-                        + "edits the chart.")
+                    "Audition where chord changes are placed. Switch between these while the "
+                        + "song plays and watch the chord highlight and ball against the recording "
+                        + "— whichever lands with it is the better anchor. Auditioning never edits "
+                        + "the chart.")
                 Button("Chord Shading Legend", systemImage: "questionmark.circle") {
                     showConfidenceLegend = true
                 }
@@ -2174,8 +2176,8 @@ struct ChordProTabEditor: View {
                 )
                 let segment = deriver.segment(atOrdinal: ordinal)
                 // Chord-tracking mode reads the PLACED times, not `row.chordTimes` — the timeline
-                // row carries the stored placement, and during an A/B the ball has to agree with
-                // what the chord click is playing or the two cues contradict each other.
+                // row carries the stored placement, and during an A/B the ball has to follow the
+                // placement being auditioned, not the stored one.
                 let placed =
                     model.placedChordTimes.filter { $0 >= row.start && $0 < row.end }
                 return BeatBallInput(
@@ -2482,6 +2484,10 @@ struct ChordProAppPreview: View {
     /// Recorded placement verdicts, applied when no audition is in progress.
     var placementPicks: [ChordPlacementPick] = []
     var highlightContext: ChordProPlaybackHighlightContext?
+    /// Whether playback is running and where the playhead is, so starting playback from the top of
+    /// the song scrolls the chart back to its top.
+    var isPlaying = false
+    var playheadTime: TimeInterval = 0
     var beatBall: BeatBallInput?
     var beatDots: BeatDotContext?
     var ballVisibility = BouncingBallVisibility()
@@ -2703,6 +2709,12 @@ struct ChordProAppPreview: View {
             ?? DownbeatEstimator.estimateBeatsPerBar(
                 beatTimes: beatTimes,
                 onsets: lyricLineWords.compactMap { $0.first?.start })
+    }
+
+    /// End of the chart's first row in song time (without a timeline, the first sung line's
+    /// start): playback started before it counts as starting from the top of the song.
+    private var firstRowEndTime: TimeInterval {
+        timelineRowWindowsByLine[1]?.upperBound ?? lyricLineWindows.first?.lowerBound ?? 0.5
     }
 
     /// The song's phrase period in beats — how far apart sung lines actually sit, pooled across
@@ -3034,6 +3046,17 @@ struct ChordProAppPreview: View {
                             .defaultScrollAnchor(.topLeading)
                             .background(Color.swTextBackground)
                             .border(.separator)
+                            // Starting playback from the top of the song (the playhead still in the
+                            // chart's first row) scrolls back to the top; resuming later in the
+                            // song keeps following the current row.
+                            .onChange(of: isPlaying) { _, playing in
+                                guard playing, playheadTime < firstRowEndTime,
+                                    let top = indexedBlocks(for: document).first?.offset
+                                else { return }
+                                withAnimation(Self.autoScrollGlide) {
+                                    scrollProxy.scrollTo(top, anchor: .top)
+                                }
+                            }
                             .onChange(of: highlightContext?.currentLyricOrdinal) { _, ordinal in
                                 guard
                                     let ordinal,
@@ -4675,9 +4698,8 @@ private struct ChordProPreviewLineView: View {
     }
 
     /// A brief glow on a chord glyph at the moment its onset passes under the playhead, decaying
-    /// over the beat it triggers on. The audible chord click answers "is this placement right?"
-    /// better than any static picture can, but the click alone leaves you guessing WHICH chord
-    /// just fired — this ties the sound to the glyph, so ear and eye agree.
+    /// over the beat it triggers on — so a listener can see WHICH chord just fired against the
+    /// recording and judge whether its placement is right.
     ///
     /// Decays rather than switching off so the eye reads it as an attack (matching how the click
     /// itself is an exponentially-decaying sample), and so two chords a beat apart never both sit
@@ -6439,27 +6461,10 @@ struct StemMixSidebar: View {
                     ? "Beat click volume (metronome grid); 0% is off"
                     : "Beat click volume (detected beats); 0% is off")
 
-            HStack(spacing: 2) {
-                VerticalFader(
-                    value: Binding(
-                        get: { Double(stemPlayback.chordClickGain) },
-                        set: { stemPlayback.chordClickGain = Float($0) }
-                    ),
-                    range: 0...Double(StemMixState.maximumGain),
-                    thumbWidth: 14,
-                    controlWidth: 15
-                )
-                Color.clear.frame(width: 11)
-            }
-            .frame(maxHeight: .infinity)
-            .help(
-                "Higher click at each chord change, where the current placement puts it; 0% is off"
-            )
-
             // Stand-in for the M/S buttons so the scribble strips align.
             Color.clear.frame(height: 14 * 2 + 2)
 
-            ScribbleStrip(text: "Clk")
+            ScribbleStrip(text: "Met")
         }
         .frame(maxWidth: 38)
     }

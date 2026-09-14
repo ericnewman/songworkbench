@@ -3345,3 +3345,147 @@ that is the metronome telling the truth about the estimate, not a bug to smooth 
 - [x] Stage e: bucket rows + solo block on instrumental rows (row-window fallback, shared
       `stemRows` drawing in both line paths)
 - [ ] Verify in the .app; lead/rhythm stem split
+
+## 2026-09-14 — Bucket rows: stem colors, chord names; bouncing-ball toggles
+
+- [ ] Bucket rows draw in their stem's lane color (per-stem `laneColor`; committed HEAD drew every
+      row `swViolet`, the per-stem change from 2026-09-08 was never committed).
+- [ ] A polyphonic bucket cell whose pitch classes exactly spell a chord shows it: `C·E·G (C)`.
+- [ ] The chord a whole bucket makes across the visible rows is appended to the lowest sounding
+      row's cell (bass when it plays): `C (C)`; not repeated when that cell already names it.
+- [ ] Chord vocabulary: maj, m, dim, aug, sus2, sus4, 7, maj7, m7, m7b5, dim7; exact sets only,
+      sharp spelling, transposed with the chart; no slash chords.
+- [ ] View menu "Bouncing Balls": Word Ball, Chord Ball, Chord Pop toggles on both ChordPro
+      surfaces; the word ball no longer switches off the chord ball.
+- [ ] Unit tests for chord naming and the bucket row suffixes; build; screenshot the Review chart.
+
+Committed 2026-09-14 as 70a70be on branch `bucket-chords-ball-toggles` (Eric checked the UI):
+bucket/ball edits plus the 2026-09-08 stem-color hunks and `StemMixerTests` color test; the
+chart-caching and metronome hunks in `WorkspaceEditorsView.swift` stay uncommitted.
+Isolated check: 70a70be alone in a temporary worktree (Tuist `Derived/` copied in, cloned
+packages reused) builds, and `BucketNoteAnalyzerTests` + `StemMixerTests` pass 35/0.
+
+Review (partial): `BucketNoteAnalyzerTests` 14/0 under `xcodebuild test` (app + tests compiled, so
+the ball-toggle plumbing builds). New `testBucketChordAcrossRowsEndsOnTheBassCellAndSkipsHiddenStems`
+fails when `combinedChordNames` returns nothing (mutation restored). Rebuilt Debug app relaunched (binary 10:11:25); screen-control access was declined, so the Review chart has NOT been inspected yet — awaiting Eric's visual check.
+
+## 2026-09-14 — Fixed-period chart rows (spec-fixed-period-rows.md) — PLAN, awaiting decisions
+
+Goal (Eric): every Review row the same visual width with consistent beat and bar spacing.
+Chosen over padding/stretching. Beats already share one px/beat; rows differ because they span
+2–26 beats.
+
+Design (from planning pass, premises verified 2026-09-14):
+- New pure `ChartRowGrid`: windows cut in BEAT-INDEX space (`MeasureGrid.time(atBeatIndex:)`,
+  anchor = bar phase, period P = `SongBeatsPerLine.rowBeats` or the Beats-per-Row override), not a
+  fixed 60/bpm grid (would drift off measured beats).
+- Derived in `ChordProDraftBuilder.buildResult` only; never persisted (fa9986c feedback loop).
+  Words/chords assigned by onset; empty windows become P-beat chord-only rows; chord folding into
+  neighbouring lines removed; `algorithmVersion` 6 → 7. Untimed songs keep today's path.
+- Preview: row origin = timeline row start; one fixed frame width for every row kind; furniture
+  clamped; width math extracted into a pure geometry type.
+- Later: retire `PhrasePeriodLineRecutter` (`timing-3`).
+
+Steps:
+- [x] 1. `ChartRowGrid` + unit tests (period, anchor, pickups before first beat, drift).
+      Evidence: `ChartRowGridTests` + `XcodeProjectRegistrationTests` 7/0; the drift test fails when
+      boundaries use a rigid 60/bpm clock (mutation restored). Override is resolved by the caller
+      (step 3), which passes `phraseBeats`.
+- [x] 2. Red invariants in `ChartGeometryInvariantTests` (fixture `makeFixedPeriodInput`: 8-beat
+      phrase, a 14-beat line, a pickup line, two between-line chords). RED on current code, recorded
+      2026-09-14: tiling/period 13 failed assertions (gaps 27.5→28.5 s…); downbeat starts 2 (rows at
+      beat 87, 102); chord-in-owning-row 2 (no row holds 27.9 s / 43.7 s); equal frame width 2
+      (overhang widens 1000→1300 pt; one-period chord-only row 800 vs 1000 pt). The 7 pre-existing
+      invariant tests still pass. These four stay red until steps 3 and 5.
+- [ ] 3. Builder cut + `lyricLines` + chord-only empty windows + alg7; update builder/timeline tests.
+      Approach (2026-09-14): `ChartLyricLineCutter` cuts sorted lyric lines into per-window chart
+      lines that KEEP their source segment IDs (split halves share one ID; merged short lines list
+      every source ID). The builder emits one sung line per chart line, so the preview's
+      `lyricOrdinal` indexes chart lines and its 39 ordinal lookups stay as they are; only the
+      lyric list feeding them switches (sortedLyricSegments, highlightContext, timelineBeatBall,
+      beatDotContext). Accept/override keep going through segment IDs.
+      Progress: `ChartLyricLineCutter` + 5 tests landed in `ChartRowGrid.swift` /
+      `ChartRowGridTests.swift` (ChartRowGridTests 10/0): whole lines keep identity, long lines
+      split at the boundary with `continuesOnNextRow`, pickups within 2 beats move forward, short
+      lines in one row merge (accepted only together), hand-corrected and untimed lines never split.
+      Cutter mutation: `testAPickupJustBeforeARowMovesIntoIt` fails when pickups never move (restored).
+      Builder: `ChordProDraftBuilder.buildResult` takes a fixed-period path for timed songs with
+      lyrics (`fixedPeriodGrid` + `fixedPeriodBody`), `ChordProDraftInput.beatsPerRowOverride`,
+      `ChordProDraftResult.chartLines`, alg7. Full suite 1114 run: 3 of 4 fixed-period invariants
+      now GREEN (tiling/period, downbeat starts, chord-in-owning-row); frame width stays red for
+      step 5. 10 builder/timeline tests failed; triage:
+      - Old-row expectations, updated to fixed-row semantics: `testChordOnlyRowRendersOneChordPerBar`
+        (outro wraps onto two 2-bar rows), `testGapChordsBelongToTheRowWhoseWindowHoldsThem` (was
+        ...EarlierThanTheGutterStayInThePreviousLinesTail — chord folding removed by design),
+        `testShortIntervalChordStaysOnASungRowNotItsOwnLine` (two short lines share one row), and
+        the three `SongTimelineTests` window assertions (rows now start/end on grid windows).
+      - Regression fixed in the builder: a chordless silent stretch merged into a sung row lost its
+        "Instrumental · N bars" / "Vocals not transcribed" comment (and a silent intro its "Intro"
+        comment). Covered by the unchanged interlude, missed-vocals and section-across-gap tests.
+      Known limitation: silent windows before any chord has sounded (e.g. a song with no detected
+      chords) still merge into the neighbouring row, so that row is wider than one period — the
+      preview cannot yet show a row with neither chords nor lyrics without renumbering lines.
+      After the fix and test updates: ChordProDraftBuilderTests 46/0, SongTimelineTests 6/0,
+      ChartRowGridTests 10/0, ChartGeometryInvariantTests 10 pass + the frame-width invariant still
+      red (step 5). Full suite not yet re-run after the fix.
+- [ ] 4. AppModel: override input, chart lyric lines, accept/override mapped to source lines.
+      Done so far (2026-09-14): all 6 `ChordProDraftInput` builds read the View-menu Beats per Row
+      (`chartBeatsPerRowOverride`); the timeline cache keeps the whole `ChordProDraftResult`;
+      `chartLayoutForPreview()` exposes chart lines, `periodBeats` and `rowOrigins`;
+      `chartBeatsPerRowChanged()` rebuilds generated charts when the menu value changes.
+      Decision (Eric): on a row shared by several stored lines, Accept accepts all of them; text
+      editing is only offered on a row made from one whole stored line.
+- [ ] 5. Preview: chart lines, fixed frame, geometry extraction; invariants green.
+      Done so far: the editor's four lyric lists read chart lines; rows use the builder's period,
+      their window origin and the full 2-beat gutter; `fixedRowFrameWidth` fixes the frame for
+      lyric, instrumental and monospace rows (overhanging labels no longer widen a row); "→" marks
+      a row whose line continues. Shared rows: Accept sets every source line together
+      (`AppModel.setLyricsAccepted`); the pencil is hidden unless the row is one whole stored line
+      (`ChartLyricLine.isWholeSourceLine`).
+      Evidence (2026-09-14): full `xcodebuild test` 1117 run, 30 skipped, 0 failures; all four
+      fixed-period invariants GREEN (they were red on the old code, recorded under step 2).
+      Pending: visual check of the Review chart in the rebuilt app (Eric), then step 6.
+      Committed 2026-09-14 as 008f2d4 on branch `fixed-period-rows` (based on 70a70be); alone in a
+      temporary worktree it builds and 121 tests pass (row grid, invariants, builder, timeline,
+      AppModel, project registration).
+      Bug (Eric, after relaunch): at playback start the highlighted row, auto-scroll and ball
+      position disagreed. Loop: a replay comparing, every 0.1 s, the ball's timeline row with the
+      highlight's lyric ordinal — red on the fixture (5) and on all 19 library songs at 8 beats
+      per row (119–346 disagreements each). Confirmed cause (H1): `ChordProHighlightDeriver`
+      switches lines at a line's start (first word / pickup) while the timeline row starts on the
+      window's downbeat; auto-scroll follows the highlight. Ruled out: ordinal order (H2), text vs
+      timeline numbering (H3). Fix: the builder gives each sung row's chart line its row window's
+      start/end and returns lines as emitted. Regression test
+      `testTheHighlightFollowsTheTimelineRowOnFixedPeriodRows` (fixture + half-beat-late copy) was
+      red (5 and 20) and is green; the library replay is 0 on all 19 songs. Ball position within a
+      row (H4) is not separately verified — needs the on-screen check.
+- [ ] 6. Remove recutter (`timing-3`); real-library audits (≥95% rows exactly P) + rendered PNGs.
+
+Decisions (Eric, 2026-09-14):
+- Low bar-phase confidence: fixed rows anyway (no fallback to variable rows).
+- A line continuing onto the next row ends its row with "→"; pickup words move into the next
+  row's gutter.
+- A hand-corrected (`overrideText`) line is never split: it stays on one row even if that row
+  runs long (accepted exception to equal widths).
+- P rounds UP to whole bars, so rows start and end on bar lines.
+Defaults (not asked): one-window breaths get their own chord-only row; one pickup gutter width on
+every row so bar columns align; Beats per Row stays a View preference that rebuilds generated (not
+reviewed) charts.
+
+## 2026-09-14 — One click track; scroll to top on playback start
+
+- [x] Merged `fixed-period-rows` into `main` (b0f8036, with the bucket/ball commits); working-tree
+      changes restored byte-identical (29 files compared).
+- [x] Remove the chord click (Eric: the metronome replaces the click track): the chord-click channel,
+      `chordClickGain`, `loadChordClickTrack`, `AppModel.refreshChordClickTrack` and its callers,
+      the mixer's second fader; strip label "Clk" → "Met"; Chord Placement help no longer points
+      at a chord-click fader. The chord-placement A/B stays (chart, highlight and ball follow the
+      auditioned placement).
+- [x] Review/ChordPro chart scrolls to its top when playback starts with the playhead still in
+      the first row (Eric: only from the beginning; resuming later keeps following the row).
+- [x] Build and full suite.
+- [ ] Eric's on-screen check (one fader in the mixer, scroll to top from the start).
+
+Review: no chord-click references left in Sources/Tests; full `xcodebuild test` 1118 run, 30 skipped,
+0 failures (app built 11:48:50). The scroll-to-top wiring has no unit seam (SwiftUI ScrollViewReader);
+it needs the on-screen check. Not committed.
