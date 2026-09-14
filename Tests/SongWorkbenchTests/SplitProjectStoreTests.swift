@@ -134,4 +134,88 @@ final class SplitProjectStoreTests: XCTestCase {
             FileManager.default.fileExists(
                 atPath: directory.appendingPathComponent("projects.json.premigration-backup").path))
     }
+
+    /// Enum-keyed dictionaries as already on disk: `JSONEncoder`'s alternating `[key, value, …]`
+    /// arrays, in whatever hash order the writing process happened to use.
+    private static let oldFormatAnalysis = """
+        {
+          "stemMixer": {
+            "masterGain": 0.8,
+            "states": [
+              "vocals", {"gain": 0.5, "isMuted": true, "isSoloed": false, "pan": -0.25},
+              "drums", {"gain": 1, "isMuted": false, "isSoloed": false, "pan": 0},
+              "other", {"gain": 1, "isMuted": false, "isSoloed": true, "pan": 0},
+              "bass", {"gain": 1.5, "isMuted": false, "isSoloed": false, "pan": 0.5}
+            ]
+          },
+          "stageRecords": [
+            "harmony", {"errorMessage": "The accompaniment stem is missing.", "state": "failed"},
+            "separation", {
+              "errorMessage": "Saved stems were created by an older separator.",
+              "provenance": {
+                "completedAt": 803836549.278034, "configurationIdentifier": "four-stem",
+                "engineIdentifier": "coreml-htdemucs", "engineVersion": "1",
+                "loadedFromCache": true, "resultSchemaVersion": 2,
+                "sourceDigest": "bda6", "sourceKind": "recording"
+              },
+              "state": "stale"
+            },
+            "chordPro", {"state": "succeeded"},
+            "transcription", {"state": "cancelled"}
+          ]
+        }
+        """
+
+    private static func manifestEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]  // as SplitProjectStore
+        return encoder
+    }
+
+    func testDecodesOldFormatAnalysisManifestAndRoundTrips() throws {
+        let decoded = try JSONDecoder().decode(
+            SongAnalysisDocument.self, from: Data(Self.oldFormatAnalysis.utf8))
+
+        XCTAssertEqual(decoded.stageRecords.count, 4)
+        XCTAssertEqual(decoded.stageRecords[.harmony]?.state, .failed)
+        XCTAssertEqual(decoded.stageRecords[.separation]?.state, .stale)
+        XCTAssertEqual(
+            decoded.stageRecords[.separation]?.provenance?.engineIdentifier, "coreml-htdemucs")
+        XCTAssertEqual(
+            decoded.stemMixer[StemKind.vocals],
+            StemMixState(gain: 0.5, isMuted: true, isSoloed: false, pan: -0.25))
+        XCTAssertEqual(decoded.stemMixer[StemKind.bass].pan, 0.5)
+        XCTAssertEqual(decoded.stemMixer.masterGain, 0.8)
+
+        let reencoded = try Self.manifestEncoder().encode(decoded)
+        XCTAssertEqual(
+            try JSONDecoder().decode(SongAnalysisDocument.self, from: reencoded), decoded)
+    }
+
+    /// Launching rewrote every manifest because these arrays followed the per-process hash seed.
+    /// Equal documents must encode to equal bytes, or the store's byte-diff skip never fires.
+    func testManifestEncodingIsIndependentOfDictionaryOrder() throws {
+        let decoded = try JSONDecoder().decode(
+            SongAnalysisDocument.self, from: Data(Self.oldFormatAnalysis.utf8))
+        var rebuilt = decoded
+        var records = [SongAnalysisStage: AnalysisStageRecord](minimumCapacity: 512)
+        for (stage, record) in decoded.stageRecords.reversed() { records[stage] = record }
+        rebuilt.stageRecords = records
+
+        let bytes = try Self.manifestEncoder().encode(decoded)
+        XCTAssertEqual(bytes, try Self.manifestEncoder().encode(rebuilt))
+
+        // Byte equality within one process can pass by luck; the order must be the sorted one.
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        func keys(_ pairs: Any?) -> [String] {
+            let array = (pairs as? [Any]) ?? []
+            return stride(from: 0, to: array.count, by: 2).compactMap { array[$0] as? String }
+        }
+        let stageKeys = keys(json["stageRecords"])
+        let stemKeys = keys((json["stemMixer"] as? [String: Any])?["states"])
+        XCTAssertEqual(stageKeys.count, 4)
+        XCTAssertEqual(stageKeys, stageKeys.sorted())
+        XCTAssertEqual(stemKeys.count, 4)
+        XCTAssertEqual(stemKeys, stemKeys.sorted())
+    }
 }
