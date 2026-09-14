@@ -356,9 +356,12 @@ actor ModelArtifactManager {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+        // Each chunk is autoreleased; drain per chunk or the whole file accumulates in memory.
+        while try autoreleasepool(invoking: {
+            guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { return false }
             hasher.update(data: data)
-        }
+            return true
+        }) {}
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

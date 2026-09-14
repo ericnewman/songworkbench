@@ -95,6 +95,27 @@ final class ModelArtifactManagerTests: XCTestCase {
         XCTAssertEqual(usage.bytesByDescriptorID, [installedDescriptor.id: Int64(payload.count)])
     }
 
+    func testStatusVerifiesDigestOfFileSpanningSeveralReadChunks() async throws {
+        // sha256(of:) reads 1 MiB chunks; the payload spans two full chunks plus a partial one.
+        let payload = Data((0..<(2 * 1_048_576 + 12_345)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let descriptor = descriptor(id: "multi-chunk-model", version: "1", payload: payload)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = ModelArtifactManager(
+            directoryURL: directory,
+            downloader: StubModelArtifactDownloader(payload: payload)
+        )
+
+        let installed = try await manager.install(descriptor) { _ in }
+
+        let status = await manager.status(for: descriptor)
+        XCTAssertEqual(
+            status,
+            .installed(fileURL: installed.fileURL, sizeBytes: Int64(payload.count))
+        )
+    }
+
     private func descriptor(
         id: String,
         version: String,
