@@ -1784,6 +1784,308 @@ enum TranscriptionOnsetCorrection {
     }
 }
 
+/// One word timing the stretched-word check acted on, kept on the song so the Review chart can mark
+/// it for spot-checking. Matched back to its word by start time and text.
+struct WordTimingFinding: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        /// The start moved to a vocal attack inside the word.
+        case retimed
+        /// Stretched and the vocals were vague: the start moved to the attack nearest where the
+        /// word's rhymes land in the bar.
+        case rhymeAligned
+        /// Stretched, but no clear attack to move to: flagged only.
+        case suspect
+    }
+    var kind: Kind
+    var text: String
+    /// The word's start as it now stands — where the chart finds it.
+    var start: TimeInterval
+    /// The transcriber's start.
+    var transcribedStart: TimeInterval
+}
+
+/// Reads an audio file as one mono channel (channels averaged), with its sample rate.
+enum MonoAudioFile {
+    static func samples(url: URL) throws -> (samples: [Float], sampleRate: Double) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let capacity: AVAudioFrameCount = 16_384
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+            return ([], format.sampleRate)
+        }
+        var samples: [Float] = []
+        samples.reserveCapacity(Int(file.length))
+        let channelCount = max(Int(format.channelCount), 1)
+        while file.framePosition < file.length {
+            let remaining = file.length - file.framePosition
+            try file.read(into: buffer, frameCount: min(capacity, AVAudioFrameCount(remaining)))
+            guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { break }
+            for frame in 0..<Int(buffer.frameLength) {
+                var sum: Float = 0
+                for channel in 0..<channelCount { sum += channels[channel][frame] }
+                samples.append(sum / Float(channelCount))
+            }
+        }
+        return (samples, format.sampleRate)
+    }
+}
+
+/// The vocals stem's loudness in dB on a 10 ms hop, for judging how hard the voice ATTACKS at a
+/// moment. Attack strength, not onset detection: `InstrumentOnsetDetector` also fires on consonant
+/// flickers, and `VocalWordOnsetAligner` has usually snapped a word's start onto one of those, so
+/// "is there an onset at the start" can't tell a stretched word from a correct one.
+struct VocalAttackEnvelope: Sendable {
+    let decibels: [Float]
+    let hopSeconds: TimeInterval
+
+    init(decibels: [Float], hopSeconds: TimeInterval) {
+        self.decibels = decibels
+        self.hopSeconds = hopSeconds
+    }
+
+    init(samples: [Float], sampleRate: Double) {
+        let rms = VocalRMSEnvelope.compute(
+            samples: samples, sampleRate: sampleRate, windowSeconds: 0.02, hopSeconds: 0.01)
+        self.init(decibels: rms.map { 20 * log10(max($0, 1e-6)) }, hopSeconds: 0.01)
+    }
+
+    static func load(url: URL) throws -> VocalAttackEnvelope {
+        let audio = try MonoAudioFile.samples(url: url)
+        return VocalAttackEnvelope(samples: audio.samples, sampleRate: audio.sampleRate)
+    }
+
+    /// The sharpest loudness rise over `riseFrames` hops (30 ms) that completes within
+    /// `[start, end]`, and the moment that rise begins.
+    func sharpestRise(
+        from start: TimeInterval, to end: TimeInterval, riseFrames: Int = 3
+    ) -> (time: TimeInterval, rise: Float)? {
+        guard hopSeconds > 0 else { return nil }
+        let first = max(riseFrames, Int((start / hopSeconds).rounded(.up)))
+        let last = min(decibels.count - 1, Int((end / hopSeconds).rounded(.down)))
+        guard first <= last else { return nil }
+        var best: (time: TimeInterval, rise: Float)?
+        for frame in first...last {
+            let rise = decibels[frame] - decibels[frame - riseFrames]
+            if rise > (best?.rise ?? -.infinity) {
+                best = (Double(frame - riseFrames + 1) * hopSeconds, rise)
+            }
+        }
+        return best
+    }
+
+    /// Loudness in dB at `time`, or nil outside the envelope.
+    func level(at time: TimeInterval) -> Float? {
+        guard hopSeconds > 0 else { return nil }
+        let frame = Int((time / hopSeconds).rounded())
+        return decibels.indices.contains(frame) ? decibels[frame] : nil
+    }
+
+    /// The loudest level in `[start, end]`, or nil when the span holds no frames.
+    func loudest(from start: TimeInterval, to end: TimeInterval) -> Float? {
+        guard hopSeconds > 0 else { return nil }
+        let first = max(0, Int((start / hopSeconds).rounded(.up)))
+        let last = min(decibels.count - 1, Int((end / hopSeconds).rounded(.down)))
+        guard first <= last else { return nil }
+        return decibels[first...last].max()
+    }
+
+    /// Every attack in `[start, end]` rising at least `minimumRise` dB over `riseFrames` hops, as
+    /// local peaks at least `minimumSpacing` apart (the stronger of two close peaks wins).
+    func attacks(
+        from start: TimeInterval, to end: TimeInterval, minimumRise: Float, riseFrames: Int = 3,
+        minimumSpacing: TimeInterval = 0.12
+    ) -> [(time: TimeInterval, rise: Float)] {
+        guard hopSeconds > 0 else { return [] }
+        let first = max(riseFrames, Int((start / hopSeconds).rounded(.up)))
+        let last = min(decibels.count - 1, Int((end / hopSeconds).rounded(.down)))
+        guard first <= last else { return [] }
+        func rise(_ frame: Int) -> Float { decibels[frame] - decibels[frame - riseFrames] }
+        var found: [(time: TimeInterval, rise: Float)] = []
+        for frame in first...last {
+            let value = rise(frame)
+            guard value >= minimumRise,
+                frame == first || value >= rise(frame - 1),
+                frame == last || value > rise(frame + 1)
+            else { continue }
+            let time = Double(frame - riseFrames + 1) * hopSeconds
+            if let previous = found.last, time - previous.time < minimumSpacing {
+                if value > previous.rise { found[found.count - 1] = (time, value) }
+            } else {
+                found.append((time, value))
+            }
+        }
+        return found
+    }
+}
+
+/// Catches the transcriber's STRETCHED words (Eric, 2026-09-14: "…Louisiana breeze" looked like
+/// 4–5 beats of silence before "I'm going back"; the gap was under one beat). Whisper glues a held
+/// word's start to the previous word's end and stretches it to the next line: "breeze" 57.77 s,
+/// where the vocals attack it at ~58.6 s. `VocalWordOnsetAligner` only snaps within 0.15 s and
+/// `VocalWordSpanNormalizer` only pulls LATE starts earlier, so an early start inside continuous
+/// singing survived both.
+///
+/// A word is stretched when its start is glued to the previous word's end and it lasts at least
+/// `minimumSeconds` and `minimumBeats`. A stretched word whose start already has a strong attack is
+/// left alone. Otherwise, in two passes:
+///
+/// 1. The vocals decide where they are clear: when the sharpest attack inside the word rises at
+///    least `minimumRise` dB and `riseMargin` dB more than the start's, the start moves there.
+/// 2. Where they are vague, the song's rhymes decide (Eric: "In most cases I'd err on the side of
+///    the rhyme timing"). A line-final word takes the bar position where most of its rhyming (or
+///    identical) line-final words start. A start already within `rhymeTolerance` beats of it
+///    stands; otherwise it moves to the sung attack (≥ `weakRise` dB, reaching within
+///    `voicedRange` dB of the word's loudest) nearest that position, if one is within
+///    `rhymeTolerance`. Anything left is flagged only.
+///
+/// A moved start pulls the previous word's end along (the voice never stopped). Never adds, drops
+/// or reorders words, and idempotent: a moved start sits on its attack or its rhyme position.
+enum StretchedWordRetimer {
+    /// Bump when the rule changes, so stored songs are checked again.
+    static let versionTag = "stretched-words-1"
+
+    static func retimed(
+        _ segments: [TimedLyricSegment],
+        attacks: VocalAttackEnvelope,
+        beatLength: TimeInterval?,
+        grid: MeasureGrid? = nil,
+        rhymes: RhymeDetector? = nil,
+        glueTolerance: TimeInterval = 0.03,
+        minimumSeconds: TimeInterval = 1.0,
+        minimumBeats: Double = 2,
+        startWindow: TimeInterval = 0.1,
+        minimumLead: TimeInterval = 0.25,
+        endGuard: TimeInterval = 0.15,
+        minimumRise: Float = 6,
+        riseMargin: Float = 3,
+        weakRise: Float = 3,
+        voicedRange: Float = 15,
+        rhymeTolerance: Double = 0.5
+    ) -> (segments: [TimedLyricSegment], findings: [WordTimingFinding]) {
+        let minimumLength = max(minimumSeconds, (beatLength ?? 0) * minimumBeats)
+        var result = segments
+        var findings: [WordTimingFinding] = []
+        var vague: [(segment: Int, word: Int)] = []
+
+        func move(
+            _ segment: Int, _ index: Int, to time: TimeInterval, kind: WordTimingFinding.Kind
+        ) {
+            let word = result[segment].words[index]
+            result[segment].words[index].start = time
+            result[segment].words[index - 1].end = time
+            findings.append(
+                WordTimingFinding(
+                    kind: kind, text: word.text, start: time, transcribedStart: word.start))
+        }
+
+        // Pass 1: the vocals decide wherever their evidence is clear.
+        for segment in result.indices where result[segment].words.count >= 2 {
+            for index in 1..<result[segment].words.count {
+                let words = result[segment].words
+                let word = words[index]
+                guard abs(word.start - words[index - 1].end) <= glueTolerance,
+                    word.end - word.start >= minimumLength
+                else { continue }
+                let startRise =
+                    attacks.sharpestRise(
+                        from: word.start - startWindow, to: word.start + startWindow)?.rise ?? 0
+                guard startRise < minimumRise else { continue }
+                if let inside = attacks.sharpestRise(
+                    from: word.start + minimumLead, to: word.end - endGuard),
+                    inside.rise >= minimumRise, inside.rise >= startRise + riseMargin
+                {
+                    move(segment, index, to: inside.time, kind: .retimed)
+                } else {
+                    vague.append((segment, index))
+                }
+            }
+        }
+
+        // Pass 2: where the vocals are vague, err toward the rhyme timing.
+        for (segment, index) in vague {
+            let word = result[segment].words[index]
+            let position = grid.flatMap { grid in
+                rhymePosition(
+                    segment: segment, index: index, in: result, excluding: vague, grid: grid,
+                    rhymes: rhymes, tolerance: rhymeTolerance)
+            }
+            if let grid, let position {
+                func distance(_ time: TimeInterval) -> Double {
+                    circularDistance(barPosition(time, grid), position, Double(grid.beatsPerBar))
+                }
+                if distance(word.start) <= rhymeTolerance { continue }
+                // Only attacks that reach a sung level: a few dB of noise rising out of the silence
+                // after a word is not the word starting.
+                let sung = (attacks.loudest(from: word.start, to: word.end) ?? 0) - voicedRange
+                let nearest = attacks.attacks(
+                    from: word.start + minimumLead, to: word.end - endGuard, minimumRise: weakRise
+                )
+                .filter {
+                    distance($0.time) <= rhymeTolerance
+                        && (attacks.level(at: $0.time + 0.03) ?? -.infinity) >= sung
+                }
+                .min { distance($0.time) < distance($1.time) }
+                if let nearest {
+                    move(segment, index, to: nearest.time, kind: .rhymeAligned)
+                    continue
+                }
+            }
+            findings.append(
+                WordTimingFinding(
+                    kind: .suspect, text: word.text, start: word.start,
+                    transcribedStart: word.start))
+        }
+        return (result, findings.sorted { $0.start < $1.start })
+    }
+
+    /// Beats into the bar at `time`, in `[0, beatsPerBar)`.
+    private static func barPosition(_ time: TimeInterval, _ grid: MeasureGrid) -> Double {
+        let perBar = Double(max(grid.beatsPerBar, 1))
+        let beats = grid.beatIndex(atTime: time) - Double(grid.barPhase)
+        return beats - perBar * (beats / perBar).rounded(.down)
+    }
+
+    private static func circularDistance(_ a: Double, _ b: Double, _ period: Double) -> Double {
+        let d = abs(a - b).truncatingRemainder(dividingBy: period)
+        return min(d, period - d)
+    }
+
+    /// The bar position where most line-final words rhyming with (or identical to) this line-final
+    /// word start, or nil when it isn't line-final, has no such partners, or they disagree.
+    private static func rhymePosition(
+        segment: Int, index: Int, in segments: [TimedLyricSegment],
+        excluding vague: [(segment: Int, word: Int)], grid: MeasureGrid, rhymes: RhymeDetector?,
+        tolerance: Double
+    ) -> Double? {
+        let words = segments[segment].words
+        guard index == words.count - 1 else { return nil }
+        let text = RhymeDetector.normalize(words[index].text)
+        let positions: [Double] = segments.indices.compactMap { other in
+            guard other != segment, let last = segments[other].words.last,
+                !vague.contains(where: {
+                    $0.segment == other && $0.word == segments[other].words.count - 1
+                })
+            else { return nil }
+            let lastText = RhymeDetector.normalize(last.text)
+            guard !text.isEmpty,
+                lastText == text || (rhymes?.rhymes(last.text, words[index].text) ?? false)
+            else { return nil }
+            return barPosition(last.start, grid)
+        }
+        guard !positions.isEmpty else { return nil }
+        let period = Double(max(grid.beatsPerBar, 1))
+        let support = positions.map { candidate in
+            positions.filter { circularDistance($0, candidate, period) <= tolerance }.count
+        }
+        guard let best = support.indices.max(by: { support[$0] < support[$1] }),
+            support[best] * 2 > positions.count
+        else { return nil }
+        return positions[best]
+    }
+}
+
 /// Voice-activity envelope over an ISOLATED vocals stem: the time intervals where singing is
 /// actually present, separated by the silent gaps (pauses). Built from short-window RMS energy
 /// with hysteresis and minimum voiced/gap durations so it produces clean intervals rather than

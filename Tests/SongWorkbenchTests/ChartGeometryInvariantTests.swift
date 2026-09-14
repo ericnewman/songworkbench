@@ -491,6 +491,24 @@ final class ChartGeometryInvariantTests: XCTestCase {
             "a one-period chord-only row renders at a different width from a one-period lyric row")
     }
 
+    func testHoldLinesRunToTheWordEndButStopAtTheNextLabelAndTheFrame() {
+        // Three labels 20 px wide. Word 0 is held to x 200; word 1 ends right after its label;
+        // word 2 is held past the frame edge.
+        let spans = ChordProPreviewLineLayout.holdLineSpans(
+            labelEnds: [20, 320, 520], wordEndXs: [200, 330, 900], labelStarts: [0, 300, 500],
+            frameEnd: 700, gap: 4, minimumLength: 50)
+        XCTAssertEqual(spans.count, 2)
+        XCTAssertEqual(spans[0].x, 24, accuracy: 0.001)
+        XCTAssertEqual(spans[0].width, 176, accuracy: 0.001, "a held word runs to its end")
+        XCTAssertEqual(spans[1].x, 524, accuracy: 0.001)
+        XCTAssertEqual(spans[1].width, 176, accuracy: 0.001, "and never past the frame edge")
+        // A long hold overlapping the next label stops a gap short of it.
+        let clipped = ChordProPreviewLineLayout.holdLineSpans(
+            labelEnds: [20], wordEndXs: [400], labelStarts: [0, 150], frameEnd: nil, gap: 4,
+            minimumLength: 50)
+        XCTAssertEqual(clipped.first?.width ?? -1, 122, accuracy: 0.001)
+    }
+
     /// Playback on fixed-period rows: at every playhead time, the sung row the highlight (and so
     /// the auto-scroll) follows is the timeline row the ball follows — at a row's downbeat before its
     /// first word, and while a pickup is sung just ahead of the next row's downbeat. The second

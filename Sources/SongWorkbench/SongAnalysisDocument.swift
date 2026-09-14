@@ -575,6 +575,13 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     var chordReviewState = AnalysisReviewState.draft
     var chordProReviewState = AnalysisReviewState.draft
     @SortedKeyPairs var stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:]
+    /// Stretched word timings the stretched-word check retimed or flagged, for the Review chart to
+    /// mark (`StretchedWordRetimer`), and the version of that check that last ran on `lyrics`.
+    var wordTimingFindings: [WordTimingFinding] = []
+    var wordTimingCheckTag: String?
+    /// Each chordal instrument's own chords (`InstrumentChordPass`). `nil` until computed; may be
+    /// stale — check `isCurrent(for:)` against the current grid key before showing it.
+    var instrumentChords: InstrumentChordTimeline?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -609,6 +616,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case chordReviewState
         case chordProReviewState
         case stageRecords
+        case wordTimingFindings
+        case wordTimingCheckTag
+        case instrumentChords
     }
 
     init(
@@ -643,7 +653,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         lyricReviewState: AnalysisReviewState = .draft,
         chordReviewState: AnalysisReviewState = .draft,
         chordProReviewState: AnalysisReviewState = .draft,
-        stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:]
+        stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:],
+        wordTimingFindings: [WordTimingFinding] = [],
+        wordTimingCheckTag: String? = nil,
+        instrumentChords: InstrumentChordTimeline? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.lyrics = lyrics
@@ -677,6 +690,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.chordReviewState = chordReviewState
         self.chordProReviewState = chordProReviewState
         self.stageRecords = stageRecords
+        self.wordTimingFindings = wordTimingFindings
+        self.wordTimingCheckTag = wordTimingCheckTag
+        self.instrumentChords = instrumentChords
     }
 
     init(from decoder: Decoder) throws {
@@ -754,6 +770,12 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
                 [SongAnalysisStage: AnalysisStageRecord].self,
                 forKey: .stageRecords
             ) ?? [:]
+        wordTimingFindings =
+            try container.decodeIfPresent([WordTimingFinding].self, forKey: .wordTimingFindings)
+            ?? []
+        wordTimingCheckTag = try container.decodeIfPresent(String.self, forKey: .wordTimingCheckTag)
+        instrumentChords = try container.decodeIfPresent(
+            InstrumentChordTimeline.self, forKey: .instrumentChords)
     }
 }
 

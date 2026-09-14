@@ -1335,6 +1335,22 @@ struct ChordProTabEditor: View {
         if hidden { stems.insert(stemID) } else { stems.remove(stemID) }
         hiddenBucketStemsStorage = stems.map(\.rawValue).sorted().joined(separator: ",")
     }
+    /// Per-instrument chord lines (`InstrumentChordPass`), under their bucket-note lines. Off by
+    /// default like the other optional rows; stems hidden from them as a comma-joined list.
+    @AppStorage("reviewShowInstrumentChords") private var showInstrumentChords = false
+    @AppStorage("reviewHiddenInstrumentChordStems") private var hiddenInstrumentChordStemsStorage =
+        ""
+    private var hiddenInstrumentChordStems: Set<StemID> {
+        Set(
+            hiddenInstrumentChordStemsStorage.split(separator: ",").map {
+                StemID(rawValue: String($0))
+            })
+    }
+    private func setInstrumentChordStemHidden(_ stemID: StemID, _ hidden: Bool) {
+        var stems = hiddenInstrumentChordStems
+        if hidden { stems.insert(stemID) } else { stems.remove(stemID) }
+        hiddenInstrumentChordStemsStorage = stems.map(\.rawValue).sorted().joined(separator: ",")
+    }
     /// The stem's mixer name for the Bucket Stems submenu (the rows themselves use two-letter
     /// tags), falling back to the legacy kind name or the raw ID.
     private func bucketStemMenuTitle(_ stemID: StemID) -> String {
@@ -1484,6 +1500,8 @@ struct ChordProTabEditor: View {
                                     from: model.stemWaveforms, perStem: instrumentEnergyPerStem,
                                     hidden: hiddenEnergyStems) : [],
                             instrumentEnergyPerStem: instrumentEnergyPerStem,
+                            wordTimingFindings: config.showsReviewAffordances
+                                ? model.wordTimingFindings : [],
                             drumsEnvelope: config.showsReviewAffordances
                                 ? model.stemWaveformEnvelope(for: .drums) : nil,
                             bassEnvelope: config.showsReviewAffordances
@@ -1527,6 +1545,10 @@ struct ChordProTabEditor: View {
                             bucketNotes: config.showsReviewAffordances && showBucketNotes
                                 && model.isBucketTimelineCurrent ? model.bucketNotes : nil,
                             hiddenBucketStems: hiddenBucketStems,
+                            instrumentChords: config.showsReviewAffordances && showInstrumentChords
+                                && model.isInstrumentChordTimelineCurrent
+                                ? model.instrumentChords : nil,
+                            hiddenInstrumentChordStems: hiddenInstrumentChordStems,
                             soloTranscriptions: config.showsReviewAffordances && showSoloTab
                                 && model.isSoloTimelineCurrent ? model.soloTranscriptions : nil,
                             showChordTimeLabels: config.showsReviewAffordances
@@ -1727,6 +1749,35 @@ struct ChordProTabEditor: View {
                             model.computeBucketNotes()
                         }
                         .disabled(!model.canComputeBucketNotes)
+                        Toggle("Instrument Chords", isOn: $showInstrumentChords)
+                            .disabled(model.instrumentChords == nil)
+                        if let timeline = model.instrumentChords {
+                            Menu("Instrument Chord Stems") {
+                                ForEach(timeline.tracks, id: \.stemID) { track in
+                                    Toggle(
+                                        bucketStemMenuTitle(track.stemID),
+                                        isOn: Binding(
+                                            get: {
+                                                !hiddenInstrumentChordStems.contains(track.stemID)
+                                            },
+                                            set: { setInstrumentChordStemHidden(track.stemID, !$0) }
+                                        ))
+                                }
+                            }
+                            .disabled(!showInstrumentChords)
+                        }
+                        Button(
+                            model.isComputingInstrumentChords
+                                ? "Computing Instrument Chords…"
+                                : model.instrumentChords == nil
+                                    ? "Compute Instrument Chords"
+                                    : model.isInstrumentChordTimelineCurrent
+                                        ? "Recompute Instrument Chords"
+                                        : "Recompute Instrument Chords (grid changed)"
+                        ) {
+                            model.computeInstrumentChords()
+                        }
+                        .disabled(!model.canComputeInstrumentChords)
                         Toggle("Solo Tab", isOn: $showSoloTab)
                             .disabled(model.soloTranscriptions == nil)
                         Button(
@@ -2543,6 +2594,8 @@ struct ChordProAppPreview: View {
     var instrumentLanes: [StemWaveformLaneModel] = []
     /// Per-instrument lanes draw as colored outlines on a shared scale; the summed lane fills.
     var instrumentEnergyPerStem = false
+    /// Word timings the stretched-word check retimed or flagged, marked on their words.
+    var wordTimingFindings: [WordTimingFinding] = []
     /// Drums stem waveform — primary accent cue for detecting the bar downbeat (kick lands on 1).
     var drumsEnvelope: WaveformEnvelope?
     /// Bass stem waveform — secondary downbeat accent cue (bass root usually on beat 1).
@@ -2599,6 +2652,9 @@ struct ChordProAppPreview: View {
     /// nil = toggle off or the timeline is stale for the current grid.
     var bucketNotes: BucketNoteTimeline?
     var hiddenBucketStems: Set<StemID> = []
+    /// Each chordal instrument's own chords, when shown and current; some stems may be hidden.
+    var instrumentChords: InstrumentChordTimeline?
+    var hiddenInstrumentChordStems: Set<StemID> = []
     /// Solo passages as guitar tab under each line. nil = toggle off or stale timeline.
     var soloTranscriptions: SoloTranscriptionTimeline?
     /// Shows the raw `{x_chord_times: ...}` directive text (View menu's "Chord Time Labels"
@@ -2717,14 +2773,30 @@ struct ChordProAppPreview: View {
     private func bucketRows(
         forLyricOrdinal ordinal: Int?, rowStart: TimeInterval, rowDuration: TimeInterval
     ) -> [BucketNoteRow] {
-        guard let bucketNotes,
+        guard bucketNotes != nil || instrumentChords != nil,
             let window = ChordProPreviewLineWindowResolver.stemRowWindow(
                 lyricOrdinal: ordinal, lyricLineWindows: lyricLineWindows, rowStart: rowStart,
                 rowDuration: rowDuration)
         else { return [] }
-        return BucketNoteRowFormatter.rows(
-            timeline: bucketNotes, hiddenStems: hiddenBucketStems,
-            inWindow: window, transposedBy: transpose)
+        let noteRows =
+            bucketNotes.map {
+                BucketNoteRowFormatter.rows(
+                    timeline: $0, hiddenStems: hiddenBucketStems, inWindow: window,
+                    transposedBy: transpose)
+            } ?? []
+        // Each instrument's chord line sits right under that instrument's bucket-note line.
+        let chordRows =
+            instrumentChords.map {
+                InstrumentChordRowFormatter.rows(
+                    timeline: $0, hiddenStems: hiddenInstrumentChordStems, inWindow: window,
+                    transposedBy: transpose)
+            } ?? []
+        return InstrumentChordRowFormatter.interleaved(noteRows: noteRows, chordRows: chordRows)
+    }
+
+    /// The instrument chord tracks chord names are colored by: shown, current and not hidden.
+    private var visibleInstrumentChordTracks: [InstrumentChordTrack] {
+        instrumentChords?.tracks.filter { !hiddenInstrumentChordStems.contains($0.stemID) } ?? []
     }
 
     private func soloBlocks(
@@ -3135,6 +3207,8 @@ struct ChordProAppPreview: View {
     /// the same x and all rows render the same length (Eric, 2026-09-14). nil on other charts,
     /// whose rows keep their own gutter. Computed once per render and passed to every row; as a
     /// per-row property it would cost rows × rows on every playback tick.
+    static let fixedRowMaximumGutterBeats = 1
+
     private func fixedPeriodGutterSeconds(for document: ChordProPreviewDocument) -> TimeInterval? {
         guard fixedPeriodBeats != nil, rhythmicSpacing else { return nil }
         let beats =
@@ -3150,7 +3224,9 @@ struct ChordProAppPreview: View {
                     downbeat: origin, earliestContent: earliest,
                     beatLengthSeconds: beatLengthSeconds)
             }.max() ?? 0
-        return Double(beats) * beatLengthSeconds
+        // Capped at one beat (Eric, 2026-09-14): a two-beat margin read as silence before rows
+        // that start on the beat. A longer pickup crowds the left edge instead.
+        return Double(min(beats, Self.fixedRowMaximumGutterBeats)) * beatLengthSeconds
     }
 
     /// One rendered chart row (title/metadata/section/lyric/chord-only line), fully configured.
@@ -3226,6 +3302,9 @@ struct ChordProAppPreview: View {
         let rowEnergy = instrumentEnergy(
             rowAnchor: rowAnchorTime, rowDownbeat: rowDownbeat, gutterSeconds: rowGutterSeconds,
             end: energyEnd)
+        let rowWordStarts = Set(lineWords.map(\.start))
+        let rowWordFindings = wordTimingFindings.filter { rowWordStarts.contains($0.start) }
+        let rowInstrumentChordTracks = visibleInstrumentChordTracks
         // Every argument below is pre-computed into its own `let`
         // (rather than inlined as an expression in the call) —
         // this view's `ChordProPreviewBlockView(...)` call has
@@ -3292,6 +3371,8 @@ struct ChordProAppPreview: View {
             instrumentEnergyStart: rowEnergy.start,
             instrumentEnergySeconds: rowEnergy.seconds,
             instrumentEnergyOutlined: instrumentEnergyPerStem,
+            wordTimingFindings: rowWordFindings,
+            instrumentChordTracks: rowInstrumentChordTracks,
             lineNumber: item.displayLineNumber,
             trailingRestSeconds: itemTrailingRest,
             hasUntranscribedVocals: itemHasUntranscribed,
@@ -4068,6 +4149,10 @@ private struct ChordProPreviewBlockView: View {
     var instrumentEnergySeconds: TimeInterval = 0
     /// Per-instrument lanes draw as outlines over the vocals; the summed lane fills behind them.
     var instrumentEnergyOutlined = false
+    /// This row's word timings retimed or flagged by the stretched-word check.
+    var wordTimingFindings: [WordTimingFinding] = []
+    /// The instrument chord tracks this row's chord names are colored by.
+    var instrumentChordTracks: [InstrumentChordTrack] = []
     /// 1-based number shown in a left gutter for lyric lines, so they can be referenced ("line 7").
     var lineNumber: Int?
     /// Seconds of true silence after this line's last word (< 4 bars) — rendered as a rest
@@ -4230,6 +4315,8 @@ private struct ChordProPreviewBlockView: View {
                         instrumentEnergyStart: instrumentEnergyStart,
                         instrumentEnergySeconds: instrumentEnergySeconds,
                         instrumentEnergyOutlined: instrumentEnergyOutlined,
+                        wordTimingFindings: wordTimingFindings,
+                        instrumentChordTracks: instrumentChordTracks,
                         trailingRestSeconds: trailingRestSeconds,
                         rowChordTimes: rowChordTimes,
                         rowChordEvents: rowChordEvents,
@@ -4349,6 +4436,23 @@ enum ChordProPreviewLineLayout {
     /// gutter plus exactly one period. Labels that overhang draw past it; they never widen it.
     static func fixedRowFrameWidth(reservedGutterPx: CGFloat, periodPx: CGFloat) -> CGFloat {
         max(1, reservedGutterPx + periodPx)
+    }
+
+    /// Hold lines for sung words (Eric, 2026-09-14): a word still sounding past its label draws a
+    /// thin extender, like a lead-sheet melisma line, so a held note doesn't read as silence. Each
+    /// line runs from just past the label to where the word ends, stopping short of the next label
+    /// and at the row's frame edge; only lines at least `minimumLength` long are drawn.
+    static func holdLineSpans(
+        labelEnds: [CGFloat], wordEndXs: [CGFloat], labelStarts: [CGFloat], frameEnd: CGFloat?,
+        gap: CGFloat, minimumLength: CGFloat
+    ) -> [(x: CGFloat, width: CGFloat)] {
+        labelEnds.indices.compactMap { index in
+            let start = labelEnds[index] + gap
+            var end = wordEndXs[index]
+            if index + 1 < labelStarts.count { end = min(end, labelStarts[index + 1] - gap) }
+            if let frameEnd { end = min(end, frameEnd) }
+            return end - start >= minimumLength ? (start, end - start) : nil
+        }
     }
 
     static func rhythmicFrameWidth(
@@ -4530,6 +4634,10 @@ private struct ChordProPreviewLineView: View {
     var instrumentEnergySeconds: TimeInterval = 0
     /// Per-instrument lanes draw as outlines over the vocals; the summed lane fills behind them.
     var instrumentEnergyOutlined = false
+    /// This row's word timings retimed or flagged by the stretched-word check.
+    var wordTimingFindings: [WordTimingFinding] = []
+    /// The instrument chord tracks this row's chord names are colored by.
+    var instrumentChordTracks: [InstrumentChordTrack] = []
     /// Seconds of TRUE vocal silence after this line's last word (≥ 2 beats, < 4 bars) —
     /// drawn as a rest marker so short real breaks are visible (audit RC-4). 0 = none.
     var trailingRestSeconds: TimeInterval = 0
@@ -4833,9 +4941,21 @@ private struct ChordProPreviewLineView: View {
         soundingChordIndex == index
     }
 
-    /// Foreground for a chord label: amber while sounding, the confidence tint otherwise.
+    /// Foreground for a chord label: amber while sounding; otherwise the color of the one
+    /// instrument playing that chord when instrument chords are shown; else the accent tint.
     private func chordLabelStyle(at index: Int) -> AnyShapeStyle {
-        isChordSounding(at: index) ? AnyShapeStyle(Color.swAmber) : AnyShapeStyle(.tint)
+        if isChordSounding(at: index) { return AnyShapeStyle(Color.swAmber) }
+        if let color = instrumentChordColor(at: index) { return AnyShapeStyle(color) }
+        return AnyShapeStyle(.tint)
+    }
+
+    private func instrumentChordColor(at index: Int) -> Color? {
+        guard !instrumentChordTracks.isEmpty, rowChordEvents.indices.contains(index),
+            rowChordTimes.indices.contains(index), let event = rowChordEvents[index]
+        else { return nil }
+        return InstrumentChordAgreement.instrument(
+            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks)?
+            .laneColor
     }
 
     /// Scale for a chord label at the playhead: pops to 1.3× exactly AT the onset and settles
@@ -5222,10 +5342,13 @@ private struct ChordProPreviewLineView: View {
                     // Normalize to the line's own peak so quiet lines still show their energy shape
                     // (it's the WHERE of the energy, not its level, that reveals word alignment).
                     let vocalScale = max(vocalPeaks.max() ?? 1, 0.0001)
+                    // Dimmer when instruments share the strip, so their lines show through the
+                    // vocal fill (Eric, 2026-09-14).
+                    let vocalOpacity = instrumentEnergy.isEmpty ? 0.7 : 0.35
                     for rect in bars(
                         vocalPeaks, from: lineStartTime, seconds: lineDuration, scale: vocalScale)
                     {
-                        context.fill(Path(rect), with: .color(stripColor.opacity(0.7)))
+                        context.fill(Path(rect), with: .color(stripColor.opacity(vocalOpacity)))
                     }
                 }
                 if instrumentEnergyOutlined, instrumentEnergySeconds > 0 {
@@ -5388,10 +5511,24 @@ private struct ChordProPreviewLineView: View {
                     // their columns — see `rhythmicWordSlots`.
                     .tracking(slots[index].tracking)
                     .foregroundColor(isHighlighted ? .swAmber : .swTextPrimary)
+                    // Retimed (mint) or flagged (coral) by the stretched-word check.
+                    .underline(
+                        hasWordFinding(word), pattern: .dot, color: wordFindingColor(for: word)
+                    )
+                    .help(wordFindingHelp(for: word))
                     .offset(
                         x: xs[index],
                         y: lyricBandOffset + topReserve + harmonyReserve + bucketReserve
                             + soloReserve + bassReserve)
+            }
+            ForEach(Array(holdLines.enumerated()), id: \.offset) { _, hold in
+                Rectangle()
+                    .fill(Color.swTextSecondary.opacity(0.7))
+                    .frame(width: hold.width, height: max(1, scale.scaled(1.2)))
+                    .offset(
+                        x: hold.x,
+                        y: lyricBandOffset + topReserve + harmonyReserve + bucketReserve
+                            + soloReserve + bassReserve + scale.lyricSize * 0.9)
             }
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
@@ -5821,6 +5958,46 @@ private struct ChordProPreviewLineView: View {
             cursor = x + count * (characterWidth + tracking) + characterWidth
         }
         return slots
+    }
+
+    private func wordFinding(for word: TimedLyricWord) -> WordTimingFinding? {
+        wordTimingFindings.first { $0.start == word.start && $0.text == word.text }
+    }
+
+    private func hasWordFinding(_ word: TimedLyricWord) -> Bool {
+        wordFinding(for: word) != nil
+    }
+
+    private func wordFindingColor(for word: TimedLyricWord) -> Color {
+        wordFinding(for: word)?.kind == .suspect ? .swCoral : .swMint
+    }
+
+    private func wordFindingHelp(for word: TimedLyricWord) -> String {
+        guard let finding = wordFinding(for: word) else { return "" }
+        switch finding.kind {
+        case .retimed:
+            return String(
+                format: "Start moved from %.2f s to the vocal attack at %.2f s",
+                finding.transcribedStart, finding.start)
+        case .rhymeAligned:
+            return String(
+                format: "Start moved from %.2f s to %.2f s, where its rhymes land in the bar",
+                finding.transcribedStart, finding.start)
+        case .suspect:
+            return "Timing looks stretched, but the vocals show no clear attack to move it to"
+        }
+    }
+
+    /// Extender lines for held words (see `ChordProPreviewLineLayout.holdLineSpans`).
+    private var holdLines: [(x: CGFloat, width: CGFloat)] {
+        let words = rhythmicWords
+        let xs = rhythmicWordXs
+        guard words.count == xs.count, pixelsPerBeat > 0 else { return [] }
+        return ChordProPreviewLineLayout.holdLineSpans(
+            labelEnds: xs.indices.map { xs[$0] + rhythmicWordWidth(at: $0) },
+            wordEndXs: words.map { metricX(forTime: $0.end) },
+            labelStarts: xs, frameEnd: fixedFramePx, gap: characterWidth / 2,
+            minimumLength: pixelsPerBeat)
     }
 
     /// Left x of each word label (see `rhythmicWordSlots`).

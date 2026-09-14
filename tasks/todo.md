@@ -3748,3 +3748,115 @@ render and passes it to every row; energy on fixed rows now ends at the frame's 
 loudest) are suppressed per row; per-instrument lanes stack in bands with a gap. Full suite 1121/0,
 lint clean. No unit seam for the row alignment (SwiftUI layout); needs Eric's on-screen check. Not
 committed.
+
+### Follow-up — "line lengths got worse" (Eric's screenshot, 13:30); vocal fill dimmed
+
+Not a layout regression. Eric's re-analysis of Back to New Orleans (running at 13:06) was cancelled
+when I quit the Debug app to relaunch it (13:10, 13:19): the song's `chordPro` and `separation`
+stage records are `cancelled`. `rebuildGeneratedChordProDraft` only rebuilds after a succeeded
+chordPro stage, so the stored chart (171 lines, a 12-bar intro comment built on a 3:4 mixed grid)
+no longer reproduces from the current analysis (139.7 BPM, 61 lines) at either Beats per Row
+setting; `songTimelineForPreview()` returns nil and the Review chart falls back to variable rows.
+A rebuild at 8 beats per row gives fixed rows (52 chart lines, period 8). Verified with a temporary
+render (every row's gutter 2 beats, 265 px) and a stored-vs-rebuilt source comparison; both removed.
+- [ ] Eric: re-run Analyze on the song and let it finish.
+- [x] Vocal fill opacity 0.7 → 0.35 whenever instrument energy is drawn, so instrument lines show
+      through. Full suite 1121/0, lint clean. Not committed.
+- [x] Committed eb2723b (energy option, quiet lanes, stacked bands, shared margin, header) on
+      `review-chart-timing-fixes`; branch suite 1110 run, only the 4 failures that also fail on main.
+
+## 2026-09-14 — Held words read as silence ("…Louisiana breeze" → "I'm going back")
+
+Evidence (Back to New Orleans, after Eric's re-analysis finished): the vocals are continuous from
+"Flowing" (55.0 s) to ~60.15 s, then "I'm" enters at 60.70 s — under 1 beat of silence. The chart
+showed ~6 beats of apparent blank: "breeze" is a held word (ASR 57.77–60.65, start glued to the end of
+"Louisiana"; the vocals show an attack near 58.60), labels mark only word STARTS, and row 14 opened
+with the 2-beat shared margin. `VocalWordOnsetAligner` only snaps within 0.15 s and
+`VocalWordSpanNormalizer` only pulls LATE onsets earlier, so an early, stretched start survives.
+
+Eric chose all three: hold lines, correct word starts, smaller margin; and asked for a mechanism
+that detects these timing errors.
+- [x] Hold lines: `ChordProPreviewLineLayout.holdLineSpans` (tested) — a thin extender from past the
+      label to the word's end, stopping before the next label and at the frame edge; ≥ 1 beat only.
+- [x] Shared fixed-row margin capped at 1 beat (`fixedRowMaximumGutterBeats`).
+- [x] Library audit (rough script, 20 songs with vocals stems): 68 stretched words (start glued to
+      the previous word's end, ≥ 1 s and ≥ 2 beats); 30 show a clear vocal attack inside the word and
+      none at its start (Back to New Orleans: breeze +0.70 s, Hall +0.89, breeze. +0.96, old +0.93).
+- Eric (2026-09-14): fix and mark; run on new analyses AND existing songs.
+- Design: one app-side pass (the pipeline's transcription stage runs before tempo exists, and
+  `AnalysisStage.swift`/`SongAnalysisDocument.swift` carry another session's edits):
+  - [ ] `StretchedWordRetimer` (pure, AudioFileAnalysisService.swift): glued start + long duration →
+        move the start to the first vocal attack inside (none within 0.15 s of the start), extend the
+        previous word to meet it; no attack → flag as suspect. Tests incl. the breeze case.
+  - [ ] Findings persisted at song level (`wordTimingFindings`, `wordTimingCheckTag`), matched to
+        words by start + text — per-word fields would be dropped by passes that rebuild words.
+  - [ ] AppModel: after any analysis load, if the tag is stale and a vocals stem exists, compute
+        vocal onsets off the main actor, retime, store findings + tag, rebuild the generated chart,
+        persist. Skip (retry next load) if the song or lyrics changed meanwhile.
+  - [ ] Review chart marks retimed words (mint dotted underline) and suspect words (coral).
+  - [ ] Verify on Back to New Orleans (breeze → ~58.5 s), full suite, lint, Eric's check.
+- Real-song finding: with the app's onset detector the first rule missed "breeze" — the pipeline's
+  `VocalWordOnsetAligner` had already snapped it onto a weak onset at its transcribed start. Switched
+  to attack STRENGTH (`VocalAttackEnvelope`, dB rise over 30 ms): clear inside attack ≥ 6 dB and
+  ≥ 3 dB above the start's → move; start with a ≥ 6 dB attack → leave.
+- Library calibration (20 songs with vocals stems): margin 3 dB → 26 moved / 24 flagged; margin 2 dB
+  → 31 / 19. Kept 3 dB. Back to New Orleans: Hall +0.87 s, breeze. +0.28 s, old +0.90 s moved;
+  "breeze" (start rise 5.4 dB, inside 8.0 dB at 58.59) flagged, not moved.
+- Eric: use the rhyme structure when detections are vague ("err on the side of the rhyme timing").
+  Added pass 2: a vague line-final word takes the bar position where most rhyming/identical
+  line-final words start, and moves to the SUNG attack (≥ 3 dB rise, within 15 dB of the word's
+  loudest) nearest it. First version moved "breeze" to 60.40 s — noise rising out of the silence
+  before "I'm" — so the sung-level guard was added. Its partner positions disagree ("breeze." 0.50
+  by the vocal rule vs 1.69 from the audit; the "breeze" attack sits at 1.32), so it stays flagged.
+  Library: 26 moved by vocals, 0 by rhyme, 23 flagged.
+
+## 2026-09-14 — Chords per instrument, in instrument colors (planning)
+
+Eric: chord names on a piano song still come from guitar. Today `HarmonyStemMix` blends guitar (1.0)
+and piano (0.6) after leveling each stem, so a bleed-heavy guitar stem outvotes a real piano part and
+no chord knows its instrument. Eric chose: detect chords separately per instrument and show each
+instrument's chords in its color (both when they differ), and give piano a distinct color everywhere.
+- [x] Map (explore agent): chords come from one blended signal (`HarmonyStage` → `analyze(weighted:)` →
+      `ChordAnalysisPipeline` → `ChordTimelineDecoder` → refiners → `ChorusChordConsensus`); nothing
+      records an instrument. `analyze(url:)` already takes a single stem (it re-runs beat tracking).
+      `chordEvents` drives the ChordPro text, `SongTimeline` chord times, balls, editing and export.
+      `BucketNotePass` is the per-stem pass pattern (versionTag + stem-set check, on-demand compute).
+      Chart chord labels: `chordLabelStyle` (sounding amber, else `.tint`); the bass-note row is the
+      template for an extra per-instrument row. Piano's lane color (`swTextPrimary`) isn't relied on;
+      mint/amber/coral are taken by review states.
+- Proposed plan (pending Eric's choices):
+  - [ ] `InstrumentChordPass`: for each of guitar/piano whose stem clears the leakage gate, chord
+        frames on that stem alone (reusing the song's beat grid, not re-tracking), decoded with the
+        same decoder/refiners; stored per stem with a version tag and stem-set check; cached.
+  - [ ] Blended chords stay the chart's main chord list unless Eric chooses otherwise.
+  - [ ] Review chart: each main chord name colored by the instrument whose chord agrees; where the
+        instruments differ, the other instrument's chord shown in its color (row like bass notes).
+  - [ ] Piano gets a distinct palette color everywhere `laneColor` is used.
+- Eric's choices (14:38): show BOTH instruments' chords on separate lines tied to the Bucket Notes
+  rows, with the user choosing which to see; color chord names by the agreeing instrument and add a
+  row where they differ; piano teal #22B8CF everywhere; existing songs on demand (View menu, like
+  Bucket Notes), new analyses automatically.
+- Built (14:40–15:00, not committed):
+  - [x] `InstrumentChordPass` (HarmonyStemMix.swift): the harmony stage's chord chain per guitar/piano
+        stem on the song's own beat grid, leakage-gated; `InstrumentChordTimeline` on the document
+        (grid-key staleness like Bucket Notes); runs after Solo Tab in the pipeline; on demand via
+        View menu › Compute Instrument Chords (`AppModel.computeInstrumentChords`).
+  - [x] Review chart: "GtC"/"PnC" chord lines under their bucket-note lines (dimmed carried chord,
+        transposed), View menu › Instrument Chords toggle + Instrument Chord Stems submenu; chart
+        chord names take the color of the ONE instrument playing them (`InstrumentChordAgreement`).
+  - [x] Piano lane color is teal `swTeal` #22B8CF everywhere `laneColor` is used.
+  - [x] Tests: stem colors distinct, agreement, pass on synthetic piano + bleed guitar, row formatter.
+        Full suite 1130/0.
+  - [ ] Real-song check (Back to New Orleans: compute, compare GtC vs PnC), Eric's on-screen check.
+  - [ ] Tests: pass on synthetic stems, agreement/coloring, color distinctness; real-song check on
+        Back to New Orleans; ground-truth harness (`StemSourceChordAccuracyTests`) if charts exist.
+- [ ] Full suite, Eric's on-screen check, commit.
+
+### 2026-09-14 14:16 — The other session stopped; we own its uncommitted work
+
+Eric: the other session is killed; absorb its changes and treat the whole checkout as ours. Its
+uncommitted work (metronome toggle removal, chart derivation cache, low-memory separation gate,
+duplicate-song restore fix, Basic Pitch transcriber + `noteEvents`, AnalysisStage/BeatTracking and
+test edits) has not been reviewed or fully verified here. Before committing it: full suite, lint
+(it carried 4 lint errors in AnalysisStage.swift and AppModelTests.swift), and the 4 tests that fail
+on main without it (LyricGroupingDiagnostic, 2× PhrasePeriodLineRecutter, SongAnalysisPipelineFactory).

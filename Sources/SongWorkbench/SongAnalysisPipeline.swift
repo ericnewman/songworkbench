@@ -621,6 +621,7 @@ struct SongAnalysisPipeline: Sendable {
                 // Bucket notes are cut on the grid the post-passes just settled, so they run last.
                 BucketNotePass.apply(to: &document, force: true)
                 SoloTranscriptionPass.apply(to: &document, force: true)
+                InstrumentChordPass.apply(to: &document, force: true)
 
                 completedStages += 1
                 progress(
@@ -784,6 +785,7 @@ struct SongAnalysisPipeline: Sendable {
                 AnalysisTimingPostPasses.apply(to: &document)
                 BucketNotePass.apply(to: &document, force: stage == .harmony)
                 SoloTranscriptionPass.apply(to: &document, force: stage == .harmony)
+                InstrumentChordPass.apply(to: &document, force: stage == .harmony)
             }
 
             completedStages += 1

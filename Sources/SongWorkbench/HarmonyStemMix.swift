@@ -167,3 +167,247 @@ enum HarmonyStemMix {
         return (sum / Float(samples.count)).squareRoot()
     }
 }
+
+/// Chords detected on ONE instrument stem on its own (Eric, 2026-09-14: on a piano-led song the
+/// chord names still came from guitar). `HarmonyStemMix` blends guitar and piano into one signal,
+/// so no detected chord knows its instrument; this track listens to a single chordal stem.
+struct InstrumentChordTrack: Codable, Equatable, Sendable {
+    var stemID: StemID
+    /// Sorted by time.
+    var chords: [EditableChordEvent]
+}
+
+/// Every chordal instrument's own chords, cut on the song's grid. Same staleness contract as
+/// `BucketNoteTimeline`: check `isCurrent(for:)` against the current grid key before showing it.
+struct InstrumentChordTimeline: Codable, Equatable, Sendable {
+    /// Bump when detection changes so stored timelines recompute.
+    static let currentVersionTag = "instrument-chords-1"
+
+    var versionTag: String
+    var gridKey: BucketGridKey
+    var tracks: [InstrumentChordTrack]
+
+    init(gridKey: BucketGridKey, tracks: [InstrumentChordTrack]) {
+        self.versionTag = Self.currentVersionTag
+        self.gridKey = gridKey
+        self.tracks = tracks
+    }
+
+    /// True when this timeline was detected on `key` by the current detector.
+    func isCurrent(for key: BucketGridKey?) -> Bool {
+        guard let key else { return false }
+        return versionTag == Self.currentVersionTag && gridKey.matches(key)
+    }
+}
+
+/// Detects `InstrumentChordTimeline`: the harmony stage's chord chain — frame chroma, the key- and
+/// bass-aware Viterbi on the song's OWN beat grid (no second beat tracking), bass refinement,
+/// snapping to THIS stem's attacks, the duration filter and both evidence audits — run on each
+/// chordal stem alone. A stem more than `HarmonyStemMix.leakageFloorDecibels` below the loudest is
+/// skipped as bleed. Best-effort like `BucketNotePass`: an unreadable stem is simply absent. The
+/// repeated-chorus vote is left out on purpose: a track should say what that instrument played.
+enum InstrumentChordPass {
+    /// The chordal instruments that get their own chord line.
+    static let instruments: [StemKind] = [.guitar, .piano]
+
+    /// The guitar and piano stems (a refined child stands in for its parent).
+    static func stemAudio(for document: SongAnalysisDocument) -> [(id: StemID, url: URL)] {
+        BucketNotePass.stemAudio(for: document).filter { entry in
+            instruments.contains { kind in
+                entry.id == StemID(kind) || entry.id.rawValue.hasPrefix(kind.rawValue + ".")
+            }
+        }
+    }
+
+    static func timeline(for document: SongAnalysisDocument) -> InstrumentChordTimeline? {
+        guard let key = BucketNotePass.gridKey(for: document) else { return nil }
+        let loaded = stemAudio(for: document).compactMap {
+            entry -> (id: StemID, samples: [Float], sampleRate: Double)? in
+            guard let audio = try? MonoAudioFile.samples(url: entry.url), !audio.samples.isEmpty
+            else { return nil }
+            return (entry.id, audio.samples, audio.sampleRate)
+        }
+        let found = tracks(for: loaded, document: document)
+        guard !found.isEmpty else { return nil }
+        return InstrumentChordTimeline(gridKey: key, tracks: found)
+    }
+
+    /// One track per stem that clears the leakage gate and yields chords.
+    static func tracks(
+        for stems: [(id: StemID, samples: [Float], sampleRate: Double)],
+        document: SongAnalysisDocument
+    ) -> [InstrumentChordTrack] {
+        let kept = HarmonyStemMix.keptAfterLeakageGate(
+            stems.map { HarmonyStemMix.rootMeanSquare($0.samples) })
+        return stems.indices.filter { kept.contains($0) }.compactMap { index in
+            let stem = stems[index]
+            guard
+                let found = try? chords(
+                    samples: stem.samples, sampleRate: stem.sampleRate, document: document),
+                !found.isEmpty
+            else { return nil }
+            return InstrumentChordTrack(stemID: stem.id, chords: found)
+        }
+    }
+
+    /// The harmony stage's chord chain on one stem's samples.
+    static func chords(
+        samples: [Float], sampleRate: Double, document: SongAnalysisDocument
+    ) throws -> [EditableChordEvent] {
+        let beats = document.beatTimes
+        guard beats.count >= 2, let bpm = document.estimatedBPM, bpm > 0 else { return [] }
+        let configuration = try AudioAnalysisConfiguration(
+            sampleRate: sampleRate, frameLength: 8_192, hopLength: 4_096)
+        let frames = try ChordAnalysisPipeline(configuration: configuration).analyzeFrames(
+            samples: samples)
+        let changePoints = ChromaChangePointDetector.changePoints(frames: frames.chroma)
+        let analysis = SongAudioAnalysis(
+            beat: nil, chords: frames.observations, estimatedKey: document.estimatedKey,
+            harmonicChangePoints: changePoints)
+        let onsets = InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate)
+        let bassCues = document.bassNotes.filter { $0.confidence >= 0.5 }.map(\.timestamp)
+        let beatLength = MetricalLevelReconciler.medianBeatLength(beatTimes: beats, bpm: bpm) ?? 0
+        let subdivision = HarmonyDecodeResolution.subdivision(beatLength: beatLength)
+        let decodeBeats = ChordTimelineDecoder.subdivided(
+            ChordTimelineDecoder.extendedBackward(
+                beats, toCover: frames.observations.first?.timestamp ?? 0),
+            by: subdivision)
+        let meter: ChordTimelineDecoder.BarMeter? = document.barGrid.flatMap { grid in
+            grid.phaseSource == .drumAccents
+                ? ChordTimelineDecoder.BarMeter(
+                    beatsPerBar: grid.beatsPerBar * subdivision,
+                    barPhase: grid.barPhase * subdivision)
+                : nil
+        }
+        var decoder = ChordTimelineDecoder()
+        decoder.switchPenalty *= Float(subdivision)
+        var events = BassInformedChordRefiner().refine(
+            decoder.events(
+                from: analysis, key: document.estimatedKey, bassNotes: document.bassNotes,
+                instrumentOnsets: onsets + bassCues, beatTimes: decodeBeats, meter: meter),
+            bassNotes: document.bassNotes)
+        if !onsets.isEmpty {
+            events = ChordOnsetAligner.snap(events, toOnsets: onsets, beatTimes: beats)
+        }
+        events = ChordEventDurationFilter.merge(
+            events, beatTimes: beats, sourceDuration: document.sourceDuration)
+        events =
+            ChordEvidenceAudit.filtered(
+                events: events, frameObservations: frames.observations, attackOnsets: onsets,
+                changePoints: changePoints, sourceDuration: document.sourceDuration,
+                minimumAttackOnlyDuration: beatLength
+            ).events
+        events =
+            ChordQualityAudit.corrected(
+                events: events, frameObservations: frames.observations,
+                sourceDuration: document.sourceDuration
+            ).events
+        return events.sorted { $0.time < $1.time }
+    }
+
+    /// Recomputes when the stored timeline is missing or stale for the current grid — or always
+    /// with `force`, which a fresh harmony run passes since the stems themselves may be new.
+    static func apply(to document: inout SongAnalysisDocument, force: Bool = false) {
+        if !force, let existing = document.instrumentChords,
+            existing.isCurrent(for: BucketNotePass.gridKey(for: document))
+        {
+            return
+        }
+        if let fresh = timeline(for: document) {
+            document.instrumentChords = fresh
+        }
+    }
+}
+
+/// Which instrument a chart chord belongs to, from the per-instrument tracks.
+enum InstrumentChordAgreement {
+    /// The chord `track` has sounding at `time`: its latest visible change at or before
+    /// `time + grace`, so a change landing just after the chart chord's onset still counts.
+    static func sounding(
+        in track: InstrumentChordTrack, at time: TimeInterval, grace: TimeInterval = 0.25
+    ) -> EditableChordEvent? {
+        track.chords.last { !$0.hidden && $0.time <= time + grace }
+    }
+
+    /// The instrument whose sounding chord matches `chord` at `time`, or nil when no instrument or
+    /// more than one does — a chord both instruments play belongs to neither. Refined children of
+    /// one instrument (lead and rhythm guitar) count as that one instrument.
+    static func instrument(
+        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack]
+    ) -> StemID? {
+        let agreeing = tracks.filter { sounding(in: $0, at: time)?.chord == chord }.map(\.stemID)
+        let kinds = Set(agreeing.map { $0.rawValue.split(separator: ".").first.map(String.init) })
+        return kinds.count == 1 ? agreeing.first : nil
+    }
+}
+
+/// Rows for the Review chart: each instrument's chord line, in the same shape as a bucket-note row
+/// so it draws and stacks with them (Eric, 2026-09-14: chord lines "tied to the bucket notes").
+enum InstrumentChordRowFormatter {
+    /// The stem's bucket-row tag plus "C" ("GtC", "PnC"), so a chord line reads apart from the
+    /// same instrument's bucket-note line.
+    static func label(for stemID: StemID) -> String {
+        BucketNoteRowFormatter.label(for: stemID) + "C"
+    }
+
+    /// One row per shown track with a chord to name in `window`. A chord still sounding from
+    /// before the window opens the row, dimmed, so every line says what that instrument plays.
+    static func rows(
+        timeline: InstrumentChordTimeline, hiddenStems: Set<StemID> = [],
+        inWindow window: ClosedRange<TimeInterval>, transposedBy semitones: Int = 0
+    ) -> [BucketNoteRow] {
+        timeline.tracks
+            .filter { !hiddenStems.contains($0.stemID) }
+            .sorted {
+                BucketNoteRowFormatter.displayOrder($0.stemID)
+                    < BucketNoteRowFormatter.displayOrder($1.stemID)
+            }
+            .compactMap { track in
+                let chords = track.chords.filter { !$0.hidden }
+                var cells = chords.filter { window.contains($0.time) }.map {
+                    BucketNoteRowCell(
+                        time: $0.time, text: transposedName($0.chord, by: semitones), isDim: false)
+                }
+                if cells.first.map({ $0.time > window.lowerBound + 0.05 }) ?? true,
+                    let carried = chords.last(where: { $0.time < window.lowerBound })
+                {
+                    cells.insert(
+                        BucketNoteRowCell(
+                            time: window.lowerBound,
+                            text: transposedName(carried.chord, by: semitones), isDim: true),
+                        at: 0)
+                }
+                return cells.isEmpty
+                    ? nil
+                    : BucketNoteRow(
+                        stemID: track.stemID, label: label(for: track.stemID), cells: cells)
+            }
+    }
+
+    /// `noteRows` with each chord row right after its instrument's note row; a chord row whose
+    /// instrument has no note row follows the rest.
+    static func interleaved(noteRows: [BucketNoteRow], chordRows: [BucketNoteRow])
+        -> [BucketNoteRow]
+    {
+        var rows = noteRows
+        for chordRow in chordRows {
+            if let index = rows.lastIndex(where: { $0.stemID == chordRow.stemID }) {
+                rows.insert(chordRow, at: index + 1)
+            } else {
+                rows.append(chordRow)
+            }
+        }
+        return rows
+    }
+
+    /// `chord` moved by `semitones`, spelled the way the chart transposes its own chords.
+    static func transposedName(_ chord: String, by semitones: Int) -> String {
+        guard semitones % 12 != 0,
+            let document = try? ChordProDocument(parsing: "[\(chord)]").transposed(by: semitones)
+        else { return chord }
+        for element in document.elements {
+            if case .chord(let transposed) = element { return transposed.description }
+        }
+        return chord
+    }
+}
