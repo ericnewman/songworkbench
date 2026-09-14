@@ -3410,7 +3410,8 @@ final class AppModel: ObservableObject {
     /// Validity is proven, not assumed: the timeline is used only when rebuilding the draft from
     /// the current analysis reproduces `chordProSource` byte-for-byte, so timeline row N is
     /// exactly the preview's numbered musical line N (audit RC-2's single alignment routine).
-    private var timelineCache: (input: ChordProDraftInput, source: String, result: ChordProDraftResult)?
+    private var timelineCache:
+        (input: ChordProDraftInput, source: String, result: ChordProDraftResult)?
     func songTimelineForPreview() -> SongTimeline? {
         guard !chordProSource.isEmpty else { return nil }
         guard let song = selectedSong else { return nil }
@@ -3570,10 +3571,11 @@ final class AppModel: ObservableObject {
         let identifier = SHA256.hash(data: Data(songID.path.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return supportDirectory
-        .appendingPathComponent("Analysis", isDirectory: true)
-        .appendingPathComponent("Stems", isDirectory: true)
-        .appendingPathComponent(identifier, isDirectory: true)
+        return
+            supportDirectory
+            .appendingPathComponent("Analysis", isDirectory: true)
+            .appendingPathComponent("Stems", isDirectory: true)
+            .appendingPathComponent(identifier, isDirectory: true)
     }
 
     /// Computes vocal-activity intervals from the current song's vocals stem (off the main actor)

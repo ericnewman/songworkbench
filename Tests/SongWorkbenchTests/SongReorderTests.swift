@@ -24,7 +24,8 @@ final class SongReorderTests: XCTestCase {
         }
         let document = ProjectLibraryDocument(
             songs: descending.map { StoredSongProject(url: $0.url, settings: PracticeSettings()) })
-        let model = AppModel(store: ReorderTestStore(document: document), storageRoot: makeTestStorageRoot())
+        let model = AppModel(
+            store: ReorderTestStore(document: document), storageRoot: makeTestStorageRoot())
 
         await model.restoreProjects()
 

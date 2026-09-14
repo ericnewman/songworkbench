@@ -3144,9 +3144,10 @@ struct ChordProAppPreview: View {
         let itemRowSources: [TimedLyricSegment.ID]? = item.lyricOrdinal.flatMap { ordinal in
             lyricRowSourceIDs.indices.contains(ordinal) ? lyricRowSourceIDs[ordinal] : nil
         }
-        let itemCanEditLyric: Bool = item.lyricOrdinal.map { ordinal in
-            lyricRowEditable.indices.contains(ordinal) ? lyricRowEditable[ordinal] : true
-        } ?? true
+        let itemCanEditLyric: Bool =
+            item.lyricOrdinal.map { ordinal in
+                lyricRowEditable.indices.contains(ordinal) ? lyricRowEditable[ordinal] : true
+            } ?? true
         let leadingMelody = leadingMelodyFill(
             upTo: rowAnchorTime, rowDownbeat: rowDownbeat, gutterSeconds: rowGutterSeconds)
         let trailingMelody = trailingMelodyFill(

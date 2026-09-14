@@ -126,16 +126,19 @@ final class ChartRowGridTests: XCTestCase {
     func testALongLineSplitsAtTheRowBoundaryAndMarksItsContinuation() throws {
         // Onsets 8.0 ... 14.5 span beats 16-29: rows 2 (16-23) and 3 (24-31).
         let source = line(
-            "A much longer line that keeps on going", [8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 14.5],
+            "A much longer line that keeps on going",
+            [8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 14.5],
             end: 15.0)
         let lines = ChartLyricLineCutter.lines(from: [source], grid: try cutterGrid())
         XCTAssertEqual(lines.map(\.windowIndex), [2, 3])
         XCTAssertEqual(lines.map(\.segment.text), ["A much longer line", "that keeps on going"])
         XCTAssertEqual(lines.map(\.continuesOnNextRow), [true, false])
         XCTAssertEqual(lines.map(\.segment.id), [source.id, source.id])
-        XCTAssertEqual(lines.map(\.isWholeSourceLine), [false, false], "a split piece is not editable")
+        XCTAssertEqual(
+            lines.map(\.isWholeSourceLine), [false, false], "a split piece is not editable")
         // Character ranges are rebased onto each row's own text.
-        XCTAssertEqual(lines[1].segment.words.map(\.characterRange), [0..<4, 5..<10, 11..<13, 14..<19])
+        XCTAssertEqual(
+            lines[1].segment.words.map(\.characterRange), [0..<4, 5..<10, 11..<13, 14..<19])
         XCTAssertEqual(lines[1].segment.start, 12.0)
         XCTAssertEqual(lines[0].segment.end, 12.0)
     }
@@ -145,7 +148,8 @@ final class ChartRowGridTests: XCTestCase {
         let source = line("And then we sing", [11.5, 12.0, 13.0, 14.0], end: 15.0)
         let lines = ChartLyricLineCutter.lines(from: [source], grid: try cutterGrid())
         XCTAssertEqual(lines.map(\.windowIndex), [3])
-        XCTAssertEqual(lines[0].segment, source, "a whole line after moving its pickup stays untouched")
+        XCTAssertEqual(
+            lines[0].segment, source, "a whole line after moving its pickup stays untouched")
         XCTAssertTrue(lines[0].isWholeSourceLine)
 
         // Three beats early is no pickup: it stays on the earlier row.
@@ -171,7 +175,8 @@ final class ChartRowGridTests: XCTestCase {
 
     func testHandCorrectedAndUntimedLinesAreNeverSplit() throws {
         let corrected = line(
-            "A much longer line that keeps on going", [8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 14.5],
+            "A much longer line that keeps on going",
+            [8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 14.5],
             end: 15.0, overrideText: "A much longer line that keeps on rolling")
         let untimed = TimedLyricSegment(start: 20.5, end: 27.0, text: "No word timings here")
         let lines = ChartLyricLineCutter.lines(from: [untimed, corrected], grid: try cutterGrid())

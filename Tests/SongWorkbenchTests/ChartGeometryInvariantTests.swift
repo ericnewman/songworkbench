@@ -351,7 +351,8 @@ final class ChartGeometryInvariantTests: XCTestCase {
     /// the shapes that make today's rows differ in length.
     private func makeFixedPeriodInput() -> ChordProDraftInput {
         let beats = stride(from: 0.5, through: 80.0, by: 0.5).map { $0 }
-        func line(_ text: String, _ onsets: [TimeInterval], end: TimeInterval) -> TimedLyricSegment {
+        func line(_ text: String, _ onsets: [TimeInterval], end: TimeInterval) -> TimedLyricSegment
+        {
             var cursor = 0
             let tokens = text.split(separator: " ").map(String.init)
             let words = zip(tokens, onsets).enumerated().map { index, pair -> TimedLyricWord in
@@ -378,12 +379,14 @@ final class ChartGeometryInvariantTests: XCTestCase {
         // window holds them.
         let downbeatChords = stride(from: 0.5, through: 78.5, by: 2.0).enumerated().map {
             index, time in
-            EditableChordEvent(time: time, chord: ["C", "G", "Am", "F"][index % 4], confidence: 0.9)
+            EditableChordEvent(
+                time: time, chord: ["C", "G", "Am", "F"][index % 4], confidence: 0.9)
         }
-        let chords = (downbeatChords + [
-            EditableChordEvent(time: 27.9, chord: "Em", confidence: 0.9),
-            EditableChordEvent(time: 43.7, chord: "D", confidence: 0.9),
-        ]).sorted { $0.time < $1.time }
+        let chords =
+            (downbeatChords + [
+                EditableChordEvent(time: 27.9, chord: "Em", confidence: 0.9),
+                EditableChordEvent(time: 43.7, chord: "D", confidence: 0.9),
+            ]).sorted { $0.time < $1.time }
         var input = ChordProDraftInput(
             title: "Fixed period", tempo: 120, lyrics: lyrics, chords: chords,
             beatTimes: beats, sourceDuration: 80)
@@ -402,7 +405,8 @@ final class ChartGeometryInvariantTests: XCTestCase {
         let input = makeFixedPeriodInput()
         let rows = fixedPeriodRows(input)
         XCTAssertGreaterThanOrEqual(rows.count, 3)
-        XCTAssertEqual(rows.first?.start ?? -1, 0, accuracy: 1e-6, "rows must start at the song's start")
+        XCTAssertEqual(
+            rows.first?.start ?? -1, 0, accuracy: 1e-6, "rows must start at the song's start")
         XCTAssertEqual(rows.last?.end ?? -1, 80, accuracy: 1e-6, "rows must end at the song's end")
         for (earlier, later) in zip(rows, rows.dropFirst()) {
             XCTAssertEqual(
@@ -411,7 +415,9 @@ final class ChartGeometryInvariantTests: XCTestCase {
         }
         let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120, beatsPerBar: 4, barPhase: 0)
         let interior = Array(rows.dropFirst().dropLast())
-        let spans = interior.map { grid.beatIndex(atTime: $0.end) - grid.beatIndex(atTime: $0.start) }
+        let spans = interior.map {
+            grid.beatIndex(atTime: $0.end) - grid.beatIndex(atTime: $0.start)
+        }
         let period = try XCTUnwrap(spans.first)
         XCTAssertGreaterThan(period, 0)
         XCTAssertEqual(
