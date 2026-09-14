@@ -1800,6 +1800,7 @@ final class AppModel: ObservableObject {
         guard let index = lyricBlendRows.firstIndex(where: { $0.id == rowID }) else { return }
         lyricBlendRows[index].selectedMode = mode
         lyricSegments = LyricBlendRowBuilder.effectiveLyrics(from: lyricBlendRows)
+        scheduleWordTimingCheck()
     }
 
     /// Records a manual override for one Lyric Blend row — a "4th candidate" the user types in
@@ -1814,6 +1815,7 @@ final class AppModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         lyricBlendRows[index].overrideText = trimmed.isEmpty ? nil : text
         lyricSegments = LyricBlendRowBuilder.effectiveLyrics(from: lyricBlendRows)
+        scheduleWordTimingCheck()
     }
 
     /// Toggles a chord event's Review-chart "accepted" flag, by id (backlog #15 Phase 2
@@ -3403,7 +3405,17 @@ final class AppModel: ObservableObject {
     /// next load tries again. A retiming is a timing correction, not a lyric edit, so it keeps the
     /// review states and rebuilds only a generated chart.
     private func scheduleWordTimingCheck() {
-        guard wordTimingCheckTag != StretchedWordRetimer.versionTag, let songID = selectedSongID,
+        // A path that rebuilds the lines from the transcription (a Lyric Blend pick, override, or
+        // prep) drops the moved starts but keeps the tag. Findings that no longer land on a word
+        // mean the check is stale, and that also heals documents saved that way.
+        let isCurrent =
+            wordTimingCheckTag == StretchedWordRetimer.versionTag
+            && wordTimingFindings.allSatisfy { finding in
+                lyricSegments.contains { line in
+                    line.words.contains { $0.text == finding.text && $0.start == finding.start }
+                }
+            }
+        guard !isCurrent, let songID = selectedSongID,
             let vocalsURL = stemFiles?.vocals, !lyricSegments.isEmpty
         else { return }
         let lyrics = lyricSegments

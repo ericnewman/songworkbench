@@ -952,6 +952,106 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.isSongAnalysisRunning)
     }
 
+    /// A Lyric Blend pick rebuilds every line from the raw transcription, which undid the
+    /// stretched-word check's moves while its tag and findings stayed saved — so after a reload the
+    /// Review chart's markers matched no word (2026-09-14). Every saved finding must start where a
+    /// saved word with its text starts.
+    func testWordTimingFindingsStillMatchSavedWordsAfterALyricBlendPickAndReload() async throws {
+        let songURL = try makeSilentWAV(frameCount: 16_000)
+        let stemDirectory = try makeStemDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: songURL)
+            try? FileManager.default.removeItem(at: stemDirectory)
+        }
+        let stems = sixStemFiles(in: stemDirectory)
+        // Steady singing with a 30 ms dip before 1.7 s: "breeze" (1.0–3.0 s, glued to "Louisiana")
+        // is stretched, and the voice attacks it at 1.7 s.
+        let format = AVAudioFormat(standardFormatWithSampleRate: 8_000, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32_000)!
+        buffer.frameLength = 32_000
+        for frame in 0..<32_000 {
+            let amplitude: Float = (13_360..<13_600).contains(frame) ? 0.03 : 0.5
+            buffer.floatChannelData![0][frame] =
+                amplitude * sin(Float(frame) * 2 * .pi * 220 / 8_000)
+        }
+        try FileManager.default.removeItem(at: stems.vocals)
+        try AVAudioFile(forWriting: stems.vocals, settings: format.settings).write(from: buffer)
+
+        func words(_ spans: [(String, TimeInterval, TimeInterval)]) -> [TimedLyricWord] {
+            var offset = 0
+            return spans.map { text, start, end in
+                defer { offset += text.count + 1 }
+                return TimedLyricWord(
+                    text: text, start: start, end: end,
+                    characterRange: offset..<(offset + text.count))
+            }
+        }
+        let breezeRow = LyricBlendRow(
+            start: 0.2, end: 3.0,
+            candidates: [
+                LyricBlendCandidate(
+                    mode: .accuracy, text: "Louisiana breeze",
+                    words: words([("Louisiana", 0.2, 1.0), ("breeze", 1.0, 3.0)]))
+            ])
+        let homeRow = LyricBlendRow(
+            start: 3.2, end: 3.9,
+            candidates: [
+                LyricBlendCandidate(
+                    mode: .accuracy, text: "going home",
+                    words: words([("going", 3.2, 3.5), ("home", 3.5, 3.9)])),
+                LyricBlendCandidate(
+                    mode: .balancedDraft, text: "going back",
+                    words: words([("going", 3.2, 3.5), ("back", 3.5, 3.9)])),
+            ])
+        let rows = [breezeRow, homeRow]
+        let analysis = SongAnalysisDocument(
+            lyrics: LyricBlendRowBuilder.effectiveLyrics(from: rows),
+            lyricBlendRows: rows,
+            timingPostPassTag: AnalysisTimingPostPasses.versionTag,
+            stems: StoredStemFiles(files: stems)
+        )
+        let store = DelayedProjectStore(
+            document: ProjectLibraryDocument(songs: [
+                StoredSongProject(url: songURL, settings: PracticeSettings(), analysis: analysis)
+            ]))
+        func findingsMatchWords(_ document: SongAnalysisDocument?) -> Bool {
+            guard let document, !document.wordTimingFindings.isEmpty else { return false }
+            return document.wordTimingFindings.allSatisfy { finding in
+                document.lyrics.contains { line in
+                    line.words.contains { $0.text == finding.text && $0.start == finding.start }
+                }
+            }
+        }
+
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
+        await model.restoreProjects()
+        try await waitUntil(timeout: .seconds(10)) {
+            findingsMatchWords(await store.lastSavedDocument()?.songs.first?.analysis)
+        }
+        XCTAssertEqual(model.wordTimingFindings.map(\.text), ["breeze"], "the fixture retimes")
+
+        model.applyLyricBlendSelection(rowID: homeRow.id, mode: .balancedDraft)
+        try await waitUntil(timeout: .seconds(10)) {
+            guard let saved = await store.lastSavedDocument()?.songs.first?.analysis else {
+                return false
+            }
+            return saved.lyrics.contains { $0.text == "going back" } && findingsMatchWords(saved)
+        }
+
+        let lastSaved = await store.lastSavedDocument()
+        let saved = try XCTUnwrap(lastSaved)
+        let reloaded = AppModel(
+            store: DelayedProjectStore(document: saved), storageRoot: makeTestStorageRoot())
+        await reloaded.restoreProjects()
+        XCTAssertEqual(reloaded.wordTimingFindings.map(\.text), ["breeze"])
+        for finding in reloaded.wordTimingFindings {
+            XCTAssertTrue(
+                reloaded.lyricSegments.contains { line in
+                    line.words.contains { $0.text == finding.text && $0.start == finding.start }
+                }, "no word \"\(finding.text)\" starts at \(finding.start)")
+        }
+    }
+
     private func makeSilentWAV(frameCount: AVAudioFrameCount = 800) throws -> URL {
         try writeSilentWAV(
             to: FileManager.default.temporaryDirectory
