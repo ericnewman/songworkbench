@@ -221,20 +221,59 @@ enum LyricBlendRowBuilder {
     /// `document.lyrics` after every blend pick or override edit (and right after the 3 passes
     /// first complete, before the user has picked anything).
     static func effectiveLyrics(from rows: [LyricBlendRow]) -> [TimedLyricSegment] {
-        rows.compactMap { row -> TimedLyricSegment? in
+        rows.indices.compactMap { index -> TimedLyricSegment? in
+            let row = rows[index]
             if let overrideText = row.overrideText {
                 let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     return TimedLyricSegment(start: row.start, end: row.end, text: trimmed)
                 }
             }
-            guard let candidate = row.effectiveCandidate() else { return nil }
+            guard let picked = row.effectiveCandidate() else { return nil }
+            let candidate = withBoundaryWordRestored(picked, rows: rows, index: index)
             let candidateStart = candidate.words.map(\.start).min() ?? row.start
             let candidateEnd = candidate.words.map(\.end).max() ?? row.end
             return TimedLyricSegment(
                 start: candidateStart, end: max(candidateEnd, candidateStart),
                 text: candidate.text, words: candidate.words)
         }.sorted { $0.start < $1.start }
+    }
+
+    /// Restores a line-final word that two adjacent picks drop between them (Back to New Orleans
+    /// line 9, 2026-09-14). The next row's mode ends THIS row with the word, this row's mode opens
+    /// the NEXT row with it, and neither pick contains it where it chose to. Each pick is
+    /// reasonable alone (accuracy-first default, onset corroboration, or the user), and picks are
+    /// saved and carried across re-analysis, so the repair lives here, where lines are assembled.
+    /// The word and its timing come from the next row's mode, which heard it in this row. A word
+    /// both picks keep is a duplicate and is left alone.
+    private static func withBoundaryWordRestored(
+        _ candidate: LyricBlendCandidate, rows: [LyricBlendRow], index: Int
+    ) -> LyricBlendCandidate {
+        let nextIndex = index + 1
+        guard rows.indices.contains(nextIndex),
+            rows[nextIndex].overrideText?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty ?? true,
+            let next = rows[nextIndex].effectiveCandidate(), next.mode != candidate.mode,
+            let heardHere = rows[index].candidates.first(where: { $0.mode == next.mode }),
+            let thisModeThere = rows[nextIndex].candidates.first(where: {
+                $0.mode == candidate.mode
+            }),
+            let lastKept = candidate.words.last,
+            let word = heardHere.words.last,
+            let boundary = tokens(word.text).last,
+            tokens(heardHere.text).last == boundary,
+            tokens(candidate.text).last != boundary,
+            tokens(thisModeThere.text).first == boundary,
+            tokens(next.text).first != boundary,
+            word.start >= lastKept.start
+        else { return candidate }
+        var restored = candidate
+        let offset = candidate.text.count + 1
+        restored.text = candidate.text + " " + word.text
+        var appended = word
+        appended.characterRange = offset..<(offset + word.text.count)
+        restored.words.append(appended)
+        return restored
     }
 
     // MARK: - Vocal-onset corroboration (the stem waveform is ground truth for word placement)
