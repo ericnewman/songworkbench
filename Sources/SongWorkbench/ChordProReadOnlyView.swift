@@ -424,6 +424,37 @@ struct BucketNoteRow: Equatable, Sendable {
     let cells: [BucketNoteRowCell]
 }
 
+/// Names the chord an exact set of pitch classes spells, for the bucket rows' "(Am)" suffix.
+/// Exact on purpose: two notes are an interval, not a chord, and a set with a stray class spells
+/// nothing rather than a guess. Sharp spelling, like the note cells it follows.
+enum BucketChordNaming {
+    /// Intervals above the root and the suffix they spell. Earlier entries win ties.
+    static let qualities: [(intervals: Set<Int>, suffix: String)] = [
+        ([0, 4, 7], ""), ([0, 3, 7], "m"), ([0, 3, 6], "dim"), ([0, 4, 8], "aug"),
+        ([0, 2, 7], "sus2"), ([0, 5, 7], "sus4"),
+        ([0, 4, 7, 10], "7"), ([0, 4, 7, 11], "maj7"), ([0, 3, 7, 10], "m7"),
+        ([0, 3, 6, 10], "m7b5"), ([0, 3, 6, 9], "dim7"),
+    ]
+
+    /// The chord `pitchClasses` (any octave, duplicates allowed) spell exactly, or nil. A set can
+    /// read on more than one root (Csus2 is Gsus4; aug and dim7 are symmetric): the first of
+    /// `preferredRoots` that names it wins, else the earliest quality, then the lowest root.
+    static func name(pitchClasses: [Int], preferredRoots: [Int] = []) -> String? {
+        let set = Set(pitchClasses.map { ($0 % 12 + 12) % 12 })
+        guard set.count >= 3 else { return nil }
+        let matches: [(root: Int, quality: Int)] = (0..<12).compactMap { root in
+            let intervals = Set(set.map { ($0 - root + 12) % 12 })
+            return qualities.firstIndex { $0.intervals == intervals }.map { (root, $0) }
+        }
+        let preferred = preferredRoots.lazy.compactMap { root in
+            matches.first { $0.root == (root % 12 + 12) % 12 }
+        }.first
+        guard let pick = preferred ?? matches.min(by: { ($0.quality, $0.root) < ($1.quality, $1.root) })
+        else { return nil }
+        return BassNoteNaming.name(forMidiNote: pick.root) + qualities[pick.quality].suffix
+    }
+}
+
 /// Formats a `BucketNoteTimeline` for the Review chart's optional per-stem bucket rows. Non-view,
 /// like `BassNoteRowFormatter`, so the windowing/naming/ordering is testable without SwiftUI.
 enum BucketNoteRowFormatter {
@@ -441,35 +472,78 @@ enum BucketNoteRowFormatter {
         transposedBy semitones: Int = 0
     ) -> [BucketNoteRow] {
         let clicks = timeline.clickTimes
-        return timeline.stems
+        let visible = timeline.stems
             .filter { !hiddenStems.contains($0.stemID) }
             .sorted { displayOrder($0.stemID) < displayOrder($1.stemID) }
-            .compactMap { stem in
-                let cells = stem.notes.compactMap { note -> BucketNoteRowCell? in
+        var rows: [(stemID: StemID, cells: [(bucket: Int, cell: BucketNoteRowCell)])] =
+            visible.compactMap { stem in
+                let cells = stem.notes.compactMap { note -> (bucket: Int, cell: BucketNoteRowCell)? in
                     guard clicks.indices.contains(note.bucketIndex),
                         window.contains(clicks[note.bucketIndex])
                     else { return nil }
-                    return BucketNoteRowCell(
-                        time: clicks[note.bucketIndex],
-                        text: text(for: note, transposedBy: semitones),
-                        isDim: note.confidence < dimConfidence)
+                    return (
+                        note.bucketIndex,
+                        BucketNoteRowCell(
+                            time: clicks[note.bucketIndex],
+                            text: text(for: note, transposedBy: semitones),
+                            isDim: note.confidence < dimConfidence)
+                    )
                 }
-                guard !cells.isEmpty else { return nil }
-                return BucketNoteRow(
-                    stemID: stem.stemID, label: label(for: stem.stemID),
-                    cells: cells)
+                return cells.isEmpty ? nil : (stem.stemID, cells)
             }
+        // The chord the whole beat makes ends the stack: appended to the lowest row sounding in
+        // that bucket (the bass whenever it plays), unless that cell already names it.
+        for (bucket, chord) in combinedChordNames(stems: visible, transposedBy: semitones) {
+            guard let row = rows.lastIndex(where: { $0.cells.contains { $0.bucket == bucket } }),
+                let index = rows[row].cells.firstIndex(where: { $0.bucket == bucket })
+            else { continue }
+            let cell = rows[row].cells[index].cell
+            let suffix = " (\(chord))"
+            guard !cell.text.hasSuffix(suffix) else { continue }
+            rows[row].cells[index].cell = BucketNoteRowCell(
+                time: cell.time, text: cell.text + suffix, isDim: cell.isDim)
+        }
+        return rows.map {
+            BucketNoteRow(stemID: $0.stemID, label: label(for: $0.stemID), cells: $0.cells.map(\.cell))
+        }
     }
 
     /// Monophonic buckets name the note; polyphonic ones list pitch classes strongest first,
-    /// dot-separated ("C·E·G") so sharps stay readable.
+    /// dot-separated ("C·E·G") so sharps stay readable, followed by the chord they spell, if any
+    /// ("C·E·G (C)").
     static func text(for note: StemBucketNote, transposedBy semitones: Int) -> String {
         if let midi = note.midiNote {
             return BassNoteNaming.name(forMidiNote: midi + semitones)
         }
-        return note.pitchClasses
-            .map { BassNoteNaming.name(forMidiNote: $0 + semitones) }
-            .joined(separator: "·")
+        let classes = note.pitchClasses.map { $0 + semitones }
+        let names = classes.map { BassNoteNaming.name(forMidiNote: $0) }.joined(separator: "·")
+        guard
+            let chord = BucketChordNaming.name(
+                pitchClasses: classes, preferredRoots: Array(classes.prefix(1)))
+        else { return names }
+        return "\(names) (\(chord))"
+    }
+
+    /// Each bucket's chord across every stem in `stems` (monophonic notes and polyphonic classes
+    /// pooled), keyed by bucket index; buckets that spell no chord are absent. The bass note, when
+    /// one sounds, is the preferred root.
+    static func combinedChordNames(stems: [StemBucketNotes], transposedBy semitones: Int)
+        -> [Int: String]
+    {
+        var classes: [Int: [Int]] = [:]
+        var bassNotes: [Int: Int] = [:]
+        for stem in stems {
+            let isBass = BucketNoteAnalyzer.role(for: stem.stemID) == .bass
+            for note in stem.notes {
+                let pitches = note.midiNote.map { [$0] } ?? note.pitchClasses
+                classes[note.bucketIndex, default: []] += pitches.map { $0 + semitones }
+                if isBass, let midi = note.midiNote { bassNotes[note.bucketIndex] = midi + semitones }
+            }
+        }
+        return classes.reduce(into: [:]) { names, entry in
+            let preferred = bassNotes[entry.key].map { [$0] } ?? []
+            names[entry.key] = BucketChordNaming.name(pitchClasses: entry.value, preferredRoots: preferred)
+        }
     }
 
     /// Two-letter row tags, short enough to sit in the row's left gutter without pushing the

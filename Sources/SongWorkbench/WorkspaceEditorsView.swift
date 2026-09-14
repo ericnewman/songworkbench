@@ -1283,6 +1283,14 @@ struct ChordProTabEditor: View {
     /// Switched off on 2026-08-20 and back on on 2026-08-21, so it is a stored preference now
     /// rather than a compile-time `let` — the machinery it gates never went anywhere.
     @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
+    /// The amber ball travelling chord onset to chord onset along the row.
+    @AppStorage("chordBallEnabled") private var chordBallEnabled = true
+    /// The amber ball parked over the sounding chord, popping at each onset.
+    @AppStorage("chordPopBallEnabled") private var chordPopBallEnabled = true
+    private var ballVisibility: BouncingBallVisibility {
+        BouncingBallVisibility(
+            word: bouncingBallEnabled, chord: chordBallEnabled, chordPop: chordPopBallEnabled)
+    }
     @AppStorage("beatDotsEnabled") private var beatDotsEnabled = false
     /// Beats per chart row; 0 = automatic from the measured phrase period.
     @AppStorage("chordProBeatsPerRow") private var beatsPerRow = 0
@@ -1346,11 +1354,31 @@ struct ChordProTabEditor: View {
     /// Lyric segments sorted into the order the highlight/ball ordinals use (so ordinal N indexes
     /// the same line across words, windows, and highlight).
     private var sortedLyricSegments: [TimedLyricSegment] {
-        model.lyricSegments.sorted {
+        // Fixed-period rows: ordinal N is the chart's Nth sung row, cut from the stored lines.
+        if let chart = model.chartLayoutForPreview() { return chart.chartLines.map(\.segment) }
+        return model.lyricSegments.sorted {
             if $0.start == $1.start, $0.end == $1.end { return $0.text < $1.text }
             if $0.start == $1.start { return $0.end < $1.end }
             return $0.start < $1.start
         }
+    }
+
+    /// Fixed-period sung rows' stored source lines, by ordinal (empty when the chart has no rows cut).
+    private var lyricRowSourceIDs: [[TimedLyricSegment.ID]] {
+        (model.chartLayoutForPreview()?.chartLines ?? []).map(\.sourceIDs)
+    }
+
+    /// Whether each fixed-period sung row is one whole stored line, by ordinal — the only rows
+    /// whose text can be corrected in place.
+    private var lyricRowEditable: [Bool] {
+        (model.chartLayoutForPreview()?.chartLines ?? []).map(\.isWholeSourceLine)
+    }
+
+    /// Ordinals of fixed-period sung rows whose line carries on onto the next row (drawn "→").
+    private var continuingLyricOrdinals: Set<Int> {
+        Set(
+            (model.chartLayoutForPreview()?.chartLines ?? []).enumerated()
+                .filter(\.element.continuesOnNextRow).map(\.offset))
     }
 
     /// Lyric-line word timings sorted into the same order the highlight/ball ordinals use, so the
@@ -1429,6 +1457,7 @@ struct ChordProTabEditor: View {
                                 ? highlightContext(style: config.highlightStyle) : nil,
                             beatBall: config.showsPlaybackControls ? beatBallInput : nil,
                             beatDots: config.showsReviewAffordances ? beatDotContext : nil,
+                            ballVisibility: ballVisibility,
                             rhythmicSpacing: rhythmicSpacing,
                             lyricLineWords: sortedLyricLineWords,
                             showWaveform: config.showsReviewAffordances && showWaveform,
@@ -1466,6 +1495,11 @@ struct ChordProTabEditor: View {
                                         row.end > row.start
                                             ? (row.number, row.start...row.end) : nil
                                     }),
+                            fixedPeriodBeats: model.chartLayoutForPreview()?.periodBeats,
+                            rowOriginsByLine: model.chartLayoutForPreview()?.rowOrigins ?? [:],
+                            continuingLyricOrdinals: continuingLyricOrdinals,
+                            lyricRowSourceIDs: lyricRowSourceIDs,
+                            lyricRowEditable: lyricRowEditable,
                             bassNotes: model.bassNotes,
                             showBassNotes: config.showsReviewAffordances && showBassNotes,
                             vocalHarmonyNotes: model.vocalHarmonyNotes,
@@ -1488,6 +1522,9 @@ struct ChordProTabEditor: View {
                             onToggleLyricAccepted: { id in model.toggleLyricAccepted(id: id) },
                             onCommitLyricOverride: { id, text in
                                 model.setLyricOverrideText(id: id, text: text)
+                            },
+                            onSetLyricsAccepted: { ids, accepted in
+                                model.setLyricsAccepted(ids: ids, accepted: accepted)
                             },
                             onToggleChordAccepted: { id in model.toggleChordAccepted(id: id) },
                             onSetChordManualTime: { id, time in
@@ -1604,6 +1641,7 @@ struct ChordProTabEditor: View {
             // display control that acts on the chart itself rather than on the Review tab's
             // overlays, so it belongs on both surfaces (Eric: the slider goes in both tabs).
             fontSizeControl
+                .onChange(of: beatsPerRow) { _, _ in model.chartBeatsPerRowChanged() }
             if config.showsPlaybackControls {
                 timingOffsetControl
                 if config.showsReviewAffordances {
@@ -1670,6 +1708,11 @@ struct ChordProTabEditor: View {
                         .disabled(!model.canComputeSolos)
                         Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
                     }
+                    Section("Bouncing Balls") {
+                        Toggle("Word Ball", isOn: $bouncingBallEnabled)
+                        Toggle("Chord Ball", isOn: $chordBallEnabled)
+                        Toggle("Chord Pop", isOn: $chordPopBallEnabled)
+                    }
                     Picker("Beats per Row", selection: $beatsPerRow) {
                         Text("Auto").tag(0)
                         Text("4").tag(4)
@@ -1686,7 +1729,7 @@ struct ChordProTabEditor: View {
                         ? "Show/hide beat dots, measure barlines, the per-line waveform, "
                             + "the detected bass note row, "
                             + "and each chord's raw detected timestamp"
-                        : "Choose the chart row length")
+                        : "Choose which bouncing balls show and the chart row length")
             }
             if config.showsReviewAffordances {
                 // Chord-placement A/B. A chord change is an inference, but WHERE it sits is a
@@ -1993,7 +2036,7 @@ struct ChordProTabEditor: View {
     ) -> ChordProPlaybackHighlightContext {
         ChordProPlaybackHighlightContext(
             currentTime: currentPlaybackTime,
-            lyricSegments: model.lyricSegments,
+            lyricSegments: sortedLyricSegments,
             chordEvents: model.chordEvents,
             confidenceThreshold: model.chordConfidenceThreshold,
             style: style
@@ -2097,7 +2140,8 @@ struct ChordProTabEditor: View {
     }
 
     private var beatBallInput: BeatBallInput? {
-        guard bouncingBallEnabled else { return nil }
+        // Both travelling balls ride this input; each row gates its own ball on `ballVisibility`.
+        guard bouncingBallEnabled || chordBallEnabled else { return nil }
         let bpm = model.estimatedBPM
         let beatTimes = model.beatTimes
         // Need either explicit beats or a usable BPM to synthesize them.
@@ -2124,7 +2168,7 @@ struct ChordProTabEditor: View {
             case .lyric(let ordinal):
                 // Sung line (or the short held tail after it — hold-through-gap semantics).
                 let deriver = ChordProHighlightDeriver(
-                    lyricSegments: model.lyricSegments,
+                    lyricSegments: sortedLyricSegments,
                     chordEvents: model.chordEvents,
                     confidenceThreshold: model.chordConfidenceThreshold
                 )
@@ -2297,7 +2341,7 @@ struct ChordProTabEditor: View {
     private var beatDotContext: BeatDotContext? {
         guard beatDotsEnabled else { return nil }
         let segments =
-            model.lyricSegments
+            sortedLyricSegments
             .filter { !$0.text.isEmpty }
             .sorted {
                 if $0.start == $1.start, $0.end == $1.end { return $0.text < $1.text }
@@ -2440,6 +2484,7 @@ struct ChordProAppPreview: View {
     var highlightContext: ChordProPlaybackHighlightContext?
     var beatBall: BeatBallInput?
     var beatDots: BeatDotContext?
+    var ballVisibility = BouncingBallVisibility()
     var rhythmicSpacing = false
     /// Per-lyric-line word timings, indexed by lyric ordinal (same order the highlight/ball use),
     /// for rhythmic spacing — available regardless of playback.
@@ -2489,6 +2534,16 @@ struct ChordProAppPreview: View {
     /// land anywhere in a bar, so onset-derived windows gave every row an arbitrary width and
     /// no splitter fix could ever show through (Eric: "Not improving").
     var timelineRowWindowsByLine: [Int: ClosedRange<TimeInterval>] = [:]
+    /// Fixed-period rows: beats per row (whole bars) from the builder, nil otherwise.
+    var fixedPeriodBeats: Int?
+    /// Fixed-period rows: each row's origin (its grid window's downbeat) by display line number.
+    var rowOriginsByLine: [Int: TimeInterval] = [:]
+    /// Fixed-period rows: lyric ordinals whose line continues on the next row.
+    var continuingLyricOrdinals: Set<Int> = []
+    /// Fixed-period rows: each sung row's stored source lines, by lyric ordinal.
+    var lyricRowSourceIDs: [[TimedLyricSegment.ID]] = []
+    /// Fixed-period rows: whether each sung row is one whole stored line, by lyric ordinal.
+    var lyricRowEditable: [Bool] = []
     /// Detected bass notes (backlog: Bass Note display consolidation) — shown as an optional row
     /// above each lyric line when `showBassNotes` is on, replacing the standalone Bass Notes tab.
     var bassNotes: [BassNoteObservation] = []
@@ -2522,6 +2577,8 @@ struct ChordProAppPreview: View {
     var showsReviewAffordances = true
     var onToggleLyricAccepted: (TimedLyricSegment.ID) -> Void = { _ in }
     var onCommitLyricOverride: (TimedLyricSegment.ID, String) -> Void = { _, _ in }
+    /// Sets several stored lines' accepted state together (a fixed-period row shared by several).
+    var onSetLyricsAccepted: ([TimedLyricSegment.ID], Bool) -> Void = { _, _ in }
     var onToggleChordAccepted: (EditableChordEvent.ID) -> Void = { _ in }
     var onSetChordManualTime: (EditableChordEvent.ID, TimeInterval?) -> Void = { _, _ in }
     var onSetChordName: (EditableChordEvent.ID, String) -> Void = { _, _ in }
@@ -2658,6 +2715,8 @@ struct ChordProAppPreview: View {
     /// OWN measured downbeat, never to an absolute slot boundary, because downbeat phase was
     /// measured unrecoverable (see `SongBeatsPerLine`).
     private var phraseBeats: Int? {
+        // Fixed-period rows were cut on the builder's whole-bar period; frame them at exactly that.
+        if let fixedPeriodBeats { return fixedPeriodBeats }
         if beatsPerRowOverride > 0 { return beatsPerRowOverride }
         // The SAME rule (and the same onsets) the pipeline recut the rows on — see
         // `SongBeatsPerLine.rowBeats`; anything else frames rows at a period they were not cut to.
@@ -3054,9 +3113,12 @@ struct ChordProAppPreview: View {
         let rowAnchorTime =
             firstWordOnset
             ?? (strip.duration > 0 ? strip.start : nil)
+        // Fixed-period rows start on their grid window's downbeat; other charts anchor on the
+        // downbeat nearest the row's first sound.
+        let fixedRowOrigin = item.displayLineNumber.flatMap { rowOriginsByLine[$0] }
         let rowDownbeat =
             rhythmicSpacing
-            ? rowDownbeatTime(forFirstWordAt: rowAnchorTime) : nil
+            ? (fixedRowOrigin ?? rowDownbeatTime(forFirstWordAt: rowAnchorTime)) : nil
         // Next sung line's start, for the trailing-rest marker.
         let nextLineStart: TimeInterval? =
             (item.lyricOrdinal).flatMap { ord in
@@ -3069,11 +3131,22 @@ struct ChordProAppPreview: View {
         // This row's OWN pickup gutter, in whole beats. See `ChartPickupGutter` for why it is
         // per-row, why it is quantised, and why neither the row's nominal start nor the leading
         // melody fill may feed into it.
-        let rowGutterSeconds = ChartPickupGutter.seconds(
+        let pickupGutterSeconds = ChartPickupGutter.seconds(
             downbeat: rowDownbeat,
             earliestContent: [lineWords.first?.start, chordRow.effectiveTimes.min()]
                 .compactMap { $0 }.min(),
             beatLengthSeconds: beatLengthSeconds)
+        // Fixed-period rows all reserve the full gutter, so every row's downbeat column (and so
+        // every bar line) sits at the same x.
+        let fullGutterSeconds = Double(ChordProPreviewLineLayout.gutterBeats) * beatLengthSeconds
+        let rowGutterSeconds = fixedPeriodBeats == nil ? pickupGutterSeconds : fullGutterSeconds
+        let itemContinues = item.lyricOrdinal.map(continuingLyricOrdinals.contains) ?? false
+        let itemRowSources: [TimedLyricSegment.ID]? = item.lyricOrdinal.flatMap { ordinal in
+            lyricRowSourceIDs.indices.contains(ordinal) ? lyricRowSourceIDs[ordinal] : nil
+        }
+        let itemCanEditLyric: Bool = item.lyricOrdinal.map { ordinal in
+            lyricRowEditable.indices.contains(ordinal) ? lyricRowEditable[ordinal] : true
+        } ?? true
         let leadingMelody = leadingMelodyFill(
             upTo: rowAnchorTime, rowDownbeat: rowDownbeat, gutterSeconds: rowGutterSeconds)
         let trailingMelody = trailingMelodyFill(
@@ -3087,6 +3160,12 @@ struct ChordProAppPreview: View {
         // the call itself; simple identifiers avoid that.
         let itemLyricSegment = lyricSegment(
             forOrdinal: item.lyricOrdinal)
+        let rowAcceptTarget = onToggleLyricAccepted
+        let rowSetAccepted = onSetLyricsAccepted
+        let itemToggleAccepted: (TimedLyricSegment.ID) -> Void =
+            itemRowSources.map { sources in
+                { _ in rowSetAccepted(sources, !(itemLyricSegment?.accepted ?? false)) }
+            } ?? rowAcceptTarget
         let itemHighlight = highlightContext?.highlight(
             forLyricOrdinal: item.lyricOrdinal)
         let itemBeatBall = beatBallValue(for: item, in: document)
@@ -3118,6 +3197,7 @@ struct ChordProAppPreview: View {
             playheadTime: highlightContext?.currentTime,
             beatBall: itemBeatBall,
             beatDots: itemBeatDots,
+            ballVisibility: ballVisibility,
             rhythmicSpacing: rhythmicSpacing,
             rhythmicWordTimings: lineWords,
             vocalPeaks: strip.peaks,
@@ -3129,6 +3209,8 @@ struct ChordProAppPreview: View {
             beatLengthSeconds: beatLengthSeconds,
             beatsPerBar: beatsPerBar,
             beatsPerLine: phraseBeats ?? 0,
+            usesFixedPeriodRows: fixedPeriodBeats != nil,
+            continuesOnNextRow: itemContinues,
             gridBeatTimes: beatTimes,
             showBarlines: itemShowBarlines,
             chordOnsetTimes: chordOnsetTimes,
@@ -3151,8 +3233,9 @@ struct ChordProAppPreview: View {
             songChordTimes: songChordTimes,
             lyricSegment: itemLyricSegment,
             showsReviewAffordances: showsReviewAffordances,
-            onToggleLyricAccepted: onToggleLyricAccepted,
+            onToggleLyricAccepted: itemToggleAccepted,
             onCommitLyricOverride: onCommitLyricOverride,
+            canEditLyric: itemCanEditLyric,
             rowChordEvents: chordRow.events,
             onToggleChordAccepted: onToggleChordAccepted,
             onSetChordManualTime: onSetChordManualTime,
@@ -3824,6 +3907,7 @@ private struct ChordProPreviewBlockView: View {
     var playheadTime: TimeInterval?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
+    var ballVisibility = BouncingBallVisibility()
     var rhythmicSpacing = false
     var rhythmicWordTimings: [TimedLyricWord] = []
     var vocalPeaks: [Float] = []
@@ -3845,6 +3929,10 @@ private struct ChordProPreviewBlockView: View {
     /// The song's phrase period in beats — the reference extent every row is drawn against.
     /// 0 when the song has no recoverable phrase period, which disables the frame.
     var beatsPerLine: Int = 0
+    /// Every row spans exactly `beatsPerLine` beats and renders at gutter + period width.
+    var usesFixedPeriodRows = false
+    /// This sung row's line carries on onto the next row.
+    var continuesOnNextRow = false
     /// The song's measured beat grid, threaded in independently of the beat-dot toggle so the
     /// LAYOUT never depends on a display option. Empty disables the beat axis.
     var gridBeatTimes: [TimeInterval] = []
@@ -3898,6 +3986,8 @@ private struct ChordProPreviewBlockView: View {
     var showsReviewAffordances = true
     var onToggleLyricAccepted: (TimedLyricSegment.ID) -> Void = { _ in }
     var onCommitLyricOverride: (TimedLyricSegment.ID, String) -> Void = { _, _ in }
+    /// False on a fixed-period row that is not one whole stored line: its text can't be corrected.
+    var canEditLyric = true
     /// Real chord events behind this row's rendered chords, index-aligned with the block's
     /// `ChordProPreviewLine.chords` (backlog #15 Phase 2 remainder).
     var rowChordEvents: [EditableChordEvent?] = []
@@ -3954,14 +4044,11 @@ private struct ChordProPreviewBlockView: View {
                     }
                 }
                 if let bassLabel, !rendersPositionedBassNotes {
-                    // Flush-left fallback (monospace mode / overridden lines). Same size as the
-                    // chord glyphs (13pt monospaced) and a bright green — Eric: "Bass note names
-                    // should be the same size as chords, and be in bright green" — rather than
-                    // the smaller 10pt `StemKind.bass.laneColor` (blue) used elsewhere, which
-                    // read as secondary metadata next to the chart's chords.
+                    // Flush-left fallback (monospace mode / overridden lines). Keep its color
+                    // aligned with the bass waveform and mixer lane.
                     Text(bassLabel)
                         .font(ChordProChartTypography.chord(size: scale.chordSize))
-                        .foregroundStyle(Color.swMint)
+                        .foregroundStyle(StemKind.bass.laneColor)
                 }
                 blockContent
                 if hasUntranscribedVocals {
@@ -4010,13 +4097,15 @@ private struct ChordProPreviewBlockView: View {
                         line: line, scale: scale,
                         songChordTimes: songChordTimes,
                         highlight: highlight, playheadTime: playheadTime,
-                        beatBall: beatBall, beatDots: beatDots,
+                        beatBall: beatBall, beatDots: beatDots, ballVisibility: ballVisibility,
                         rhythmicSpacing: rhythmicSpacing, rhythmicWordTimings: rhythmicWordTimings,
                         vocalPeaks: vocalPeaks, lineDuration: lineDuration,
                         rowStartTime: rowStartTime, stripColor: stripColor,
                         rowDownbeatSeconds: rowDownbeatSeconds, gutterSeconds: gutterSeconds,
                         beatLengthSeconds: beatLengthSeconds, beatsPerBar: beatsPerBar,
                         beatsPerLine: beatsPerLine,
+                        usesFixedPeriodRows: usesFixedPeriodRows,
+                        continuesOnNextRow: continuesOnNextRow,
                         gridBeatTimes: gridBeatTimes,
                         showBarlines: showBarlines,
                         chordOnsetTimes: chordOnsetTimes,
@@ -4067,15 +4156,17 @@ private struct ChordProPreviewBlockView: View {
             .foregroundStyle(segment.accepted ? Color.swMint : Color.swTextSecondary)
             .help(segment.accepted ? "Accepted — click to un-accept" : "Accept this line")
 
-            Button {
-                draftLyricText = segment.effectiveText
-                isEditingLyric = true
-            } label: {
-                Image(systemName: "pencil")
+            if canEditLyric {
+                Button {
+                    draftLyricText = segment.effectiveText
+                    isEditingLyric = true
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.swTextSecondary)
+                .help("Correct this line's text")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.swTextSecondary)
-            .help("Correct this line's text")
 
             if !segment.accepted, let label = tier.label {
                 Text(label)
@@ -4137,13 +4228,24 @@ enum ChordProPreviewLineLayout {
         return max(0, gutterPx, reservedGutterPx) + phraseWidth
     }
 
+    /// The frame every fixed-period row renders at, whatever its content: the reserved pickup
+    /// gutter plus exactly one period. Labels that overhang draw past it; they never widen it.
+    static func fixedRowFrameWidth(reservedGutterPx: CGFloat, periodPx: CGFloat) -> CGFloat {
+        max(1, reservedGutterPx + periodPx)
+    }
+
     static func rhythmicFrameWidth(
         wordExtent: CGFloat,
         chordExtent: CGFloat,
         bassExtent: CGFloat,
-        rowContentEndX: CGFloat
+        rowContentEndX: CGFloat,
+        fixedPeriod: (reservedGutterPx: CGFloat, periodPx: CGFloat)? = nil
     ) -> CGFloat {
-        max(1, wordExtent, chordExtent, bassExtent, rowContentEndX)
+        if let fixedPeriod {
+            return fixedRowFrameWidth(
+                reservedGutterPx: fixedPeriod.reservedGutterPx, periodPx: fixedPeriod.periodPx)
+        }
+        return max(1, wordExtent, chordExtent, bassExtent, rowContentEndX)
     }
 
     /// 1.0 — chord-only rows share the SAME pixels-per-second as sung rows.
@@ -4190,8 +4292,13 @@ enum ChordProPreviewLineLayout {
         lineDuration: TimeInterval,
         chordColumnExtent: CGFloat,
         characterWidth: CGFloat,
-        pixelsPerSecond: CGFloat
+        pixelsPerSecond: CGFloat,
+        fixedPeriod: (reservedGutterPx: CGFloat, periodPx: CGFloat)? = nil
     ) -> CGFloat {
+        if let fixedPeriod {
+            return fixedRowFrameWidth(
+                reservedGutterPx: fixedPeriod.reservedGutterPx, periodPx: fixedPeriod.periodPx)
+        }
         let chordExtentWidth = chordColumnExtent * characterWidth
         // Off the rhythmic axis (or with no duration) there is no time to size by, so the chord
         // columns are all that's left.
@@ -4247,6 +4354,7 @@ private struct ChordProPreviewLineView: View {
     var playheadTime: TimeInterval?
     var beatBall: LineBeatBall?
     var beatDots: LineBeatBall?
+    var ballVisibility = BouncingBallVisibility()
     /// When true (and real word timings are available), words are spaced by their onset time
     /// instead of one monospace space apart, so the layout reflects the sung rhythm.
     var rhythmicSpacing = false
@@ -4280,6 +4388,10 @@ private struct ChordProPreviewLineView: View {
     /// The song's phrase period in beats — the reference extent every row is drawn against.
     /// 0 when the song has no recoverable phrase period, which disables the frame.
     var beatsPerLine: Int = 0
+    /// Every row spans exactly `beatsPerLine` beats and renders at gutter + period width.
+    var usesFixedPeriodRows = false
+    /// This sung row's line carries on onto the next row.
+    var continuesOnNextRow = false
     /// The song's measured beat grid, threaded in independently of the beat-dot toggle so the
     /// LAYOUT never depends on a display option. Empty disables the beat axis.
     var gridBeatTimes: [TimeInterval] = []
@@ -4434,14 +4546,15 @@ private struct ChordProPreviewLineView: View {
     ) -> some View {
         ForEach(Array(bucketRows.enumerated()), id: \.offset) { rowIndex, entry in
             let rowY = baseY + bucketRowReserve * CGFloat(rowIndex)
+            let rowColor = entry.row.stemID.laneColor
             Text(entry.row.label)
                 .font(.swDisplay(scale.scaled(9), weight: .semibold))
-                .foregroundStyle(Color.swViolet.opacity(0.85))
+                .foregroundStyle(rowColor.opacity(0.85))
                 .offset(x: 0, y: rowY)
             ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
                 Text(cell.text)
                     .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
-                    .foregroundStyle(Color.swViolet.opacity(cell.isDim ? 0.45 : 1))
+                    .foregroundStyle(rowColor.opacity(cell.isDim ? 0.45 : 1))
                     .offset(x: entry.xs[index], y: rowY)
             }
         }
@@ -4450,11 +4563,12 @@ private struct ChordProPreviewLineView: View {
                 baseY + bucketRowReserve * CGFloat(bucketRows.count)
                 + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
                 * CGFloat(blockIndex)
+            let tabColor = entry.block.stemID.laneColor
             ForEach(Array(SoloTabRowFormatter.stringLabels.enumerated()), id: \.offset) {
                 row, label in
                 Text(label)
                     .font(.swDisplay(scale.scaled(8), weight: .semibold))
-                    .foregroundStyle(Color.swCoral.opacity(0.85))
+                    .foregroundStyle(tabColor.opacity(0.85))
                     .offset(x: 0, y: blockY + soloStringReserve * CGFloat(row))
             }
             ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
@@ -4462,7 +4576,7 @@ private struct ChordProPreviewLineView: View {
                     Text(cell)
                         .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
                         .foregroundStyle(
-                            Color.swCoral.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
+                            tabColor.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
                         )
                         .offset(x: entry.xs[index], y: blockY + soloStringReserve * CGFloat(row))
                 }
@@ -4636,7 +4750,7 @@ private struct ChordProPreviewLineView: View {
     /// chord x array for whichever layout mode is asking.
     @ViewBuilder
     private func soundingChordBall(chordXs xs: [CGFloat]) -> some View {
-        if let index = soundingChordIndex, xs.indices.contains(index) {
+        if ballVisibility.chordPop, let index = soundingChordIndex, xs.indices.contains(index) {
             let labelHalfWidth =
                 CGFloat(max(line.chords[index].name.count, 1)) * characterWidth / 2
             let lift = chordOnsetIntensity(at: index)
@@ -4867,6 +4981,7 @@ private struct ChordProPreviewLineView: View {
     /// whenever the measured beats wobbled). Non-rhythmic and unknown-duration rows keep the old
     /// chord-text fallback.
     private var instrumentalTimeWidth: CGFloat {
+        if let fixedFramePx { return fixedFramePx }
         guard rhythmicSpacing, lineDuration > 0 else {
             return ChordProPreviewLineLayout.instrumentalWidth(
                 rhythmicSpacing: rhythmicSpacing,
@@ -5102,11 +5217,10 @@ private struct ChordProPreviewLineView: View {
                     .position(x: x, y: scale.scaled(4))
             }
             ForEach(Array(bassXs.enumerated()), id: \.offset) { index, x in
-                // Same size as the chord glyphs and bright green (Eric: "Bass note names
-                // should be the same size as chords, and be in bright green").
+                // Same size as chord glyphs, using the bass waveform/mixer lane color.
                 Text(rowBassNotes[index].name)
                     .font(ChordProChartTypography.chord(size: scale.chordSize))
-                    .foregroundStyle(Color.swMint)
+                    .foregroundStyle(StemKind.bass.laneColor)
                     .offset(x: x, y: topReserve + harmonyReserve + bucketReserve + soloReserve)
             }
             stemRows(
@@ -5114,14 +5228,14 @@ private struct ChordProPreviewLineView: View {
             ForEach(Array(harmonyRows.enumerated()), id: \.offset) { rowIndex, row in
                 Text(row.part.displayName)
                     .font(.swDisplay(scale.scaled(9), weight: .semibold))
-                    .foregroundStyle(Color.swAmber.opacity(0.85))
+                    .foregroundStyle(StemKind.vocals.laneColor.opacity(0.85))
                     .offset(
                         x: 0,
                         y: topReserve + harmonyRowReserve * CGFloat(rowIndex))
                 ForEach(Array(row.labels.enumerated()), id: \.offset) { _, item in
                     Text(item.label.name)
                         .font(ChordProChartTypography.chord(size: scale.chordSize))
-                        .foregroundStyle(Color.swAmber)
+                        .foregroundStyle(StemKind.vocals.laneColor)
                         .offset(
                             x: item.x,
                             y: topReserve + harmonyRowReserve * CGFloat(rowIndex))
@@ -5188,6 +5302,18 @@ private struct ChordProPreviewLineView: View {
                     )
                     .help(
                         "\(restBeats)-beat rest: the voice stops here before the next line")
+            }
+            // A sung line that carries on onto the next fixed-period row.
+            if continuesOnNextRow {
+                Text("→")
+                    .font(ChordProChartTypography.lyric(size: scale.scaled(12)))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .offset(
+                        x: max(0, totalWidth - characterWidth),
+                        y: lyricBandOffset + topReserve + harmonyReserve + bucketReserve
+                            + soloReserve + bassReserve
+                    )
+                    .help("This line continues on the next row")
             }
             soundingChordBall(chordXs: chordXs)
             if let chordBall {
@@ -5309,7 +5435,7 @@ private struct ChordProPreviewLineView: View {
     /// (mirrors `ballPosition` but maps each beat to the rhythmic word being sung). `nil` when no
     /// ball should draw.
     private var rhythmicBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall else { return nil }
+        guard ballVisibility.word, let beatBall else { return nil }
         let words = rhythmicWords
         guard beatBall.isWaiting || !words.isEmpty else { return nil }
         let ballModel: BouncingBall
@@ -5385,6 +5511,7 @@ private struct ChordProPreviewLineView: View {
     /// duration, whichever runs further. This is the extent grid furniture (barlines, frames)
     /// should cover, on EVERY row kind.
     private var rowContentEndX: CGFloat {
+        if let fixedFramePx { return fixedFramePx }
         var end: CGFloat = 0
         if !rhythmicWords.isEmpty { end = rhythmicContentWidth }
         if lineDuration > 0 {
@@ -5478,7 +5605,21 @@ private struct ChordProPreviewLineView: View {
             wordExtent: wordExtent,
             chordExtent: chordExtent + characterWidth,
             bassExtent: max(bassExtent, harmonyExtent) + characterWidth,
-            rowContentEndX: rowContentEndX)
+            rowContentEndX: rowContentEndX,
+            fixedPeriod: fixedPeriodFrame)
+    }
+
+    /// On fixed-period rows: the reserved gutter and one period, which fix this row's frame.
+    private var fixedPeriodFrame: (reservedGutterPx: CGFloat, periodPx: CGFloat)? {
+        guard usesFixedPeriodRows, let phraseWidth else { return nil }
+        return (maximumGutterPx, phraseWidth)
+    }
+
+    private var fixedFramePx: CGFloat? {
+        fixedPeriodFrame.map {
+            ChordProPreviewLineLayout.fixedRowFrameWidth(
+                reservedGutterPx: $0.reservedGutterPx, periodPx: $0.periodPx)
+        }
     }
 
     /// How many phrases this row's content actually spans. A row materially past a whole number is
@@ -5667,6 +5808,7 @@ private struct ChordProPreviewLineView: View {
     /// window in rhythmic mode (so barlines/dots aren't clipped at the text width), else the
     /// text width.
     private var monospaceFrameWidth: CGFloat {
+        if let fixedFramePx { return fixedFramePx }
         if isInstrumentalLine, lineDuration > 0 { return instrumentalTimeWidth }
         if rhythmicSpacing, lineDuration > 0 { return max(monospaceWidth, rowContentEndX) }
         return monospaceWidth
@@ -5739,7 +5881,7 @@ private struct ChordProPreviewLineView: View {
     // glyphs, and it is exact at both ends — it leaves a chord at its onset and reaches the next
     // chord's drawn position at that chord's onset, which is the requirement.
     private var rhythmicChordBallPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall, !rhythmicWords.isEmpty else { return nil }
+        guard ballVisibility.chord, let beatBall, !rhythmicWords.isEmpty else { return nil }
         let xs = rhythmicChordXs
         let times = rowChordTimes
         guard xs.count == times.count, !times.isEmpty else { return nil }
@@ -5800,7 +5942,7 @@ private struct ChordProPreviewLineView: View {
     }
 
     private var ballPosition: (x: CGFloat, y: CGFloat)? {
-        guard let beatBall else { return nil }
+        guard ballVisibility.word, let beatBall else { return nil }
         // The ball pulses on the detected beats (BPM-synthesized when no beat
         // times are available); at each beat it sits over the word being sung
         // then — from real word timings when present, else an interpolated

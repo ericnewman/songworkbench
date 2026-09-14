@@ -301,6 +301,15 @@ struct ChordProHighlightDeriver: Sendable {
     }
 }
 
+/// Which of the chart's three balls draw: the white word ball, the amber ball travelling chord
+/// onset to chord onset, and the amber pop parked over the sounding chord. Each is a View-menu
+/// toggle; none of them changes layout.
+struct BouncingBallVisibility: Equatable, Sendable {
+    var word = true
+    var chord = true
+    var chordPop = true
+}
+
 /// Pure, unit-tested geometry for the karaoke "bouncing ball" that taps the word
 /// coinciding with each beat at the beat moment, arcs up to an apex around mid-beat,
 /// then descends to tap the next beat's word. Construct it with the beat times that

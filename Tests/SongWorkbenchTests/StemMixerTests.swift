@@ -301,6 +301,14 @@ final class StemMixerTests: XCTestCase {
         XCTAssertEqual(StemID.drumKick.laneColor, StemKind.drums.laneColor)
     }
 
+    func testPreviewNoteStemColorsMatchTheirWaveformAndMixerLanes() {
+        XCTAssertEqual(StemID(.bass).laneColor, StemKind.bass.laneColor)
+        XCTAssertEqual(StemID.vocalLead.laneColor, StemKind.vocals.laneColor)
+        XCTAssertEqual(StemID.vocalBacking.laneColor, StemKind.vocals.laneColor)
+        XCTAssertEqual(StemID.guitarLead.laneColor, StemKind.guitar.laneColor)
+        XCTAssertEqual(StemID.guitarRhythm.laneColor, StemKind.guitar.laneColor)
+    }
+
     func testWaveformLaneTargetsUseNumberedVocalChildNames() {
         let root = URL(fileURLWithPath: "/tmp/refined-vocal-waveforms")
         let manifest = StemSetManifest(

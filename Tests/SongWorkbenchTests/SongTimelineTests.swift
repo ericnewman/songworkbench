@@ -60,7 +60,7 @@ final class SongTimelineTests: XCTestCase {
         XCTAssertEqual(result.timeline.rows.map(\.number), Array(1...numberedLines.count))
     }
 
-    func testMultiRowIntroHasPerRowWindowsCoveringTheGap() {
+    func testMultiRowIntroHasPerRowWindowsCoveringTheGap() throws {
         let result = ChordProDraftBuilder().buildResult(makeInput())
         let introRows = result.timeline.rows.filter {
             $0.kind == .instrumental(role: .intro)
@@ -68,7 +68,9 @@ final class SongTimelineTests: XCTestCase {
         // 24s intro at 2s bars = 12 bars → split into multiple rows (typical lyric bars ~4).
         XCTAssertGreaterThan(introRows.count, 1, "long intro must produce multiple rows")
         XCTAssertEqual(introRows.first?.start ?? -1, 0, accuracy: 1e-9)
-        XCTAssertEqual(introRows.last?.end ?? -1, 24.0, accuracy: 1e-9)
+        // The intro runs up to the first sung row, which starts on its row grid window.
+        let firstLyric = try XCTUnwrap(result.timeline.rows.first(where: \.isLyric))
+        XCTAssertEqual(introRows.last?.end ?? -1, firstLyric.start, accuracy: 1e-9)
         // Contiguous, ascending windows — the ball walks them row by row (audit RC-2).
         for (early, late) in zip(introRows, introRows.dropFirst()) {
             XCTAssertEqual(early.end, late.start, accuracy: 1e-9)
@@ -85,25 +87,33 @@ final class SongTimelineTests: XCTestCase {
     func testLyricRowsCarryOrdinalsAndWindows() {
         let result = ChordProDraftBuilder().buildResult(makeInput())
         let lyricRows = result.timeline.rows.filter(\.isLyric)
-        XCTAssertEqual(lyricRows.count, 3)
-        XCTAssertEqual(lyricRows[0].kind, .lyric(ordinal: 0))
-        XCTAssertEqual(lyricRows[0].start, 24.0, accuracy: 1e-9)
-        // The playhead inside a lyric line resolves to it; inside the short gap after it,
-        // it HOLDS on that line (fold-into-tail semantics), not the next one.
-        XCTAssertEqual(result.timeline.row(at: 25.0)?.kind, .lyric(ordinal: 0))
-        XCTAssertEqual(result.timeline.row(at: 27.2)?.kind, .lyric(ordinal: 0))
-        XCTAssertEqual(result.timeline.row(at: 28.0)?.kind, .lyric(ordinal: 1))
+        XCTAssertFalse(lyricRows.isEmpty)
+        // Ordinals count the sung rows in chart order, and each one is `chartLines[ordinal]`.
+        XCTAssertEqual(lyricRows.map(\.kind), lyricRows.indices.map { .lyric(ordinal: $0) })
+        XCTAssertEqual(lyricRows.count, result.chartLines.count)
+        // The playhead on any word a row sings (pickups drawn in its gutter aside) resolves to
+        // that row.
+        for (row, line) in zip(lyricRows, result.chartLines) {
+            for word in line.segment.words where word.start >= row.start {
+                XCTAssertEqual(
+                    result.timeline.row(at: word.start)?.number, row.number,
+                    "word \(word.text) at \(word.start) s must resolve to row \(row.number)")
+            }
+        }
     }
 
-    func testBreakAndOutroRowsAreTypedAndUntranscribedFlagged() {
+    func testBreakAndOutroRowsAreTypedAndUntranscribedFlagged() throws {
         let result = ChordProDraftBuilder().buildResult(makeInput())
-        let interludes = result.timeline.rows.filter {
-            $0.kind == .instrumental(role: .interlude)
-        }
-        // The 30.5→45 gap (7+ bars) becomes instrumental rows between lyric 1 and 2.
-        XCTAssertFalse(interludes.isEmpty)
-        XCTAssertEqual(interludes.first?.start ?? -1, 30.5, accuracy: 1e-9)
-        XCTAssertEqual(interludes.last?.end ?? -1, 45.0, accuracy: 1e-9)
+        let rows = result.timeline.rows
+        let interludes = rows.filter { $0.kind == .instrumental(role: .interlude) }
+        // The 30.5→45 gap (7+ bars) becomes instrumental rows that tile the space between the
+        // sung rows on either side of it.
+        let firstInterlude = try XCTUnwrap(interludes.first)
+        let lastInterlude = try XCTUnwrap(interludes.last)
+        let before = try XCTUnwrap(rows.last { $0.isLyric && $0.end <= firstInterlude.start + 1e-9 })
+        let after = try XCTUnwrap(rows.first { $0.isLyric && $0.start >= lastInterlude.end - 1e-9 })
+        XCTAssertEqual(firstInterlude.start, before.end, accuracy: 1e-9)
+        XCTAssertEqual(lastInterlude.end, after.start, accuracy: 1e-9)
         // The untranscribed sung span 50–55 lies in the OUTRO here (after the last line at 48):
         // outro rows overlapping it are flagged; the interlude rows (30.5–45) are not.
         XCTAssertTrue(interludes.allSatisfy { !$0.containsUntranscribedVocals })

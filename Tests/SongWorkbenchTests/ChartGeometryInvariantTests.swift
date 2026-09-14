@@ -343,4 +343,194 @@ final class ChartGeometryInvariantTests: XCTestCase {
             "a short lyric row must reserve the full phrase frame instead of laying out as a tiny island"
         )
     }
+
+    // MARK: - Fixed-period rows (tasks/spec-fixed-period-rows.md)
+
+    /// 120 BPM 4/4 (beat 0 at 0.5 s, downbeats every 2 s from 0.5 s) with verse lines on a steady
+    /// 8-beat phrase, one line running 14 beats, and one line opening a beat before its downbeat —
+    /// the shapes that make today's rows differ in length.
+    private func makeFixedPeriodInput() -> ChordProDraftInput {
+        let beats = stride(from: 0.5, through: 80.0, by: 0.5).map { $0 }
+        func line(_ text: String, _ onsets: [TimeInterval], end: TimeInterval) -> TimedLyricSegment {
+            var cursor = 0
+            let tokens = text.split(separator: " ").map(String.init)
+            let words = zip(tokens, onsets).enumerated().map { index, pair -> TimedLyricWord in
+                let (token, onset) = pair
+                let range = cursor..<(cursor + token.count)
+                cursor += token.count + 1
+                let next = index + 1 < onsets.count ? onsets[index + 1] : end
+                return TimedLyricWord(text: token, start: onset, end: next, characterRange: range)
+            }
+            return TimedLyricSegment(start: onsets[0], end: end, text: text, words: words)
+        }
+        let lyrics = [
+            line("First line here", [24.5, 25.5, 26.5], end: 27.5),
+            line("Second line goes", [28.5, 29.5, 30.5], end: 31.5),
+            line("Third line lands", [32.5, 33.5, 34.5], end: 35.5),
+            line(
+                "A much longer line that keeps on going",
+                [36.5, 37.5, 38.5, 39.5, 40.5, 41.5, 42.5, 43.0], end: 43.5),
+            line("And then we sing", [44.0, 44.5, 45.5, 46.5], end: 47.5),
+            line("Last line home", [48.5, 49.5, 50.5], end: 51.5),
+        ]
+        // A chord on every downbeat, plus two changes played BETWEEN sung lines (27.9 s, 43.7 s):
+        // today those fold into a neighbouring line; on fixed rows they belong to the row whose
+        // window holds them.
+        let downbeatChords = stride(from: 0.5, through: 78.5, by: 2.0).enumerated().map {
+            index, time in
+            EditableChordEvent(time: time, chord: ["C", "G", "Am", "F"][index % 4], confidence: 0.9)
+        }
+        let chords = (downbeatChords + [
+            EditableChordEvent(time: 27.9, chord: "Em", confidence: 0.9),
+            EditableChordEvent(time: 43.7, chord: "D", confidence: 0.9),
+        ]).sorted { $0.time < $1.time }
+        var input = ChordProDraftInput(
+            title: "Fixed period", tempo: 120, lyrics: lyrics, chords: chords,
+            beatTimes: beats, sourceDuration: 80)
+        input.barGrid = SongBarGrid(
+            beatsPerBar: 4, barPhase: 0, confidence: 0.5, phaseSource: .drumAccents)
+        return input
+    }
+
+    private func fixedPeriodRows(_ input: ChordProDraftInput) -> [SongTimeline.Row] {
+        ChordProDraftBuilder().buildResult(input).timeline.rows
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+    }
+
+    func testFixedPeriodRowsTileTheSongAndSpanOneWholeBarPeriod() throws {
+        let input = makeFixedPeriodInput()
+        let rows = fixedPeriodRows(input)
+        XCTAssertGreaterThanOrEqual(rows.count, 3)
+        XCTAssertEqual(rows.first?.start ?? -1, 0, accuracy: 1e-6, "rows must start at the song's start")
+        XCTAssertEqual(rows.last?.end ?? -1, 80, accuracy: 1e-6, "rows must end at the song's end")
+        for (earlier, later) in zip(rows, rows.dropFirst()) {
+            XCTAssertEqual(
+                earlier.end, later.start, accuracy: 1e-6,
+                "rows \(earlier.number) and \(later.number) must tile with no gap or overlap")
+        }
+        let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120, beatsPerBar: 4, barPhase: 0)
+        let interior = Array(rows.dropFirst().dropLast())
+        let spans = interior.map { grid.beatIndex(atTime: $0.end) - grid.beatIndex(atTime: $0.start) }
+        let period = try XCTUnwrap(spans.first)
+        XCTAssertGreaterThan(period, 0)
+        XCTAssertEqual(
+            period.truncatingRemainder(dividingBy: 4), 0, accuracy: 0.01,
+            "the row period (\(period) beats) must be whole bars")
+        for (row, span) in zip(interior, spans) {
+            XCTAssertEqual(
+                span, period, accuracy: 0.01,
+                "row \(row.number) spans \(span) beats; every interior row must span \(period)")
+        }
+    }
+
+    func testInteriorFixedPeriodRowsStartOnDownbeats() {
+        let input = makeFixedPeriodInput()
+        let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120, beatsPerBar: 4, barPhase: 0)
+        for row in fixedPeriodRows(input).dropFirst().dropLast() {
+            let index = grid.beatIndex(atTime: row.start)
+            XCTAssertEqual(
+                index, index.rounded(), accuracy: 0.01,
+                "row \(row.number) starts \(index) beats in, between beats")
+            XCTAssertTrue(
+                grid.isDownbeat(beatIndex: Int(index.rounded())),
+                "row \(row.number) starts on beat index \(index), not a downbeat")
+        }
+    }
+
+    func testEveryChordSitsInTheRowWhoseWindowHoldsItsOnset() {
+        let input = makeFixedPeriodInput()
+        let rows = fixedPeriodRows(input)
+        for chord in input.chords {
+            guard let owner = rows.first(where: { $0.start <= chord.time && chord.time < $0.end })
+            else {
+                XCTFail("no row window holds the chord at \(chord.time) s")
+                continue
+            }
+            XCTAssertTrue(
+                owner.chordTimes.contains { abs($0 - chord.time) < 1e-6 },
+                "the chord at \(chord.time) s must sit in row \(owner.number) "
+                    + "(\(owner.start)–\(owner.end) s), whose window holds it")
+        }
+    }
+
+    func testEveryFixedPeriodRowRendersTheSameFrameWidth() {
+        let beatLength = 0.5
+        let periodBeats = 8
+        let pixelsPerBeat = CGFloat(beatLength) * ChordProPreviewLineLayout.pixelsPerSecond
+        let reservedGutter = ChordProPreviewLineLayout.gutterBeats * pixelsPerBeat
+        let lyricFrame = ChordProPreviewLineLayout.referenceFrameEndX(
+            gutterPx: 0, reservedGutterPx: reservedGutter,
+            phraseWidth: CGFloat(periodBeats) * pixelsPerBeat)
+
+        let fixedPeriod = (
+            reservedGutterPx: reservedGutter, periodPx: CGFloat(periodBeats) * pixelsPerBeat
+        )
+
+        // A last word whose label hangs three beats past the period must not widen its row.
+        XCTAssertEqual(
+            ChordProPreviewLineLayout.rhythmicFrameWidth(
+                wordExtent: lyricFrame + 3 * pixelsPerBeat, chordExtent: lyricFrame,
+                bassExtent: 0, rowContentEndX: lyricFrame, fixedPeriod: fixedPeriod),
+            lyricFrame, accuracy: 0.001,
+            "an overhanging label widened a fixed-period lyric row")
+        // A chord-only row of exactly one period draws as wide as a sung row of one period.
+        XCTAssertEqual(
+            ChordProPreviewLineLayout.instrumentalWidth(
+                rhythmicSpacing: true, lineDuration: Double(periodBeats) * beatLength,
+                chordColumnExtent: 12, characterWidth: 9,
+                pixelsPerSecond: ChordProPreviewLineLayout.pixelsPerSecond,
+                fixedPeriod: fixedPeriod),
+            lyricFrame, accuracy: 0.001,
+            "a one-period chord-only row renders at a different width from a one-period lyric row")
+    }
+
+    /// Playback on fixed-period rows: at every playhead time, the sung row the highlight (and so
+    /// the auto-scroll) follows is the timeline row the ball follows — at a row's downbeat before its
+    /// first word, and while a pickup is sung just ahead of the next row's downbeat. The second
+    /// input shifts every line half a beat late so first words land after their downbeats.
+    func testTheHighlightFollowsTheTimelineRowOnFixedPeriodRows() {
+        let base = makeFixedPeriodInput()
+        func shifted(_ seconds: TimeInterval) -> ChordProDraftInput {
+            let lyrics = base.lyrics.map { line -> TimedLyricSegment in
+                var moved = line
+                moved.start += seconds
+                moved.end += seconds
+                moved.words = line.words.map { word in
+                    var w = word
+                    w.start += seconds
+                    w.end += seconds
+                    return w
+                }
+                return moved
+            }
+            var input = ChordProDraftInput(
+                title: base.title, tempo: base.tempo, lyrics: lyrics, chords: base.chords,
+                beatTimes: base.beatTimes, sourceDuration: base.sourceDuration)
+            input.barGrid = base.barGrid
+            return input
+        }
+        for (label, input) in [("fixture", base), ("half a beat late", shifted(0.25))] {
+            let result = ChordProDraftBuilder().buildResult(input)
+            let deriver = ChordProHighlightDeriver(
+                lyricSegments: result.chartLines.map(\.segment), chordEvents: input.chords,
+                confidenceThreshold: input.confidenceThreshold)
+            var disagreements: [String] = []
+            for step in 0..<800 {
+                let time = Double(step) * 0.1
+                guard let row = result.timeline.row(at: time), case .lyric(let ordinal) = row.kind
+                else { continue }
+                let highlighted = deriver.lyricOrdinal(at: time)
+                if highlighted != ordinal {
+                    disagreements.append(
+                        String(
+                            format: "t=%.1f row %d (ordinal %d) highlight %@", time, row.number,
+                            ordinal, highlighted.map(String.init) ?? "nil"))
+                }
+            }
+            XCTAssertEqual(
+                disagreements.count, 0,
+                "\(label): the highlight must follow the timeline row: \(disagreements.prefix(4))")
+        }
+    }
 }

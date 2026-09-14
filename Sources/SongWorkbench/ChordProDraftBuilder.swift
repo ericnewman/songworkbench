@@ -27,6 +27,9 @@ struct ChordProDraftInput: Equatable, Sendable {
     /// chord timeline is never modified. Empty (the default) renders no walk annotations —
     /// the bass-note draft variant deliberately passes none.
     var bassNotes: [BassNoteObservation] = []
+    /// Beats per chart row chosen in the View menu; 0 (the default) derives it from the lyric
+    /// phrasing (`SongBeatsPerLine.rowBeats`). Rounded up to whole bars either way.
+    var beatsPerRowOverride: Int = 0
 }
 
 enum UntranscribedVocalRegionResolver {
@@ -66,6 +69,14 @@ enum UntranscribedVocalRegionResolver {
 struct ChordProDraftResult: Equatable, Sendable {
     let source: String
     let timeline: SongTimeline
+    /// On fixed-period rows, the sung text of each lyric row in chart order — `lyricOrdinal` N of
+    /// the rendered source is `chartLines[N]`. Empty for untimed songs, whose rows are the stored
+    /// lyric lines themselves.
+    var chartLines: [ChartLyricLine] = []
+    /// On fixed-period rows: beats per row (whole bars), and each timeline row's origin — the
+    /// downbeat its grid window starts on — keyed by row number. nil/empty for untimed songs.
+    var periodBeats: Int? = nil
+    var rowOrigins: [Int: TimeInterval] = [:]
 }
 
 struct ChordProDraftBuilder: Sendable {
@@ -87,7 +98,9 @@ struct ChordProDraftBuilder: Sendable {
     /// chord-onset bar phase, so a chart could persist with bars the drum-measured grid
     /// contradicts); 6 = bass walk-up/walk-down steps annotated as slash chords
     /// (`BassRunDetector`).
-    static let algorithmVersion = 6
+    /// 7 = fixed-period rows: every timed chart row spans exactly one whole-bar phrase period
+    /// (`ChartRowGrid`, tasks/spec-fixed-period-rows.md).
+    static let algorithmVersion = 7
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -229,6 +242,23 @@ struct ChordProDraftBuilder: Sendable {
                 lines.append("| \(row) |")
             }
             lines.append("{end_of_grid}")
+        }
+
+        // Fixed-period rows (alg7, tasks/spec-fixed-period-rows.md): with a detected beat grid the
+        // song is cut into rows of exactly one phrase period, so every row renders the same width
+        // on shared beat and bar columns. Untimed songs keep the line-by-line layout below.
+        if !lyrics.isEmpty,
+            let rowGrid = fixedPeriodGrid(input: input, lyrics: lyrics, chords: chords)
+        {
+            let body = fixedPeriodBody(
+                input: input, lyrics: lyrics, chords: chords, grid: rowGrid,
+                sectionByStart: sectionByStart, tailCutoff: tailCutoff)
+            return ChordProDraftResult(
+                source: (lines + body.lines).joined(separator: "\n") + "\n",
+                timeline: SongTimeline(rows: body.rows),
+                chartLines: body.chartLines,
+                periodBeats: rowGrid.periodBeats,
+                rowOrigins: body.origins)
         }
 
         // Typical bars per sung line — used to break a long instrumental section into rows of a
@@ -403,6 +433,252 @@ struct ChordProDraftBuilder: Sendable {
             source: lines.joined(separator: "\n") + "\n",
             timeline: SongTimeline(rows: rows)
         )
+    }
+
+    /// The row grid for a timed song: detected beats, a tempo, the shared bar grid, and a phrase
+    /// period from the View-menu override or the lyric phrasing (two bars when neither says).
+    private func fixedPeriodGrid(
+        input: ChordProDraftInput, lyrics: [TimedLyricSegment], chords: [RenderableChordEvent]
+    ) -> ChartRowGrid? {
+        guard let bpm = input.tempo, bpm > 0, !input.beatTimes.isEmpty else { return nil }
+        let onsets = lyrics.map(SongBeatsPerLine.lineOnset)
+        let bars =
+            input.barGrid
+            ?? SongBarGridEstimator.estimate(
+                beatTimes: input.beatTimes, beatStrengths: [], lyricLineOnsets: onsets)
+        let phraseBeats =
+            input.beatsPerRowOverride > 0
+            ? input.beatsPerRowOverride
+            : SongBeatsPerLine.rowBeats(beatTimes: input.beatTimes, bpm: bpm, lineOnsets: onsets)
+                ?? 2 * bars.beatsPerBar
+        let lastSound = max(chords.map(\.time).max() ?? 0, lyrics.map(\.end).max() ?? 0)
+        return ChartRowGrid.make(
+            beatTimes: input.beatTimes, bpm: bpm, barGrid: bars, phraseBeats: phraseBeats,
+            duration: resolvedSongDuration(input: input, fallback: lastSound + 1))
+    }
+
+    /// The chart body on fixed-period rows: one row per window holding sound. A window with a
+    /// chart lyric line is a sung row carrying the chords whose onsets fall in it; any other
+    /// window is a chord-only row (sustaining the held chord when it has no change of its own).
+    /// Windows before the first sound join the first row, windows after the last sound join the
+    /// last row, and a silent window before any chord has sounded joins the row before it — so the
+    /// rows always tile the song and no row renders blank.
+    private func fixedPeriodBody(
+        input: ChordProDraftInput,
+        lyrics: [TimedLyricSegment],
+        chords: [RenderableChordEvent],
+        grid rowGrid: ChartRowGrid,
+        sectionByStart: [TimeInterval: SongStructureAnalyzer.VocalSection],
+        tailCutoff: TimeInterval?
+    ) -> (
+        lines: [String], rows: [SongTimeline.Row], chartLines: [ChartLyricLine],
+        origins: [Int: TimeInterval]
+    ) {
+        let measure = rowGrid.measure
+        let windows = rowGrid.windows
+        let chartLines = ChartLyricLineCutter.lines(from: lyrics, grid: rowGrid)
+        guard let firstWindow = windows.first?.index, let lastWindow = windows.last?.index else {
+            return ([], [], chartLines, [:])
+        }
+        func clamped(_ window: Int) -> Int { min(max(window, firstWindow), lastWindow) }
+        let lineByWindow = Dictionary(
+            chartLines.map { (clamped($0.windowIndex), $0) }, uniquingKeysWith: { first, _ in first })
+        var chordsByWindow: [Int: [RenderableChordEvent]] = [:]
+        for chord in chords {
+            chordsByWindow[clamped(rowGrid.windowIndex(forTime: chord.time)), default: []].append(chord)
+        }
+        let contentWindows = Set(lineByWindow.keys).union(chordsByWindow.keys)
+        guard let firstContent = contentWindows.min(), let lastContent = contentWindows.max() else {
+            return ([], [], chartLines, [:])
+        }
+
+        struct Span {
+            let window: Int
+            let start: TimeInterval
+            var end: TimeInterval
+            let chords: [RenderableChordEvent]
+            let line: ChartLyricLine?
+            /// Start of the silent windows (no chord has sounded yet) merged onto this row's end.
+            var silentFrom: TimeInterval? = nil
+        }
+        var spans: [Span] = []
+        var leadingStart: TimeInterval?
+        for window in windows {
+            if window.index < firstContent {
+                leadingStart = leadingStart ?? window.start
+                continue
+            }
+            let line = lineByWindow[window.index]
+            let own = chordsByWindow[window.index] ?? []
+            let silent =
+                line == nil && own.isEmpty && !chords.contains { $0.time < window.start }
+            if window.index > lastContent, !spans.isEmpty {
+                spans[spans.count - 1].end = window.end
+                continue
+            }
+            if silent, !spans.isEmpty {
+                spans[spans.count - 1].silentFrom = spans[spans.count - 1].silentFrom ?? window.start
+                spans[spans.count - 1].end = window.end
+                continue
+            }
+            spans.append(
+                Span(
+                    window: window.index, start: leadingStart ?? window.start, end: window.end,
+                    chords: own.sorted { $0.time < $1.time }, line: line))
+            leadingStart = nil
+        }
+
+        var lines: [String] = []
+        var rows: [SongTimeline.Row] = []
+        var origins: [Int: TimeInterval] = [:]
+        func appendRow(
+            kind: SongTimeline.Row.Kind, window: Int, start: TimeInterval, end: TimeInterval,
+            chordTimes: [TimeInterval]
+        ) {
+            origins[rows.count + 1] = measure.time(
+                atBeatIndex: Double(rowGrid.anchorBeatIndex + window * rowGrid.periodBeats))
+            let sung = UntranscribedVocalRegionResolver.overlaps(
+                input.untranscribedVocalRegions, start: start, end: max(end, start))
+            rows.append(
+                SongTimeline.Row(
+                    number: rows.count + 1, kind: kind, start: start,
+                    end: max(end, start + 0.01), chordTimes: chordTimes,
+                    containsUntranscribedVocals: sung))
+        }
+        /// The Intro / Instrumental / missed-vocals comment for a silent stretch of 4+ bars that has
+        /// no chord-only rows of its own (it sits inside the neighbouring sung row's window).
+        func gapComment(from start: TimeInterval, to end: TimeInterval, intro: Bool) {
+            let bars =
+                (measure.beatIndex(atTime: end) - measure.beatIndex(atTime: start))
+                / Double(measure.beatsPerBar)
+            guard bars >= 4 else { return }
+            let missed = UntranscribedVocalRegionResolver.overlaps(
+                input.untranscribedVocalRegions, start: start, end: end)
+            let label = missed ? "Vocals not transcribed" : (intro ? "Intro" : "Instrumental")
+            if !lines.isEmpty { lines.append("") }
+            lines.append("{comment: \(directiveValue("\(label) · \(barCount(bars)) bars"))}")
+        }
+        func held(at time: TimeInterval) -> RenderableChordEvent? {
+            chords.last { $0.time < time }.map {
+                RenderableChordEvent(time: time, label: $0.label, confidence: $0.confidence)
+            }
+        }
+
+        let firstLyricSpan = spans.firstIndex { $0.line != nil }
+        let lastLyricSpan = spans.lastIndex { $0.line != nil }
+        let sourcesByID = Dictionary(
+            lyrics.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var openSection: SongStructureAnalyzer.SectionKind?
+        var openedSources = Set<TimedLyricSegment.ID>()
+        var lyricOrdinal = 0
+        var rowLines: [ChartLyricLine] = []
+        var index = 0
+        while index < spans.count {
+            if let line = spans[index].line {
+                let span = spans[index]
+                if index == 0, let firstSound = line.segment.words.first?.start ?? Optional(line.segment.start),
+                    firstSound > span.start
+                {
+                    gapComment(from: span.start, to: firstSound, intro: true)
+                }
+                var isSectionStart = index == firstLyricSpan
+                // A section opens before the row holding the first word of its first line.
+                var opening: SongStructureAnalyzer.VocalSection?
+                for id in line.sourceIDs where openedSources.insert(id).inserted {
+                    guard opening == nil, let source = sourcesByID[id],
+                        let section = sectionByStart[source.start],
+                        !(tailCutoff.map {
+                            TrailingLyricTailPruner.substantiveLineStart(source) >= $0 - 0.02
+                        } ?? false)
+                    else { continue }
+                    opening = section
+                }
+                if let opening {
+                    if !lines.isEmpty { lines.append("") }
+                    if let openSection { lines.append(sectionDirective(closing: openSection)) }
+                    lines.append(sectionDirective(opening: opening))
+                    openSection = opening.kind
+                    isSectionStart = true
+                }
+                var rowChords = span.chords
+                // Name the sounding chord at every section start (standard chart practice).
+                if isSectionStart,
+                    rowChords.first.map({ $0.time > line.segment.start + 0.5 }) ?? true,
+                    let restated = held(at: line.segment.start)
+                {
+                    rowChords.insert(restated, at: 0)
+                }
+                if !rowChords.isEmpty { lines.append(chordTimeDirective(for: rowChords)) }
+                lines.append(render(segment: line.segment, chords: rowChords))
+                appendRow(
+                    kind: .lyric(ordinal: lyricOrdinal), window: span.window, start: span.start,
+                    end: span.end,
+                    chordTimes: rowChords.map(\.time))
+                if let silentFrom = span.silentFrom {
+                    gapComment(from: min(silentFrom, line.segment.end), to: span.end, intro: false)
+                }
+                // The row's line spans its row window: the playback highlight switches lines at
+                // line starts, so it now turns exactly when the ball's timeline row does — at the
+                // downbeat before the first word, and not on a pickup sung ahead of the next row.
+                var rowSegment = line.segment
+                rowSegment.start = span.start
+                rowSegment.end = span.end
+                rowLines.append(
+                    ChartLyricLine(
+                        windowIndex: line.windowIndex, segment: rowSegment, sourceIDs: line.sourceIDs,
+                        continuesOnNextRow: line.continuesOnNextRow,
+                        isWholeSourceLine: line.isWholeSourceLine))
+                lyricOrdinal += 1
+                index += 1
+                continue
+            }
+
+            // A run of chord-only rows.
+            var runEnd = index
+            while runEnd + 1 < spans.count, spans[runEnd + 1].line == nil { runEnd += 1 }
+            let runStart = spans[index].start
+            let runStop = spans[runEnd].end
+            let role: SongTimeline.Row.InstrumentalRole
+            if let first = firstLyricSpan, index < first {
+                role = .intro
+            } else if let last = lastLyricSpan, index > last {
+                role = .outro
+            } else {
+                role = .interlude
+            }
+            let runBars =
+                (measure.beatIndex(atTime: runStop) - measure.beatIndex(atTime: runStart))
+                / Double(measure.beatsPerBar)
+            if !lines.isEmpty { lines.append("") }
+            if role == .outro {
+                if let open = openSection {
+                    lines.append(sectionDirective(closing: open))
+                    openSection = nil
+                }
+                lines.append("{comment: Outro}")
+            } else if runBars >= 4 {
+                let missed = UntranscribedVocalRegionResolver.overlaps(
+                    input.untranscribedVocalRegions, start: runStart, end: runStop)
+                let label = missed ? "Vocals not transcribed" : (role == .intro ? "Intro" : "Instrumental")
+                lines.append("{comment: \(directiveValue("\(label) · \(barCount(runBars)) bars"))}")
+            }
+            for span in spans[index...runEnd] {
+                var rowChords = span.chords
+                if rowChords.isEmpty, let sustained = held(at: span.start) {
+                    rowChords = [sustained]
+                }
+                if !rowChords.isEmpty { lines.append(chordTimeDirective(for: rowChords)) }
+                lines.append(chordOnlyLine(rowChords, start: span.start, end: span.end, grid: measure))
+                appendRow(
+                    kind: .instrumental(role: role), window: span.window, start: span.start,
+                    end: span.end,
+                    chordTimes: rowChords.map(\.time))
+            }
+            index = runEnd + 1
+        }
+        if let openSection { lines.append(sectionDirective(closing: openSection)) }
+        // Rows as emitted, so lyric ordinal N is always `rowLines[N]`.
+        return (lines, rows, rowLines, origins)
     }
 
     /// The full song duration for timeline bounds: prefer the transcribed audio length, else beats,
