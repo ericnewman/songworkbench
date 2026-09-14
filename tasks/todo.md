@@ -3489,3 +3489,20 @@ reviewed) charts.
 Review: no chord-click references left in Sources/Tests; full `xcodebuild test` 1118 run, 30 skipped,
 0 failures (app built 11:48:50). The scroll-to-top wiring has no unit seam (SwiftUI ScrollViewReader);
 it needs the on-screen check. Not committed.
+
+## 2026-09-14 — Bar grid after a tempo retune; per-row gutter on fixed rows
+
+Eric: pauses seemed to add too many beats of silence. Verified against the audio (Back to New
+Orleans): rows tile 0–281.86 s = the track, and the vocals stem is silent in every lyric gap, so no
+time is added. The extra beats came from (1) a 3/4 bar grid — the tracker's default anchored 4/4 at
+139.7 BPM rescaled by the ×3/4 retune to 104.8 BPM — making 8-beat rows round up to 9, and (2) the
+flat 2-beat gutter every fixed-period row reserved even without a pickup.
+
+- [x] Regression test (red first: 6 ≠ 4): an anchored bar grid is re-estimated after a retune.
+- [x] `AnalysisTimingPostPasses.apply`: only a `.drumAccents` grid is rescaled; anchored grids are
+      re-estimated on the final beats. `versionTag` → `timing-3` so stored songs re-derive.
+- [x] Fixed-period rows use the per-row `ChartPickupGutter` (0 when no pickup) for both the row's
+      downbeat and its frame, like variable rows already did.
+- [x] Full suite; real-song check of the re-derived grid.
+- [ ] Eric's on-screen check.
+Skipped: `{time: 4/4}` stays hard-coded (the non-fixed chart's bar math is 4/4).

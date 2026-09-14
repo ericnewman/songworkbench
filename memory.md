@@ -365,3 +365,4 @@
 - 2026-09-14: The metronome (`StemPlaybackService.beatClick`, `clickGain`) is the only click
   track. The chord click that marked chord placement was removed at Eric's request; the
   chord-placement A/B is judged by eye (highlight, ball) against the recording.
+- 2026-09-14: A tempo retune (`AnalysisTimingPostPasses`, `timing-3`) rescales only a MEASURED (`.drumAccents`) bar grid; an anchored grid is a guess and is re-estimated on the retuned beats (rescaling turned a default 4/4 into 3/4 and 9-beat rows). Fixed-period chart rows use the per-row whole-beat `ChartPickupGutter` (0 without a pickup), not a flat 2-beat gutter.

@@ -3159,10 +3159,9 @@ struct ChordProAppPreview: View {
             earliestContent: [lineWords.first?.start, chordRow.effectiveTimes.min()]
                 .compactMap { $0 }.min(),
             beatLengthSeconds: beatLengthSeconds)
-        // Fixed-period rows all reserve the full gutter, so every row's downbeat column (and so
-        // every bar line) sits at the same x.
-        let fullGutterSeconds = Double(ChordProPreviewLineLayout.gutterBeats) * beatLengthSeconds
-        let rowGutterSeconds = fixedPeriodBeats == nil ? pickupGutterSeconds : fullGutterSeconds
+        // Fixed-period rows use the same per-row gutter: a row with no pickup opens on its downbeat
+        // (Eric, 2026-09-14: a flat two beats on every row read as silence the track doesn't have).
+        let rowGutterSeconds = pickupGutterSeconds
         let itemContinues = item.lyricOrdinal.map(continuingLyricOrdinals.contains) ?? false
         let itemRowSources: [TimedLyricSegment.ID]? = item.lyricOrdinal.flatMap { ordinal in
             lyricRowSourceIDs.indices.contains(ordinal) ? lyricRowSourceIDs[ordinal] : nil
@@ -5632,10 +5631,10 @@ private struct ChordProPreviewLineView: View {
             fixedPeriod: fixedPeriodFrame)
     }
 
-    /// On fixed-period rows: the reserved gutter and one period, which fix this row's frame.
+    /// On fixed-period rows: this row's own pickup gutter and one period, which fix its frame.
     private var fixedPeriodFrame: (reservedGutterPx: CGFloat, periodPx: CGFloat)? {
         guard usesFixedPeriodRows, let phraseWidth else { return nil }
-        return (maximumGutterPx, phraseWidth)
+        return (gutterPx, phraseWidth)
     }
 
     private var fixedFramePx: CGFloat? {

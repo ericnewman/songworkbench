@@ -344,7 +344,8 @@ enum AnalysisTimingPostPasses {
     /// Bump when regroup/reconcile/recut semantics change, so stamped documents re-derive.
     // timing-2: rows are recut on `SongBeatsPerLine.rowBeats` (the preview's period) instead of
     // the raw fit, so stored lines re-derive onto the period they are framed at.
-    static let versionTag = "timing-2"
+    // timing-3: an anchored (guessed) bar grid is re-estimated after a retune, not rescaled.
+    static let versionTag = "timing-3"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag
@@ -372,7 +373,12 @@ enum AnalysisTimingPostPasses {
             document.estimatedBPM = verdict.bpm
             document.beatTimes = MetricalLevelReconciler.reconciledBeatTimes(
                 beatTimes: document.preReconciliationTiming!.beatTimes, ratio: verdict.ratio)
-            document.barGrid = document.barGrid?.retuned(by: verdict.ratio)
+            // Only a MEASURED bar survives a retune. An anchored grid's bar length is a guess made
+            // at the old beat level, and rescaling it turned Back to New Orleans' default 4/4 at
+            // 139.7 BPM into 3/4 at 104.8 — so it is re-estimated on the final grid below.
+            document.barGrid =
+                document.barGrid?.phaseSource == .drumAccents
+                ? document.barGrid?.retuned(by: verdict.ratio) : nil
         }
         // Recut on the FINAL grid, then carry user annotations (overrideText/accepted) forward
         // from the stored lines — these passes rebuild plain segments straight from words.
