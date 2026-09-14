@@ -3506,3 +3506,15 @@ flat 2-beat gutter every fixed-period row reserved even without a pickup.
 - [x] Full suite; real-song check of the re-derived grid.
 - [ ] Eric's on-screen check.
 Skipped: `{time: 4/4}` stays hard-coded (the non-fixed chart's bar math is 4/4).
+
+### Follow-up — vocal energy drawn right of its words (Eric's screenshot, 12:32)
+
+Cause (from 65d16cf, not the bar-grid/gutter change): a fixed-period lyric row's window now starts
+on its downbeat, and its vocal peaks are cut from that window, but `waveformStrip` drew them from
+the first word's onset. Each row's energy shifted right by its lead-in. Confirmed on Back to New
+Orleans: predicted shifts (first word − window start) for rows 7–12 were 3.9/1.0/3.6/0.1/2.0/7.3
+beats; the screenshot measured about 3.0/0.8/2.9/0.1/1.7/5.9, a constant ~0.8 scale with the same
+zero row.
+- [x] `lineStartTime` = the strip window's start (`rowStartTime`) for all three uses.
+- [x] Full suite.
+- [ ] Eric's on-screen check. No unit seam: the mapping lives in a SwiftUI `Canvas`.

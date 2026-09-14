@@ -5043,9 +5043,11 @@ private struct ChordProPreviewLineView: View {
         return instrumentalTimeWidth * CGFloat(chord.column) / chordColumnExtent
     }
 
-    /// The line's window start: its first word's onset, or the row's own start when the line has
-    /// no per-word timings — the origin for the strip's time mapping either way.
-    private var lineStartTime: TimeInterval { rhythmicWords.first?.start ?? rowStartTime }
+    /// The origin for the strip's time mapping: the start of the window its peaks were cut from.
+    /// It was the first word's onset, which only agreed while a line's window began at its first
+    /// word; fixed-period rows open their window on the downbeat, so the energy drew shifted right
+    /// by that row's lead-in (Eric, 2026-09-14: lyrics and vocal energy misaligned).
+    private var lineStartTime: TimeInterval { rowStartTime }
 
     /// x of a song time for row content — an alias for `metricX`, kept because many call sites
     /// read better as "the rhythmic axis".
