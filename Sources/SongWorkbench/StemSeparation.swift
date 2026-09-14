@@ -625,6 +625,16 @@ struct NativeStemRefinementEngine: StemRefinementEngine {
             guard let modelAsset = modelAssets[output.modelOutputID] else {
                 throw StemRefinementError.missingModelOutput(output.modelOutputID)
             }
+            // Name the file for the stem it holds. Models write into transport slots, so the
+            // drum-piece model's kick lands in "vocals.wav". Stored manifests keep full paths,
+            // so stems refined before this rename still resolve.
+            let namedURL = request.outputDirectory
+                .appendingPathComponent(output.id.rawValue)
+                .appendingPathExtension(modelAsset.audioURL.pathExtension)
+            if FileManager.default.fileExists(atPath: namedURL.path) {
+                try FileManager.default.removeItem(at: namedURL)
+            }
+            try FileManager.default.moveItem(at: modelAsset.audioURL, to: namedURL)
             descriptors.append(
                 StemDescriptor(
                     id: output.id,
@@ -637,7 +647,7 @@ struct NativeStemRefinementEngine: StemRefinementEngine {
             assets.append(
                 StemAsset(
                     id: output.id,
-                    audioURL: modelAsset.audioURL,
+                    audioURL: namedURL,
                     producerID: identifier
                 )
             )

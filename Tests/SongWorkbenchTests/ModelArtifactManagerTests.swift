@@ -97,7 +97,8 @@ final class ModelArtifactManagerTests: XCTestCase {
 
     func testStatusVerifiesDigestOfFileSpanningSeveralReadChunks() async throws {
         // sha256(of:) reads 1 MiB chunks; the payload spans two full chunks plus a partial one.
-        let payload = Data((0..<(2 * 1_048_576 + 12_345)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let payload = Data(
+            (0..<(2 * 1_048_576 + 12_345)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
         let descriptor = descriptor(id: "multi-chunk-model", version: "1", payload: payload)
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
