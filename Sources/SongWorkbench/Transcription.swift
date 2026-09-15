@@ -551,12 +551,18 @@ enum TimedLyricSegmentGrouper {
     /// word ("on", "you", "the", …) that is essentially never a real one-word lyric line, even
     /// across a larger pause. Capitalized one-word lines are legitimate line starts and are left
     /// untouched.
+    ///
+    /// (b) does not reach back across a gap break for a word that OPENS the next line ("the" |
+    /// "saddles we no longer ride", 0.2 s later): `mergedConjunctionContinuations` carries it
+    /// forward instead. Gluing it back erased both the gap break and the next line's forced
+    /// start, and `regroup` of that one long line — no forced start left, so no orphan — split
+    /// it at the gap: not idempotent (Storm Warning, 2026-09-15).
     private static func mergedTrailingOrphans(
         _ groups: [[TimedTranscriptionToken]],
         configuration: TimedLyricGroupingConfiguration
     ) -> [[TimedTranscriptionToken]] {
         var result: [[TimedTranscriptionToken]] = []
-        for group in groups {
+        for (index, group) in groups.enumerated() {
             if group.count == 1,
                 let orphan = group.first,
                 !beginsCapitalizedWord(orphan.text),
@@ -565,8 +571,19 @@ enum TimedLyricSegmentGrouper {
             {
                 let gap = orphan.startTime - previousLast.endTime
                 let contiguous = gap <= configuration.maximumGap
+                let next = index + 1 < groups.count ? groups[index + 1] : []
+                let opensNext =
+                    next.first.map { first in
+                        let nextGap = first.startTime - orphan.endTime
+                        return endsWithContinuationWord(orphan.text)
+                            && nextGap >= 0 && nextGap <= 1.0
+                            && 1 + next.count <= configuration.maximumTokens
+                            && (next.last?.endTime ?? first.endTime) - orphan.startTime
+                                <= configuration.maximumDuration
+                    } ?? false
                 let functionWordInSameSection =
                     isFunctionWord(orphan.text) && gap <= configuration.maximumDuration
+                    && !opensNext
                 if contiguous || functionWordInSameSection {
                     result[result.count - 1].append(contentsOf: group)
                     continue

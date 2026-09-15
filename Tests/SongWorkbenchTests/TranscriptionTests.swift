@@ -174,6 +174,37 @@ final class TranscriptionTests: XCTestCase {
         )
     }
 
+    func testRegroupIsIdempotentWhenAnOpenOrphanBridgesAGapAndAForcedBreak() {
+        // Storm Warning (2026-09-15 corpus, stem-whisper85), words anonymized, timings and case
+        // kept. "the" sits alone between a 5.2 s gap and the forced line start at 91.100. It was
+        // glued back onto "Lift high" as a function-word orphan, then "the" (which cannot end a
+        // line) pulled the next line forward across the forced break: one 8-word line. Regrouping
+        // THAT loses the forced break, so "the" is no longer an orphan and the gap break stands —
+        // AnalysisTimingPostPasses moved the line on its second run.
+        let stored = [
+            storedLine([
+                ("Lift", 81.073, 83.249), ("high", 83.320, 84.703), ("the", 89.878, 90.878),
+            ]),
+            storedLine([
+                ("wagons", 91.100, 91.987), ("we", 91.987, 92.183), ("left", 92.183, 92.378),
+                ("behind", 92.350, 92.965), ("today", 92.870, 93.364),
+            ]),
+            storedLine([("Sing", 93.364, 93.814), ("along", 93.814, 94.588)]),
+        ]
+        let regrouped = TimedLyricSegmentGrouper.regroup(stored)
+        assertSegments(
+            regrouped,
+            equal: [
+                ("Lift high", 81.073, 84.703),
+                ("the wagons we left behind today", 89.878, 93.364),
+                ("Sing along", 93.364, 94.588),
+            ])
+        // Regrouping the result forces breaks at its own line starts over the same words, which is
+        // also what AnalysisTimingPostPasses does with the line starts it stores.
+        XCTAssertEqual(
+            TimedLyricSegmentGrouper.regroup(regrouped).map(\.words), regrouped.map(\.words))
+    }
+
     func testConjunctionMergeDoesNotChainPastDurationCap() {
         // A dense run of lines each ending on the open word "and" a beat apart — the exact shape
         // that used to chain through the conjunction-merge into one over-long line. The merge must
@@ -1074,6 +1105,18 @@ final class TranscriptionTests: XCTestCase {
     }
 
     private func assertSendable<T: Sendable>(_ value: T) {}
+
+    private func storedLine(_ words: [(String, TimeInterval, TimeInterval)]) -> TimedLyricSegment {
+        var offset = 0
+        let timed = words.map { text, start, end in
+            defer { offset += text.count + 1 }
+            return TimedLyricWord(
+                text: text, start: start, end: end, characterRange: offset..<(offset + text.count))
+        }
+        return TimedLyricSegment(
+            start: words[0].1, end: words[words.count - 1].2,
+            text: words.map(\.0).joined(separator: " "), words: timed)
+    }
 
     private func assertSegments(
         _ actual: [TimedLyricSegment],
