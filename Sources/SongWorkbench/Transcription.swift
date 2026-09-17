@@ -508,9 +508,14 @@ enum TimedLyricSegmentGrouper {
     /// line-starts are honored). Lets songs analyzed before a grouping change adopt the
     /// new line breaks on load without re-transcribing. Idempotent for lyrics already
     /// grouped under the current rules.
+    ///
+    /// `lineStartOnsets` replaces the stored lines' own first-word onsets as the forced breaks —
+    /// `AnalysisTimingPostPasses` passes the RAW line starts it set aside, so a recut of these
+    /// lines is not what gets regrouped.
     static func regroup(
         _ segments: [TimedLyricSegment],
-        configuration: TimedLyricGroupingConfiguration = .init()
+        configuration: TimedLyricGroupingConfiguration = .init(),
+        lineStartOnsets: Set<TimeInterval>? = nil
     ) -> [TimedLyricSegment] {
         // Re-grouping re-splits lines from per-word timings. Without word-level data on
         // every segment we can't find sub-line boundaries, and collapsing each line to a
@@ -529,7 +534,8 @@ enum TimedLyricSegmentGrouper {
         // came from segment boundaries, not gaps) would collapse the zero-gap words back into
         // run-on lines. The within-line gap/capitalization rules still apply on top, so old
         // over-merged lyrics are still re-split.
-        let lineStartOnsets = Set(segments.compactMap { $0.words.first?.start })
+        let lineStartOnsets =
+            lineStartOnsets ?? Set(segments.compactMap { $0.words.first?.start })
         return group(
             tokens: tokens, configuration: configuration, lineStartOnsets: lineStartOnsets)
     }
@@ -746,12 +752,18 @@ enum TimedLyricSegmentGrouper {
     /// word ("on", "you", "the", …) that is essentially never a real one-word lyric line, even
     /// across a larger pause. Capitalized one-word lines are legitimate line starts and are left
     /// untouched.
+    ///
+    /// (b) does not reach back across a gap break for a word that OPENS the next line ("the" |
+    /// "saddles we no longer ride", 0.2 s later): `mergedConjunctionContinuations` carries it
+    /// forward instead. Gluing it back erased both the gap break and the next line's forced
+    /// start, and `regroup` of that one long line — no forced start left, so no orphan — split
+    /// it at the gap: not idempotent (Storm Warning, 2026-09-15).
     private static func mergedTrailingOrphans(
         _ groups: [[TimedTranscriptionToken]],
         configuration: TimedLyricGroupingConfiguration
     ) -> [[TimedTranscriptionToken]] {
         var result: [[TimedTranscriptionToken]] = []
-        for group in groups {
+        for (index, group) in groups.enumerated() {
             if group.count == 1,
                 let orphan = group.first,
                 !beginsCapitalizedWord(orphan.text),
@@ -760,8 +772,19 @@ enum TimedLyricSegmentGrouper {
             {
                 let gap = orphan.startTime - previousLast.endTime
                 let contiguous = gap <= configuration.maximumGap
+                let next = index + 1 < groups.count ? groups[index + 1] : []
+                let opensNext =
+                    next.first.map { first in
+                        let nextGap = first.startTime - orphan.endTime
+                        return endsWithContinuationWord(orphan.text)
+                            && nextGap >= 0 && nextGap <= 1.0
+                            && 1 + next.count <= configuration.maximumTokens
+                            && (next.last?.endTime ?? first.endTime) - orphan.startTime
+                                <= configuration.maximumDuration
+                    } ?? false
                 let functionWordInSameSection =
                     isFunctionWord(orphan.text) && gap <= configuration.maximumDuration
+                    && !opensNext
                 if contiguous || functionWordInSameSection {
                     result[result.count - 1].append(contentsOf: group)
                     continue
