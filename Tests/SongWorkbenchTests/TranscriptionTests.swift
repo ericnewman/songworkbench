@@ -258,6 +258,8 @@ final class TranscriptionTests: XCTestCase {
                 ("the wagons we left behind today", 89.878, 93.364),
                 ("Sing along", 93.364, 94.588),
             ])
+        // Regrouping the result forces breaks at its own line starts over the same words, which is
+        // also what AnalysisTimingPostPasses does with the line starts it stores.
         XCTAssertEqual(
             TimedLyricSegmentGrouper.regroup(regrouped).map(\.words), regrouped.map(\.words))
         let starts = Set(regrouped.compactMap { $0.words.first?.start })
