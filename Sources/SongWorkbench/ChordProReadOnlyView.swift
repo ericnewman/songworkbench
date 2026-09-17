@@ -477,23 +477,29 @@ enum BucketNoteRowFormatter {
         let visible = timeline.stems
             .filter { !hiddenStems.contains($0.stemID) }
             .sorted { displayOrder($0.stemID) < displayOrder($1.stemID) }
-        var rows: [(stemID: StemID, cells: [(bucket: Int, cell: BucketNoteRowCell)])] =
-            visible.compactMap { stem in
-                let cells = stem.notes.compactMap {
-                    note -> (bucket: Int, cell: BucketNoteRowCell)? in
-                    guard clicks.indices.contains(note.bucketIndex),
-                        window.contains(clicks[note.bucketIndex])
-                    else { return nil }
-                    return (
-                        note.bucketIndex,
-                        BucketNoteRowCell(
-                            time: clicks[note.bucketIndex],
-                            text: text(for: note, transposedBy: semitones),
-                            isDim: note.confidence < dimConfidence)
-                    )
-                }
-                return cells.isEmpty ? nil : (stem.stemID, cells)
+        // ponytail: built with plain loops, not nested compactMaps. Inferring these labelled
+        // tuples through two chained compactMaps timed the type checker out outright ("failed to
+        // produce diagnostic for expression"); naming them with the typealiases below was not
+        // enough on its own. Keep the loops, or promote Row/Cell to a struct.
+        typealias Cell = (bucket: Int, cell: BucketNoteRowCell)
+        typealias Row = (stemID: StemID, cells: [Cell])
+        var rows: [Row] = []
+        for stem in visible {
+            var cells: [Cell] = []
+            for note in stem.notes {
+                guard clicks.indices.contains(note.bucketIndex),
+                    window.contains(clicks[note.bucketIndex])
+                else { continue }
+                let cell = BucketNoteRowCell(
+                    time: clicks[note.bucketIndex],
+                    text: text(for: note, transposedBy: semitones),
+                    isDim: note.confidence < dimConfidence)
+                cells.append((bucket: note.bucketIndex, cell: cell))
             }
+            if !cells.isEmpty {
+                rows.append((stemID: stem.stemID, cells: cells))
+            }
+        }
         // The chord the whole beat makes ends the stack: appended to the lowest row sounding in
         // that bucket (the bass whenever it plays), unless that cell already names it.
         for (bucket, chord) in combinedChordNames(stems: visible, transposedBy: semitones) {
