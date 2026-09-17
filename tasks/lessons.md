@@ -993,3 +993,22 @@ line starts. Re-running `apply` changed 3 of 25 tempos on the first pass, and Do
 127.6 → 143.6 → 71.8 (timing-3 gates) or → 95.7 (timing-5). **Detect:** run `apply` several times
 on a stored document; any tempo change after the first pass means one of its inputs is derived. The
 fix belongs in what is persisted (pre-recut line onsets), not in the gates.
+
+## 2026-09-15 — A fix for one branch of a condition needs the OTHER branch checked on field data
+
+**Mistake:** the 2026-09-14 retune fix stopped rescaling ANCHORED bar grids (Back to New Orleans
+3/4) and kept rescaling MEASURED (`.drumAccents`) ones, on the premise that a retune preserves bar
+duration. The field case was anchored, so only that branch was checked. On the 25-song corpus
+every retune of a drum-measured grid produced a wrong meter for songs charted 4/4: x4/5 → 3/4
+(Summertime, Tijuana), x3/4 → 3/4 (Moving on), x3/2 → 6/4 (Good friends), x4/3 → 5/4.
+
+**Why:** drums measure only the PHASE. `beatsPerBar` always comes from the lyric estimator's
+conservative 4 at the beat level the reconciler has just rejected, so rescaling it carries a guess.
+
+**Detect:** `{confidence: 0, phaseSource: anchoredToFirstBeat}` does NOT mean nothing was measured.
+`SongBarGrid.retuned(by:)`'s non-divisible fallback emits exactly that, so read
+`preReconciliationTiming.barGrid` before concluding a grid was a guess.
+
+**Rule:** after a retune, re-estimate the bar on the final grid; keep a measured phase only when
+its rescaled bar equals the re-estimate (`timing-4`). Replay a post-pass fix through the real
+`AnalysisTimingPostPasses.apply` on stored documents, not a Python model of one branch.
