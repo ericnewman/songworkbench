@@ -345,7 +345,9 @@ enum AnalysisTimingPostPasses {
     // timing-2: rows are recut on `SongBeatsPerLine.rowBeats` (the preview's period) instead of
     // the raw fit, so stored lines re-derive onto the period they are framed at.
     // timing-3: an anchored (guessed) bar grid is re-estimated after a retune, not rescaled.
-    static let versionTag = "timing-3"
+    // timing-5: the reconciler declines octave ties and retunes only when both halves of the
+    // song reject the tracker's tempo. (timing-4 is taken by fix/retuned-bar-meter.)
+    static let versionTag = "timing-5"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag

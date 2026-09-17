@@ -954,3 +954,26 @@ lane palette, so a note's color could disagree with the corresponding waveform a
 
 **Rule:** Render source-derived note and tab rows with `StemID.laneColor`; do not introduce
 per-view color constants for a stem-backed artifact.
+
+## 2026-09-15 — An octave pair ties by construction, and restoring raw timing does not make the input raw
+
+**Finding:** on the 25-song stem-whisper85 corpus, 7 of 10 metrical retunes moved away from the
+reviewed catalog tempo. Replaying the real `reconcile` on the stored documents: five of the seven
+won an EXACT fit-error tie between x3/2 and x3/4 (Another day ×2, Moving on, Jessie, Something to
+believe v2), a sixth a 0.012 near-tie (Tijuana). Those ratios are an octave apart, so the dyadic
+fit scores them identically — the octave blindness that got 2:1 excluded, readmitted through the
+pair. The slower-tempo tie-break then chose; for Jessie and Something to believe v2 x3/2 was right.
+The seventh (Good friends, 105.5 → 158.2) was not a tie: one half of its lines still fit x1.
+
+**Rule:** a tie declines, and a retune needs BOTH halves of the song to reject the incumbent under
+the same fit gates (`timing-5`). Replayed through `apply`: 16/25 within 5% of catalog (shipped:
+11/25), every harmful retune stopped, Don't forget me kept at 143.6 (catalog 144). Tightening the
+existing thresholds could not do this — `improve<=0.4/0.5`, `incumbent>0.15/0.20` changed nothing,
+and `abs<=0.08` lost Don't forget me.
+
+**Second finding — `apply` is still not a fixed point.** It restores raw TIMING before reconciling,
+but the lyrics it reconciles were recut on the previously published grid, and `regroup` keeps those
+line starts. Re-running `apply` changed 3 of 25 tempos on the first pass, and Don't forget me walks
+127.6 → 143.6 → 71.8 (timing-3 gates) or → 95.7 (timing-5). **Detect:** run `apply` several times
+on a stored document; any tempo change after the first pass means one of its inputs is derived. The
+fix belongs in what is persisted (pre-recut line onsets), not in the gates.
