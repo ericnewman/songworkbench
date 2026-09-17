@@ -345,7 +345,9 @@ enum AnalysisTimingPostPasses {
     // timing-2: rows are recut on `SongBeatsPerLine.rowBeats` (the preview's period) instead of
     // the raw fit, so stored lines re-derive onto the period they are framed at.
     // timing-3: an anchored (guessed) bar grid is re-estimated after a retune, not rescaled.
-    static let versionTag = "timing-3"
+    // timing-4: a measured bar grid is re-estimated after a retune too; its phase is kept only
+    // when the rescaled bar matches.
+    static let versionTag = "timing-4"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag
@@ -365,6 +367,7 @@ enum AnalysisTimingPostPasses {
             bpm: document.estimatedBPM ?? 0,
             beatTimes: document.beatTimes,
             lineOnsets: regrouped.map(\.start))
+        var rescaledMeasuredGrid: SongBarGrid?
         if let verdict, verdict.isRetune {
             document.preReconciliationTiming = PreReconciliationTiming(
                 estimatedBPM: document.estimatedBPM,
@@ -373,12 +376,16 @@ enum AnalysisTimingPostPasses {
             document.estimatedBPM = verdict.bpm
             document.beatTimes = MetricalLevelReconciler.reconciledBeatTimes(
                 beatTimes: document.preReconciliationTiming!.beatTimes, ratio: verdict.ratio)
-            // Only a MEASURED bar survives a retune. An anchored grid's bar length is a guess made
-            // at the old beat level, and rescaling it turned Back to New Orleans' default 4/4 at
-            // 139.7 BPM into 3/4 at 104.8 — so it is re-estimated on the final grid below.
-            document.barGrid =
-                document.barGrid?.phaseSource == .drumAccents
-                ? document.barGrid?.retuned(by: verdict.ratio) : nil
+            // A retune re-estimates the bar on the final grid below; it never rescales one. Drums
+            // measure only a PHASE, over `beatsPerBar` beats of the OLD grid, and that count is the
+            // lyric estimator's conservative 4 at the level just rejected. Rescaling it gave Back
+            // to New Orleans 3/4 (x3/4, anchored) and, on the 2026-09-15 corpus, 3/4 (x4/5
+            // Summertime, rounded from 3.2), 5/4 (x4/3) and 6/4 (x3/2) to songs charted 4/4. A
+            // measured phase survives only when its rescaled bar IS the re-estimated bar.
+            if document.barGrid?.phaseSource == .drumAccents {
+                rescaledMeasuredGrid = document.barGrid?.retuned(by: verdict.ratio)
+            }
+            document.barGrid = nil
         }
         // Recut on the FINAL grid, then carry user annotations (overrideText/accepted) forward
         // from the stored lines — these passes rebuild plain segments straight from words.
@@ -389,10 +396,17 @@ enum AnalysisTimingPostPasses {
         // A pre-`SongBarGrid` document gets its one grid here, on the final beat grid — the
         // single fallback for every consumer.
         if document.barGrid == nil {
-            document.barGrid = SongBarGridEstimator.estimate(
+            let estimated = SongBarGridEstimator.estimate(
                 beatTimes: document.beatTimes,
                 beatStrengths: [],
                 lyricLineOnsets: document.lyrics.map { $0.words.first?.start ?? $0.start })
+            if let measured = rescaledMeasuredGrid, measured.phaseSource == .drumAccents,
+                measured.beatsPerBar == estimated.beatsPerBar
+            {
+                document.barGrid = measured
+            } else {
+                document.barGrid = estimated
+            }
         }
         document.timingPostPassTag = versionTag
     }

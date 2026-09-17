@@ -47,11 +47,13 @@ struct SongBarGrid: Codable, Equatable, Sendable {
         beatsPerBar: 4, barPhase: 0, confidence: 0, phaseSource: .anchoredToFirstBeat)
 
     /// This grid re-expressed on a beat grid retuned by `ratio` (old beat index i ↔ new index
-    /// i × ratio, see `MetricalLevelReconciler.reconciledBeatTimes`). Bar DURATION is what a
-    /// retune preserves — the same physical downbeats, counted at a different level — so both
-    /// `beatsPerBar` and `barPhase` scale with the grid. When either lands between beats of the
-    /// new grid the measured phase is not representable there; the result then anchors to beat 0
-    /// honestly (confidence 0) rather than rounding to a nearby beat and calling it measured.
+    /// i × ratio, see `MetricalLevelReconciler.reconciledBeatTimes`), assuming bar DURATION is
+    /// preserved, so both `beatsPerBar` and `barPhase` scale with the grid. That assumption is
+    /// usually false — a retune means the old beat count was wrong — so `AnalysisTimingPostPasses`
+    /// keeps this only when it matches the bar re-estimated on the new grid. When either lands
+    /// between beats of the new grid the measured phase is not representable there; the result
+    /// then anchors to beat 0 honestly (confidence 0) rather than rounding to a nearby beat and
+    /// calling it measured.
     func retuned(by ratio: MetricalRatio) -> SongBarGrid {
         guard !ratio.isIdentity else { return self }
         let scaledBeats = beatsPerBar * ratio.numerator

@@ -205,16 +205,38 @@ final class MetricalLevelReconcilerTests: XCTestCase {
         XCTAssertTrue(AnalysisTimingPostPasses.isCurrent(document))
     }
 
-    func testPostPassesRetuneTheBarGridWithTheBeats() {
+    /// Field case, Good friends and a beer or two (2026-09-15 corpus, charted 4/4): a drum-measured
+    /// 4-beat grid at 105.5 BPM rescaled by the x3/2 retune into 6/4 at 158.2. The accents measured
+    /// a phase over 4 OLD beats; the 4 itself was the lyric estimator's default at the wrong level,
+    /// so it is not a bar length to carry. The bar is re-estimated on the retuned beats.
+    func testPostPassesReestimateAMeasuredBarGridWhoseRescaledBarIsNotTheSongsBar() {
         var document = documentNeedingRetune()
         document.barGrid = SongBarGrid(
             beatsPerBar: 4, barPhase: 2, confidence: 0.4, phaseSource: .drumAccents)
         AnalysisTimingPostPasses.apply(to: &document)
-        // x3/2 retune: 4 beats/bar -> 6, phase 2 -> 3 (see SongBarGrid.retuned).
-        XCTAssertEqual(document.barGrid?.beatsPerBar, 6)
-        XCTAssertEqual(document.barGrid?.barPhase, 3)
+        XCTAssertEqual(document.estimatedBPM!, 152.0, accuracy: 0.5, "the fixture must retune")
+        XCTAssertEqual(document.barGrid?.beatsPerBar, 4, "a measured 4/4 must not rescale to 6")
+        XCTAssertEqual(document.barGrid?.phaseSource, .anchoredToFirstBeat)
         XCTAssertEqual(document.preReconciliationTiming?.barGrid?.beatsPerBar, 4)
         XCTAssertEqual(document.preReconciliationTiming?.barGrid?.barPhase, 2)
+    }
+
+    /// Field case, Summertime's here with you (2026-09-15 corpus, charted 4/4): drums measured
+    /// {4, phase 1, 0.22} at 112.3 BPM, the x4/5 retune landed on 89.9, and 16/5 beats does not
+    /// divide, so `retuned(by:)` rounded 3.2 down to a 3/4 bar labelled anchored with confidence 0.
+    func testPostPassesDoNotRoundAFiveFourRetuneIntoThreeFour() {
+        let trueBPM = 89.9
+        let reportedBPM = trueBPM * 5 / 4
+        var document = SongAnalysisDocument()
+        document.estimatedBPM = reportedBPM
+        document.beatTimes = uniformBeats(bpm: reportedBPM, duration: 170)
+        document.lyrics = lineOnsets(bpm: trueBPM, beatsPerLine: 8, lineCount: 30, jitter: 0.05)
+            .map { TimedLyricSegment(start: $0, end: $0 + 1.2, text: "la la la") }
+        document.barGrid = SongBarGrid(
+            beatsPerBar: 4, barPhase: 1, confidence: 0.22, phaseSource: .drumAccents)
+        AnalysisTimingPostPasses.apply(to: &document)
+        XCTAssertEqual(document.estimatedBPM!, trueBPM, accuracy: 0.5, "the fixture must retune")
+        XCTAssertEqual(document.barGrid?.beatsPerBar, 4)
     }
 
     /// Field case, Back to New Orleans (2026-09-14): the tracker's 139.7 BPM grid carried only the
