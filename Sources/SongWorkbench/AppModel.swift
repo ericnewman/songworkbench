@@ -210,8 +210,16 @@ final class AppModel: ObservableObject {
     /// touch `chordReviewState`, because picking where a chord sits is a separate judgement from
     /// reviewing which chord it is.
     @Published var chordPlacementPicks: [ChordPlacementPick] = [] {
-        didSet { persistSelectedAnalysis() }
+        didSet {
+            persistSelectedAnalysis()
+            // A verdict moves where the chord renders, so the generated chart (and its export)
+            // follows it.
+            if !isApplyingAnalysis { rebuildGeneratedChordProDraft() }
+        }
     }
+    /// The generated chart's persisted layout (`PersistedChartLayout`), written together with
+    /// `chordProSource` by the draft builder.
+    @Published private(set) var chartLayout: PersistedChartLayout?
     @Published var chordProSource = "" {
         didSet {
             if !isApplyingAnalysis { chordProReviewState = .draft }
@@ -1260,7 +1268,7 @@ final class AppModel: ObservableObject {
     /// same words but no line structure, so promoting the better mode's lines to the reference and
     /// re-aligning gives the quick modes the same line breaks.
     var currentLyricsAsText: String {
-        lyricSegments.map(\.text).joined(separator: "\n")
+        lyricSegments.map(\.effectiveText).joined(separator: "\n")
     }
 
     /// Re-analyzes EVERY song in the library, sequentially. Each song runs all stages, but the
@@ -1716,7 +1724,7 @@ final class AppModel: ObservableObject {
                 updated.chordProReviewState != .reviewed
             {
                 self.lyricBlendStatus = "Preparing Lyric Blend — rebuilding chart…"
-                updated.chordProSource = self.chordProBuilder.build(
+                let built = self.chordProBuilder.buildResult(
                     ChordProDraftInput(
                         title: song.title,
                         tempo: updated.estimatedBPM,
@@ -1729,8 +1737,11 @@ final class AppModel: ObservableObject {
                         estimatedKey: updated.estimatedKey,
                         barGrid: updated.barGrid,
                         bassNotes: updated.bassNotes,
-                        beatsPerRowOverride: chartBeatsPerRowOverride
+                        beatsPerRowOverride: chartBeatsPerRowOverride,
+                        placementPicks: updated.chordPlacementPicks
                     ))
+                updated.chordProSource = built.source
+                updated.chartLayout = PersistedChartLayout(result: built, lyrics: updated.lyrics)
             }
             self.analysisBySongID[songID] = updated
             if self.selectedSongID == songID {
@@ -1994,9 +2005,15 @@ final class AppModel: ObservableObject {
         chordEvents.filter { !$0.hidden }.map { placementTime(for: $0) }.sorted()
     }
 
+    /// Commits a dragged chord's time. Like a rename, it un-reviews and rebuilds the generated
+    /// chart, so the chord moves to the row holding its new time and the export carries it.
     func setChordManualTime(id: EditableChordEvent.ID, manualTime: TimeInterval?) {
-        guard let index = chordEvents.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = chordEvents.firstIndex(where: { $0.id == id }),
+            chordEvents[index].manualTime != manualTime
+        else { return }
         chordEvents[index].manualTime = manualTime
+        chordProReviewState = .draft
+        rebuildGeneratedChordProDraft()
     }
 
     /// Toggles a lyric segment's Review-chart "accepted" flag, by id.
@@ -3298,6 +3315,7 @@ final class AppModel: ObservableObject {
         lyricBlendRows = analysis.lyricBlendRows
         referenceLyrics = analysis.referenceLyrics
         chordEvents = analysis.chords
+        chartLayout = analysis.chartLayout
         chordProSource = analysis.chordProSource
         referenceChordProSource = analysis.referenceChordProSource
         instrumentAttackOnsets = analysis.instrumentAttackOnsets
@@ -3420,14 +3438,6 @@ final class AppModel: ObservableObject {
         else { return }
         let lyrics = lyricSegments
         let beatLength = estimatedBPM.flatMap { $0 > 0 ? 60 / $0 : nil }
-        let grid: MeasureGrid? =
-            estimatedBPM.flatMap { bpm in
-                bpm > 0 && !beatTimes.isEmpty
-                    ? MeasureGrid(
-                        beatTimes: beatTimes, bpm: bpm, beatsPerBar: barGrid?.beatsPerBar ?? 4,
-                        barPhase: barGrid?.barPhase ?? 0)
-                    : nil
-            }
         wordTimingCheckTask?.cancel()
         wordTimingCheckTask = Task { [weak self] in
             let attacks = await Task.detached(priority: .utility) {
@@ -3437,8 +3447,7 @@ final class AppModel: ObservableObject {
                 self.selectedSongID == songID, self.lyricSegments == lyrics
             else { return }
             let checked = StretchedWordRetimer.retimed(
-                lyrics, attacks: attacks, beatLength: beatLength, grid: grid,
-                rhymes: RhymeDetector.shared)
+                lyrics, attacks: attacks, beatLength: beatLength)
             self.wordTimingFindings = checked.findings
             self.wordTimingCheckTag = StretchedWordRetimer.versionTag
             if checked.segments != lyrics {
@@ -3490,7 +3499,8 @@ final class AppModel: ObservableObject {
             stageRecords: analysisStageRecords,
             wordTimingFindings: wordTimingFindings,
             wordTimingCheckTag: wordTimingCheckTag,
-            instrumentChords: instrumentChords
+            instrumentChords: instrumentChords,
+            chartLayout: chartLayout
         )
         scheduleSave()
     }
@@ -3540,7 +3550,8 @@ final class AppModel: ObservableObject {
             estimatedKey: estimatedKey,
             barGrid: barGrid,
             bassNotes: bassNotes,
-            beatsPerRowOverride: chartBeatsPerRowOverride
+            beatsPerRowOverride: chartBeatsPerRowOverride,
+            placementPicks: chordPlacementPicks
         )
         if let cached = timelineCache,
             cached.source == chordProSource,
@@ -3551,11 +3562,47 @@ final class AppModel: ObservableObject {
         let result = chordProBuilder.buildResult(input)
         guard result.source == chordProSource else {
             timelineCache = nil
-            return nil
+            return storedChartLayout()?.timeline
         }
         timelineCache = (input, chordProSource, result)
         return result.timeline
     }
+
+    /// True when the chart's persisted layout was cut from different words than the song's lyrics
+    /// now hold — a re-transcription under a kept (reviewed or edited) chart. Its rows must not be
+    /// timed with the new lyrics: the Review page withholds lyric timing for it until the chart
+    /// is regenerated.
+    var isChartLyricsStale: Bool {
+        guard let chartLayout, !chordProSource.isEmpty else { return false }
+        if let cached = staleCache, cached.lyrics == lyricSegments,
+            cached.digest == chartLayout.lyricStructureDigest
+        {
+            return cached.stale
+        }
+        let stale = chartLayout.lyricStructureDigest != LyricStructureDigest.of(lyricSegments)
+        staleCache = (lyricSegments, chartLayout.lyricStructureDigest, stale)
+        return stale
+    }
+    private var staleCache: (lyrics: [TimedLyricSegment], digest: String, stale: Bool)?
+
+    /// The persisted layout, when it still describes `chordProSource`: the same numbered musical
+    /// lines (edited text on them keeps every row window), built from the lyrics the song still
+    /// has. nil otherwise.
+    private func storedChartLayout() -> ChordProDraftResult? {
+        guard let chartLayout, !isChartLyricsStale else { return nil }
+        if let cached = storedLayoutCache, cached.source == chordProSource,
+            cached.layout == chartLayout
+        {
+            return cached.result
+        }
+        let result =
+            chartLayout.timeline.matchesRowStructure(of: chordProSource)
+            ? chartLayout.result(source: chordProSource) : nil
+        storedLayoutCache = (chordProSource, chartLayout, result)
+        return result
+    }
+    private var storedLayoutCache:
+        (source: String, layout: PersistedChartLayout, result: ChordProDraftResult?)?
 
     /// Cached `SongStructureOverview` (the Structure tab's Form/Harmony/Meter/Rhyme/Melody-
     /// proxy breakdown) for the current analysis. The complete derived input is the cache key:
@@ -3577,7 +3624,8 @@ final class AppModel: ObservableObject {
             estimatedKey: estimatedKey,
             barGrid: barGrid,
             bassNotes: bassNotes,
-            beatsPerRowOverride: chartBeatsPerRowOverride
+            beatsPerRowOverride: chartBeatsPerRowOverride,
+            placementPicks: chordPlacementPicks
         )
         if let cached = structureOverviewCache, cached.input == input {
             return cached.overview
@@ -3596,8 +3644,8 @@ final class AppModel: ObservableObject {
     /// origins — or nil when the previewed source isn't the current generated draft or the song has
     /// no beat grid (the chart then renders the stored lyric lines as rows).
     func chartLayoutForPreview() -> ChordProDraftResult? {
-        guard songTimelineForPreview() != nil, let result = timelineCache?.result,
-            !result.chartLines.isEmpty
+        guard songTimelineForPreview() != nil else { return nil }
+        guard let result = timelineCache?.result ?? storedChartLayout(), !result.chartLines.isEmpty
         else { return nil }
         return result
     }
@@ -3625,7 +3673,7 @@ final class AppModel: ObservableObject {
         guard chordProReviewState != .reviewed || stale else { return }
         if chordProReviewState == .reviewed { chordProReviewState = .draft }
 
-        chordProSource = chordProBuilder.build(
+        let built = chordProBuilder.buildResult(
             ChordProDraftInput(
                 title: song.title,
                 tempo: estimatedBPM,
@@ -3638,8 +3686,11 @@ final class AppModel: ObservableObject {
                 estimatedKey: estimatedKey,
                 barGrid: barGrid,
                 bassNotes: bassNotes,
-                beatsPerRowOverride: chartBeatsPerRowOverride
+                beatsPerRowOverride: chartBeatsPerRowOverride,
+                placementPicks: chordPlacementPicks
             ))
+        chartLayout = PersistedChartLayout(result: built, lyrics: lyricSegments)
+        chordProSource = built.source
         if var record = analysisStageRecords[.chordPro], var provenance = record.provenance {
             provenance.configurationIdentifier = chordProConfigurationIdentifier
             provenance.resultSchemaVersion = SongAnalysisDocument.currentSchemaVersion
@@ -3743,8 +3794,11 @@ final class AppModel: ObservableObject {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                 do {
+                    // Same resolution as the vocal strip (4,000 peaks per song): at 1,200 the
+                    // instrument energy lines smoothed away the fluctuations the vocals show
+                    // (Eric, 2026-09-14).
                     let envelope = try await waveformAnalyzer.analyze(
-                        url: url, targetSampleCount: 1_200)
+                        url: url, targetSampleCount: 4_000)
                     lanes.append(
                         StemWaveformLaneModel(
                             id: target.id,

@@ -298,3 +298,83 @@ final class SongAnalysisDocumentReconciliationTests: XCTestCase {
     }
 
 }
+
+// MARK: - Resolved lines (`TimedLyricSegment.resolved`)
+
+extension SongAnalysisDocumentReconciliationTests {
+    private func timedLine(
+        _ words: [(String, TimeInterval, TimeInterval)], override: String? = nil
+    ) -> TimedLyricSegment {
+        var text = ""
+        var timed: [TimedLyricWord] = []
+        for (word, start, end) in words {
+            if !text.isEmpty { text += " " }
+            let lower = text.count
+            text += word
+            timed.append(
+                TimedLyricWord(
+                    text: word, start: start, end: end, characterRange: lower..<text.count,
+                    confidence: 0.9))
+        }
+        return TimedLyricSegment(
+            start: words.first?.1 ?? 0, end: words.last?.2 ?? 0, text: text, words: timed,
+            overrideText: override)
+    }
+
+    func testResolvedCorrectionAddressesItsOwnTextAndKeepsSungTimes() {
+        let line = timedLine(
+            [("I", 10, 10.2), ("got", 10.2, 10.6), ("sum", 10.6, 11), ("troubles", 11, 12)],
+            override: "I've got some troubles now")
+
+        let resolved = line.resolved
+
+        XCTAssertEqual(resolved.text, "I've got some troubles now")
+        XCTAssertTrue(LyricWordRanges.addressText(resolved.words, resolved.text))
+        XCTAssertEqual(resolved.words.map(\.text), ["I've", "got", "some", "troubles", "now"])
+        XCTAssertEqual(resolved.words.map(\.start), [10, 10.2, 10.6, 11, 12])
+        XCTAssertEqual(
+            resolved.words.map(\.timingSource),
+            [.substituted, .matched, .substituted, .matched, .interpolated])
+        // Only words the transcriber actually heard keep a confidence.
+        XCTAssertEqual(
+            resolved.words.map { $0.confidence != nil }, [false, true, false, true, false])
+        // The stored line is untouched; the correction is still identifiable.
+        XCTAssertEqual(line.text, "I got sum troubles")
+        XCTAssertEqual(resolved.overrideText, "I've got some troubles now")
+    }
+
+    func testResolvedCorrectionSpreadsARewordedRunAcrossTheWordsItReplaces() {
+        let line = timedLine(
+            [("I", 1, 1.5), ("wanna", 1.5, 2.5), ("go", 2.5, 3)], override: "I want to go")
+
+        let resolved = line.resolved
+
+        XCTAssertTrue(LyricWordRanges.addressText(resolved.words, resolved.text))
+        XCTAssertEqual(resolved.words.map(\.text), ["I", "want", "to", "go"])
+        XCTAssertEqual(resolved.words[1].start, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(resolved.words[2].end, 2.5, accuracy: 1e-9)
+        XCTAssertEqual(resolved.words[1].timingSource, .interpolated)
+        XCTAssertEqual(resolved.words.map(\.start), resolved.words.map(\.start).sorted())
+    }
+
+    func testResolvedRederivesStaleRangesWithoutMovingWords() {
+        var line = timedLine([("hello", 1, 2), ("world", 2, 3)])
+        line.words[1].characterRange = 0..<5  // points at "hello"
+
+        let resolved = line.resolved
+
+        XCTAssertTrue(LyricWordRanges.addressText(resolved.words, resolved.text))
+        XCTAssertEqual(resolved.words.map(\.characterRange), [0..<5, 6..<11])
+        XCTAssertEqual(resolved.words.map(\.start), [1, 2])
+        XCTAssertEqual(resolved.words.map(\.timingSource), [nil, nil])
+    }
+
+    func testResolvedLeavesAConsistentLineUnchangedAndClearsWordsOnAnUntimedCorrection() {
+        let line = timedLine([("hello", 1, 2), ("world", 2, 3)])
+        XCTAssertEqual(line.resolved, line)
+
+        let untimed = TimedLyricSegment(start: 4, end: 6, text: "wrong", overrideText: "right")
+        XCTAssertEqual(untimed.resolved.text, "right")
+        XCTAssertEqual(untimed.resolved.words, [])
+    }
+}

@@ -562,7 +562,7 @@ private struct TimedLyricsEditor: View {
                 sectionIndex += 1
             }
             if let previousEnd, segment.start - previousEnd >= 4 { lines.append("") }
-            lines.append(segment.text)
+            lines.append(segment.effectiveText)
             previousEnd = segment.end
         }
         while sectionIndex < sections.count {
@@ -1299,7 +1299,7 @@ struct ChordProTabEditor: View {
     private let rhythmicSpacing = true
     @AppStorage("chordProShowWaveform") private var showWaveform = false
     /// Instrument energy under each Review row: every non-vocal stem summed into one gray line
-    /// (the default), or one colored outline per stem that isn't hidden.
+    /// (the default), or one colored band of bars per stem that isn't hidden.
     @AppStorage("reviewInstrumentEnergyPerStem") private var instrumentEnergyPerStem = false
     /// Stems left out of per-instrument energy, as a comma-joined list of stem IDs.
     @AppStorage("reviewHiddenEnergyStems") private var hiddenEnergyStemsStorage = ""
@@ -1385,7 +1385,10 @@ struct ChordProTabEditor: View {
     private var sortedLyricSegments: [TimedLyricSegment] {
         // Fixed-period rows: ordinal N is the chart's Nth sung row, cut from the stored lines.
         if let chart = model.chartLayoutForPreview() { return chart.chartLines.map(\.segment) }
-        return model.lyricSegments.sorted {
+        // A kept chart cut from different lyrics gets no lyric timing at all, rather than the
+        // new words paired with its old rows by position.
+        guard !model.isChartLyricsStale else { return [] }
+        return model.lyricSegments.map(\.resolved).sorted {
             if $0.start == $1.start, $0.end == $1.end { return $0.text < $1.text }
             if $0.start == $1.start { return $0.end < $1.end }
             return $0.start < $1.start
@@ -1681,6 +1684,14 @@ struct ChordProTabEditor: View {
             fontSizeControl
                 .onChange(of: beatsPerRow) { _, _ in model.chartBeatsPerRowChanged() }
             if config.showsPlaybackControls {
+                if model.isChartLyricsStale {
+                    Text(
+                        "Lyrics changed since this chart was built. Regenerate it to time the words."
+                    )
+                    .font(.swDisplay(11))
+                    .foregroundStyle(Color.swAmber)
+                    .fixedSize()
+                }
                 timingOffsetControl
                 if config.showsReviewAffordances {
                     chordConfidenceControl
@@ -2330,6 +2341,7 @@ struct ChordProTabEditor: View {
     private func legacyBeatBall(
         now: TimeInterval, bpm: Double?, beatTimes: [TimeInterval]
     ) -> BeatBallInput? {
+        guard !model.isChartLyricsStale else { return nil }
         let deriver = ChordProHighlightDeriver(
             lyricSegments: model.lyricSegments,
             chordEvents: model.chordEvents,
@@ -2592,7 +2604,7 @@ struct ChordProAppPreview: View {
     /// Instrument energy drawn under every row (`InstrumentEnergyLanes`): one summed lane, or one
     /// lane per shown stem.
     var instrumentLanes: [StemWaveformLaneModel] = []
-    /// Per-instrument lanes draw as colored outlines on a shared scale; the summed lane fills.
+    /// Per-instrument lanes draw as bars in their own bands on a shared scale; the summed lane fills.
     var instrumentEnergyPerStem = false
     /// Word timings the stretched-word check retimed or flagged, marked on their words.
     var wordTimingFindings: [WordTimingFinding] = []
@@ -3202,31 +3214,12 @@ struct ChordProAppPreview: View {
         .onChange(of: gridDependencyKey, initial: true) { _, _ in refreshGrid() }
     }
 
-    /// On fixed-period rows, ONE pickup gutter for the whole song: the largest whole-beat pickup any
-    /// row needs (`ChartPickupGutter`), so every row's downbeat column — and so its frame — sits at
-    /// the same x and all rows render the same length (Eric, 2026-09-14). nil on other charts,
-    /// whose rows keep their own gutter. Computed once per render and passed to every row; as a
-    /// per-row property it would cost rows × rows on every playback tick.
-    static let fixedRowMaximumGutterBeats = 1
-
+    /// On fixed-period rows, no gutter: every row starts on its downbeat, and a pickup is drawn at
+    /// the end of the row where it sounds (Eric, 2026-09-14: "The song itself is a continuum, and
+    /// has no breaks like this, so the sound must be accounted for within the bars and measures").
+    /// nil on other charts, whose rows keep their own pickup gutter.
     private func fixedPeriodGutterSeconds(for document: ChordProPreviewDocument) -> TimeInterval? {
-        guard fixedPeriodBeats != nil, rhythmicSpacing else { return nil }
-        let beats =
-            indexedBlocks(for: document).map { item -> Int in
-                guard let origin = item.displayLineNumber.flatMap({ rowOriginsByLine[$0] }) else {
-                    return 0
-                }
-                let earliest = [
-                    wordTimings(forLyricOrdinal: item.lyricOrdinal).first?.start,
-                    chordRowData(for: item).effectiveTimes.min(),
-                ].compactMap { $0 }.min()
-                return ChartPickupGutter.beats(
-                    downbeat: origin, earliestContent: earliest,
-                    beatLengthSeconds: beatLengthSeconds)
-            }.max() ?? 0
-        // Capped at one beat (Eric, 2026-09-14): a two-beat margin read as silence before rows
-        // that start on the beat. A longer pickup crowds the left edge instead.
-        return Double(min(beats, Self.fixedRowMaximumGutterBeats)) * beatLengthSeconds
+        fixedPeriodBeats != nil && rhythmicSpacing ? 0 : nil
     }
 
     /// One rendered chart row (title/metadata/section/lyric/chord-only line), fully configured.
@@ -3276,8 +3269,8 @@ struct ChordProAppPreview: View {
             earliestContent: [lineWords.first?.start, chordRow.effectiveTimes.min()]
                 .compactMap { $0 }.min(),
             beatLengthSeconds: beatLengthSeconds)
-        // Fixed-period rows share the song's gutter (its longest pickup), so all rows line up and
-        // render the same length; other charts size each row's gutter to its own pickup.
+        // Fixed-period rows have no gutter (see `fixedPeriodGutterSeconds`), so every row starts on
+        // its downbeat; other charts size each row's gutter to its own pickup.
         let rowGutterSeconds = songGutterSeconds ?? pickupGutterSeconds
         let itemContinues = item.lyricOrdinal.map(continuingLyricOrdinals.contains) ?? false
         let itemRowSources: [TimedLyricSegment.ID]? = item.lyricOrdinal.flatMap { ordinal in
@@ -4147,7 +4140,7 @@ private struct ChordProPreviewBlockView: View {
     var instrumentEnergy: [ChordProRowEnergySeries] = []
     var instrumentEnergyStart: TimeInterval = 0
     var instrumentEnergySeconds: TimeInterval = 0
-    /// Per-instrument lanes draw as outlines over the vocals; the summed lane fills behind them.
+    /// Per-instrument lanes draw as bars in their own bands; the summed lane fills behind the vocals.
     var instrumentEnergyOutlined = false
     /// This row's word timings retimed or flagged by the stretched-word check.
     var wordTimingFindings: [WordTimingFinding] = []
@@ -4209,8 +4202,9 @@ private struct ChordProPreviewBlockView: View {
         guard rhythmicSpacing, !rhythmicWordTimings.isEmpty, !rowBassNotes.isEmpty else {
             return false
         }
+        // A correction with resolved word timings renders rhythmically like any other line.
         let overrideActive =
-            line.hasSungText
+            line.hasSungText && rhythmicWordTimings.isEmpty
             && lyricSegment?.overrideText?
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         return !overrideActive
@@ -4221,8 +4215,9 @@ private struct ChordProPreviewBlockView: View {
         guard rhythmicSpacing, !rhythmicWordTimings.isEmpty, !rowHarmonyParts.isEmpty else {
             return false
         }
+        // A correction with resolved word timings renders rhythmically like any other line.
         let overrideActive =
-            line.hasSungText
+            line.hasSungText && rhythmicWordTimings.isEmpty
             && lyricSegment?.overrideText?
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         return !overrideActive
@@ -4438,6 +4433,63 @@ enum ChordProPreviewLineLayout {
         max(1, reservedGutterPx + periodPx)
     }
 
+    /// Word-label layout on a row: each label wants its left edge at its anchor; a crowded label
+    /// first compresses (down to `minimumCompression` of its advance), then nudges right. With a
+    /// `frameEnd`, a tail that would still run past it is pulled back inside, each label ending a
+    /// character before the next begins, so text never runs off the row (Eric, 2026-09-14).
+    static func wordSlots(
+        anchors: [CGFloat], lengths: [Int], characterWidth cw: CGFloat,
+        minimumCompression: CGFloat, frameEnd: CGFloat?
+    ) -> [(x: CGFloat, tracking: CGFloat)] {
+        guard !anchors.isEmpty, anchors.count == lengths.count, cw > 0 else { return [] }
+        var slots: [(x: CGFloat, tracking: CGFloat)] = []
+        var cursor: CGFloat = 0
+        for index in anchors.indices {
+            let x = index == 0 ? anchors[index] : max(anchors[index], cursor)
+            let count = CGFloat(max(lengths[index], 1))
+            // Room to the NEXT word's anchor, minus a one-character breathing gap; the last word
+            // has all the room it wants.
+            let room =
+                index + 1 < anchors.count
+                ? anchors[index + 1] - x - cw : .greatestFiniteMagnitude
+            let factor = max(min(room / (count * cw), 1), minimumCompression)
+            let tracking = (factor - 1) * cw
+            slots.append((x, tracking))
+            cursor = x + count * (cw + tracking) + cw
+        }
+        if let frameEnd {
+            var limit = frameEnd
+            for index in slots.indices.reversed() {
+                let width = CGFloat(max(lengths[index], 1)) * (cw + slots[index].tracking)
+                if slots[index].x + width > limit { slots[index].x = max(0, limit - width) }
+                limit = slots[index].x - cw
+            }
+        }
+        return slots
+    }
+
+    /// The largest of `steps` at which a row's labels fit inside `frameEnd` without being pulled
+    /// back; the smallest step when none does. 1 when the row has no frame.
+    static func lyricFitScale(
+        anchors: [CGFloat], lengths: [Int], characterWidth: CGFloat, minimumCompression: CGFloat,
+        frameEnd: CGFloat?, steps: [CGFloat] = [1, 0.9, 0.8, 0.7, 0.6]
+    ) -> CGFloat {
+        guard let frameEnd, !anchors.isEmpty, let lastLength = lengths.last else { return 1 }
+        for fit in steps {
+            let cw = characterWidth * fit
+            guard
+                let last = wordSlots(
+                    anchors: anchors, lengths: lengths, characterWidth: cw,
+                    minimumCompression: minimumCompression, frameEnd: nil
+                ).last
+            else { return 1 }
+            if last.x + CGFloat(max(lastLength, 1)) * (cw + last.tracking) <= frameEnd {
+                return fit
+            }
+        }
+        return steps.last ?? 1
+    }
+
     /// Hold lines for sung words (Eric, 2026-09-14): a word still sounding past its label draws a
     /// thin extender, like a lead-sheet melisma line, so a held note doesn't read as silence. Each
     /// line runs from just past the label to where the word ends, stopping short of the next label
@@ -4632,7 +4684,7 @@ private struct ChordProPreviewLineView: View {
     var instrumentEnergy: [ChordProRowEnergySeries] = []
     var instrumentEnergyStart: TimeInterval = 0
     var instrumentEnergySeconds: TimeInterval = 0
-    /// Per-instrument lanes draw as outlines over the vocals; the summed lane fills behind them.
+    /// Per-instrument lanes draw as bars in their own bands; the summed lane fills behind the vocals.
     var instrumentEnergyOutlined = false
     /// This row's word timings retimed or flagged by the stretched-word check.
     var wordTimingFindings: [WordTimingFinding] = []
@@ -5123,7 +5175,9 @@ private struct ChordProPreviewLineView: View {
         // line much longer than one phrase is a segmentation defect to fix upstream, not a
         // layout to re-flow.
         VStack(alignment: .leading, spacing: 2) {
-            if line.hasSungText, effectiveOverrideText != nil {
+            // A correction whose words resolved to timings (`TimedLyricSegment.resolved`) plays
+            // and highlights like any line; only one without word timings renders as plain text.
+            if line.hasSungText, effectiveOverrideText != nil, rhythmicWords.isEmpty {
                 overriddenContent
             } else if rhythmicWords.isEmpty {
                 monospaceContent
@@ -5134,6 +5188,24 @@ private struct ChordProPreviewLineView: View {
                 waveformStrip
             }
         }
+        .overlay(alignment: .topLeading) {
+            if let playheadX {
+                Rectangle()
+                    .fill(Color.swTextPrimary.opacity(0.6))
+                    .frame(width: 1)
+                    .offset(x: playheadX)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// The playback position on this row's ruler, while playback is inside the row's window —
+    /// the exact time, independent of where the words or the ball are.
+    private var playheadX: CGFloat? {
+        guard rhythmicSpacing, lineDuration > 0, let now = playheadTime,
+            now >= rowStartTime, now < rowStartTime + lineDuration
+        else { return nil }
+        return rowRuler.x(atTime: now)
     }
 
     /// A hand-corrected line's render: the chords stay exactly where they already are (still
@@ -5326,7 +5398,7 @@ private struct ChordProPreviewLineView: View {
                 }
                 // Instruments share one scale across lanes, so a quiet stem stays visibly quieter
                 // than a loud one. The summed lane fills behind the vocals; per-stem lanes are
-                // outlines drawn over them.
+                // bars in their own bands.
                 let energyScale = max(instrumentEnergy.flatMap(\.peaks).max() ?? 1, 0.0001)
                 if !instrumentEnergyOutlined, instrumentEnergySeconds > 0 {
                     for series in instrumentEnergy {
@@ -5352,26 +5424,19 @@ private struct ChordProPreviewLineView: View {
                     }
                 }
                 if instrumentEnergyOutlined, instrumentEnergySeconds > 0 {
-                    // Each stem gets its own band, stacked up from the bottom with a gap, so the
-                    // outlines never overlap (Eric, 2026-09-14).
+                    // Each stem gets its own band, stacked up from the bottom with a gap, drawn as
+                    // bars like the vocals so small swings stay visible (Eric, 2026-09-14).
                     let gap = energyLaneGap
                     let laneCount = CGFloat(instrumentEnergy.count)
                     let band = (size.height - gap * (laneCount - 1)) / laneCount
                     for (lane, series) in instrumentEnergy.enumerated() {
-                        var outline = Path()
-                        let rects = bars(
+                        for rect in bars(
                             series.peaks, from: instrumentEnergyStart,
                             seconds: instrumentEnergySeconds, scale: energyScale,
                             baseline: size.height - CGFloat(lane) * (band + gap), bandHeight: band)
-                        for (index, rect) in rects.enumerated() {
-                            let top = CGPoint(x: rect.midX, y: rect.minY)
-                            if index == 0 {
-                                outline.move(to: top)
-                            } else {
-                                outline.addLine(to: top)
-                            }
+                        {
+                            context.fill(Path(rect), with: .color(series.color.opacity(0.85)))
                         }
-                        context.stroke(outline, with: .color(series.color), lineWidth: 1.2)
                     }
                 }
             } else if !vocalPeaks.isEmpty {
@@ -5392,7 +5457,7 @@ private struct ChordProPreviewLineView: View {
     /// Gap between stacked per-instrument energy bands.
     private var energyLaneGap: CGFloat { scale.scaled(3) }
 
-    /// The strip is 18 pt, or tall enough for a 10 pt band per stem when per-instrument outlines
+    /// The strip is 18 pt, or tall enough for a 10 pt band per stem when per-instrument bands
     /// stack more than one.
     private var stripHeight: CGFloat {
         let lanes = CGFloat(instrumentEnergyOutlined ? instrumentEnergy.count : 0)
@@ -5504,7 +5569,7 @@ private struct ChordProPreviewLineView: View {
                 Text(word.text)
                     .font(
                         ChordProChartTypography.lyric(
-                            size: scale.lyricSize,
+                            size: scale.lyricSize * lyricFitScale,
                             weight: isHighlighted ? .bold : .regular)
                     )
                     // Squeeze the label into its beat slot rather than pushing later words off
@@ -5732,7 +5797,10 @@ private struct ChordProPreviewLineView: View {
             let lineEnd = max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3)
             taps.append(lineEnd)
             tapXs.append(tapXs.last ?? 0)
-            ballModel = BouncingBall(beatTimes: taps, beatX: tapXs)
+            // Steady glide (Eric, 2026-09-14: "moving linearly and smoothly to land on the words
+            // at the exact right moment"): constant speed between words, not an ease that
+            // lingers at each word and rushes the gap.
+            ballModel = BouncingBall(beatTimes: taps, beatX: tapXs, horizontalEasing: .linear)
         } else {
             // Fallback (no word timings): bounce on the beat at the metric columns.
             let beats = BouncingBall.beats(
@@ -5742,7 +5810,13 @@ private struct ChordProPreviewLineView: View {
             ballModel = BouncingBall(
                 beatTimes: beats, beatX: beats.map { metricX(forTime: $0) })
         }
-        guard let position = ballModel.position(at: beatBall.currentTime) else { return nil }
+        var now = beatBall.currentTime
+        // Through the row's lead-in the ball rests on the first word until it is sung, instead
+        // of vanishing until the first tap.
+        if !beatBall.isWaiting, let firstWord = words.first, now >= beatBall.segmentStart {
+            now = max(now, firstWord.start)
+        }
+        guard let position = ballModel.position(at: now) else { return nil }
         let baseline = ballTopReserve - 2
         let y = baseline - position.lift * ballApexHeight
         return (x: position.x, y: y)
@@ -5938,27 +6012,27 @@ private struct ChordProPreviewLineView: View {
     /// only after that nudges the next word right. Labels only: nothing here feeds back into the
     /// strip, dots, barlines, or chord geometry, which all stay on the ruler.
     private var rhythmicWordSlots: [RhythmicWordSlot] {
-        let words = rhythmicWords
-        guard !words.isEmpty else { return [] }
-        let anchors = words.map { metricX(forTime: $0.start) }
-        var slots: [RhythmicWordSlot] = []
-        var cursor: CGFloat = 0
-        for (index, word) in words.enumerated() {
-            let x = index == 0 ? anchors[index] : max(anchors[index], cursor)
-            let count = CGFloat(max(word.text.count, 1))
-            let natural = count * characterWidth
-            // Room from this word's left edge to the NEXT word's metric anchor, minus a
-            // one-character breathing gap. The last word has all the room it wants.
-            let room =
-                index + 1 < anchors.count
-                ? anchors[index + 1] - x - characterWidth : .greatestFiniteMagnitude
-            let factor = max(min(room / natural, 1), Self.minWordCompression)
-            let tracking = (factor - 1) * characterWidth
-            slots.append(RhythmicWordSlot(x: x, tracking: tracking))
-            cursor = x + count * (characterWidth + tracking) + characterWidth
-        }
-        return slots
+        ChordProPreviewLineLayout.wordSlots(
+            anchors: rhythmicWordAnchors, lengths: rhythmicWordLengths,
+            characterWidth: lyricCharacterWidth, minimumCompression: Self.minWordCompression,
+            frameEnd: fixedFramePx
+        ).map { RhythmicWordSlot(x: $0.x, tracking: $0.tracking) }
     }
+
+    private var rhythmicWordAnchors: [CGFloat] { rhythmicWords.map { metricX(forTime: $0.start) } }
+    private var rhythmicWordLengths: [Int] { rhythmicWords.map(\.text.count) }
+
+    /// This row's lyric text scale: 1, or smaller when a fixed-period row's words would otherwise
+    /// run past its frame (Eric, 2026-09-14: crowded words went off the edge).
+    private var lyricFitScale: CGFloat {
+        ChordProPreviewLineLayout.lyricFitScale(
+            anchors: rhythmicWordAnchors, lengths: rhythmicWordLengths,
+            characterWidth: characterWidth, minimumCompression: Self.minWordCompression,
+            frameEnd: fixedFramePx)
+    }
+
+    /// Advance of one lyric character on this row, after `lyricFitScale`.
+    private var lyricCharacterWidth: CGFloat { characterWidth * lyricFitScale }
 
     private func wordFinding(for word: TimedLyricWord) -> WordTimingFinding? {
         wordTimingFindings.first { $0.start == word.start && $0.text == word.text }
@@ -6011,7 +6085,7 @@ private struct ChordProPreviewLineView: View {
         guard words.indices.contains(index) else { return characterWidth }
         let slots = rhythmicWordSlots
         let tracking = slots.indices.contains(index) ? slots[index].tracking : 0
-        return CGFloat(max(words[index].text.count, 1)) * (characterWidth + tracking)
+        return CGFloat(max(words[index].text.count, 1)) * (lyricCharacterWidth + tracking)
     }
 
     private func chordRhythmicX(

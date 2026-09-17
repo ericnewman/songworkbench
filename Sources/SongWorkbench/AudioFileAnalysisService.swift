@@ -967,227 +967,6 @@ enum ChordOnsetAligner {
     }
 }
 
-/// Repairs line-LEADING words stranded on a weak energy blip well before the rest of their line.
-/// ASR pads a line's first word early after an instrumental break, and the distribution pass can
-/// then anchor it onto a brief bleed/breath blip (e.g. "Oceans" pinned 2.4s before "moving…" on a
-/// blip at half body level) — the rendered line then shows a multi-beat gap where the music has
-/// none. When a small leading cluster is separated from the line's main body by a mostly-UNVOICED
-/// gap, the cluster is translated forward to abut the body. A mostly-voiced gap is left alone —
-/// that's a genuinely held note, not a timing error. Word/segment count, order, text preserved.
-enum StrandedLeadingWordRepairer {
-    static func repaired(
-        _ segments: [TimedLyricSegment],
-        voicedIntervals: [ClosedRange<TimeInterval>],
-        // 0.8, lowered from 1.0 on measured evidence. Line-leading gaps across the whole local
-        // library (n=500) are sharply bimodal: 84 % fall under 0.2 s (normal sung spacing,
-        // including ASR overlaps), there is a clear valley at 0.2-0.4 s (9 of 500), and from
-        // 0.4 s up the histogram goes FLAT (22/17/16/13/3 per 0.2 s band) — a second population,
-        // not the tail of the first. 1.0 s sat arbitrarily out in that tail and caught only 16
-        // cases; it missed e.g. Doc Holiday's "He" stranded 0.92 s before "walks" on the previous
-        // line's decaying tail, which is exactly the shape this repairer exists for. 0.8 doubles
-        // the reach while staying far clear of the valley. The real safety guard is
-        // `maximumVoicedFraction` below — a gap the singer is actually sounding through is left
-        // alone regardless of length.
-        minimumGap: TimeInterval = 0.8,
-        maximumLeadingWords: Int = 2,
-        maximumVoicedFraction: Double = 0.3,
-        abutGap: TimeInterval = 0.08
-    ) -> [TimedLyricSegment] {
-        guard !segments.isEmpty, !voicedIntervals.isEmpty else { return segments }
-        var result = segments
-        for index in result.indices {
-            var words = result[index].words
-            guard words.count >= 2 else { continue }
-            // Find the largest leading gap within the allowed cluster size.
-            var clusterEnd: Int?
-            var gap: TimeInterval = 0
-            for wordIndex in 0..<min(maximumLeadingWords, words.count - 1) {
-                let g = words[wordIndex + 1].start - words[wordIndex].end
-                if g >= minimumGap {
-                    clusterEnd = wordIndex
-                    gap = g
-                    break
-                }
-            }
-            guard let clusterEnd, gap > 0 else { continue }
-            let gapStart = words[clusterEnd].end
-            let gapEnd = words[clusterEnd + 1].start
-            let voiced = voicedCoverage(from: gapStart, to: gapEnd, in: voicedIntervals)
-            guard voiced / gap <= maximumVoicedFraction else { continue }
-            // Translate the leading cluster forward so it ends just before the body begins.
-            let shift = gapEnd - abutGap - words[clusterEnd].end
-            guard shift > 0 else { continue }
-            for wordIndex in 0...clusterEnd {
-                words[wordIndex].start += shift
-                words[wordIndex].end += shift
-            }
-            result[index].words = words
-            result[index].start = words.first!.start
-            result[index].end = max(result[index].end, words.last!.end)
-        }
-        return result
-    }
-
-    private static func voicedCoverage(
-        from start: TimeInterval,
-        to end: TimeInterval,
-        in intervals: [ClosedRange<TimeInterval>]
-    ) -> TimeInterval {
-        intervals.reduce(0) { total, interval in
-            let lo = max(start, interval.lowerBound)
-            let hi = min(end, interval.upperBound)
-            return total + max(0, hi - lo)
-        }
-    }
-}
-
-/// Rejoins a phrase TORN ACROSS TWO LINES by ASR timestamp drift over untranscribed vocals.
-/// Measured on Settle Down (2026-08-10): the song opens with sung "doo doo doo"s the ASR emits
-/// no words for; it timestamped the real first words "I used" into that intro region (2.2-4.8 s)
-/// while their continuation "to stay out late at night" carries correct times (22.7 s). The
-/// grouper's gap cap then split them into two lines, so the chart showed "I used" in bar 1 —
-/// words not actually sung until bar 9 — and, because those words COVERED the intro vocals,
-/// `UntranscribedVocalRegionDetector` couldn't flag the doo-doos either.
-///
-/// Evidence required before merging (all of it — re-time, never drop, and never touch
-/// plausible real short lines):
-/// - the leading line is a SHORT fragment (<= `maximumLeadingWords` words) that doesn't end a
-///   sentence, and isn't a standalone interjection ("Oh yeah" stays its own line);
-/// - the next line begins LOWERCASE (engines capitalize genuine line starts, and a grouper
-///   cap-split mid-sentence leaves the continuation lowercase) with a real phrase body
-///   (>= `minimumBodyWords` words);
-/// - the gap between them is far longer than any real mid-phrase pause (>= `minimumGap`) and
-///   mostly UNVOICED (a gap the singer sounds through is never crossed);
-/// - neither line carries user state (`accepted` / `overrideText`).
-///
-/// The fragment's words translate forward (durations preserved) to abut the continuation, and
-/// the two lines merge into one. The vacated vocal region is then naturally flagged by
-/// `UntranscribedVocalRegionDetector`, which runs later in the stage.
-enum TornContinuationLineRejoiner {
-    static func rejoined(
-        _ segments: [TimedLyricSegment],
-        voicedIntervals: [ClosedRange<TimeInterval>],
-        maximumLeadingWords: Int = 2,
-        minimumBodyWords: Int = 3,
-        minimumGap: TimeInterval = 4.0,
-        maximumVoicedFraction: Double = 0.5,
-        abutGap: TimeInterval = 0.08
-    ) -> [TimedLyricSegment] {
-        guard segments.count > 1 else { return segments }
-        var result: [TimedLyricSegment] = []
-        var index = 0
-        while index < segments.count {
-            if index + 1 < segments.count,
-                let merged = mergedIfTorn(
-                    segments[index], into: segments[index + 1],
-                    voicedIntervals: voicedIntervals,
-                    maximumLeadingWords: maximumLeadingWords,
-                    minimumBodyWords: minimumBodyWords,
-                    minimumGap: minimumGap,
-                    maximumVoicedFraction: maximumVoicedFraction,
-                    abutGap: abutGap)
-            {
-                result.append(merged)
-                index += 2
-            } else {
-                result.append(segments[index])
-                index += 1
-            }
-        }
-        return result
-    }
-
-    private static func mergedIfTorn(
-        _ fragment: TimedLyricSegment,
-        into body: TimedLyricSegment,
-        voicedIntervals: [ClosedRange<TimeInterval>],
-        maximumLeadingWords: Int,
-        minimumBodyWords: Int,
-        minimumGap: TimeInterval,
-        maximumVoicedFraction: Double,
-        abutGap: TimeInterval
-    ) -> TimedLyricSegment? {
-        guard
-            !fragment.words.isEmpty,
-            fragment.words.count <= maximumLeadingWords,
-            body.words.count >= minimumBodyWords,
-            !fragment.accepted, !body.accepted,
-            fragment.overrideText?.isEmpty != false,
-            body.overrideText?.isEmpty != false
-        else { return nil }
-        // A standalone interjection line ("Oh yeah") is a real lyric, not a torn fragment.
-        guard !fragment.words.allSatisfy({ isInterjection($0.text) }) else { return nil }
-        // Sentence-ending punctuation means the fragment legitimately ends a phrase.
-        let trimmedFragment = fragment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let lastCharacter = trimmedFragment.last,
-            !".!?".contains(lastCharacter)
-        else { return nil }
-        // The continuation must read as mid-sentence: a lowercase first letter.
-        guard
-            let firstScalar = body.text.unicodeScalars.first(where: {
-                CharacterSet.letters.contains($0)
-            }), CharacterSet.lowercaseLetters.contains(firstScalar)
-        else { return nil }
-        // The tear: a gap no sung phrase pauses through, mostly unvoiced.
-        guard let fragmentEnd = fragment.words.last?.end,
-            let bodyStart = body.words.first?.start
-        else { return nil }
-        let gap = bodyStart - fragmentEnd
-        guard gap >= minimumGap else { return nil }
-        let voiced = voicedCoverage(from: fragmentEnd, to: bodyStart, in: voicedIntervals)
-        guard voiced / gap <= maximumVoicedFraction else { return nil }
-
-        // Translate the fragment forward (durations preserved) to abut the body.
-        let shift = bodyStart - abutGap - fragmentEnd
-        guard shift > 0 else { return nil }
-        var mergedWords: [TimedLyricWord] = fragment.words.map { word in
-            var moved = word
-            moved.start += shift
-            moved.end += shift
-            return moved
-        }
-        // Re-base the body words' character ranges into the merged text.
-        let offset = fragment.text.count + 1
-        mergedWords.append(
-            contentsOf: body.words.map { word in
-                var rebased = word
-                let lower = word.characterRange.lowerBound + offset
-                let upper = word.characterRange.upperBound + offset
-                rebased.characterRange = lower..<upper
-                return rebased
-            })
-        var merged = body
-        merged.text = fragment.text + " " + body.text
-        merged.words = mergedWords
-        merged.start = mergedWords.first?.start ?? body.start
-        merged.end = max(body.end, mergedWords.last?.end ?? body.end)
-        // A merged cut spans two ASR lines; per convention a re-segmentation pass that cannot
-        // attribute a single confidence leaves it nil (word confidences are preserved above).
-        merged.confidence = nil
-        return merged
-    }
-
-    private static func isInterjection(_ text: String) -> Bool {
-        let core = String(text.lowercased().unicodeScalars.filter(CharacterSet.letters.contains))
-        return [
-            "oh", "yeah", "yea", "ya", "hey", "no", "woah", "whoa", "ah", "ooh", "oo", "na",
-            "la", "mm", "hmm", "uh", "ohh", "doo", "do", "da", "dum",
-        ].contains(core)
-    }
-
-    private static func voicedCoverage(
-        from start: TimeInterval,
-        to end: TimeInterval,
-        in intervals: [ClosedRange<TimeInterval>]
-    ) -> TimeInterval {
-        intervals.reduce(0) { total, interval in
-            let lo = max(start, interval.lowerBound)
-            let hi = min(end, interval.upperBound)
-            return total + max(0, hi - lo)
-        }
-    }
-}
-
 /// Finds sung regions the ASR produced no words for (audit RC-4, tasks/audit-ball-timing.md):
 /// strict-VAD voiced intervals minus (padded) transcribed word coverage. On Summertime this is the
 /// chorus-1 tail (49.8–55.4), the verse-2 lead-in (58.1–61.7), and two outro vocal passages — all
@@ -1200,11 +979,25 @@ enum UntranscribedVocalRegionDetector {
         minimumDuration: TimeInterval = 1.5,
         wordPadding: TimeInterval = 0.25
     ) -> [ClosedRange<TimeInterval>] {
+        regions(
+            voicedIntervals: voicedIntervals,
+            wordSpans: lyrics.flatMap(\.words).map { $0.start...max($0.start, $0.end) },
+            minimumDuration: minimumDuration,
+            wordPadding: wordPadding)
+    }
+
+    /// The same regions from bare word time spans (raw transcription tokens, before grouping).
+    static func regions(
+        voicedIntervals: [ClosedRange<TimeInterval>],
+        wordSpans: [ClosedRange<TimeInterval>],
+        minimumDuration: TimeInterval = 1.5,
+        wordPadding: TimeInterval = 0.25
+    ) -> [ClosedRange<TimeInterval>] {
         guard !voicedIntervals.isEmpty else { return [] }
         // Padded, merged word coverage — every span the transcription accounts for.
         let covered: [ClosedRange<TimeInterval>] = merged(
-            lyrics.flatMap(\.words).map {
-                (max($0.start - wordPadding, 0))...($0.end + wordPadding)
+            wordSpans.map {
+                (max($0.lowerBound - wordPadding, 0))...($0.upperBound + wordPadding)
             }
         )
         var result: [ClosedRange<TimeInterval>] = []
@@ -1342,25 +1135,21 @@ enum IntraLinePauseSplitter {
 /// Repairs ASR melisma artifacts INSIDE a line (audit RC-3, tasks/audit-ball-timing.md):
 /// Whisper gives a held/stretched word a tiny span at its onset ("Sitting" 35.02–35.10) and often
 /// places the NEXT word's onset late, so the chart renders a multi-beat "pause" where the voice
-/// never stops. Two conservative, non-destructive rules against the strict-VAD voiced intervals:
+/// never stops. One conservative rule against the strict-VAD voiced intervals:
 ///
 /// - Melisma bridge: a ≥ `minimumGap` inter-word gap that is CONTINUOUSLY voiced
 ///   (≥ `melismaVoicedFraction`) is a held word, not a pause → extend `word.end` to the next
 ///   word's onset.
-/// - Late-onset pullback: a mostly-unvoiced gap (≤ `pullbackUnvoicedFraction` voiced) where the
-///   voice audibly re-enters more than `onsetSlack` BEFORE the ASR's next onset → pull the next
-///   word's start back to the voiced re-entry edge.
 ///
-/// Never deletes or reorders tokens (see tasks/lessons.md 2026-06-25); only re-times. Segment
+/// Never deletes or reorders tokens (see tasks/lessons.md 2026-06-25) and never moves a start
+/// (Eric, 2026-09-14: "There should be NO shifting code"); only extends word ends. Segment
 /// `start`/`end` are re-derived from the adjusted words. No-op without voiced intervals.
 enum VocalWordSpanNormalizer {
     static func normalized(
         _ segments: [TimedLyricSegment],
         voicedIntervals: [ClosedRange<TimeInterval>],
         minimumGap: TimeInterval = 0.4,
-        melismaVoicedFraction: Double = 0.8,
-        pullbackUnvoicedFraction: Double = 0.5,
-        onsetSlack: TimeInterval = 0.25
+        melismaVoicedFraction: Double = 0.8
     ) -> [TimedLyricSegment] {
         guard !segments.isEmpty, !voicedIntervals.isEmpty else { return segments }
         let sortedIntervals = voicedIntervals.sorted { $0.lowerBound < $1.lowerBound }
@@ -1379,19 +1168,6 @@ enum VocalWordSpanNormalizer {
                 if voicedFraction >= melismaVoicedFraction {
                     // Held word: the voice never stops between the two onsets.
                     words[wordIndex].end = gapEnd
-                } else if voicedFraction <= pullbackUnvoicedFraction {
-                    // Real pause, but the ASR onset trails the audible re-entry.
-                    guard
-                        let edge =
-                            sortedIntervals
-                            .map(\.lowerBound)
-                            .first(where: { $0 > gapStart && $0 < gapEnd })
-                    else { continue }
-                    guard gapEnd - edge > onsetSlack else { continue }
-                    let newStart = max(edge, gapStart + 0.01)
-                    if newStart < words[wordIndex + 1].end - 0.01 {
-                        words[wordIndex + 1].start = newStart
-                    }
                 }
             }
             result[index].words = words
@@ -1619,90 +1395,9 @@ enum VocalWordOnsetAligner {
     }
 }
 
-/// Non-destructive companion to `VocalOnsetDetector`: ASR engines (Whisper) mis-time the real
-/// first line's words DOWN into a silent instrumental intro, so the first line shows at ~0:00.
-/// Rather than dropping those words (which loses real lyrics — see the project rule), this RE-TIMES
-/// the leading lines that start before the detected vocal onset so they begin at the onset,
-/// preserving every line and word. The number of segments is never changed.
-enum VocalOnsetReanchor {
-    /// Re-times leading lines that the ASR placed before the true vocal `onset`.
-    /// - A line straddling the onset is compressed into `[onset, originalEnd]` (the END is the
-    ///   reliable anchor, same assumption as de-padding).
-    /// - A line entirely before the onset is translated forward to begin at the onset.
-    /// - Lines starting at/after the onset, or only slightly before it (`< minLeadToReanchor`),
-    ///   are left untouched. Lines never overlap and never reorder; the count is preserved.
-    static func reanchor(
-        _ segments: [TimedLyricSegment],
-        onset: TimeInterval,
-        minLeadToReanchor: TimeInterval = 2,
-        minLineDuration: TimeInterval = 0.3
-    ) -> [TimedLyricSegment] {
-        guard onset > 0, let first = segments.first, first.start < onset else { return segments }
-        var result = segments
-        var floor = onset
-        for index in result.indices {
-            let seg = result[index]
-            guard seg.start < onset else { break }  // reached lines already at/after the onset
-            let wouldDropLeadingWords =
-                seg.end > onset && seg.words.contains { $0.end <= onset }
-            guard onset - seg.start >= minLeadToReanchor || wouldDropLeadingWords else {
-                floor = max(floor, seg.end)  // basically correct already; just advance the floor
-                continue
-            }
-            let nextStart =
-                index + 1 < result.count ? result[index + 1].start : TimeInterval.infinity
-            let newStart = floor
-            // Keep the (reliable) end if it's still after the new start, else translate the span.
-            var newEnd =
-                seg.end > newStart
-                ? seg.end : newStart + max(seg.end - seg.start, minLineDuration)
-            newEnd = max(newEnd, newStart + minLineDuration)
-            if nextStart.isFinite {
-                newEnd = min(newEnd, max(nextStart, newStart + minLineDuration))
-            }
-            result[index] = remap(seg, toStart: newStart, end: newEnd)
-            floor = result[index].end
-        }
-        return result
-    }
-
-    /// Linearly remaps a segment's word timings from its old span onto `[newStart, newEnd]`,
-    /// preserving id/text and relative word spacing (mutates copies so the Codable id is kept).
-    private static func remap(
-        _ segment: TimedLyricSegment, toStart newStart: TimeInterval, end newEnd: TimeInterval
-    ) -> TimedLyricSegment {
-        let oldSpan = max(segment.end - segment.start, 0.000_001)
-        let newSpan = max(newEnd - newStart, 0.000_001)
-        func mapped(_ time: TimeInterval) -> TimeInterval {
-            newStart + (time - segment.start) / oldSpan * newSpan
-        }
-        var updated = segment
-        updated.start = newStart
-        updated.end = newEnd
-        updated.words = segment.words.map { word in
-            var w = word
-            w.start = mapped(word.start)
-            w.end = mapped(word.end)
-            return w
-        }
-        return updated
-    }
-}
-
-/// Prepares ASR segments for lyric grouping after a detected vocal onset: re-anchors lines that
-/// Whisper mis-timed into a silent intro (preserving every word) and drops tokens entirely before
-/// the onset (intro hallucinations). No-op when `onset` is nil.
+/// Drops ASR segments and tokens after the detected vocal offset (outro hallucinations). Word times
+/// are never changed.
 enum TranscriptionOnsetCorrection {
-    static func preparedSegments(
-        _ segments: [TimedTranscriptionSegment],
-        onset: TimeInterval
-    ) -> [TimedTranscriptionSegment] {
-        let lyricSegments = segments.compactMap(lyricSegment(from:))
-        guard !lyricSegments.isEmpty else { return segments }
-        let reanchored = VocalOnsetReanchor.reanchor(lyricSegments, onset: onset)
-        return reanchored.compactMap { transcriptionSegment(from: $0, droppingBefore: onset) }
-    }
-
     /// Drops whole ASR segments whose start is at/after the vocal `offset` (outro hallucinations).
     /// Stricter than token-level drop: a segment that begins in bleed after the last real vocal is
     /// removed entirely even when Whisper back-dates a few tokens before the offset.
@@ -1731,64 +1426,13 @@ enum TranscriptionOnsetCorrection {
             )
         }
     }
-
-    private static func lyricSegment(from segment: TimedTranscriptionSegment) -> TimedLyricSegment?
-    {
-        guard !segment.tokens.isEmpty else { return nil }
-        var text = ""
-        var words: [TimedLyricWord] = []
-        for token in segment.tokens {
-            let trimmed = token.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            if !text.isEmpty { text += " " }
-            let lower = text.count
-            text += trimmed
-            words.append(
-                TimedLyricWord(
-                    text: trimmed,
-                    start: token.startTime,
-                    end: token.endTime,
-                    characterRange: lower..<text.count
-                ))
-        }
-        guard !words.isEmpty else { return nil }
-        return TimedLyricSegment(
-            start: segment.startTime,
-            end: segment.endTime,
-            text: text,
-            words: words
-        )
-    }
-
-    private static func transcriptionSegment(
-        from segment: TimedLyricSegment,
-        droppingBefore onset: TimeInterval
-    ) -> TimedTranscriptionSegment? {
-        let keptWords = segment.words.filter { $0.end > onset }
-        guard !keptWords.isEmpty else { return nil }
-        let tokens = keptWords.map { word in
-            TimedTranscriptionToken(
-                text: word.text,
-                startTime: word.start,
-                endTime: word.end,
-                confidence: nil
-            )
-        }
-        return TimedTranscriptionSegment(
-            text: keptWords.map(\.text).joined(separator: " "),
-            startTime: keptWords.first?.start ?? segment.start,
-            endTime: keptWords.last?.end ?? segment.end,
-            tokens: tokens,
-            confidence: nil
-        )
-    }
 }
 
 /// One word timing the stretched-word check acted on, kept on the song so the Review chart can mark
 /// it for spot-checking. Matched back to its word by start time and text.
 struct WordTimingFinding: Codable, Equatable, Sendable {
     enum Kind: String, Codable, Sendable {
-        /// The start moved to a vocal attack inside the word.
+        /// The start moved to a vocal attack inside the word. No longer produced; saved songs decode.
         case retimed
         /// Stretched and the vocals were vague: the start moved to the attack nearest where the
         /// word's rhymes land in the bar.
@@ -1920,169 +1564,49 @@ struct VocalAttackEnvelope: Sendable {
     }
 }
 
-/// Catches the transcriber's STRETCHED words (Eric, 2026-09-14: "…Louisiana breeze" looked like
-/// 4–5 beats of silence before "I'm going back"; the gap was under one beat). Whisper glues a held
-/// word's start to the previous word's end and stretches it to the next line: "breeze" 57.77 s,
-/// where the vocals attack it at ~58.6 s. `VocalWordOnsetAligner` only snaps within 0.15 s and
-/// `VocalWordSpanNormalizer` only pulls LATE starts earlier, so an early start inside continuous
-/// singing survived both.
+/// Flags the transcriber's STRETCHED words for spot-checking (Eric, 2026-09-14: "…Louisiana breeze"
+/// looked like 4–5 beats of silence before "I'm going back"). Whisper glues a held word's start to
+/// the previous word's end and stretches it to the next line.
 ///
 /// A word is stretched when its start is glued to the previous word's end and it lasts at least
-/// `minimumSeconds` and `minimumBeats`. A stretched word whose start already has a strong attack is
-/// left alone. Otherwise, in two passes:
-///
-/// 1. The vocals decide where they are clear: when the sharpest attack inside the word rises at
-///    least `minimumRise` dB and `riseMargin` dB more than the start's, the start moves there.
-/// 2. Where they are vague, the song's rhymes decide (Eric: "In most cases I'd err on the side of
-///    the rhyme timing"). A line-final word takes the bar position where most of its rhyming (or
-///    identical) line-final words start. A start already within `rhymeTolerance` beats of it
-///    stands; otherwise it moves to the sung attack (≥ `weakRise` dB, reaching within
-///    `voicedRange` dB of the word's loudest) nearest that position, if one is within
-///    `rhymeTolerance`. Anything left is flagged only.
-///
-/// A moved start pulls the previous word's end along (the voice never stopped). Never adds, drops
-/// or reorders words, and idempotent: a moved start sits on its attack or its rhyme position.
+/// `minimumSeconds` and `minimumBeats`. A stretched word whose start has no strong vocal attack is
+/// flagged `.suspect`. Word times never change (Eric: "There should be NO shifting code"): this
+/// pass used to move such starts onto an attack inside the word or toward the rhyme position, which
+/// pushed Beach Weather's "places" 3.6 s past where all three transcribers heard it.
 enum StretchedWordRetimer {
     /// Bump when the rule changes, so stored songs are checked again.
-    static let versionTag = "stretched-words-1"
+    // 2: squashed runs are spread across their singing (pass 0).
+    // 3: pass 0 removed.
+    // 4: flag only; no word moves.
+    static let versionTag = "stretched-words-4"
 
     static func retimed(
         _ segments: [TimedLyricSegment],
         attacks: VocalAttackEnvelope,
         beatLength: TimeInterval?,
-        grid: MeasureGrid? = nil,
-        rhymes: RhymeDetector? = nil,
         glueTolerance: TimeInterval = 0.03,
         minimumSeconds: TimeInterval = 1.0,
         minimumBeats: Double = 2,
         startWindow: TimeInterval = 0.1,
-        minimumLead: TimeInterval = 0.25,
-        endGuard: TimeInterval = 0.15,
-        minimumRise: Float = 6,
-        riseMargin: Float = 3,
-        weakRise: Float = 3,
-        voicedRange: Float = 15,
-        rhymeTolerance: Double = 0.5
+        minimumRise: Float = 6
     ) -> (segments: [TimedLyricSegment], findings: [WordTimingFinding]) {
         let minimumLength = max(minimumSeconds, (beatLength ?? 0) * minimumBeats)
-        var result = segments
         var findings: [WordTimingFinding] = []
-        var vague: [(segment: Int, word: Int)] = []
-
-        func move(
-            _ segment: Int, _ index: Int, to time: TimeInterval, kind: WordTimingFinding.Kind
-        ) {
-            let word = result[segment].words[index]
-            result[segment].words[index].start = time
-            result[segment].words[index - 1].end = time
-            findings.append(
-                WordTimingFinding(
-                    kind: kind, text: word.text, start: time, transcribedStart: word.start))
-        }
-
-        // Pass 1: the vocals decide wherever their evidence is clear.
-        for segment in result.indices where result[segment].words.count >= 2 {
-            for index in 1..<result[segment].words.count {
-                let words = result[segment].words
-                let word = words[index]
-                guard abs(word.start - words[index - 1].end) <= glueTolerance,
-                    word.end - word.start >= minimumLength
-                else { continue }
+        for segment in segments {
+            for (previous, word) in zip(segment.words, segment.words.dropFirst()) {
                 let startRise =
                     attacks.sharpestRise(
                         from: word.start - startWindow, to: word.start + startWindow)?.rise ?? 0
-                guard startRise < minimumRise else { continue }
-                if let inside = attacks.sharpestRise(
-                    from: word.start + minimumLead, to: word.end - endGuard),
-                    inside.rise >= minimumRise, inside.rise >= startRise + riseMargin
-                {
-                    move(segment, index, to: inside.time, kind: .retimed)
-                } else {
-                    vague.append((segment, index))
-                }
+                guard abs(word.start - previous.end) <= glueTolerance,
+                    word.end - word.start >= minimumLength, startRise < minimumRise
+                else { continue }
+                findings.append(
+                    WordTimingFinding(
+                        kind: .suspect, text: word.text, start: word.start,
+                        transcribedStart: word.start))
             }
         }
-
-        // Pass 2: where the vocals are vague, err toward the rhyme timing.
-        for (segment, index) in vague {
-            let word = result[segment].words[index]
-            let position = grid.flatMap { grid in
-                rhymePosition(
-                    segment: segment, index: index, in: result, excluding: vague, grid: grid,
-                    rhymes: rhymes, tolerance: rhymeTolerance)
-            }
-            if let grid, let position {
-                func distance(_ time: TimeInterval) -> Double {
-                    circularDistance(barPosition(time, grid), position, Double(grid.beatsPerBar))
-                }
-                if distance(word.start) <= rhymeTolerance { continue }
-                // Only attacks that reach a sung level: a few dB of noise rising out of the silence
-                // after a word is not the word starting.
-                let sung = (attacks.loudest(from: word.start, to: word.end) ?? 0) - voicedRange
-                let nearest = attacks.attacks(
-                    from: word.start + minimumLead, to: word.end - endGuard, minimumRise: weakRise
-                )
-                .filter {
-                    distance($0.time) <= rhymeTolerance
-                        && (attacks.level(at: $0.time + 0.03) ?? -.infinity) >= sung
-                }
-                .min { distance($0.time) < distance($1.time) }
-                if let nearest {
-                    move(segment, index, to: nearest.time, kind: .rhymeAligned)
-                    continue
-                }
-            }
-            findings.append(
-                WordTimingFinding(
-                    kind: .suspect, text: word.text, start: word.start,
-                    transcribedStart: word.start))
-        }
-        return (result, findings.sorted { $0.start < $1.start })
-    }
-
-    /// Beats into the bar at `time`, in `[0, beatsPerBar)`.
-    private static func barPosition(_ time: TimeInterval, _ grid: MeasureGrid) -> Double {
-        let perBar = Double(max(grid.beatsPerBar, 1))
-        let beats = grid.beatIndex(atTime: time) - Double(grid.barPhase)
-        return beats - perBar * (beats / perBar).rounded(.down)
-    }
-
-    private static func circularDistance(_ a: Double, _ b: Double, _ period: Double) -> Double {
-        let d = abs(a - b).truncatingRemainder(dividingBy: period)
-        return min(d, period - d)
-    }
-
-    /// The bar position where most line-final words rhyming with (or identical to) this line-final
-    /// word start, or nil when it isn't line-final, has no such partners, or they disagree.
-    private static func rhymePosition(
-        segment: Int, index: Int, in segments: [TimedLyricSegment],
-        excluding vague: [(segment: Int, word: Int)], grid: MeasureGrid, rhymes: RhymeDetector?,
-        tolerance: Double
-    ) -> Double? {
-        let words = segments[segment].words
-        guard index == words.count - 1 else { return nil }
-        let text = RhymeDetector.normalize(words[index].text)
-        let positions: [Double] = segments.indices.compactMap { other in
-            guard other != segment, let last = segments[other].words.last,
-                !vague.contains(where: {
-                    $0.segment == other && $0.word == segments[other].words.count - 1
-                })
-            else { return nil }
-            let lastText = RhymeDetector.normalize(last.text)
-            guard !text.isEmpty,
-                lastText == text || (rhymes?.rhymes(last.text, words[index].text) ?? false)
-            else { return nil }
-            return barPosition(last.start, grid)
-        }
-        guard !positions.isEmpty else { return nil }
-        let period = Double(max(grid.beatsPerBar, 1))
-        let support = positions.map { candidate in
-            positions.filter { circularDistance($0, candidate, period) <= tolerance }.count
-        }
-        guard let best = support.indices.max(by: { support[$0] < support[$1] }),
-            support[best] * 2 > positions.count
-        else { return nil }
-        return positions[best]
+        return (segments, findings.sorted { $0.start < $1.start })
     }
 }
 
@@ -2386,174 +1910,6 @@ enum VocalPitchSalience {
     }
 }
 
-/// Corrects the systematic "words precede the singing" lead by shifting each lyric LINE to the
-/// vocal onset detected near its ASR start (from the vocals-stem voiced intervals). Lines are only
-/// ever moved in time — never dropped, never reordered — so it cannot lose or scramble lyrics. Also
-/// fixes the intro (no voiced region at 0 ⇒ the first line snaps to the first real onset).
-enum VocalAlignmentCorrector {
-    static func align(
-        _ segments: [TimedLyricSegment],
-        voicedIntervals: [ClosedRange<TimeInterval>],
-        searchBack: TimeInterval = 0.4,
-        searchForward: TimeInterval = 2.5,
-        minShift: TimeInterval = 0.15,
-        minLineDuration: TimeInterval = 0.3
-    ) -> [TimedLyricSegment] {
-        guard !segments.isEmpty, !voicedIntervals.isEmpty else { return segments }
-        let onsets = voicedIntervals.map(\.lowerBound).sorted()
-        var result = segments
-        // Nothing can be sung before the first voiced onset, so no line may start before it. This
-        // also fixes a far intro (first line at ~0) that's beyond the per-line forward search.
-        var floor = onsets.first ?? 0
-        for index in result.indices {
-            let seg = result[index]
-            let nextStart =
-                index + 1 < result.count ? result[index + 1].start : Double.infinity
-            // The line's true onset is the first voiced region near its ASR start (words lead the
-            // singing, so look mostly forward with a small backward tolerance).
-            let candidate = onsets.first {
-                $0 >= seg.start - searchBack && $0 <= seg.start + searchForward
-            }
-            var newStart = seg.start
-            if let candidate, abs(candidate - seg.start) >= minShift {
-                newStart = candidate
-            }
-            // never start before the previous line ends (keep order)
-            newStart = max(newStart, floor)
-            let delta = newStart - seg.start
-            var newEnd = seg.end + delta
-            newEnd = max(newEnd, newStart + minLineDuration)
-            if nextStart.isFinite {
-                newEnd = min(newEnd, max(nextStart, newStart + minLineDuration))
-            }
-            result[index] = shifted(seg, by: delta, newEnd: newEnd)
-            floor = newEnd
-        }
-        return result
-    }
-
-    /// Audio-as-reference word placement: the vocals stem's voiced regions are the ground truth.
-    /// Each LINE's words are distributed across the voiced regions NEAR that line (its ASR time
-    /// window, padded and clipped to its neighbours), weighted by word length, so words land only on
-    /// signal and silent gaps stay wordless. Distributing PER LINE (not globally) keeps every line
-    /// anchored to its own time: if the detector misses singing somewhere, only that line is
-    /// affected — lyrics can't pile into early regions and drift the whole song ahead. A line with no
-    /// nearby signal keeps its ASR timing. Line/word count is never changed.
-    static func distributeAcrossSignal(
-        _ segments: [TimedLyricSegment],
-        voicedIntervals: [ClosedRange<TimeInterval>],
-        windowPadding: TimeInterval = 0.5
-    ) -> [TimedLyricSegment] {
-        let allRegions =
-            voicedIntervals
-            .filter { $0.upperBound > $0.lowerBound }
-            .sorted { $0.lowerBound < $1.lowerBound }
-        guard !segments.isEmpty, !allRegions.isEmpty else { return segments }
-
-        var result = segments
-        for index in segments.indices {
-            let segment = segments[index]
-            guard !segment.words.isEmpty else { continue }
-            // This line's neighbourhood: its ASR window padded, but never past the previous line's
-            // end or the next line's start (so lines don't steal each other's regions / overlap).
-            let previousEnd = index > 0 ? segments[index - 1].end : -.greatestFiniteMagnitude
-            let nextStart =
-                index + 1 < segments.count ? segments[index + 1].start : .greatestFiniteMagnitude
-            let lo = max(min(segment.start, segment.end) - windowPadding, previousEnd)
-            let hi = min(max(segment.start, segment.end) + windowPadding, nextStart)
-            guard hi > lo else { continue }
-            let regions: [ClosedRange<TimeInterval>] = allRegions.compactMap { region in
-                let start = max(region.lowerBound, lo)
-                let end = min(region.upperBound, hi)
-                guard end > start else { return nil }
-                // Majority-overlap rule: a voiced region only counts as THIS line's signal when
-                // most of it falls inside the line's window. The window is clipped at the
-                // neighbouring lines' ASR times, but sung audio decays past where ASR ends a
-                // line, so the previous phrase's tail leaks in as a short sliver — and because
-                // words are packed from the first region onward, the line's first word gets
-                // pinned to that sliver instead of to its own phrase. Measured on Doc Holiday:
-                // the previous line's tail 27.00-27.78 survives clipping as just 27.56-27.78
-                // (28 % of itself), and "He" was pinned there, 1.1 s before the run that
-                // actually sings it. Requiring the majority to be inside is threshold-free in
-                // the gap sense — it asks who the region BELONGS to, not how big a hole is.
-                let originalLength = region.upperBound - region.lowerBound
-                guard originalLength > 0 else { return nil }
-                guard (end - start) / originalLength >= 0.5 else { return nil }
-                return start...end
-            }
-            guard !regions.isEmpty else { continue }  // no nearby signal → keep the ASR timing
-            result[index] = distribute(segment, across: regions)
-        }
-        return result
-    }
-
-    /// Spreads one line's words across the given voiced regions (weighted by word length), skipping
-    /// the silent gaps between them; word starts snap onto signal and word ends never cross a gap.
-    private static func distribute(
-        _ segment: TimedLyricSegment, across regions: [ClosedRange<TimeInterval>]
-    ) -> TimedLyricSegment {
-        let totalVoiced = regions.reduce(0.0) { $0 + ($1.upperBound - $1.lowerBound) }
-        let totalWeight = segment.words.reduce(0.0) { $0 + Double(max($1.text.count, 1)) }
-        guard totalVoiced > 0, totalWeight > 0 else { return segment }
-
-        func realTime(atVoicedOffset offset: Double) -> TimeInterval {
-            var remaining = min(max(offset, 0), totalVoiced)
-            for region in regions {
-                let length = region.upperBound - region.lowerBound
-                if remaining <= length { return region.lowerBound + remaining }
-                remaining -= length
-            }
-            return regions.last?.upperBound ?? 0
-        }
-        func snapToSignalStart(_ time: TimeInterval) -> TimeInterval {
-            for region in regions {
-                if time < region.lowerBound { return region.lowerBound }
-                if time < region.upperBound { return time }
-            }
-            return regions.last?.upperBound ?? time
-        }
-        func regionEnd(for time: TimeInterval) -> TimeInterval {
-            for region in regions where time < region.upperBound { return region.upperBound }
-            return regions.last?.upperBound ?? time
-        }
-
-        var newWords: [TimedLyricWord] = []
-        var cumulative = 0.0
-        for word in segment.words {
-            let startOffset = cumulative / totalWeight * totalVoiced
-            cumulative += Double(max(word.text.count, 1))
-            let endOffset = cumulative / totalWeight * totalVoiced
-            var updated = word
-            let start = snapToSignalStart(realTime(atVoicedOffset: startOffset))
-            updated.start = start
-            updated.end = max(
-                min(realTime(atVoicedOffset: endOffset), regionEnd(for: start)), start + 0.05)
-            newWords.append(updated)
-        }
-        guard let first = newWords.first, let last = newWords.last else { return segment }
-        var result = segment
-        result.words = newWords
-        result.start = first.start
-        result.end = max(last.end, first.start + 0.1)
-        return result
-    }
-
-    private static func shifted(
-        _ segment: TimedLyricSegment, by delta: TimeInterval, newEnd: TimeInterval
-    ) -> TimedLyricSegment {
-        var updated = segment
-        updated.start = segment.start + delta
-        updated.end = newEnd
-        updated.words = segment.words.map { word in
-            var w = word
-            w.start = word.start + delta
-            w.end = word.end + delta
-            return w
-        }
-        return updated
-    }
-}
-
 /// Removes lyric lines that have NO real vocal under them — the words a transcriber (notably
 /// Whisper) hallucinates over instrumental sections (intro / breaks / outro). The vocals stem
 /// often has instrumental BLEED (e.g. guitar), so the discriminator must be a STRICT vocal-presence
@@ -2564,18 +1920,54 @@ enum VocalAlignmentCorrector {
 /// No-op when `voicedIntervals` is empty (the detector produced nothing), so a failed VAD never
 /// wipes the lyrics. Use only on the pure-ASR path — with reference lyrics the words are
 /// user-supplied and must never be dropped on a timing miss. Idempotent.
+/// Adjacent lyric lines never overlap. The ±0.15 s onset snap can start a line's first word inside
+/// the previous line's last word (40–90 ms, five times on Summertime's corpus run), which the chart
+/// then draws as two rows sounding at once. The earlier line's word ends are clipped at the next
+/// line's start; no start moves and no word is dropped.
+enum LyricLineOverlapClipper {
+    static func clipped(_ lines: [TimedLyricSegment]) -> [TimedLyricSegment] {
+        var result = lines.sorted { $0.start < $1.start }
+        for index in result.indices.dropLast() {
+            let nextStart = result[index + 1].start
+            guard result[index].end > nextStart else { continue }
+            result[index].words = result[index].words.map { word in
+                var clipped = word
+                clipped.end = max(word.start, min(word.end, nextStart))
+                return clipped
+            }
+            result[index].end = max(result[index].start, nextStart)
+        }
+        return result
+    }
+}
+
 enum VocalHallucinationGate {
+    /// A tail cutoff moved past the end of the last pitched (sung) interval, so words the energy
+    /// detectors put in the instrumental tail but pitch evidence hears sung are not cut. nil stays
+    /// nil: no energy cutoff means no tail filtering at all.
+    static func pitchExtended(
+        _ cutoff: TimeInterval?, sungIntervals: [ClosedRange<TimeInterval>]
+    ) -> TimeInterval? {
+        guard let cutoff else { return nil }
+        return max(cutoff, sungIntervals.map(\.upperBound).max() ?? cutoff)
+    }
+
     static func filtered(
         _ segments: [TimedLyricSegment],
         voicedIntervals: [ClosedRange<TimeInterval>],
         padding: TimeInterval = 0.15,
         trailingCutoff: TimeInterval? = nil,
         lastVoicedEnd: TimeInterval? = nil,
-        lineStartEpsilon: TimeInterval = 0.02
+        lineStartEpsilon: TimeInterval = 0.02,
+        sungIntervals: [ClosedRange<TimeInterval>] = []
     ) -> [TimedLyricSegment] {
         guard !voicedIntervals.isEmpty else { return segments }
+        // A line survives when EITHER energy or pitch evidence hears singing under a word: soft
+        // melodic vocals sit below the energy gate but carry clear pitch (`VocalPitchSalience`),
+        // and the wordless-gap rescue recovers exactly those phrases.
+        let evidence = voicedIntervals + sungIntervals
         func overlapsVoiced(_ start: TimeInterval, _ end: TimeInterval) -> Bool {
-            for interval in voicedIntervals
+            for interval in evidence
             where end + padding >= interval.lowerBound && start - padding <= interval.upperBound {
                 return true
             }

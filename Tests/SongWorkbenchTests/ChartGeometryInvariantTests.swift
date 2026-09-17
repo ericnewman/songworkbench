@@ -491,6 +491,39 @@ final class ChartGeometryInvariantTests: XCTestCase {
             "a one-period chord-only row renders at a different width from a one-period lyric row")
     }
 
+    /// Beach Weather's squashed opening line: eight labels anchored within a third of a beat near
+    /// the row's end. The text shrinks, then its tail is pulled back so nothing passes the frame.
+    func testCrowdedWordsStayInsideTheFrame() {
+        let anchors: [CGFloat] = [600, 604, 608, 612, 615, 619, 622, 626]
+        let lengths = [3, 3, 3, 2, 3, 3, 3, 9]
+        let frameEnd: CGFloat = 700
+        let fit = ChordProPreviewLineLayout.lyricFitScale(
+            anchors: anchors, lengths: lengths, characterWidth: 9, minimumCompression: 0.75,
+            frameEnd: frameEnd)
+        XCTAssertLessThan(fit, 1, "crowded text shrinks")
+        let cw = 9 * fit
+        let slots = ChordProPreviewLineLayout.wordSlots(
+            anchors: anchors, lengths: lengths, characterWidth: cw, minimumCompression: 0.75,
+            frameEnd: frameEnd)
+        func end(_ index: Int) -> CGFloat {
+            slots[index].x + CGFloat(lengths[index]) * (cw + slots[index].tracking)
+        }
+        XCTAssertLessThanOrEqual(
+            end(slots.count - 1), frameEnd + 0.001, "the last word stays inside")
+        for index in slots.indices.dropFirst() {
+            XCTAssertGreaterThanOrEqual(
+                slots[index].x, end(index - 1) - 0.001, "labels never overlap")
+        }
+        let roomy = ChordProPreviewLineLayout.wordSlots(
+            anchors: [0, 100, 200], lengths: [3, 3, 3], characterWidth: 9, minimumCompression: 0.75,
+            frameEnd: 700)
+        XCTAssertEqual(roomy.map(\.x), [0, 100, 200], "words with room keep their anchors")
+        XCTAssertEqual(
+            ChordProPreviewLineLayout.lyricFitScale(
+                anchors: [0, 100, 200], lengths: [3, 3, 3], characterWidth: 9,
+                minimumCompression: 0.75, frameEnd: 700), 1)
+    }
+
     func testHoldLinesRunToTheWordEndButStopAtTheNextLabelAndTheFrame() {
         // Three labels 20 px wide. Word 0 is held to x 200; word 1 ends right after its label;
         // word 2 is held past the frame edge.

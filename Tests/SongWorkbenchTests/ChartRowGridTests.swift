@@ -143,20 +143,15 @@ final class ChartRowGridTests: XCTestCase {
         XCTAssertEqual(lines[0].segment.end, 12.0)
     }
 
-    func testAPickupJustBeforeARowMovesIntoIt() throws {
+    /// The song is one continuous stretch of bars (Eric, 2026-09-14): a pickup sung before a row's
+    /// downbeat stays at the end of the row where it sounds, and the line continues on the next row.
+    func testAPickupStaysInTheRowWhereItSounds() throws {
         // "And" one beat before the row-3 downbeat (12 s); the rest sings in row 3.
         let source = line("And then we sing", [11.5, 12.0, 13.0, 14.0], end: 15.0)
         let lines = ChartLyricLineCutter.lines(from: [source], grid: try cutterGrid())
-        XCTAssertEqual(lines.map(\.windowIndex), [3])
-        XCTAssertEqual(
-            lines[0].segment, source, "a whole line after moving its pickup stays untouched")
-        XCTAssertTrue(lines[0].isWholeSourceLine)
-
-        // Three beats early is no pickup: it stays on the earlier row.
-        let early = line("And then we sing", [10.5, 12.0, 13.0, 14.0], end: 15.0)
-        XCTAssertEqual(
-            ChartLyricLineCutter.lines(from: [early], grid: try cutterGrid()).map(\.windowIndex),
-            [2, 3])
+        XCTAssertEqual(lines.map(\.windowIndex), [2, 3])
+        XCTAssertEqual(lines.map(\.segment.text), ["And", "then we sing"])
+        XCTAssertEqual(lines.map(\.continuesOnNextRow), [true, false])
     }
 
     func testShortLinesInOneRowMergeAndAreAcceptedOnlyTogether() throws {

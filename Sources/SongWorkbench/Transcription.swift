@@ -191,6 +191,201 @@ enum SparseOpeningTranscriptionRescuer {
     }
 }
 
+/// Recovers phrases the full-song pass skipped mid-song: sung stretches of 2 s or more with no
+/// words (Beach Weather's line 4 opening is sung from 13.2 s, yet no mode transcribed a word
+/// before 18.7 s). Each stretch is re-transcribed on its own short clip. Only retry words whose
+/// middle falls inside the stretch are kept, so the retry never duplicates or moves a word the
+/// full pass already placed.
+enum WordlessVocalGapRescuer {
+    /// How long a transcribed word can stand for singing, from its onset: `minimumSupport`, or
+    /// `supportPerCharacter` per letter, whichever is longer. Whisper stretches a token across
+    /// seconds of singing it never transcribed (a held word glued to the next line), so its raw
+    /// span must not count as covering that singing — a missing phrase hides inside it.
+    static func supportedSpan(
+        start: TimeInterval, end: TimeInterval, text: String,
+        minimumSupport: TimeInterval = 0.6, supportPerCharacter: TimeInterval = 0.15
+    ) -> ClosedRange<TimeInterval> {
+        let letters = text.unicodeScalars.filter(CharacterSet.alphanumerics.contains).count
+        let support = max(minimumSupport, Double(letters) * supportPerCharacter)
+        return start...max(start, min(end, start + support))
+    }
+
+    static func gaps(
+        in result: TranscriptionResult,
+        sungIntervals: [ClosedRange<TimeInterval>],
+        minimumDuration: TimeInterval = 2
+    ) -> [ClosedRange<TimeInterval>] {
+        UntranscribedVocalRegionDetector.regions(
+            voicedIntervals: sungIntervals,
+            wordSpans: result.segments.flatMap(\.tokens).map {
+                supportedSpan(start: $0.startTime, end: $0.endTime, text: $0.text)
+            },
+            minimumDuration: minimumDuration)
+    }
+
+    /// `retry` is the transcription of a clip starting at `retryStart`. A retry word is accepted
+    /// only with evidence: its middle inside `gap`, a reported confidence of at least
+    /// `minimumConfidence` (a missing confidence is not evidence against it), and — when
+    /// `sungIntervals` are given — its onset-supported span at least half inside sung audio.
+    /// Fewer than `minimumWords` accepted words keeps `primary`: a lone word on a sung stretch
+    /// is usually a hallucination ("Thank you."), not the missing phrase.
+    static func merged(
+        primary: TranscriptionResult,
+        retry: TranscriptionResult,
+        retryStart: TimeInterval,
+        gap: ClosedRange<TimeInterval>,
+        sungIntervals: [ClosedRange<TimeInterval>] = [],
+        minimumWords: Int = 2,
+        minimumConfidence: Float = 0.4
+    ) -> TranscriptionResult {
+        func sungFraction(_ span: ClosedRange<TimeInterval>) -> Double {
+            let length = span.upperBound - span.lowerBound
+            guard length > 0 else {
+                return sungIntervals.contains { $0.contains(span.lowerBound) } ? 1 : 0
+            }
+            let inside = sungIntervals.reduce(0.0) {
+                $0
+                    + max(
+                        0, min($1.upperBound, span.upperBound) - max($1.lowerBound, span.lowerBound)
+                    )
+            }
+            return inside / length
+        }
+        let shifted = TranscriptionTimeOffsetter.offset(retry, by: retryStart)
+        let added: [TimedTranscriptionSegment] = shifted.segments.compactMap { segment in
+            let tokens = segment.tokens.filter { token in
+                guard gap.contains((token.startTime + token.endTime) / 2),
+                    (token.confidence ?? 1) >= minimumConfidence
+                else { return false }
+                guard !sungIntervals.isEmpty else { return true }
+                return sungFraction(
+                    supportedSpan(start: token.startTime, end: token.endTime, text: token.text))
+                    >= 0.5
+            }
+            guard let first = tokens.first, let last = tokens.last else { return nil }
+            let text =
+                tokens.count == segment.tokens.count
+                ? segment.text
+                : tokens.map { $0.text.trimmingCharacters(in: .whitespaces) }
+                    .joined(separator: " ")
+            return TimedTranscriptionSegment(
+                text: text, startTime: first.startTime, endTime: last.endTime, tokens: tokens,
+                confidence: segment.confidence)
+        }
+        guard added.flatMap(\.tokens).count >= minimumWords else { return primary }
+        // A recovered phrase sung inside a stretched primary segment splits that segment around
+        // it, so tokens stay in time order and the phrase can become its own line.
+        var kept: [TimedTranscriptionSegment] = []
+        for segment in primary.segments {
+            guard
+                let insertion = added.first(where: { phrase in
+                    segment.tokens.contains { $0.startTime < phrase.startTime }
+                        && segment.tokens.contains { $0.startTime > phrase.startTime }
+                })
+            else {
+                kept.append(segment)
+                continue
+            }
+            // A word before the phrase cannot still be sounding once the phrase starts: its end
+            // (never its start) is clipped there.
+            let before = segment.tokens.filter { $0.startTime < insertion.startTime }.map {
+                TimedTranscriptionToken(
+                    text: $0.text, startTime: $0.startTime,
+                    endTime: max($0.startTime, min($0.endTime, insertion.startTime)),
+                    confidence: $0.confidence)
+            }
+            for part in [before, segment.tokens.filter { $0.startTime >= insertion.startTime }] {
+                guard let first = part.first, let last = part.last else { continue }
+                kept.append(
+                    TimedTranscriptionSegment(
+                        text: part.map { $0.text.trimmingCharacters(in: .whitespaces) }
+                            .joined(separator: " "),
+                        startTime: first.startTime, endTime: max(last.endTime, first.startTime),
+                        tokens: part, confidence: segment.confidence))
+            }
+        }
+        let segments = (kept + added).sorted {
+            $0.startTime == $1.startTime
+                ? $0.endTime < $1.endTime
+                : $0.startTime < $1.startTime
+        }
+        return TranscriptionResult(
+            text: segments.map(\.text).joined(separator: " "),
+            languageCode: primary.languageCode ?? retry.languageCode,
+            sourceDuration: primary.sourceDuration,
+            completedAt: max(primary.completedAt, retry.completedAt),
+            segments: segments,
+            engine: primary.engine
+        )
+    }
+}
+
+/// Removes Whisper decode loops: the decoder repeating one segment many times, faster than anyone
+/// sings. Measured on the lyric corpus (2026-09-15): "I will be there" (vocals stem, Accuracy)
+/// came back as 119 segments with 14 distinct texts, one 10-word segment 105 times, each 0.4-1.3 s
+/// long (0.09 s per token); 10 of 25 stem runs and 14 of 25 mix runs had such runs, no Parakeet run
+/// did. A segment repeating the text of the segment before it is kept only when it could have been
+/// sung: at most `maximumWordsPerSecond`, and, when vocal onsets are known, with onsets under at
+/// least half its words (a real repeated chorus line has them). The first copy is always kept.
+/// Removed spans are returned so the wordless-gap rescue can retry the singing under them.
+enum DecodeLoopGuard {
+    static func removingLoops(
+        _ result: TranscriptionResult,
+        vocalOnsets: [TimeInterval],
+        maximumWordsPerSecond: Double = 6,
+        onsetTolerance: TimeInterval = 0.1
+    ) -> (result: TranscriptionResult, removed: [ClosedRange<TimeInterval>]) {
+        func key(_ segment: TimedTranscriptionSegment) -> String {
+            segment.tokens.map { LyricWordRanges.key($0.text) }.filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+        let segments = result.segments.sorted { $0.startTime < $1.startTime }
+        var kept: [TimedTranscriptionSegment] = []
+        var removed: [ClosedRange<TimeInterval>] = []
+        var previousKey: String?
+        for segment in segments {
+            let text = key(segment)
+            let words = text.split(separator: " ").count
+            defer { previousKey = text }
+            guard words >= 2, text == previousKey else {
+                kept.append(segment)
+                continue
+            }
+            let duration = max(segment.endTime - segment.startTime, 0.01)
+            let onsets = vocalOnsets.filter {
+                $0 >= segment.startTime - onsetTolerance && $0 <= segment.endTime + onsetTolerance
+            }.count
+            let singable =
+                Double(words) / duration <= maximumWordsPerSecond
+                && (vocalOnsets.isEmpty || onsets * 2 >= words)
+            if singable {
+                kept.append(segment)
+            } else {
+                removed.append(segment.startTime...max(segment.startTime, segment.endTime))
+            }
+        }
+        guard !removed.isEmpty else { return (result, []) }
+        var merged: [ClosedRange<TimeInterval>] = []
+        for span in removed {
+            if let last = merged.last, span.lowerBound <= last.upperBound + 0.05 {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, span.upperBound)
+            } else {
+                merged.append(span)
+            }
+        }
+        return (
+            TranscriptionResult(
+                text: kept.map(\.text).joined(separator: " "),
+                languageCode: result.languageCode,
+                sourceDuration: result.sourceDuration,
+                completedAt: result.completedAt,
+                segments: kept,
+                engine: result.engine),
+            merged
+        )
+    }
+}
+
 struct TranscriptionProgress: Codable, Equatable, Sendable {
     enum Phase: String, Codable, Sendable {
         case loadingModel

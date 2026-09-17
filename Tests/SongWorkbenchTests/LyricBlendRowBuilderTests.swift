@@ -153,7 +153,7 @@ final class LyricBlendRowBuilderTests: XCTestCase {
         XCTAssertEqual(row.effectiveText(), "fallback line")
     }
 
-    func testEffectiveLyricsUsesOverrideTextWithNoWords() {
+    func testEffectiveLyricsCarriesOverrideOnThePickedCandidate() {
         var row = LyricBlendRow(
             start: 5, end: 6,
             candidates: [LyricBlendCandidate(mode: .accuracy, text: "wrong")],
@@ -162,8 +162,11 @@ final class LyricBlendRowBuilderTests: XCTestCase {
 
         let lyrics = LyricBlendRowBuilder.effectiveLyrics(from: [row])
 
-        XCTAssertEqual(lyrics.map(\.text), ["right"])
-        XCTAssertEqual(lyrics.first?.words, [])
+        XCTAssertEqual(lyrics.map(\.effectiveText), ["right"])
+        XCTAssertEqual(lyrics.first?.text, "wrong")
+        // No candidate word timings: the resolved correction has no words to address.
+        XCTAssertEqual(lyrics.first?.resolved.words, [])
+        XCTAssertEqual(lyrics.first?.resolved.text, "right")
     }
 
     func testCrossModeDuplicateBeyondClusterWindowMergesIntoOneRow() {
@@ -673,5 +676,115 @@ final class LyricBlendRowBuilderTests: XCTestCase {
         let reconciled = LyricBlendRowBuilder.reconciled(newRows: [newRow], against: [oldRow])
 
         XCTAssertNil(reconciled[0].overrideText)
+    }
+}
+
+// MARK: - Output lines never overlap or repeat words
+
+extension LyricBlendRowBuilderTests {
+    private func wordsLine(_ words: [String], from start: TimeInterval, step: TimeInterval)
+        -> TimedLyricSegment
+    {
+        var text = ""
+        var timed: [TimedLyricWord] = []
+        for (index, word) in words.enumerated() {
+            if !text.isEmpty { text += " " }
+            let lower = text.count
+            text += word
+            let wordStart = start + Double(index) * step
+            timed.append(
+                TimedLyricWord(
+                    text: word, start: wordStart, end: wordStart + step * 0.9,
+                    characterRange: lower..<text.count))
+        }
+        return TimedLyricSegment(
+            start: start, end: timed.last?.end ?? start, text: text, words: timed)
+    }
+
+    private func assertNoOverlapsOrRepeats(
+        _ lyrics: [TimedLyricSegment], file: StaticString = #filePath, line: UInt = #line
+    ) {
+        for (previous, next) in zip(lyrics, lyrics.dropFirst()) {
+            XCTAssertLessThanOrEqual(previous.end, next.start + 1e-9, file: file, line: line)
+        }
+        let words = lyrics.flatMap(\.words)
+        for (index, word) in words.enumerated() {
+            for other in words[(index + 1)...]
+            where LyricWordRanges.key(other.text) == LyricWordRanges.key(word.text) {
+                XCTAssertFalse(
+                    other.start < word.end && word.start < other.end,
+                    "\(word.text) sung twice at once", file: file, line: line)
+            }
+        }
+        for lyric in lyrics {
+            XCTAssertTrue(
+                LyricWordRanges.addressText(lyric.words, lyric.text), file: file, line: line)
+        }
+    }
+
+    /// Whisper's one long segment against Parakeet's short lines: the overlap merge absorbs the
+    /// first two short lines, but the third anchors beyond the merge window and becomes its own
+    /// row inside the long segment's span. Before the fix both picks rendered its words twice.
+    func testLongWhisperSegmentOverlappingShortParakeetLinesCannotRepeatRows() {
+        let lyricWords = [
+            "all", "along", "the", "river", "we", "were", "singing", "loud", "until", "the",
+            "morning", "came",
+        ]
+        let accuracy = [wordsLine(lyricWords, from: 9, step: 1.0)]  // 9.0 ... 20.9
+        let fast = [
+            wordsLine(Array(lyricWords[0..<4]), from: 12.0, step: 0.9),
+            wordsLine(Array(lyricWords[4..<8]), from: 16.0, step: 0.9),
+            wordsLine(Array(lyricWords[8..<12]), from: 18.0, step: 0.9),
+        ]
+        let rows = LyricBlendRowBuilder.buildRows(
+            fastDraft: fast, balancedDraft: [], accuracy: accuracy)
+        XCTAssertGreaterThan(rows.count, 1, "fixture must reproduce overlapping rows")
+
+        let lyrics = LyricBlendRowBuilder.effectiveLyrics(from: rows)
+
+        assertNoOverlapsOrRepeats(lyrics)
+        XCTAssertEqual(lyrics.flatMap(\.words).map(\.text), lyricWords)
+    }
+
+    func testInterleavedDistinctWordsFromTwoPicksMergeIntoOneLine() {
+        let first = wordsLine(["one", "two", "three"], from: 0, step: 1)  // 0 ... 2.9
+        let second = wordsLine(["four", "five"], from: 1.5, step: 1)  // 1.5 ... 3.4
+
+        let lyrics = LyricBlendRowBuilder.withoutOverlaps([first, second])
+
+        XCTAssertEqual(lyrics.count, 1)
+        XCTAssertEqual(lyrics[0].text, "one two four three five")
+        assertNoOverlapsOrRepeats(lyrics)
+    }
+
+    func testRandomBlendPicksNeverOverlapOrRepeat() {
+        var generator = SystemRandomNumberGenerator()
+        let vocabulary = ["sun", "moon", "road", "home", "night", "rain", "blue", "fire"]
+        for _ in 0..<300 {
+            var rows: [LyricBlendRow] = []
+            var cursor = 0.0
+            for _ in 0..<Int.random(in: 2...6, using: &generator) {
+                cursor += Double.random(in: -2...3, using: &generator)
+                let modes: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+                let candidates = modes.shuffled(using: &generator)
+                    .prefix(Int.random(in: 1...3, using: &generator)).map { mode in
+                        let line = wordsLine(
+                            (0..<Int.random(in: 1...6, using: &generator)).map { _ in
+                                vocabulary.randomElement(using: &generator)!
+                            },
+                            from: max(0, cursor + Double.random(in: -1...1, using: &generator)),
+                            step: Double.random(in: 0.2...1.2, using: &generator))
+                        return LyricBlendCandidate(mode: mode, text: line.text, words: line.words)
+                    }
+                let start = candidates.flatMap(\.words).map(\.start).min() ?? cursor
+                let end = candidates.flatMap(\.words).map(\.end).max() ?? cursor
+                rows.append(
+                    LyricBlendRow(
+                        start: start, end: end, candidates: candidates,
+                        selectedMode: Bool.random(using: &generator) ? candidates.last?.mode : nil))
+            }
+            rows.sort { $0.start < $1.start }
+            assertNoOverlapsOrRepeats(LyricBlendRowBuilder.effectiveLyrics(from: rows))
+        }
     }
 }

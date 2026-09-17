@@ -367,3 +367,28 @@
   chord-placement A/B is judged by eye (highlight, ball) against the recording.
 - 2026-09-14: A tempo retune (`AnalysisTimingPostPasses`, `timing-3`) rescales only a MEASURED (`.drumAccents`) bar grid; an anchored grid is a guess and is re-estimated on the retuned beats (rescaling turned a default 4/4 into 3/4 and 9-beat rows). Fixed-period chart rows use the per-row whole-beat `ChartPickupGutter` (0 without a pickup), not a flat 2-beat gutter.
 - 2026-09-14: Review-chart instrument energy comes from `InstrumentEnergyLanes` (all non-vocal stems summed, or per stem with a hidden list in `reviewHiddenEnergyStems`), drawn across each whole row under the vocals. The old guitar-first `instrumentalLane` and leading/trailing melody fills are gone. The pre-commit hook lints strictly with `swift format` (toolchain), not standalone `swift-format`; plumbing commits (`commit-tree`) skip it.
+- 2026-09-14: Fixed-period chart rows have NO left gutter and pickups stay in the bar where they sound (Eric: the song is a continuum; every sound belongs inside its bars and measures). This replaced the earlier "move pickups into the next row's gutter" rule. Word-timing check `stretched-words-2` also spreads squashed runs (3+ words < 100 ms apart) across the singing leading into them.
+- 2026-09-14: `WordlessVocalGapRescuer` (Transcription.swift) re-transcribes sung stretches ≥ 2 s with
+  no words (stems only) and merges retry words inside the stretch. The transcription cache key
+  carries `-gap-rescue`, so a cached transcription from before it is a miss: the next analysis of
+  any song re-transcribes. Beach Weather's line 4 opening (sung from 13.2 s) was the motivating case.
+- 2026-09-14: Word starts are locked to the vocal timeline (Eric). The transcription stage keeps
+  ASR word times and only snaps them onto vocal-stem onsets; `distributeAcrossSignal` (spread words
+  across strict-VAD voiced regions) and `StretchedWordRetimer` pass 0 (spread squashed runs) were
+  removed because they moved correct words seconds away where the strict VAD missed singing. A
+  row that can't fit its words squeezes them; the timeline never moves.
+- 2026-09-14 (later): "There should be NO shifting code" (Eric). The only word-time changes left in
+  analysis are the ±0.15 s onset snap and end-only held-note extensions, both kept by his explicit
+  choice. Intro re-anchor, stranded-word repair, torn-line rejoin, late-onset pullback, and
+  `StretchedWordRetimer` moves were removed; the retimer only flags.
+- 2026-09-15: Lyric corpus = catalog mp3s matched by SHA-256 to `~/Documents/CCS Workbench/ChordPro Catalog/manifest.json`
+  with `Lyrics Only/*.txt` references; only `Those Were the Days` and `Summertime's here with you` are
+  reviewed, the rest are earlier automated transcriptions. No timed ground truth exists.
+- 2026-09-15: Strict VAD is peak-relative: on a full mix it finds a fraction of a second of "voice", so
+  energy evidence may gate or cut words only on a vocals stem. Pitch salience must also reject a word
+  before it is deleted on a stem.
+- 2026-09-15: `AVAudioUnitTimePitch` plays at floor(rate × 1024)/1024. Any slowed render whose
+  timestamps are mapped back must use `OfflineExportSettings.timeStretchRate` for both.
+- 2026-09-15: Generated charts persist `PersistedChartLayout` (row windows with stable ids + the digest
+  of the words they were cut from). Row timing survives text edits on the same lines; a kept chart
+  over different words is stale and gets no lyric timing.

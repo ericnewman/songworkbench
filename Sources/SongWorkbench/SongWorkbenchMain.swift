@@ -28,6 +28,10 @@ enum SongWorkbenchMain {
             var mode: TranscriptionMode
             var outputDirectory: URL?
             var printChart: Bool
+            var modelsDirectory: URL? = nil
+            var decodeRate: Double = 1.0
+            var language: String? = nil
+            var reuseStemsDirectory: URL? = nil
         }
 
         static let usage = """
@@ -43,6 +47,11 @@ enum SongWorkbenchMain {
                                (default: accuracy)
               --out DIR        output directory (default: the audio file's directory)
               --print-chart    also print the generated ChordPro chart to stdout
+              --models DIR     installed model store (default: Application Support/SongWorkbench/Models)
+              --decode-rate R  Accuracy decode speed, 0.75-1.0, as the app's slider (default: 1.0)
+              --language CODE  transcription language, e.g. en (default: detected)
+              --reuse-stems D  use vocals/drums/bass/guitar/piano/other/accompaniment.wav from D
+                               as already-separated stems (pair with --stages without separation)
 
             outputs: <name>.analysis.json (full document), <name>.cho (chart)
             """
@@ -91,6 +100,28 @@ enum SongWorkbenchMain {
                         fileURLWithPath: arguments[index], isDirectory: true)
                 case "--print-chart":
                     command.printChart = true
+                case "--models":
+                    index += 1
+                    guard index < arguments.count else { return fail("--models needs a value") }
+                    command.modelsDirectory = URL(
+                        fileURLWithPath: arguments[index], isDirectory: true)
+                case "--decode-rate":
+                    index += 1
+                    guard index < arguments.count, let rate = Double(arguments[index]),
+                        (0.75...1.0).contains(rate)
+                    else { return fail("--decode-rate needs a value in 0.75...1.0") }
+                    command.decodeRate = rate
+                case "--language":
+                    index += 1
+                    guard index < arguments.count else { return fail("--language needs a value") }
+                    command.language = arguments[index]
+                case "--reuse-stems":
+                    index += 1
+                    guard index < arguments.count else {
+                        return fail("--reuse-stems needs a value")
+                    }
+                    command.reuseStemsDirectory = URL(
+                        fileURLWithPath: arguments[index], isDirectory: true)
                 default:
                     guard audioPath == nil else { return fail("unexpected argument '\(argument)'") }
                     audioPath = argument
@@ -126,8 +157,8 @@ enum SongWorkbenchMain {
                 .first!
             var factory = SongAnalysisPipelineFactory(
                 modelPackageManager: ModelPackageManager(
-                    directoryURL:
-                        applicationSupport
+                    directoryURL: command.modelsDirectory
+                        ?? applicationSupport
                         .appendingPathComponent("SongWorkbench", isDirectory: true)
                         .appendingPathComponent("Models", isDirectory: true),
                     downloader: URLSessionModelArtifactDownloader()
@@ -145,13 +176,26 @@ enum SongWorkbenchMain {
             do {
                 let assembly = try await factory.makePipeline()
                 let title = command.audioURL.deletingPathExtension().lastPathComponent
+                var existingDocument = SongAnalysisDocument()
+                if let directory = command.reuseStemsDirectory {
+                    func stem(_ name: String) -> URL {
+                        directory.appendingPathComponent("\(name).wav")
+                    }
+                    existingDocument.stems = StoredStemFiles(
+                        files: StemFiles(
+                            vocals: stem("vocals"), drums: stem("drums"), bass: stem("bass"),
+                            guitar: stem("guitar"), piano: stem("piano"), other: stem("other"),
+                            accompaniment: stem("accompaniment")))
+                }
                 let request = SongAnalysisPipelineRequest(
                     sourceURL: command.audioURL,
                     outputDirectory: outputDirectory,
                     title: title,
                     stages: command.stages,
                     transcriptionMode: command.mode,
-                    existingDocument: SongAnalysisDocument()
+                    existingDocument: existingDocument,
+                    transcriptionDecodeRate: command.decodeRate,
+                    transcriptionLanguage: command.language
                 )
                 log(
                     "analyzing \(title) — stages: \(command.stages.map(\.rawValue).sorted().joined(separator: ","))"

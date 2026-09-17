@@ -395,3 +395,43 @@ private enum ChordProParser {
         }
     }
 }
+
+/// Literal lyric text inside ChordPro source. A lyric can contain anything a transcriber heard or a
+/// user typed, including characters ChordPro reads as syntax: `[` `]` open and close a chord, a
+/// line wrapped in `{` `}` is a directive, and a line break ends the line. `escaped` backslash-
+/// escapes `\\`, `[`, `]`, `{` and `}` and turns line breaks into spaces; `unescaped` reverses the
+/// backslashes. `ChordProParser` already skips escaped brackets.
+enum ChordProText {
+    private static let special: Set<Character> = ["\\", "[", "]", "{", "}"]
+
+    static func escaped(_ text: some StringProtocol) -> String {
+        var output = ""
+        for character in text {
+            if character.isNewline {
+                output.append(" ")
+            } else {
+                if special.contains(character) { output.append("\\") }
+                output.append(character)
+            }
+        }
+        return output
+    }
+
+    static func unescaped(_ text: some StringProtocol) -> String {
+        var output = ""
+        var pendingBackslash = false
+        for character in text {
+            if pendingBackslash {
+                if !special.contains(character) { output.append("\\") }
+                output.append(character)
+                pendingBackslash = false
+            } else if character == "\\" {
+                pendingBackslash = true
+            } else {
+                output.append(character)
+            }
+        }
+        if pendingBackslash { output.append("\\") }
+        return output
+    }
+}

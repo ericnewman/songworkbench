@@ -1489,3 +1489,186 @@ func makeTestStorageRoot() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("AppModelTests-\(UUID().uuidString)", isDirectory: true)
 }
+
+// MARK: - A Review correction reaches the generated and exported chart
+
+extension AppModelTests {
+    func testReviewLyricCorrectionAppearsInGeneratedAndExportedChordPro() async throws {
+        let url = try makeSilentWAV()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let record = AnalysisStageRecord(
+            state: .succeeded,
+            provenance: AnalysisProvenance(
+                sourceDigest: "source", sourceKind: .recording,
+                engineIdentifier: "chordpro-draft-builder", engineVersion: "2",
+                modelIdentifier: nil, modelVersion: nil,
+                configurationIdentifier: "\(ChordProDraftBuilder.algorithmTag)-confidence-50",
+                resultSchemaVersion: SongAnalysisDocument.currentSchemaVersion,
+                completedAt: Date(timeIntervalSince1970: 1), loadedFromCache: false),
+            confidence: nil, errorMessage: nil)
+        let heard = TimedLyricSegment(
+            start: 0, end: 2, text: "hallo werld",
+            words: [
+                TimedLyricWord(text: "hallo", start: 0, end: 1, characterRange: 0..<5),
+                TimedLyricWord(text: "werld", start: 1, end: 2, characterRange: 6..<11),
+            ])
+        let analysis = SongAnalysisDocument(
+            lyrics: [heard],
+            chords: [EditableChordEvent(time: 1.05, chord: "G", confidence: 0.9)],
+            chordProSource: "hallo [G]werld\n",
+            stageRecords: [.chordPro: record])
+        let store = DelayedProjectStore(
+            document: ProjectLibraryDocument(songs: [
+                StoredSongProject(url: url, settings: PracticeSettings(), analysis: analysis)
+            ]))
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
+        await model.restoreProjects()
+
+        // Restore re-cuts lines onto the timing grid (new ids): address the stored line.
+        let stored = try XCTUnwrap(model.lyricSegments.first)
+        XCTAssertEqual(stored.text, "hallo werld")
+        model.setLyricOverrideText(id: stored.id, text: "hello world")
+
+        XCTAssertTrue(model.chordProSource.contains("hello [G]world"), model.chordProSource)
+        let exportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("correction-\(UUID().uuidString).cho")
+        defer { try? FileManager.default.removeItem(at: exportURL) }
+        try model.exportChordPro(to: exportURL, transposedBy: 0)
+        let exported = try String(contentsOf: exportURL, encoding: .utf8)
+        XCTAssertTrue(exported.contains("hello [G]world"), exported)
+        XCTAssertFalse(exported.contains("werld"), exported)
+    }
+}
+
+// MARK: - Authoritative chart timing survives edits; stale charts are never re-timed
+
+extension AppModelTests {
+    private func generatedChartModel(
+        lyrics: [TimedLyricSegment], chords: [EditableChordEvent],
+        chordProReviewState: AnalysisReviewState = .draft,
+        chartLayout: PersistedChartLayout? = nil, chordProSource: String = "placeholder\n"
+    ) async throws -> (AppModel, URL) {
+        let url = try makeSilentWAV()
+        let record = AnalysisStageRecord(
+            state: .succeeded,
+            provenance: AnalysisProvenance(
+                sourceDigest: "source", sourceKind: .recording,
+                engineIdentifier: "chordpro-draft-builder", engineVersion: "5",
+                modelIdentifier: nil, modelVersion: nil,
+                configurationIdentifier: "\(ChordProDraftBuilder.algorithmTag)-confidence-50",
+                resultSchemaVersion: SongAnalysisDocument.currentSchemaVersion,
+                completedAt: Date(timeIntervalSince1970: 1), loadedFromCache: false),
+            confidence: nil, errorMessage: nil)
+        let analysis = SongAnalysisDocument(
+            lyrics: lyrics, chords: chords, chordProSource: chordProSource,
+            chordProReviewState: chordProReviewState, stageRecords: [.chordPro: record],
+            chartLayout: chartLayout)
+        let store = DelayedProjectStore(
+            document: ProjectLibraryDocument(songs: [
+                StoredSongProject(url: url, settings: PracticeSettings(), analysis: analysis)
+            ]))
+        let model = AppModel(store: store, storageRoot: makeTestStorageRoot())
+        await model.restoreProjects()
+        return (model, url)
+    }
+
+    private func twoLines() -> [TimedLyricSegment] {
+        [
+            TimedLyricSegment(
+                start: 0, end: 2, text: "hello world",
+                words: [
+                    TimedLyricWord(text: "hello", start: 0, end: 1, characterRange: 0..<5),
+                    TimedLyricWord(text: "world", start: 1, end: 2, characterRange: 6..<11),
+                ]),
+            TimedLyricSegment(
+                start: 10, end: 12, text: "second line",
+                words: [
+                    TimedLyricWord(text: "second", start: 10, end: 11, characterRange: 0..<6),
+                    TimedLyricWord(text: "line", start: 11, end: 12, characterRange: 7..<11),
+                ]),
+        ]
+    }
+
+    func testEditingTheChartSourceKeepsItsAuthoritativeRowTiming() async throws {
+        let (model, url) = try await generatedChartModel(
+            lyrics: twoLines(), chords: [EditableChordEvent(time: 0.1, chord: "C", confidence: 0.9)]
+        )
+        defer { try? FileManager.default.removeItem(at: url) }
+        model.chartBeatsPerRowChanged()  // regenerate the draft and its layout
+        let generated = try XCTUnwrap(model.songTimelineForPreview())
+        XCTAssertNotNil(model.chartLayout)
+
+        model.chordProSource = model.chordProSource.replacingOccurrences(
+            of: "second line", with: "second verse")
+
+        let edited = try XCTUnwrap(
+            model.songTimelineForPreview(), "an edit on the same lines keeps the row windows")
+        XCTAssertEqual(edited.rows.map(\.id), generated.rows.map(\.id))
+        XCTAssertEqual(edited.rows.map(\.start), generated.rows.map(\.start))
+
+        // Reloading the persisted document keeps the sidecar.
+        let data = try JSONEncoder().encode(
+            SongAnalysisDocument(
+                chordProSource: model.chordProSource, chartLayout: model.chartLayout))
+        let decoded = try JSONDecoder().decode(SongAnalysisDocument.self, from: data)
+        XCTAssertEqual(decoded.chartLayout?.timeline, generated)
+
+        // A structural edit (a line removed) withdraws the stored rows instead of mis-pairing them.
+        model.chordProSource = model.chordProSource.replacingOccurrences(
+            of: "{x_chord_times: 10.000:C}\n[C]second verse\n", with: "")
+        XCTAssertNil(model.songTimelineForPreview(), model.chordProSource)
+    }
+
+    func testRetranscriptionCannotTimeAKeptReviewedChartWithNewLyrics() async throws {
+        let old = twoLines()
+        let builtFrom = ChordProDraftBuilder().buildResult(
+            ChordProDraftInput(title: "t", tempo: nil, lyrics: old, chords: []))
+        var fresh = old
+        fresh[1] = TimedLyricSegment(
+            start: 9.5, end: 12, text: "a brand new line",
+            words: [
+                TimedLyricWord(text: "a", start: 9.5, end: 10, characterRange: 0..<1),
+                TimedLyricWord(text: "brand", start: 10, end: 10.5, characterRange: 2..<7),
+                TimedLyricWord(text: "new", start: 10.5, end: 11, characterRange: 8..<11),
+                TimedLyricWord(text: "line", start: 11, end: 12, characterRange: 12..<16),
+            ])
+        let (model, url) = try await generatedChartModel(
+            lyrics: fresh, chords: [], chordProReviewState: .reviewed,
+            chartLayout: PersistedChartLayout(result: builtFrom, lyrics: old),
+            chordProSource: builtFrom.source)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertEqual(model.chordProReviewState, .reviewed)
+        XCTAssertEqual(model.chordProSource, builtFrom.source)
+        XCTAssertTrue(model.isChartLyricsStale)
+        XCTAssertNil(model.songTimelineForPreview())
+        XCTAssertNil(model.chartLayoutForPreview())
+    }
+
+    func testDraggedChordInAReviewedChartMovesRowsAndExportsAtItsCommittedTime() async throws {
+        let chord = EditableChordEvent(time: 0.1, chord: "G", confidence: 0.9)
+        let lyrics = twoLines()
+        let built = ChordProDraftBuilder().buildResult(
+            ChordProDraftInput(title: "t", tempo: nil, lyrics: lyrics, chords: [chord]))
+        let (model, url) = try await generatedChartModel(
+            lyrics: lyrics, chords: [chord], chordProReviewState: .reviewed,
+            chartLayout: PersistedChartLayout(result: built, lyrics: lyrics),
+            chordProSource: built.source)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let stored = try XCTUnwrap(model.chordEvents.first)
+
+        model.setChordManualTime(id: stored.id, manualTime: 10.2)
+
+        XCTAssertEqual(model.chordProReviewState, .draft)
+        XCTAssertTrue(model.chordProSource.contains("[G]second line"), model.chordProSource)
+        XCTAssertFalse(model.chordProSource.contains("[G]hello"), model.chordProSource)
+        let rows = try XCTUnwrap(model.songTimelineForPreview()).rows.filter(\.isLyric)
+        XCTAssertEqual(rows.map(\.chordTimes), [[], [10.2]])
+        let exportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moved-\(UUID().uuidString).cho")
+        defer { try? FileManager.default.removeItem(at: exportURL) }
+        try model.exportChordPro(to: exportURL, transposedBy: 0)
+        let exported = try String(contentsOf: exportURL, encoding: .utf8)
+        XCTAssertTrue(exported.contains("{x_chord_times: 10.200:G}"), exported)
+    }
+}

@@ -290,7 +290,8 @@ struct TranscriptionStage: AnalysisStageRunning {
             // changing it re-transcribes; constant 1.0 for other modes so it never disturbs them.
             let decodeRate =
                 request.transcriptionMode == .accuracy
-                ? min(max(request.transcriptionDecodeRate, 0.5), 1.0) : 1.0
+                ? OfflineExportSettings.timeStretchRate(
+                    min(max(request.transcriptionDecodeRate, 0.5), 1.0)) : 1.0
             let cacheEngine = AnalysisEngineVersion(
                 identifier: [
                     "transcription",
@@ -304,8 +305,9 @@ struct TranscriptionStage: AnalysisStageRunning {
                     engine.metadata.modelVersion ?? "unknown",
                     "schema-\(SongAnalysisDocument.currentSchemaVersion)",
                     request.transcriptionMode == .accuracy
-                        ? "decode3-\(String(format: "%.2f", decodeRate))-opening-rescue"
-                        : "decode2-\(String(format: "%.2f", decodeRate))",
+                        ? "decode3-\(String(format: "%.4f", decodeRate))-opening-rescue-gap-rescue-2-loop-guard-1"
+                        : "decode2-\(String(format: "%.4f", decodeRate))-gap-rescue-2-loop-guard-1",
+                    request.transcriptionLanguage.map { "language-\($0)" } ?? "auto",
                 ].joined(separator: "|")
             )
             // Strict VAD is needed both for the decode-collapse check below and for the tail
@@ -316,10 +318,25 @@ struct TranscriptionStage: AnalysisStageRunning {
                     url: audioURL, configuration: strictVAD)) ?? []
             let vocalOnset: TimeInterval? =
                 hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
+            // Sung evidence for the wordless-gap rescue and the untranscribed-region flags below.
+            // On the vocals stem it is PITCH salience, not energy — the energy-only strict VAD
+            // both flagged loud-section bleed as unsung vocals (phantom "vocals — not
+            // transcribed" on true instrumentals) and missed soft melodic vocals entirely
+            // (Settle Down's doo-doo intro, below the peak-relative gate). Full-mix fallback
+            // keeps strict VAD: on a mix, everything is pitched.
+            let sungEvidence =
+                hasStems
+                ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
+                : strictVoiced
+            // Vocal-stem onsets: the decode-loop guard's acoustic check and the final onset snap.
+            let stemOnsets: [TimeInterval] =
+                hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
 
             /// One transcription pass at `rate` (slow-rendering a temp copy when < 1.0), with
             /// timestamps mapped back to the real timeline.
-            func transcribeOnce(rate: Double) async throws -> TranscriptionResult {
+            func transcribeOnce(rate requestedRate: Double) async throws -> TranscriptionResult {
+                // The rate the time-stretch really plays, so timestamps map back without drift.
+                let rate = OfflineExportSettings.timeStretchRate(requestedRate)
                 let requestID = UUID()
                 let usesSlowDecode = rate < 0.999
                 let decodeURL: URL
@@ -342,7 +359,8 @@ struct TranscriptionStage: AnalysisStageRunning {
                     rawResult = try await engine.transcribe(
                         request: TranscriptionRequest(
                             id: requestID,
-                            audioURL: decodeURL
+                            audioURL: decodeURL,
+                            localeIdentifier: request.transcriptionLanguage
                         )
                     ) { value in
                         stageProgress(value.fractionCompleted, value.phase.rawValue)
@@ -360,25 +378,48 @@ struct TranscriptionStage: AnalysisStageRunning {
                     : rawResult
             }
 
-            func transcribeRegion(_ range: ClosedRange<TimeInterval>) async throws
+            /// One region of `source` (the vocals stem by default), decoded at the same Accuracy
+            /// decode rate as the full pass, with times relative to the region start.
+            func transcribeRegion(
+                _ range: ClosedRange<TimeInterval>, phase: String = "retryingOpeningPhrase",
+                from source: URL? = nil
+            ) async throws
                 -> TranscriptionResult
             {
                 let requestID = UUID()
                 let regionURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent("opening-retry-\(requestID.uuidString).wav")
-                defer { try? FileManager.default.removeItem(at: regionURL) }
-                stageProgress(0, "retryingOpeningPhrase")
+                let slowedURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("opening-retry-slow-\(requestID.uuidString).wav")
+                defer {
+                    try? FileManager.default.removeItem(at: regionURL)
+                    try? FileManager.default.removeItem(at: slowedURL)
+                }
+                stageProgress(0, phase)
                 try AudioRegionExporter().export(
-                    sourceURL: audioURL,
+                    sourceURL: source ?? audioURL,
                     destinationURL: regionURL,
                     range: range
                 )
+                let usesSlowDecode = decodeRate < 0.999
+                if usesSlowDecode {
+                    try await OfflineAudioExporter().export(
+                        sourceURL: regionURL, destinationURL: slowedURL,
+                        settings: OfflineExportSettings(pitchSemitones: 0, tempoRate: decodeRate))
+                }
                 do {
-                    return try await engine.transcribe(
-                        request: TranscriptionRequest(id: requestID, audioURL: regionURL)
+                    let raw = try await engine.transcribe(
+                        request: TranscriptionRequest(
+                            id: requestID, audioURL: usesSlowDecode ? slowedURL : regionURL,
+                            localeIdentifier: request.transcriptionLanguage)
                     ) { value in
                         stageProgress(value.fractionCompleted, value.phase.rawValue)
                     }
+                    let mapped =
+                        usesSlowDecode ? TranscriptionTimeScaler.scaled(raw, by: decodeRate) : raw
+                    return DecodeLoopGuard.removingLoops(
+                        mapped, vocalOnsets: stemOnsets.map { $0 - range.lowerBound }
+                    ).result
                 } catch is CancellationError {
                     await engine.cancel(requestID: requestID)
                     throw CancellationError()
@@ -407,7 +448,9 @@ struct TranscriptionStage: AnalysisStageRunning {
                 loadedFromCache = true
                 stageProgress(1, "loadedFromCache")
             } else {
-                var transcribed = try await transcribeOnce(rate: decodeRate)
+                var transcribed = DecodeLoopGuard.removingLoops(
+                    try await transcribeOnce(rate: decodeRate), vocalOnsets: stemOnsets
+                ).result
                 // Decode-collapse rescue: whisper.cpp sometimes aborts mid-file at normal
                 // speed — it emits the early segments, then skips to the outro, silently
                 // dropping the middle of the song. When the transcription covers far less
@@ -420,7 +463,10 @@ struct TranscriptionStage: AnalysisStageRunning {
                     coverage < 0.6
                 {
                     stageProgress(0, "retryingSlowedDecode")
-                    if let retry = try? await transcribeOnce(rate: 0.85),
+                    if let unguarded = try? await transcribeOnce(rate: 0.85),
+                        case let retry = DecodeLoopGuard.removingLoops(
+                            unguarded, vocalOnsets: stemOnsets
+                        ).result,
                         let retryCoverage = TranscriptionVoicedCoverage.fraction(
                             of: retry, voicedIntervals: strictVoiced),
                         retryCoverage > coverage
@@ -448,6 +494,40 @@ struct TranscriptionStage: AnalysisStageRunning {
                         throw CancellationError()
                     } catch {
                         // Optional quality rescue: retain the complete primary pass on failure.
+                    }
+                }
+                // Wordless-gap rescue: re-transcribe each sung stretch the pass heard no words
+                // in, on a clip with 1 s either side. Stems only — on a full mix everything is
+                // voiced, so every instrumental would be retried and hallucinated over.
+                if hasStems {
+                    for gap in WordlessVocalGapRescuer.gaps(
+                        in: transcribed, sungIntervals: sungEvidence)
+                    {
+                        let start = max(gap.lowerBound - 1, 0)
+                        let end = max(
+                            gap.upperBound, min(gap.upperBound + 1, transcribed.sourceDuration))
+                        do {
+                            let retry = try await transcribeRegion(
+                                start...end, phase: "retryingWordlessGaps")
+                            var rescued = WordlessVocalGapRescuer.merged(
+                                primary: transcribed, retry: retry, retryStart: start, gap: gap,
+                                sungIntervals: sungEvidence)
+                            // The stem can lose a soft phrase the mix still carries: retry the
+                            // same region on the original recording, with the same evidence rule.
+                            if rescued == transcribed, request.sourceURL != audioURL {
+                                let mixRetry = try await transcribeRegion(
+                                    start...end, phase: "retryingWordlessGaps",
+                                    from: request.sourceURL)
+                                rescued = WordlessVocalGapRescuer.merged(
+                                    primary: transcribed, retry: mixRetry, retryStart: start,
+                                    gap: gap, sungIntervals: sungEvidence)
+                            }
+                            transcribed = rescued
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            // Optional quality rescue: keep the full pass on failure.
+                        }
                     }
                 }
                 result = transcribed
@@ -479,6 +559,11 @@ struct TranscriptionStage: AnalysisStageRunning {
                         + "|blend-row-overlap-merge"
                         + "|untranscribed-2-pitch-salience"
                         + "|line-tail-sustain-1"
+                        + "|words-stay-on-asr-times-1"
+                        + "|no-start-shifts-1"
+                        + "|pitch-supported-gate-1"
+                        + "|mix-no-energy-gate-1"
+                        + "|line-overlap-clip-1"
                         + referenceLyricsVersionTag(context.document.referenceLyrics)
                 ),
                 modelIdentifier: result.engine.modelName,
@@ -489,29 +574,31 @@ struct TranscriptionStage: AnalysisStageRunning {
             )
             // Drop stray low-confidence words isolated in silence so instrumental gaps
             // survive and become Intro/Instrumental/Outro sections, then group into lines.
-            // When stems exist, re-anchor/drop intro hallucinations and drop outro tokens after
+            // When stems exist, drop outro tokens after
             // the last detected vocal offset before grouping.
             let sourceDuration = result.sourceDuration
             let normalizedDuration = sourceDuration > 0 ? sourceDuration : nil
             // Every vocal onset on the stem, used to snap each word to the actual energy burst in
             // the final timing pass below. Only meaningful on the isolated vocals stem.
-            let vocalOnsets: [TimeInterval] =
-                hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
+            let vocalOnsets = stemOnsets
             let detectedOffset: TimeInterval? =
                 hasStems ? (try? VocalOffsetDetector.lastOffset(url: audioURL)) : nil
             // strictVoiced computed once above (also feeds the decode-collapse rescue).
+            // Energy VAD is vocal evidence only on an isolated vocals stem. It is peak-relative, so
+            // on a full mix it hears a fraction of a second of "voice" (Summertime's mix: 0.3 s at
+            // 78.5 s) and the tail cutoff and hallucination gate below deleted 167 of 168 Whisper
+            // words (corpus baseline, 2026-09-15). Without stems nothing is deleted on its say-so.
+            let gatingVoiced = hasStems ? strictVoiced : []
             let tailCutoff = VocalTailCutoffResolver.resolve(
                 detectedOffset: detectedOffset,
-                strictVoicedIntervals: strictVoiced,
+                strictVoicedIntervals: gatingVoiced,
                 sourceDuration: normalizedDuration)
-            let vocalOffset = tailCutoff.effectiveOffset
-            var segmentsForGrouping: [TimedTranscriptionSegment]
-            if let vocalOnset {
-                segmentsForGrouping = TranscriptionOnsetCorrection.preparedSegments(
-                    result.segments, onset: vocalOnset)
-            } else {
-                segmentsForGrouping = result.segments
-            }
+            // Pitch-supported singing past the energy offset is kept: nothing is cut unless both
+            // energy and pitch evidence say the voice has stopped.
+            let pitchEvidence = hasStems ? sungEvidence : []
+            let vocalOffset = VocalHallucinationGate.pitchExtended(
+                tailCutoff.effectiveOffset, sungIntervals: pitchEvidence)
+            var segmentsForGrouping = result.segments
             if let vocalOffset {
                 segmentsForGrouping = TranscriptionOnsetCorrection.preparedSegments(
                     segmentsForGrouping, droppingSegmentsStartingAtOrAfter: vocalOffset)
@@ -547,29 +634,33 @@ struct TranscriptionStage: AnalysisStageRunning {
                 ? RepeatedLyricCorrector().corrected(rawGroupedLyrics)
                 : ReferenceLyricAligner.align(
                     referenceText: reference, asrSegments: rawGroupedLyrics)
-            // TIMING last: pin the FINAL words (ASR or reference) to the actual singing — distribute
-            // each line's words across the voiced regions near it so words land only on
-            // signal and silent gaps stay wordless. Per-line + non-destructive; vocals stem when
-            // present, otherwise the full mix (weaker but better than no VAD).
+            // TIMING: words keep the transcriber's times and move only onto a vocal-stem onset
+            // (`VocalWordOnsetAligner`, below) — Eric, 2026-09-14: words are "locked immutably to
+            // the vocal timeline". Spreading each line's words across strict-VAD voiced regions
+            // (the removed `distributeAcrossSignal`) packed Beach Weather's correctly timed
+            // opening into 0.3 s and pushed a chorus line 6 s late where the VAD missed singing.
+            // The other start-shifting steps (intro re-anchor, stranded-word repair, torn-line
+            // rejoin, late-onset pullback) are gone too — "There should be NO shifting code." Only
+            // the ±0.15 s onset snap and held-note end extensions remain, by Eric's choice.
             let referenceEmpty =
                 reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             let lyrics: [TimedLyricSegment]
-            if !strictVoiced.isEmpty {
+            if !gatingVoiced.isEmpty {
                 let voicedForGating = VocalActivityEnvelope.voicedIntervalsForGating(
-                    strictVoiced, trailingCutoff: vocalOffset)
-                let distributed = VocalAlignmentCorrector.distributeAcrossSignal(
-                    textCorrected, voicedIntervals: voicedForGating)
+                    gatingVoiced, trailingCutoff: vocalOffset)
                 // On the pure-ASR path, definitively drop any line with NO real vocal under it —
                 // hallucinations over instrumental intro/breaks/outro. With reference lyrics the
                 // words are user-supplied, so never gate.
                 if referenceEmpty {
-                    let lastVoicedEnd =
-                        tailCutoff.lastVoicedEnd ?? voicedForGating.map(\.upperBound).max()
+                    let lastVoicedEnd = VocalHallucinationGate.pitchExtended(
+                        tailCutoff.lastVoicedEnd ?? voicedForGating.map(\.upperBound).max(),
+                        sungIntervals: pitchEvidence)
                     var gated = VocalHallucinationGate.filtered(
-                        distributed,
+                        textCorrected,
                         voicedIntervals: voicedForGating,
                         trailingCutoff: vocalOffset,
-                        lastVoicedEnd: lastVoicedEnd)
+                        lastVoicedEnd: lastVoicedEnd,
+                        sungIntervals: pitchEvidence)
                     gated = TrailingLyricTailPruner.pruned(
                         gated, lastVoicedEnd: lastVoicedEnd, vocalOffset: vocalOffset,
                         sourceDuration: normalizedDuration)
@@ -578,36 +669,24 @@ struct TranscriptionStage: AnalysisStageRunning {
                     gated = TrailingEarlierLyricRepeater.filtered(
                         gated, lastVoicedEnd: lastVoicedEnd, vocalOffset: vocalOffset,
                         sourceDuration: normalizedDuration)
-                    // Pull line-leading words stranded on a weak blip (ASR early-padding after an
-                    // instrumental) forward to the line's main body when the gap is unvoiced.
-                    let repaired = StrandedLeadingWordRepairer.repaired(
-                        gated, voicedIntervals: voicedForGating)
-                    // Rejoin a phrase torn across two lines by ASR timestamp drift over
-                    // untranscribed intro vocals ("I used" | "to stay out late at night"),
-                    // vacating the sung-but-wordless region so the untranscribed-vocals
-                    // detector below can flag it (Settle Down doo-doo intro, 2026-08-10).
-                    let rejoined = TornContinuationLineRejoiner.rejoined(
-                        repaired, voicedIntervals: voicedForGating)
                     // Split double-phrase ASR lines at long UNVOICED internal pauses so a
                     // chorus line pair doesn't render as one double-length line. ASR path
                     // only — reference lyrics carry authoritative line breaks.
                     lyrics = IntraLinePauseSplitter.split(
-                        rejoined, voicedIntervals: voicedForGating)
+                        gated, voicedIntervals: voicedForGating)
                 } else {
-                    lyrics = StrandedLeadingWordRepairer.repaired(
-                        distributed, voicedIntervals: voicedForGating)
+                    lyrics = textCorrected
                 }
             } else {
                 lyrics = textCorrected
             }
-            // FINAL precision pass: after words are distributed onto voiced regions, snap each word's
-            // onset to the nearest vocal-stem energy onset so words (and everything anchored to them
-            // — the ChordPro strip, the bouncing ball, and chords placed over words) land on the
-            // actual vocal energy. No-op without a vocals stem (`vocalOnsets` empty).
+            // FINAL precision pass: snap each word's onset to the nearest vocal-stem energy onset
+            // so words (and everything anchored to them — the ChordPro strip, the bouncing ball,
+            // and chords placed over words) land on the actual vocal energy. No-op without a
+            // vocals stem (`vocalOnsets` empty).
             let alignedLyrics = VocalWordOnsetAligner.snapped(lyrics, toOnsets: vocalOnsets)
             // Melisma repair (audit RC-3): bridge held words across continuously-voiced
-            // inter-word gaps and pull late ASR onsets back to the voiced re-entry edge, so
-            // held notes stop rendering as phantom mid-line pauses. Runs LAST, on the final
+            // inter-word gaps, so held notes stop rendering as phantom mid-line pauses. Runs LAST, on the final
             // word timings. No-op when strict VAD is unavailable.
             let spanNormalizedLyrics = VocalWordSpanNormalizer.normalized(
                 alignedLyrics, voicedIntervals: strictVoiced)
@@ -622,16 +701,8 @@ struct TranscriptionStage: AnalysisStageRunning {
             // `referenceLyrics`, the authoritative alignment target for every later analysis —
             // and reference-aligned words carry no confidence, so it could never be undone.
             // Sung spans with no words (audit RC-4): persist so structure decisions and the
-            // chart can flag them instead of mislabeling them Instrumental. On the vocals stem
-            // the evidence is PITCH salience, not energy — the energy-only strict VAD both
-            // flagged loud-section bleed as unsung vocals (phantom "vocals — not transcribed"
-            // on true instrumentals) and missed soft melodic vocals entirely (Settle Down's
-            // doo-doo intro, below the peak-relative gate). Full-mix fallback keeps strict
-            // VAD: on a mix, everything is pitched.
-            let sungEvidence =
-                hasStems
-                ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
-                : strictVoiced
+            // chart can flag them instead of mislabeling them Instrumental (`sungEvidence`,
+            // computed above).
             // Line-final held notes: extend each line's last word through the sung note it ends
             // inside. Stems only — on a full mix everything is voiced, so every line would
             // stretch into the instrumental after it.
@@ -642,8 +713,9 @@ struct TranscriptionStage: AnalysisStageRunning {
                 : spanNormalizedLyrics
             let untranscribed = UntranscribedVocalRegionDetector.regions(
                 voicedIntervals: sungEvidence, lyrics: normalizedLyrics)
+            let finalLyrics = LyricLineOverlapClipper.clipped(normalizedLyrics)
             return AnalysisStageOutcome { document in
-                document.lyrics = normalizedLyrics
+                document.lyrics = finalLyrics
                 // Fresh lyrics change the reconciler's line-onset evidence; drop the stamp so
                 // `AnalysisTimingPostPasses` re-derives (from the raw beats it restores itself).
                 document.timingPostPassTag = nil
@@ -677,9 +749,16 @@ enum TranscriptionVoicedCoverage {
         guard !voicedIntervals.isEmpty else { return nil }
         let voicedTotal = voicedIntervals.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
         guard voicedTotal > 0 else { return nil }
-        // Merge segment spans so overlaps never double-count.
-        let spans = result.segments
-            .map { (start: $0.startTime, end: max($0.endTime, $0.startTime)) }
+        // Words, not segment spans, and each word only for as long as it can stand for singing
+        // (`WordlessVocalGapRescuer.supportedSpan`, padded 0.25 s): a stretched token or a long
+        // segment would otherwise count a skipped phrase as covered. Merged so overlaps never
+        // double-count.
+        let spans = result.segments.flatMap(\.tokens)
+            .map {
+                let span = WordlessVocalGapRescuer.supportedSpan(
+                    start: $0.startTime, end: $0.endTime, text: $0.text)
+                return (start: span.lowerBound - 0.25, end: span.upperBound + 0.25)
+            }
             .sorted { $0.start < $1.start }
         var merged: [(start: TimeInterval, end: TimeInterval)] = []
         for span in spans {
@@ -1234,7 +1313,8 @@ struct ChordProStage: AnalysisStageRunning {
             else {
                 throw SongAnalysisPipelineError.chordProReplacementRequiresConfirmation
             }
-            let chordProSource = context.chordProBuilder.build(
+            let lyricsForChart = document.lyrics
+            let built = context.chordProBuilder.buildResult(
                 ChordProDraftInput(
                     title: request.title,
                     tempo: document.estimatedBPM,
@@ -1246,8 +1326,11 @@ struct ChordProStage: AnalysisStageRunning {
                     untranscribedVocalRegions: document.untranscribedVocalRegions,
                     estimatedKey: document.estimatedKey,
                     barGrid: document.barGrid,
-                    bassNotes: document.bassNotes
+                    bassNotes: document.bassNotes,
+                    placementPicks: document.chordPlacementPicks
                 ))
+            let chordProSource = built.source
+            let layout = PersistedChartLayout(result: built, lyrics: lyricsForChart)
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: .recording,
@@ -1261,6 +1344,7 @@ struct ChordProStage: AnalysisStageRunning {
             )
             return AnalysisStageOutcome { document in
                 document.chordProSource = chordProSource
+                document.chartLayout = layout
                 document.chordProReviewState = .draft
                 document.stageRecords[.chordPro] = record
             }

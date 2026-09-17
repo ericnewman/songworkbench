@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import XCTest
@@ -1517,4 +1518,142 @@ private struct FailingStemRefiner: StemRefinementEngine {
     ) async throws -> StemRefinementResult {
         throw StemRefinementError.missingProducedAsset(.drumKick)
     }
+}
+
+// MARK: - End to end: a phrase hidden by a stretched token is found and retried
+
+extension SongAnalysisPipelineTests {
+    func testPhraseHiddenByAStretchedTokenIsRetriedAndKept() async throws {
+        let sourceURL = try temporarySource()
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        let engine = StretchedTokenTranscriptionEngine()
+        let pipeline = SongAnalysisPipeline(
+            stemEngine: SungVocalsStemEngine(outputDirectory: outputDirectory),
+            fastTranscriptionEngine: engine,
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: RecordingHarmonyEngine(result: harmonyResult())
+        )
+
+        let result = try await pipeline.run(
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL, outputDirectory: outputDirectory, title: "Held",
+                stages: [.separation, .transcription], transcriptionMode: .fastDraft,
+                existingDocument: SongAnalysisDocument())
+        ) { _ in }
+
+        let durations = await engine.requestedDurations()
+        XCTAssertEqual(durations.first ?? 0, 20, accuracy: 0.01)
+        XCTAssertTrue(
+            durations.dropFirst().contains { $0 > 4 && $0 < 10 },
+            "the sung stretch inside the stretched token must be retried: \(durations)")
+        let words = result.document.lyrics.flatMap(\.words).map(\.text)
+        XCTAssertEqual(
+            words, ["hold", "we", "sang", "all", "night", "on"],
+            result.document.lyrics.map { line in
+                "\(line.start)-\(line.end): "
+                    + line.words.map { "\($0.text)@\($0.start)-\($0.end)" }.joined(separator: " ")
+            }.joined(separator: " | "))
+    }
+}
+
+/// Stems whose vocals are 8 s of a sung-like harmonic tone (1-9 s) in 20 s of audio.
+private struct SungVocalsStemEngine: StemSeparationEngine {
+    let outputDirectory: URL
+
+    func separate(
+        request: StemSeparationRequest,
+        progress: @escaping @Sendable (StemSeparationProgress) -> Void
+    ) async throws -> StemSeparationResult {
+        try FileManager.default.createDirectory(
+            at: outputDirectory, withIntermediateDirectories: true)
+        let sampleRate = 44_100.0
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        func write(_ name: String, sung: Bool) throws -> URL {
+            let url = outputDirectory.appendingPathComponent(name)
+            let frames = AVAudioFrameCount(20 * sampleRate)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+            buffer.frameLength = frames
+            let samples = buffer.floatChannelData![0]
+            for index in 0..<Int(frames) {
+                let time = Double(index) / sampleRate
+                guard sung, time >= 1, time < 9 else {
+                    samples[index] = 0
+                    continue
+                }
+                // A melody moving between notes, with vibrato and three harmonics.
+                let note = 196.0 * pow(2, Double(Int(time) % 4) * 2 / 12)
+                let phase = 2 * Double.pi * note * time + 0.3 * sin(2 * .pi * 5.5 * time)
+                samples[index] = Float(
+                    0.4 * sin(phase) + 0.2 * sin(2 * phase) + 0.1 * sin(3 * phase))
+            }
+            try AVAudioFile(forWriting: url, settings: format.settings).write(from: buffer)
+            return url
+        }
+        return StemSeparationResult(
+            stems: StemFiles(
+                vocals: try write("vocals.wav", sung: true),
+                drums: try write("drums.wav", sung: false),
+                bass: try write("bass.wav", sung: false),
+                guitar: try write("guitar.wav", sung: false),
+                piano: try write("piano.wav", sung: false),
+                other: try write("other.wav", sung: false),
+                accompaniment: try write("accompaniment.wav", sung: false)
+            ),
+            processingDuration: .seconds(1)
+        )
+    }
+}
+
+/// The full pass hears "hold" stretched over 1-8 s and "on" at 8 s; a short clip hears the phrase
+/// sung inside the stretch.
+private actor StretchedTokenTranscriptionEngine: TranscriptionEngine {
+    nonisolated let metadata = TranscriptionEngineMetadata(
+        engineName: "stretched", modelName: "stretched", modelVersion: "1", modelSizeBytes: 1,
+        license: TranscriptionModelLicense(name: "test", url: nil))
+    private var durations: [TimeInterval] = []
+
+    func transcribe(
+        request: TranscriptionRequest,
+        progress: @escaping @Sendable (TranscriptionProgress) -> Void
+    ) async throws -> TranscriptionResult {
+        let file = try AVAudioFile(forReading: request.audioURL)
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        durations.append(duration)
+        func token(_ text: String, _ start: TimeInterval, _ end: TimeInterval)
+            -> TimedTranscriptionToken
+        {
+            TimedTranscriptionToken(text: text, startTime: start, endTime: end, confidence: 0.9)
+        }
+        let tokens: [TimedTranscriptionToken]
+        if duration > 19 {
+            tokens = [token("hold", 1.0, 8.0), token("on", 8.0, 8.6)]
+        } else {
+            // The clip starts 1 s before the gap (about 1.85 s into the song).
+            let offset = 2.85 - 1.85 + 1.0
+            tokens = [
+                token("we", offset + 0.5, offset + 1.1), token("sang", offset + 1.3, offset + 2.0),
+                token("all", offset + 2.2, offset + 2.8),
+                token("night", offset + 3.0, offset + 3.8),
+            ]
+        }
+        return TranscriptionResult(
+            text: tokens.map(\.text).joined(separator: " "), languageCode: "en",
+            sourceDuration: duration, completedAt: Date(timeIntervalSince1970: 0),
+            segments: [
+                TimedTranscriptionSegment(
+                    text: tokens.map(\.text).joined(separator: " "),
+                    startTime: tokens[0].startTime, endTime: tokens.last!.endTime, tokens: tokens,
+                    confidence: 0.9)
+            ],
+            engine: metadata)
+    }
+
+    func cancel(requestID: UUID) async {}
+
+    func requestedDurations() -> [TimeInterval] { durations }
 }

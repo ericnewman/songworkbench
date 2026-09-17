@@ -248,6 +248,9 @@ struct SongAnalysisPipelineRequest: Sendable {
     /// Pitch-preserved decode speed for the transcription pass (Accuracy/Whisper only): < 1 slows
     /// the vocals before recognition, then timestamps are mapped back. 1.0 = no change.
     let transcriptionDecodeRate: Double
+    /// BCP-47 language for transcription (e.g. `en`), or nil to let the engine detect it. Part of
+    /// the transcription cache identity when set.
+    let transcriptionLanguage: String?
 
     init(
         sourceURL: URL,
@@ -257,7 +260,8 @@ struct SongAnalysisPipelineRequest: Sendable {
         transcriptionMode: TranscriptionMode,
         existingDocument: SongAnalysisDocument,
         chordProReplacementPolicy: ChordProReplacementPolicy = .preserveExisting,
-        transcriptionDecodeRate: Double = 1.0
+        transcriptionDecodeRate: Double = 1.0,
+        transcriptionLanguage: String? = nil
     ) {
         self.sourceURL = sourceURL
         self.outputDirectory = outputDirectory
@@ -267,6 +271,7 @@ struct SongAnalysisPipelineRequest: Sendable {
         self.existingDocument = existingDocument
         self.chordProReplacementPolicy = chordProReplacementPolicy
         self.transcriptionDecodeRate = transcriptionDecodeRate
+        self.transcriptionLanguage = transcriptionLanguage
     }
 }
 

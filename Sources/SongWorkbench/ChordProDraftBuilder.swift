@@ -30,6 +30,11 @@ struct ChordProDraftInput: Equatable, Sendable {
     /// Beats per chart row chosen in the View menu; 0 (the default) derives it from the lyric
     /// phrasing (`SongBeatsPerLine.rowBeats`). Rounded up to whole bars either way.
     var beatsPerRowOverride: Int = 0
+    /// Placement verdicts the user reached on spans of the song (`ChordPlacementPick`). A chord's
+    /// rendered time resolves manual drag first, then the newest pick covering it, then the
+    /// detected time (`EditableChordEvent.placementTime`), so the chart, its rows, and its export
+    /// all carry the committed time.
+    var placementPicks: [ChordPlacementPick] = []
 }
 
 enum UntranscribedVocalRegionResolver {
@@ -100,7 +105,9 @@ struct ChordProDraftBuilder: Sendable {
     /// (`BassRunDetector`).
     /// 7 = fixed-period rows: every timed chart row spans exactly one whole-bar phrase period
     /// (`ChartRowGrid`, tasks/spec-fixed-period-rows.md).
-    static let algorithmVersion = 7
+    /// 8 = lyric corrections render (`TimedLyricSegment.resolved`), lyric text is escaped
+    /// (`ChordProText`), and `{time}` states the bar grid's meter instead of always 4/4.
+    static let algorithmVersion = 8
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -173,18 +180,21 @@ struct ChordProDraftBuilder: Sendable {
         if let tempo = input.tempo {
             lines.append("{tempo: \(formattedTempo(tempo))}")
         }
-        // Reconstruction plan B1: name the key and meter so the chart is self-contained.
-        // The whole chart's bar math is 4/4 (see `bars(from:to:)`), so {time} states it.
+        // Every consumer renders the same resolved lines: a user's correction, with word ranges
+        // that address it (`TimedLyricSegment.resolved`).
+        let resolvedLyrics = input.lyrics.map(\.resolved)
+        // Reconstruction plan B1: name the key and meter so the chart is self-contained. The
+        // meter is the bar grid the rows are cut on (4/4 only when nothing measured one).
         if let key = input.estimatedKey {
             lines.append("{key: \(directiveValue(key.displayName))}")
         }
         if input.tempo != nil || !input.beatTimes.isEmpty {
-            lines.append("{time: 4/4}")
+            lines.append("{time: \(meterBeatsPerBar(input, lyrics: resolvedLyrics))/4}")
         }
         lines.append("{comment: \(directiveValue(comment))}")
         lines.append("")
 
-        let lyrics = input.lyrics.sorted {
+        let lyrics = resolvedLyrics.sorted {
             if $0.start == $1.start, $0.end == $1.end { return $0.text < $1.text }
             if $0.start == $1.start { return $0.end < $1.end }
             return $0.start < $1.start
@@ -219,8 +229,9 @@ struct ChordProDraftBuilder: Sendable {
                 return nil
             }
             guard let label = chordLabel(event), !label.isEmpty else { return nil }
+            // A dragged or picked chord renders, rows, and exports at the time the user committed.
             return RenderableChordEvent(
-                time: event.time,
+                time: event.placementTime(auditioning: nil, picks: input.placementPicks),
                 label: label,
                 confidence: event.confidence
             )
@@ -703,7 +714,9 @@ struct ChordProDraftBuilder: Sendable {
         segment: TimedLyricSegment,
         chords: [RenderableChordEvent]
     ) -> String {
-        guard !segment.text.isEmpty, !chords.isEmpty else { return segment.text }
+        guard !segment.text.isEmpty, !chords.isEmpty else {
+            return ChordProText.escaped(segment.text)
+        }
         let characters = Array(segment.text)
         let wordStarts = wordStartOffsets(in: characters)
         let duration = max(segment.end - segment.start, 0.001)
@@ -740,7 +753,7 @@ struct ChordProDraftBuilder: Sendable {
                 output += "[\(chord)]"
             }
             if offset < characters.count {
-                output.append(characters[offset])
+                output += ChordProText.escaped(String(characters[offset]))
             }
         }
         return output
@@ -826,7 +839,19 @@ struct ChordProDraftBuilder: Sendable {
         -> Double
     {
         LyricSectionDeriver.bars(
-            from: start, to: end, beatTimes: input.beatTimes, tempo: input.tempo)
+            from: start, to: end, beatTimes: input.beatTimes, tempo: input.tempo,
+            beatsPerBar: input.barGrid?.beatsPerBar ?? 4)
+    }
+
+    /// Beats per bar of the grid the chart is cut on: the supplied bar grid, else the same
+    /// estimate `fixedPeriodGrid` makes; 4 without beats.
+    private func meterBeatsPerBar(_ input: ChordProDraftInput, lyrics: [TimedLyricSegment]) -> Int {
+        if let bars = input.barGrid { return bars.beatsPerBar }
+        guard !input.beatTimes.isEmpty else { return 4 }
+        return SongBarGridEstimator.estimate(
+            beatTimes: input.beatTimes, beatStrengths: [],
+            lyricLineOnsets: lyrics.map(SongBeatsPerLine.lineOnset)
+        ).beatsPerBar
     }
 
     private func barCount(_ bars: Double) -> Int {
@@ -1687,18 +1712,20 @@ struct LyricSectionDeriver: Sendable {
         }
     }
 
-    /// Length of the gap `[start, end)` in 4/4 bars.
+    /// Length of the gap `[start, end)` in bars of `beatsPerBar` beats.
     static func bars(
         from start: TimeInterval,
         to end: TimeInterval,
         beatTimes: [TimeInterval],
-        tempo: Double?
+        tempo: Double?,
+        beatsPerBar: Int = 4
     ) -> Double {
         guard end > start else { return 0 }
+        let perBar = Double(max(beatsPerBar, 1))
         let beats = beatTimes.filter { $0 > start && $0 < end }.count
-        if beats > 0 { return Double(beats) / 4.0 }
+        if beats > 0 { return Double(beats) / perBar }
         if let tempo, tempo > 0 {
-            return (end - start) / (4.0 * 60.0 / tempo)
+            return (end - start) / (perBar * 60.0 / tempo)
         }
         return 0
     }

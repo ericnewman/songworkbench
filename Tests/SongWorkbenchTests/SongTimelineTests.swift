@@ -78,7 +78,10 @@ final class SongTimelineTests: XCTestCase {
         // row(at:) resolves each intro moment to ITS row, not the last one.
         let timeline = result.timeline
         let first = timeline.row(at: 1.0)
-        let last = timeline.row(at: 23.5)
+        // Half a second before the intro ends: a pickup sung just ahead of the first lyric row's
+        // downbeat now stays in the row where it sounds, so the last intro moment is found from
+        // the intro rows themselves rather than a fixed time.
+        let last = timeline.row(at: (introRows.last?.end ?? 24) - 0.5)
         XCTAssertEqual(first?.number, introRows.first?.number)
         XCTAssertEqual(last?.number, introRows.last?.number)
         XCTAssertNotEqual(first?.number, last?.number)
@@ -136,5 +139,49 @@ final class SongTimelineTests: XCTestCase {
         let input = makeInput()
         XCTAssertEqual(
             ChordProDraftBuilder().build(input), ChordProDraftBuilder().buildResult(input).source)
+    }
+}
+
+// MARK: - Persisted layout
+
+extension SongTimelineTests {
+    func testRowIDsAreStableAcrossRebuildsAndStructureMatchIgnoresTextEdits() throws {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "hello world"),
+            TimedLyricSegment(start: 20, end: 22, text: "second line"),
+        ]
+        let input = ChordProDraftInput(
+            title: "t", tempo: 120, lyrics: lyrics,
+            chords: [EditableChordEvent(time: 8, chord: "C", confidence: 0.9)])
+        let first = ChordProDraftBuilder().buildResult(input)
+        let again = ChordProDraftBuilder().buildResult(input)
+        XCTAssertEqual(first.timeline.rows.map(\.id), again.timeline.rows.map(\.id))
+        XCTAssertEqual(Set(first.timeline.rows.map(\.id)).count, first.timeline.rows.count)
+
+        XCTAssertTrue(first.timeline.matchesRowStructure(of: first.source))
+        XCTAssertTrue(
+            first.timeline.matchesRowStructure(
+                of: first.source.replacingOccurrences(of: "hello world", with: "hullo there")))
+        XCTAssertFalse(
+            first.timeline.matchesRowStructure(
+                of: first.source.replacingOccurrences(of: "second line", with: "")))
+
+        let layout = PersistedChartLayout(result: first, lyrics: lyrics)
+        let decoded = try JSONDecoder().decode(
+            PersistedChartLayout.self, from: JSONEncoder().encode(layout))
+        XCTAssertEqual(decoded, layout)
+        XCTAssertEqual(decoded.result(source: first.source).timeline, first.timeline)
+        XCTAssertEqual(
+            layout.lyricStructureDigest,
+            LyricStructureDigest.of(
+                lyrics.map {
+                    TimedLyricSegment(start: $0.start + 0.3, end: $0.end + 0.3, text: $0.text)
+                }),
+            "timing changes keep the digest")
+        XCTAssertNotEqual(
+            layout.lyricStructureDigest,
+            LyricStructureDigest.of([
+                lyrics[0], TimedLyricSegment(start: 20, end: 22, text: "other line"),
+            ]))
     }
 }

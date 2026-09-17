@@ -3860,3 +3860,156 @@ duplicate-song restore fix, Basic Pitch transcriber + `noteEvents`, AnalysisStag
 test edits) has not been reviewed or fully verified here. Before committing it: full suite, lint
 (it carried 4 lint errors in AnalysisStage.swift and AppModelTests.swift), and the 4 tests that fail
 on main without it (LyricGroupingDiagnostic, 2× PhrasePeriodLineRecutter, SongAnalysisPipelineFactory).
+
+## 2026-09-14 (evening) — Squashed words, row squeeze, instrument bars, no fixed-row gutter
+
+- [x] Squashed runs (Beach Weather "The end you me and you are fireproof": 8 words in 0.32 s; the
+      vocals sing it from 18.8 s). `StretchedWordRetimer` pass 0 spreads 3+ words starting < 100 ms
+      apart (plus a lead-in word < 200 ms before) across the singing leading into them, bridging
+      breaths ≤ 0.3 s, snapping to clear attacks; `stretched-words-2`. Library audit: < 100 ms
+      finds 31 runs/133 words in 7 songs (< 150 ms would catch real fast lines). Beach Weather: line
+      1 starts 18.80 s, line 2 starts 21.58 s; 42 moved, 2 flagged. Unverified: "leads" 31.52 → 30.03 s.
+- [x] Crowded row text shrinks to 60% and its tail is pulled inside the frame
+      (`ChordProPreviewLineLayout.wordSlots`/`lyricFitScale`, tested).
+- [x] Stem waveforms at 4,000 peaks (was 1,200); per-instrument energy draws bars in bands.
+- [x] Eric: "The song itself is a continuum ... the sound must be accounted for within the bars and
+      measures." Fixed-period rows have no left gutter; `ChartLyricLineCutter` no longer moves a
+      pickup into the next row — it stays at the end of the row where it sounds. Reverses the
+      earlier "pickup words move into the next row's gutter" decision. Variable charts unchanged.
+- [ ] Full suite, Eric's on-screen check, commit.
+
+## 2026-09-14 (late) — Missed opening words, steady ball, playhead
+
+Eric: line 4's opening words are "consistently missed, even though they are clearly there in the
+audio"; the ball "seems lost when no words are spoken" and should glide linearly to land on each
+word as it is sung; add a playhead line. Chosen: re-transcribe flagged gaps; steady glide with a hop.
+
+- [x] `WordlessVocalGapRescuer`: after the full pass (stems only), each sung stretch ≥ 2 s with no
+      words is re-transcribed on a clip with 1 s either side; retry words whose middle is inside
+      the stretch are merged (≥ 2 words). Transcription cache key gains `-gap-rescue`, so the next
+      analysis of every song re-transcribes. Tests on gap finding and merging.
+- [x] Word ball glides at constant speed (`.linear`) and rests on the first word from the row's
+      start until it is sung.
+- [x] Playhead: a 1 pt line at the playback time on the active row's ruler.
+- [x] Full suite 1,137/0, lint 0. Relaunched. Re-analysis ran, but the gap retry found nothing:
+      it looks for gaps in raw ASR times, and Whisper's raw times stretch across the gap.
+
+### Words locked to the vocal timeline
+
+Eric: "we cannot arbitrarily move these words around a timeline. They are locked immutably to the
+vocal timeline." Chosen: align words to onsets.
+
+- [x] Replay of the stage's post-processing on the cached Beach Weather passes (temporary test,
+      removed): `VocalAlignmentCorrector.distributeAcrossSignal` alone moved the words. The strict
+      VAD sees 19.62–20.06 s as the only singing between 15 and 24.5 s, so balanced "Me and you"
+      (16.80 s, on onsets 16.79/17.11) was packed into 19.62–19.95 s, and "got some troubles"
+      (155.4–156.3 s, sung) was split to 159.35/162.06 s. Without it: 0 words dropped, the later
+      steps move 0–1 starts, and the ±0.15 s onset snap lands both spots on real onsets.
+- [x] Removed `distributeAcrossSignal` (and its 7 tests); stage record gains
+      `|words-stay-on-asr-times-1`, so Analyze re-derives lines from the cached raw passes.
+- [x] Removed `StretchedWordRetimer` pass 0 (spreading squashed runs) and `sungStart`;
+      `stretched-words-3`. Passes 1–2 still move a start only onto a vocal attack.
+- [x] Full suite 1,129/0, lint 0.
+- [x] Relaunched; Eric re-analyzed. Reported: playback highlight lagging (the analysis was still
+      running; the clock reads the player directly, so not a clock drift — unconfirmed after idle),
+      and a "massive unexplained gap" between "more"/"places" (`StretchedWordRetimer` pass 1 moved
+      "places" 59.48 → 63.06 s; all three transcribers had it at ~59.5–59.8 s).
+
+### No shifting code
+
+Eric: "There should be NO shifting code." Kept by his choice: the ±0.15 s onset snap
+(`VocalWordOnsetAligner`) and end-only extensions (melisma bridge, `LineTailSustainExtender`).
+
+- [x] Removed `VocalOnsetReanchor` (+ the onset overload of `TranscriptionOnsetCorrection`),
+      `StrandedLeadingWordRepairer`, `TornContinuationLineRejoiner`, `VocalAlignmentCorrector` (dead),
+      and `VocalWordSpanNormalizer`'s late-onset pullback, with their tests. Stage record gains
+      `|no-start-shifts-1`.
+- [x] `StretchedWordRetimer` flags stretched words only (`stretched-words-4`); never moves a word.
+- [x] Full suite 1,109/0, lint 0.
+- [ ] Open: the blend now builds overlapping rows (Whisper's 20-word segments vs Parakeet's short
+      lines no longer start together), so chart lines 9–11 repeat words. Lines join across
+      untranscribed singing ("places" 59.71 → "In your heart" 63.52 s).
+- [ ] Relaunch (Eric's approval), re-analyze Beach Weather, recheck playback lag once idle.
+
+## 2026-09-15 — Lyric accuracy and timeline alignment (measured)
+
+Brief: separate recognition from timing, repair destructive filtering and missed phrases, make one
+resolved lyric representation feed ChordPro/Review/export, persist authoritative chart timing,
+and measure before/after on a real corpus with the shipped models.
+
+### Corpus
+
+- [x] 25 catalog songs whose mp3 SHA-256 matches `~/Documents/CCS Workbench/ChordPro Catalog/manifest.json`,
+      references from `Lyrics Only/*.txt`. Only `Those Were the Days` and `Summertime's here with you`
+      are `generated_reviewed`; the other 23 references are the catalog's earlier automated
+      transcription (silver, not truth). Summertime pairs the reviewed full-song lyrics with the
+      158.7 s `(Edit)` mp3, so its recall is capped.
+- [x] Runner and scorer (scratch, not committed): headless `SongWorkbench analyze` per song —
+      separation + Whisper Accuracy @0.85 with harmony/ChordPro, Parakeet fast/balanced on the stem,
+      Whisper + Parakeet on the original mix, Whisper + Parakeet on `accompaniment.wav`.
+      Metrics: normalized WER, recall (missed-vocal proxy), line-start F1, words on instrumental.
+- [x] CLI gains `--models DIR` and `--decode-rate R` so runs use the app's installed models and
+      the shipped 0.85 Accuracy decode default.
+- [ ] No timed ground truth exists: word-onset error and Review-row placement cannot be scored
+      against truth. Needs tap-annotated onsets for at least the two reviewed songs.
+
+### Immediate correctness fixes
+
+- [x] Generated/exported ChordPro renders `TimedLyricSegment.resolved` (effective text, word ranges
+      re-aligned to it: matched/substituted/interpolated provenance). Review preview, plain lyrics,
+      and reference seeding use the same resolution. `alg8`.
+- [x] Energy-only gate: a line survives when energy OR pitch evidence hears it; tail cutoffs extend
+      past pitched singing (`VocalHallucinationGate.pitchExtended`).
+- [x] Measured: on a full mix the peak-relative strict VAD hears 0.3 s of "voice" (Summertime:
+      78.5–78.8 s), and the tail cutoff + gate deleted 167 of 168 Whisper words. Energy VAD now gates
+      words only on a vocals stem (`|mix-no-energy-gate-1`).
+- [x] Lyric Blend output: overlapping picks are clustered, repeats aligned in order within 2 s and
+      dropped, the rest merged; output lines never overlap (fuzz test).
+- [x] Lyric text escaped in ChordPro (`ChordProText`); preview unescapes `\\ \[ \] \{ \}`.
+- [x] `{time: N/4}` from the bar grid.
+- [x] Adjacent single-mode lines no longer overlap: the ±0.15 s onset snap started a line inside the
+      previous line's last word (40–90 ms, 5 pairs on Summertime). `LyricLineOverlapClipper` clips
+      the earlier line's word ends only (`|line-overlap-clip-1`).
+- [x] Timing offset slider stays render-only (`PracticeSettings.chordProTimingOffsetMS`); nothing in
+      analysis or export reads it.
+
+### Missed phrases and slowed decoding
+
+- [x] Coverage and wordless-gap detection use each word's supported span (0.6 s or 0.15 s per
+      letter from its onset), not raw token/segment spans; a stretched token no longer hides a phrase.
+- [x] Recovered words need confidence ≥ 0.4 and half their span on pitched singing; a stem retry that
+      recovers nothing retries the same region on the original mix; a recovered phrase splits the
+      stretched segment it lands in (end clipped, start kept).
+- [x] Regional retries decode at the Accuracy decode rate.
+- [x] Measured: `AVAudioUnitTimePitch` plays at floor(rate × 1024)/1024 (0.85 → 0.849609: 0.46 ms/s
+      drift, ~110 ms by 4 min; 0.95: 0.82 ms/s; 0.75: none; 44.1/48 kHz, 60/240 s alike). Rates
+      are quantized before rendering and scaling. Click round-trip: offset 0.1 ms, drift −0.2 ms.
+
+### Decode loops (found by the baseline corpus run)
+
+- [x] Baseline (25 songs): Whisper on the vocals stem had pooled WER 0.527 against a 0.382 median,
+      driven by insertions. `I will be there` came back as 946 words against a 187-word reference:
+      the cached Whisper result held 119 segments with 14 distinct texts, one 10-word segment
+      repeated 105 times at 0.09 s per token. Consecutive identical lines faster than 4 words/s:
+      10 of 25 stem runs (488 words), 14 of 25 mix runs (1,531 words), 0 Parakeet runs.
+- [x] `DecodeLoopGuard`: a segment repeating the previous segment's text is kept only if singable
+      (≤ 6 words/s and, on a stem, vocal onsets under half its words). Runs on the full decode, the
+      collapse retry, and every regional retry, before the gap rescue, so removed spans get retried.
+      Cache key `-loop-guard-1`.
+
+### Chart timing
+
+- [x] `PersistedChartLayout` sidecar (timeline, chart lines, row origins, lyric-structure digest,
+      version) written with every generated chart; rows have stable ids (kind + start ms).
+- [x] Edited chart text on the same numbered lines keeps the stored row windows; a structural edit
+      withdraws them.
+- [x] A kept chart whose layout was cut from different words is `isChartLyricsStale`: no lyric
+      timing, ball, or highlight pairing; Review shows a regenerate notice.
+- [x] Dragged chords (`manualTime`) and placement picks render, row, and export at the committed
+      time; a drag un-reviews and rebuilds like a rename.
+
+### Not done / experimental
+
+- [ ] Forced-alignment stage (monotonic audio-text alignment with confidence and raw fallback).
+- [ ] Word-first Lyric Blend (align candidates by word before building rows).
+- [ ] Recognition configuration experiments (language, vocabulary hints, alternate models, chunking).

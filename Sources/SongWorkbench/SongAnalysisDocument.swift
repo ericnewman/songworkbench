@@ -15,6 +15,22 @@ struct TimedLyricWord: Codable, Equatable, Sendable {
     /// existed — `nil` means UNKNOWN, never "low", so it must not drive any negative signal.
     /// Consumed by `LyricConfidencePlaceholder`.
     var confidence: Float? = nil
+    /// Where `start`/`end` came from. `nil` (every word saved before this existed, and every
+    /// word straight from a transcriber) means the transcriber's own time.
+    var timingSource: LyricWordTimingSource? = nil
+}
+
+/// Provenance of a resolved word's time (see `TimedLyricSegment.resolved`).
+enum LyricWordTimingSource: String, Codable, Sendable {
+    /// A corrected word with the same text as a transcribed word: that word's time.
+    case matched
+    /// A corrected word replacing exactly one transcribed word of different text: the replaced
+    /// word's time — still the moment the transcriber heard a word sung there.
+    case substituted
+    /// A corrected word with no one-to-one transcribed counterpart, spread by length across the
+    /// transcribed words it replaced or the gap between its matched neighbours. Not acoustic
+    /// evidence of where the word starts.
+    case interpolated
 }
 
 /// One transcription mode's candidate text for a `LyricBlendRow`'s time window (backlog #11,
@@ -159,6 +175,25 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
             if !trimmed.isEmpty { return trimmed }
         }
         return text
+    }
+
+    /// The line as every consumer must render, play, and export it: `text` is `effectiveText`, and
+    /// every word's `characterRange` addresses that text. Without a correction this is `self`
+    /// (word ranges re-derived only if they no longer address the text). With one, the corrected
+    /// words are matched in order to the transcribed words: equal text keeps the transcribed time
+    /// (`.matched`), a one-for-one replacement keeps the replaced word's time (`.substituted`),
+    /// and anything else is spread across the replaced words or the gap (`.interpolated`). A
+    /// correction on a line with no word timings resolves to no words. `overrideText` is kept so
+    /// callers can still tell a corrected line apart; the stored segment is never changed.
+    var resolved: TimedLyricSegment {
+        let target = effectiveText
+        if target == text, LyricWordRanges.addressText(words, text) { return self }
+        var result = self
+        result.text = target
+        result.words = LyricWordRanges.words(
+            for: target, from: words, lineStart: start, lineEnd: end,
+            isCorrection: target != text)
+        return result
     }
 
     /// Carries `overrideText`/`accepted` forward from a PRIOR analysis's segments onto a freshly
@@ -483,6 +518,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     //     regroup/reconcile/recut trio from every load into the pipeline; the document now
     //     stores the DISPLAYED values, with the beat tracker's raw answer preserved beside
     //     them). Optional, no migration required — an unstamped document is migrated on load.
+    // (12, unbumped) added chartLayout (the persisted SongTimeline sidecar). Optional and
+    //     additive; not bumped because the schema version is part of the raw transcription
+    //     cache key, and bumping it would re-transcribe every song for a chart-only field.
     static let currentSchemaVersion = 12
 
     var schemaVersion = currentSchemaVersion
@@ -582,6 +620,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// Each chordal instrument's own chords (`InstrumentChordPass`). `nil` until computed; may be
     /// stale — check `isCurrent(for:)` against the current grid key before showing it.
     var instrumentChords: InstrumentChordTimeline?
+    /// The generated chart's layout (`PersistedChartLayout`), written whenever the draft builder
+    /// writes `chordProSource`. nil for imported charts and documents from before it existed.
+    var chartLayout: PersistedChartLayout?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -619,6 +660,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case wordTimingFindings
         case wordTimingCheckTag
         case instrumentChords
+        case chartLayout
     }
 
     init(
@@ -656,7 +698,8 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         stageRecords: [SongAnalysisStage: AnalysisStageRecord] = [:],
         wordTimingFindings: [WordTimingFinding] = [],
         wordTimingCheckTag: String? = nil,
-        instrumentChords: InstrumentChordTimeline? = nil
+        instrumentChords: InstrumentChordTimeline? = nil,
+        chartLayout: PersistedChartLayout? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.lyrics = lyrics
@@ -693,6 +736,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.wordTimingFindings = wordTimingFindings
         self.wordTimingCheckTag = wordTimingCheckTag
         self.instrumentChords = instrumentChords
+        self.chartLayout = chartLayout
     }
 
     init(from decoder: Decoder) throws {
@@ -776,6 +820,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         wordTimingCheckTag = try container.decodeIfPresent(String.self, forKey: .wordTimingCheckTag)
         instrumentChords = try container.decodeIfPresent(
             InstrumentChordTimeline.self, forKey: .instrumentChords)
+        chartLayout = try? container.decodeIfPresent(
+            PersistedChartLayout.self, forKey: .chartLayout)
+        if chartLayout?.version != PersistedChartLayout.currentVersion { chartLayout = nil }
     }
 }
 
@@ -875,5 +922,136 @@ struct StoredAudioReference: Codable, Equatable, Sendable {
         return
             (try? URL(resolvingAppScopedBookmark: bookmarkData, bookmarkDataIsStale: &stale))
             ?? URL(fileURLWithPath: path)
+    }
+}
+
+/// Word ↔ character-range bookkeeping for `TimedLyricSegment.resolved`.
+enum LyricWordRanges {
+    /// Lowercased letters and digits only, so "Don't," matches "dont".
+    static func key(_ text: some StringProtocol) -> String {
+        String(text.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains))
+    }
+
+    /// Whitespace-separated words of `text` with their Character ranges.
+    static func tokens(in text: String) -> [(text: String, range: Range<Int>)] {
+        var result: [(text: String, range: Range<Int>)] = []
+        var current = ""
+        var lower = 0
+        for (offset, character) in text.enumerated() {
+            if character.isWhitespace {
+                if !current.isEmpty { result.append((current, lower..<offset)) }
+                current = ""
+            } else {
+                if current.isEmpty { lower = offset }
+                current.append(character)
+            }
+        }
+        if !current.isEmpty { result.append((current, lower..<text.count)) }
+        return result
+    }
+
+    /// True when every word's range lies inside `text`, ranges ascend without overlapping, and
+    /// each range spells its word.
+    static func addressText(_ words: [TimedLyricWord], _ text: String) -> Bool {
+        let characters = Array(text)
+        var floor = 0
+        for word in words {
+            let range = word.characterRange
+            guard range.lowerBound >= floor, range.upperBound <= characters.count, !range.isEmpty,
+                key(String(characters[range])) == key(word.text)
+            else { return false }
+            floor = range.upperBound
+        }
+        return true
+    }
+
+    static func words(
+        for text: String, from raw: [TimedLyricWord], lineStart: TimeInterval,
+        lineEnd: TimeInterval, isCorrection: Bool
+    ) -> [TimedLyricWord] {
+        let tokens = tokens(in: text)
+        guard !raw.isEmpty, !tokens.isEmpty else { return [] }
+        let tokenKeys = tokens.map { key($0.text) }
+        let rawKeys = raw.map { key($0.text) }
+        var placed = [TimedLyricWord?](repeating: nil, count: tokens.count)
+        let anchors = matches(tokenKeys.count, rawKeys.count) {
+            !tokenKeys[$0].isEmpty && tokenKeys[$0] == rawKeys[$1]
+        }
+        for (i, j) in anchors {
+            var word = raw[j]
+            word.text = tokens[i].text
+            word.characterRange = tokens[i].range
+            if isCorrection { word.timingSource = .matched }
+            placed[i] = word
+        }
+        // Fill each unmatched run between consecutive anchors.
+        let bounded = [(-1, -1)] + anchors + [(tokens.count, raw.count)]
+        for (left, right) in zip(bounded, bounded.dropFirst()) {
+            let run = (left.0 + 1)..<right.0
+            guard !run.isEmpty else { continue }
+            let replaced = (left.1 + 1)..<right.1
+            if run.count == replaced.count {
+                for (i, j) in zip(run, replaced) {
+                    var word = raw[j]
+                    word.text = tokens[i].text
+                    word.characterRange = tokens[i].range
+                    word.confidence = nil
+                    word.timingSource = .substituted
+                    placed[i] = word
+                }
+                continue
+            }
+            let low: TimeInterval
+            let high: TimeInterval
+            if !replaced.isEmpty {
+                low = raw[replaced.lowerBound].start
+                high = raw[replaced.upperBound - 1].end
+            } else {
+                low = left.0 >= 0 ? (placed[left.0]?.end ?? lineStart) : lineStart
+                high = right.0 < tokens.count ? raw[right.1].start : lineEnd
+            }
+            let span = max(high - low, 0)
+            let weights = run.map { Double(max(tokens[$0].text.count, 1)) }
+            let total = weights.reduce(0, +)
+            var cursor = 0.0
+            for (offset, i) in run.enumerated() {
+                let wordStart = low + span * cursor / total
+                cursor += weights[offset]
+                placed[i] = TimedLyricWord(
+                    text: tokens[i].text, start: wordStart, end: low + span * cursor / total,
+                    characterRange: tokens[i].range, confidence: nil,
+                    timingSource: .interpolated)
+            }
+        }
+        return placed.compactMap { $0 }
+    }
+
+    /// Index pairs of a longest common subsequence of two sequences of lengths `a` and `b`
+    /// under `equal` (monotonic in both).
+    static func matches(_ a: Int, _ b: Int, equal: (Int, Int) -> Bool) -> [(Int, Int)] {
+        guard a > 0, b > 0 else { return [] }
+        var table = [[Int]](repeating: [Int](repeating: 0, count: b + 1), count: a + 1)
+        for i in stride(from: a - 1, through: 0, by: -1) {
+            for j in stride(from: b - 1, through: 0, by: -1) {
+                table[i][j] =
+                    equal(i, j)
+                    ? table[i + 1][j + 1] + 1 : max(table[i + 1][j], table[i][j + 1])
+            }
+        }
+        var pairs: [(Int, Int)] = []
+        var i = 0
+        var j = 0
+        while i < a, j < b {
+            if equal(i, j), table[i][j] == table[i + 1][j + 1] + 1 {
+                pairs.append((i, j))
+                i += 1
+                j += 1
+            } else if table[i + 1][j] >= table[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        return pairs
     }
 }

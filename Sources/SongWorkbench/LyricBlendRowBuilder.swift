@@ -221,13 +221,16 @@ enum LyricBlendRowBuilder {
     /// `document.lyrics` after every blend pick or override edit (and right after the 3 passes
     /// first complete, before the user has picked anything).
     static func effectiveLyrics(from rows: [LyricBlendRow]) -> [TimedLyricSegment] {
-        rows.indices.compactMap { index -> TimedLyricSegment? in
+        let lines = rows.indices.compactMap { index -> TimedLyricSegment? in
             let row = rows[index]
-            if let overrideText = row.overrideText {
-                let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    return TimedLyricSegment(start: row.start, end: row.end, text: trimmed)
-                }
+            let override = row.overrideText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let override, !override.isEmpty {
+                // The correction rides on the picked candidate's words, so the resolved line
+                // (`TimedLyricSegment.resolved`) keeps that candidate's timing where they agree.
+                let picked = row.effectiveCandidate()
+                return TimedLyricSegment(
+                    start: row.start, end: row.end, text: picked?.text ?? override,
+                    words: picked?.words ?? [], overrideText: override)
             }
             guard let picked = row.effectiveCandidate() else { return nil }
             let candidate = withBoundaryWordRestored(picked, rows: rows, index: index)
@@ -237,6 +240,134 @@ enum LyricBlendRowBuilder {
                 start: candidateStart, end: max(candidateEnd, candidateStart),
                 text: candidate.text, words: candidate.words)
         }.sorted { $0.start < $1.start }
+        return withoutOverlaps(lines)
+    }
+
+    /// Adjacent rows' picks can come from engines that segment the same singing differently (a
+    /// 20-word Whisper segment against short Parakeet lines), so their lines can overlap and sing
+    /// the same words twice. Lines whose time spans overlap form one cluster:
+    ///
+    /// - Uncorrected lines' words are aligned in order against the words already accepted (same
+    ///   text, onsets within `repeatTolerance` — engines disagree by a second or more); matched
+    ///   words are repeats and dropped, keeping the earlier line's copy.
+    /// - A corrected line (`overrideText`) is authoritative for its row span: uncorrected words
+    ///   starting inside it are dropped.
+    /// - The remaining words become one line per gap between corrected lines, and every line ends
+    ///   by the next one's start.
+    ///
+    /// A cluster of one line is returned unchanged. Output lines ascend and never overlap; no word
+    /// start moves.
+    static func withoutOverlaps(
+        _ lines: [TimedLyricSegment], repeatTolerance: TimeInterval = 2
+    ) -> [TimedLyricSegment] {
+        func isCorrected(_ line: TimedLyricSegment) -> Bool {
+            !(line.overrideText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
+        func rebuilt(_ line: TimedLyricSegment, words: [TimedLyricWord]) -> TimedLyricSegment {
+            var text = ""
+            var rebased: [TimedLyricWord] = []
+            for word in words {
+                if !text.isEmpty { text += " " }
+                let lower = text.count
+                text += word.text
+                var copy = word
+                copy.characterRange = lower..<text.count
+                rebased.append(copy)
+            }
+            var result = line
+            result.text = text
+            result.words = rebased
+            result.start = rebased.first?.start ?? line.start
+            result.end = max(rebased.map(\.end).max() ?? line.end, result.start)
+            return result
+        }
+
+        var clusters: [[TimedLyricSegment]] = []
+        var clusterEnd = -TimeInterval.infinity
+        for line in lines.sorted(by: { $0.start < $1.start }) {
+            if line.start < clusterEnd, !clusters.isEmpty {
+                clusters[clusters.count - 1].append(line)
+                clusterEnd = max(clusterEnd, line.end)
+            } else {
+                clusters.append([line])
+                clusterEnd = line.end
+            }
+        }
+
+        var result: [TimedLyricSegment] = []
+        for cluster in clusters {
+            guard cluster.count > 1 else {
+                result += cluster
+                continue
+            }
+            var blocks = cluster.filter(isCorrected)
+            for index in blocks.indices.dropLast() {
+                blocks[index].end = max(
+                    blocks[index].start, min(blocks[index].end, blocks[index + 1].start))
+            }
+            var accepted: [TimedLyricWord] = []
+            let plain = cluster.filter { !isCorrected($0) }
+            for line in plain {
+                let tail = accepted.indices.filter {
+                    accepted[$0].end > line.start - repeatTolerance
+                }
+                let repeats = LyricWordRanges.matches(tail.count, line.words.count) { i, j in
+                    let earlier = accepted[tail[i]]
+                    let later = line.words[j]
+                    let key = LyricWordRanges.key(later.text)
+                    return !key.isEmpty && key == LyricWordRanges.key(earlier.text)
+                        && abs(earlier.start - later.start) <= repeatTolerance
+                }
+                let dropped = Set(repeats.map(\.1))
+                let placed = accepted
+                accepted += line.words.indices.filter { !dropped.contains($0) }.map {
+                    line.words[$0]
+                }.filter { word in
+                    // Order alignment can pair a repeat with a different copy; a word sounding
+                    // at the same moment as an accepted word of the same text is still one word.
+                    !placed.contains { earlier in
+                        earlier.start < word.end && word.start < earlier.end
+                            && LyricWordRanges.key(earlier.text) == LyricWordRanges.key(word.text)
+                    }
+                }
+            }
+            accepted = accepted.filter { word in
+                !blocks.contains { $0.start <= word.start && word.start < $0.end }
+            }.sorted { $0.start < $1.start }
+
+            var groups: [[TimedLyricWord]] = []
+            for word in accepted {
+                if let last = groups.last?.last,
+                    !blocks.contains(where: { last.start < $0.start && $0.start <= word.start })
+                {
+                    groups[groups.count - 1].append(word)
+                } else {
+                    groups.append([word])
+                }
+            }
+            var pieces = blocks
+            for (offset, group) in groups.enumerated() {
+                guard var template = plain.first else { break }
+                if offset > 0 { template.id = UUID() }
+                let limit =
+                    blocks.map(\.start).filter { $0 > group[0].start }.min() ?? .infinity
+                pieces.append(
+                    rebuilt(
+                        template,
+                        words: group.map { word in
+                            var clipped = word
+                            clipped.end = max(word.start, min(word.end, limit))
+                            return clipped
+                        }))
+            }
+            pieces.sort { $0.start < $1.start }
+            for index in pieces.indices.dropLast() {
+                pieces[index].end = max(
+                    pieces[index].start, min(pieces[index].end, pieces[index + 1].start))
+            }
+            result += pieces
+        }
+        return result
     }
 
     /// Restores a line-final word that two adjacent picks drop between them (Back to New Orleans

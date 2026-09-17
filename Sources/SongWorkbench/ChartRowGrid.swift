@@ -82,7 +82,7 @@ struct ChartRowGrid: Equatable, Sendable {
 /// One chart row's sung text on fixed-period rows: the words of every source lyric line whose
 /// onsets fall in the same `ChartRowGrid` window, as a lyric segment the preview can index by
 /// ordinal exactly like a source line.
-struct ChartLyricLine: Equatable, Sendable {
+struct ChartLyricLine: Equatable, Codable, Sendable {
     let windowIndex: Int
     /// The row's words and text. `id` is the first source line's, so accept/override actions keep
     /// addressing a real stored line; `overrideText` survives only on a row holding exactly one
@@ -100,11 +100,11 @@ struct ChartLyricLine: Equatable, Sendable {
 /// Cuts lyric lines onto fixed-period rows. Pure: stored lyrics are never rewritten — the cut is
 /// derived from them every time, so a row change can never feed back into what it was cut from.
 enum ChartLyricLineCutter {
-    /// Chart lines in row order. A word belongs to the window holding its onset, except that a
-    /// line's opening pickup — words starting within `ChartPickupGutter.maximumBeats` before the
-    /// next window, when the rest of the line sings in that window — moves forward into it, where
-    /// the row's gutter draws it. A hand-corrected line (non-empty `overrideText`) and a line
-    /// without word timings are never split.
+    /// Chart lines in row order. Every word belongs to the window holding its onset — a pickup sung
+    /// before a row's downbeat stays at the end of the row where it sounds, because the song is one
+    /// continuous stretch of bars (Eric, 2026-09-14: "the sound must be accounted for within the
+    /// bars and measures"). A hand-corrected line (non-empty `overrideText`) and a line without
+    /// word timings are never split.
     static func lines(from lyrics: [TimedLyricSegment], grid: ChartRowGrid) -> [ChartLyricLine] {
         let sorted = lyrics.sorted {
             if $0.start == $1.start, $0.end == $1.end { return $0.text < $1.text }
@@ -130,18 +130,7 @@ enum ChartLyricLineCutter {
                         continues: false))
                 continue
             }
-            var windows = line.words.map { grid.windowIndex(forTime: $0.start) }
-            if let first = windows.first, let later = windows.firstIndex(where: { $0 > first }),
-                windows[..<later].allSatisfy({ $0 == first })
-            {
-                let boundaryBeat = Double(grid.anchorBeatIndex + windows[later] * grid.periodBeats)
-                let pickupFloor = boundaryBeat - Double(ChartPickupGutter.maximumBeats)
-                if line.words[..<later].allSatisfy({
-                    grid.measure.beatIndex(atTime: $0.start) >= pickupFloor
-                }) {
-                    for index in 0..<later { windows[index] = windows[later] }
-                }
-            }
+            let windows = line.words.map { grid.windowIndex(forTime: $0.start) }
             let lastWindow = windows.last ?? 0
             var start = 0
             while start < line.words.count {

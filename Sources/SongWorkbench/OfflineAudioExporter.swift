@@ -7,7 +7,16 @@ struct OfflineExportSettings: Equatable, Sendable {
 
     mutating func normalize() {
         pitchSemitones = PitchShift.normalized(pitchSemitones)
-        tempoRate = min(max(tempoRate, 0.5), 1.5)
+        tempoRate = Self.timeStretchRate(min(max(tempoRate, 0.5), 1.5))
+    }
+
+    /// The rate `AVAudioUnitTimePitch` actually plays: `rate` rounded down to a multiple of
+    /// 1/1024. Measured with clicks at known times (44.1 and 48 kHz, 60 and 240 s): at 0.85 the
+    /// content plays at 0.849609, drifting 0.46 ms per second of song (0.95: 0.82 ms/s; 0.75,
+    /// representable: none), with no constant offset. Rendering and timestamp mapping must both
+    /// use this value, or slowed-decode word times drift late through the song.
+    static func timeStretchRate(_ rate: Double) -> Double {
+        (rate * 1024).rounded(.down) / 1024
     }
 }
 

@@ -1240,3 +1240,128 @@ final class ChordProDraftBuilderTests: XCTestCase {
             "the late chord must reach the chart text, not just chordTimes:\n\(document)")
     }
 }
+
+// MARK: - Resolved lyrics, literal lyric syntax, meter
+
+extension ChordProDraftBuilderTests {
+    private func timedSegment(
+        _ words: [(String, TimeInterval)], wordLength: TimeInterval = 0.4, override: String? = nil
+    ) -> TimedLyricSegment {
+        var text = ""
+        var timed: [TimedLyricWord] = []
+        for (word, start) in words {
+            if !text.isEmpty { text += " " }
+            let lower = text.count
+            text += word
+            timed.append(
+                TimedLyricWord(
+                    text: word, start: start, end: start + wordLength,
+                    characterRange: lower..<text.count))
+        }
+        return TimedLyricSegment(
+            start: words.first?.1 ?? 0, end: (words.last?.1 ?? 0) + wordLength, text: text,
+            words: timed, overrideText: override)
+    }
+
+    private func previewLyrics(_ source: String) throws -> [String] {
+        try ChordProPreviewDocument(parsing: source).blocks.compactMap {
+            if case .lyric(let line) = $0, line.hasSungText { return line.lyric }
+            return nil
+        }
+    }
+
+    func testReviewCorrectionIsWhatTheDraftAndItsExportSay() throws {
+        let line = timedSegment([("hallo", 1.0), ("werld", 1.5)], override: "hello world")
+        let input = ChordProDraftInput(
+            title: "Correction", tempo: nil, lyrics: [line],
+            chords: [EditableChordEvent(time: 1.55, chord: "G")])
+
+        let source = ChordProDraftBuilder().build(input)
+        let exported = try ChordProDocument(parsing: source).transposed(by: 0).export()
+
+        XCTAssertTrue(source.contains("hello [G]world"), source)
+        XCTAssertFalse(source.contains("werld"), source)
+        XCTAssertEqual(exported, source)
+        XCTAssertEqual(try previewLyrics(exported), ["hello world"])
+    }
+
+    func testReviewCorrectionOnFixedPeriodRowsKeepsTheCorrectedWordsTimed() {
+        let beats = stride(from: 0.0, through: 16.0, by: 0.5).map { $0 }
+        let line = timedSegment(
+            [("I", 4.0), ("got", 4.5), ("sum", 5.0), ("troubles", 5.5)],
+            override: "I've got some troubles")
+        let input = ChordProDraftInput(
+            title: "Rows", tempo: 120, lyrics: [line], chords: [], beatTimes: beats)
+
+        let result = ChordProDraftBuilder().buildResult(input)
+
+        XCTAssertTrue(result.source.contains("I've got some troubles"), result.source)
+        let row = try? XCTUnwrap(result.chartLines.first?.segment)
+        XCTAssertEqual(row?.text, "I've got some troubles")
+        XCTAssertTrue(LyricWordRanges.addressText(row?.words ?? [], row?.text ?? ""))
+        XCTAssertEqual(row?.words.map(\.start), [4.0, 4.5, 5.0, 5.5])
+    }
+
+    func testLiteralChordProSyntaxInATranscribedLyricRoundTrips() throws {
+        let heard = #"sing [la] {soc} back\slash"#
+        let words = heard.split(separator: " ").enumerated().map {
+            (String($0.element), 1.0 + Double($0.offset))
+        }
+        let directiveShaped = timedSegment([("{title:", 8.0), ("Oops}", 8.5)])
+        let input = ChordProDraftInput(
+            title: "Literal", tempo: nil,
+            lyrics: [timedSegment(words), directiveShaped],
+            chords: [
+                EditableChordEvent(time: 2.1, chord: "C"),
+                EditableChordEvent(time: 8.1, chord: "D"),
+            ])
+
+        let source = ChordProDraftBuilder().build(input)
+        let document = try ChordProDocument(parsing: source)
+
+        XCTAssertEqual(try previewLyrics(document.export()), [heard, "{title: Oops}"])
+        XCTAssertFalse(
+            try ChordProPreviewDocument(parsing: source).blocks.contains(.title("Oops")), source)
+        let chords = document.elements.compactMap { element -> String? in
+            if case .chord(let chord) = element { return chord.description }
+            return nil
+        }
+        XCTAssertEqual(chords, ["C", "D"])
+        XCTAssertEqual(ChordProText.unescaped(ChordProText.escaped(heard)), heard)
+    }
+
+    func testTimeDirectiveStatesTheBarGridMeter() {
+        let beats = stride(from: 0.0, through: 12.0, by: 0.5).map { $0 }
+        var input = ChordProDraftInput(
+            title: "Waltz", tempo: 120,
+            lyrics: [timedSegment([("one", 1.0), ("two", 1.5)])], chords: [], beatTimes: beats)
+        input.barGrid = SongBarGrid(
+            beatsPerBar: 3, barPhase: 0, confidence: 0.5, phaseSource: .drumAccents)
+
+        XCTAssertTrue(ChordProDraftBuilder().build(input).contains("{time: 3/4}"))
+    }
+}
+
+// MARK: - Committed chord times
+
+extension ChordProDraftBuilderTests {
+    func testManuallyMovedChordRendersAndExportsAtItsCommittedTimeAndRow() throws {
+        let first = timedSegment([("first", 0.0), ("line", 0.5)])
+        let second = timedSegment([("second", 5.0), ("line", 5.5)])
+        var moved = EditableChordEvent(time: 0.6, chord: "G", confidence: 0.9)
+        moved.manualTime = 5.1
+        let input = ChordProDraftInput(
+            title: "Moved", tempo: nil, lyrics: [first, second],
+            chords: [EditableChordEvent(time: 0.1, chord: "C", confidence: 0.9), moved])
+
+        let result = ChordProDraftBuilder().buildResult(input)
+        let exported = try ChordProDocument(parsing: result.source).transposed(by: 0).export()
+
+        XCTAssertTrue(exported.contains("[C]first line"), exported)
+        XCTAssertTrue(exported.contains("{x_chord_times: 5.100:G}\n[G]second line"), exported)
+        XCTAssertEqual(
+            ChordProChordTimeCarrier.parse(exported).map(\.time), [0.1, 5.1])
+        let rows = result.timeline.rows.filter(\.isLyric)
+        XCTAssertEqual(rows.map(\.chordTimes), [[0.1], [5.1]])
+    }
+}

@@ -368,102 +368,6 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertNil(VocalOnsetDetector.firstOnset(samples: [0.1, 0.2, 0.3], sampleRate: 0))
     }
 
-    func testReanchorCompressesIntroLineToVocalOnsetWithoutLosingLines() {
-        let introLine = TimedLyricSegment(
-            start: 0, end: 17.34, text: "Late night day shes",
-            words: [
-                TimedLyricWord(text: "Late", start: 0, end: 4, characterRange: 0..<4),
-                TimedLyricWord(text: "shes", start: 16, end: 17.34, characterRange: 15..<19),
-            ])
-        let secondLine = TimedLyricSegment(start: 22.8, end: 27.0, text: "When I dishes insane")
-
-        let result = VocalOnsetReanchor.reanchor([introLine, secondLine], onset: 16)
-
-        XCTAssertEqual(result.count, 2)  // never drops a line
-        XCTAssertEqual(result[0].start, 16, accuracy: 0.001)  // compressed to the onset
-        XCTAssertEqual(result[0].end, 17.34, accuracy: 0.001)  // reliable end kept
-        XCTAssertEqual(result[0].words.first?.start ?? -1, 16, accuracy: 0.001)
-        XCTAssertEqual(result[0].words.last?.end ?? -1, 17.34, accuracy: 0.001)
-        XCTAssertLessThanOrEqual(result[0].end, result[1].start)
-        XCTAssertEqual(result[1], secondLine)  // line already after the onset is untouched
-    }
-
-    func testReanchorTranslatesLineEntirelyBeforeOnset() {
-        let early = TimedLyricSegment(
-            start: 2, end: 4, text: "ghost words",
-            words: [
-                TimedLyricWord(text: "ghost", start: 2, end: 3, characterRange: 0..<5),
-                TimedLyricWord(text: "words", start: 3, end: 4, characterRange: 6..<11),
-            ])
-        let real = TimedLyricSegment(start: 30, end: 33, text: "real line")
-
-        let result = VocalOnsetReanchor.reanchor([early, real], onset: 16)
-
-        XCTAssertEqual(result.count, 2)
-        XCTAssertEqual(result[0].start, 16, accuracy: 0.001)
-        XCTAssertEqual(result[0].end, 18, accuracy: 0.001)  // 2s span preserved by translation
-        XCTAssertEqual(result[1], real)
-    }
-
-    func testReanchorLeavesCorrectlyTimedLinesUntouched() {
-        let a = TimedLyricSegment(start: 20, end: 24, text: "a")
-        let b = TimedLyricSegment(start: 25, end: 28, text: "b")
-        // First line already at/after the onset → no-op.
-        XCTAssertEqual(VocalOnsetReanchor.reanchor([a, b], onset: 16), [a, b])
-
-        // First line starts only slightly before the onset (within the lead tolerance) → no-op.
-        let near = TimedLyricSegment(start: 15.5, end: 18, text: "near")
-        let later = TimedLyricSegment(start: 22, end: 25, text: "later")
-        XCTAssertEqual(VocalOnsetReanchor.reanchor([near, later], onset: 16), [near, later])
-    }
-
-    func testTranscriptionOnsetCorrectionReanchorsBeforeGrouping() {
-        let segment = TimedTranscriptionSegment(
-            text: "Late night shes",
-            startTime: 0,
-            endTime: 17.34,
-            tokens: [
-                TimedTranscriptionToken(text: "Late", startTime: 0, endTime: 4, confidence: 0.8),
-                TimedTranscriptionToken(
-                    text: "shes", startTime: 16, endTime: 17.34, confidence: 0.8),
-            ],
-            confidence: 0.8
-        )
-        let prepared = TranscriptionOnsetCorrection.preparedSegments([segment], onset: 16)
-
-        XCTAssertEqual(prepared.count, 1)
-        XCTAssertEqual(prepared[0].tokens.first?.startTime ?? -1, 16, accuracy: 0.001)
-        XCTAssertEqual(prepared[0].tokens.map(\.text), ["Late", "shes"])
-    }
-
-    func testTranscriptionOnsetCorrectionPreservesNearOnsetLeadingWords() throws {
-        let segment = TimedTranscriptionSegment(
-            text: "the saloon door swings",
-            startTime: 9,
-            endTime: 12,
-            tokens: [
-                TimedTranscriptionToken(
-                    text: "the", startTime: 9, endTime: 9.4, confidence: 0.9),
-                TimedTranscriptionToken(
-                    text: "saloon", startTime: 9.4, endTime: 10.1, confidence: 0.9),
-                TimedTranscriptionToken(
-                    text: "door", startTime: 10.1, endTime: 10.8, confidence: 0.9),
-                TimedTranscriptionToken(
-                    text: "swings", startTime: 10.8, endTime: 12, confidence: 0.9),
-            ],
-            confidence: 0.9
-        )
-
-        let corrected = TranscriptionOnsetCorrection.preparedSegments(
-            [segment],
-            onset: 10.5
-        )
-
-        let first = try XCTUnwrap(corrected.first)
-        XCTAssertEqual(first.tokens.map(\.text), ["the", "saloon", "door", "swings"])
-        XCTAssertEqual(first.tokens.first?.startTime ?? -1, 10.5, accuracy: 1e-9)
-    }
-
     func testVocalActivityEnvelopeFindsTwoSungRegionsSeparatedByASilentGap() {
         let sampleRate = 8_000.0
         let silence = [Float](repeating: 0, count: Int(sampleRate))  // 1s
@@ -487,122 +391,6 @@ final class AudioAnalysisTests: XCTestCase {
             VocalActivityEnvelope.voicedIntervals(samples: [], sampleRate: 8_000).isEmpty)
         XCTAssertTrue(
             VocalActivityEnvelope.voicedIntervals(samples: [0.1, 0.2], sampleRate: 0).isEmpty)
-    }
-
-    func testVocalAlignmentShiftsLinesForwardToTheVoicedOnset() {
-        let line1 = TimedLyricSegment(
-            start: 1, end: 3, text: "a",
-            words: [TimedLyricWord(text: "a", start: 1, end: 1.5, characterRange: 0..<1)])
-        let line2 = TimedLyricSegment(start: 10, end: 12, text: "b")
-        let voiced: [ClosedRange<TimeInterval>] = [2.0...3.0, 10.5...11.5]
-
-        let result = VocalAlignmentCorrector.align([line1, line2], voicedIntervals: voiced)
-
-        XCTAssertEqual(result.count, 2)
-        XCTAssertEqual(result[0].start, 2.0, accuracy: 0.001)  // pushed onto the singing
-        XCTAssertEqual(result[0].words.first?.start ?? -1, 2.0, accuracy: 0.001)  // words move too
-        XCTAssertEqual(result[1].start, 10.5, accuracy: 0.001)
-        XCTAssertLessThanOrEqual(result[0].end, result[1].start)  // order preserved
-    }
-
-    func testVocalAlignmentClampsIntroLineToFirstOnsetEvenWhenFar() {
-        let intro = TimedLyricSegment(start: 0, end: 2, text: "first")
-        let voiced: [ClosedRange<TimeInterval>] = [16.0...18.0]  // long instrumental intro
-
-        let result = VocalAlignmentCorrector.align([intro], voicedIntervals: voiced)
-
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].start, 16.0, accuracy: 0.001)
-    }
-
-    func testVocalAlignmentLeavesWellAlignedLinesUntouched() {
-        let line = TimedLyricSegment(start: 5, end: 7, text: "ok")
-        let voiced: [ClosedRange<TimeInterval>] = [5.0...6.5]
-
-        let result = VocalAlignmentCorrector.align([line], voicedIntervals: voiced)
-
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].start, 5.0, accuracy: 0.001)
-        XCTAssertEqual(result[0].end, 7.0, accuracy: 0.001)
-    }
-
-    func testDistributeAcrossSignalSpreadsWordsOverOneRegion() {
-        let line = TimedLyricSegment(
-            start: 0, end: 99, text: "ab cd",
-            words: [
-                TimedLyricWord(text: "ab", start: 0, end: 1, characterRange: 0..<2),
-                TimedLyricWord(text: "cd", start: 1, end: 2, characterRange: 3..<5),
-            ])
-        let voiced: [ClosedRange<TimeInterval>] = [10.0...12.0]
-
-        let result = VocalAlignmentCorrector.distributeAcrossSignal(
-            [line], voicedIntervals: voiced)
-
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].words.count, 2)
-        XCTAssertEqual(result[0].words[0].start, 10.0, accuracy: 0.001)
-        XCTAssertEqual(result[0].words[1].start, 11.0, accuracy: 0.001)  // equal weights → halfway
-        XCTAssertEqual(result[0].start, 10.0, accuracy: 0.001)
-        XCTAssertEqual(result[0].end, 12.0, accuracy: 0.001)
-    }
-
-    func testDistributeAcrossSignalSkipsSilentGapsAndStartsWordsOnSignal() {
-        let line = TimedLyricSegment(
-            start: 0, end: 99, text: "ab cd",
-            words: [
-                TimedLyricWord(text: "ab", start: 0, end: 1, characterRange: 0..<2),
-                TimedLyricWord(text: "cd", start: 1, end: 2, characterRange: 3..<5),
-            ])
-        let voiced: [ClosedRange<TimeInterval>] = [10.0...11.0, 20.0...21.0]
-
-        let result = VocalAlignmentCorrector.distributeAcrossSignal(
-            [line], voicedIntervals: voiced)
-
-        XCTAssertEqual(result[0].words[0].start, 10.0, accuracy: 0.001)
-        // Second word lands in the next region (snapped past the 11–20 silent gap), not in it.
-        XCTAssertEqual(result[0].words[1].start, 20.0, accuracy: 0.001)
-    }
-
-    func testDistributeAcrossSignalClampsWordEndToItsRegionNotIntoTheGap() {
-        // One word, two regions: the word must stay within its own region (10...11) and NOT stretch
-        // across the silent gap to 21 (that gap belongs to the next line).
-        let line = TimedLyricSegment(
-            start: 0, end: 99, text: "abcd",
-            words: [TimedLyricWord(text: "abcd", start: 0, end: 1, characterRange: 0..<4)])
-        let voiced: [ClosedRange<TimeInterval>] = [10.0...11.0, 20.0...21.0]
-
-        let result = VocalAlignmentCorrector.distributeAcrossSignal(
-            [line], voicedIntervals: voiced)
-
-        XCTAssertEqual(result[0].words[0].start, 10.0, accuracy: 0.001)
-        XCTAssertEqual(result[0].words[0].end, 11.0, accuracy: 0.001)  // clamped to region end
-        XCTAssertEqual(result[0].end, 11.0, accuracy: 0.001)
-    }
-
-    func testDistributeAcrossSignalIsPerLineAndDoesNotCramDistantLinesEarly() {
-        // line1 sings at ~10-12; line2 sings at ~30-32 but its singing was NOT detected (only the
-        // first region exists). Global distribution would cram line2 into [10,12] (drift); per-line
-        // distribution leaves line2 on its ASR timing because there's no signal near it.
-        let line1 = TimedLyricSegment(
-            start: 10, end: 12, text: "a b",
-            words: [
-                TimedLyricWord(text: "a", start: 10, end: 11, characterRange: 0..<1),
-                TimedLyricWord(text: "b", start: 11, end: 12, characterRange: 2..<3),
-            ])
-        let line2 = TimedLyricSegment(
-            start: 30, end: 32, text: "c d",
-            words: [
-                TimedLyricWord(text: "c", start: 30, end: 31, characterRange: 0..<1),
-                TimedLyricWord(text: "d", start: 31, end: 32, characterRange: 2..<3),
-            ])
-        let voiced: [ClosedRange<TimeInterval>] = [10.0...12.0]  // line2's singing undetected
-
-        let result = VocalAlignmentCorrector.distributeAcrossSignal(
-            [line1, line2], voicedIntervals: voiced)
-
-        XCTAssertEqual(result[0].words[0].start, 10.0, accuracy: 0.05)  // line1 placed on signal
-        XCTAssertEqual(result[1].start, 30.0, accuracy: 0.001)  // line2 NOT crammed early
-        XCTAssertEqual(result[1], line2)  // unchanged (kept ASR timing)
     }
 
     func testRepeatedPhraseCollapserCollapsesALoopedLine() {
@@ -1158,14 +946,6 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(lyrics.map(\.text), ["verse line here", "fade away now"])
     }
 
-    func testDistributeAcrossSignalNoOpWithoutVoicedRegions() {
-        let line = TimedLyricSegment(
-            start: 1, end: 2, text: "x",
-            words: [TimedLyricWord(text: "x", start: 1, end: 2, characterRange: 0..<1)])
-        XCTAssertEqual(
-            VocalAlignmentCorrector.distributeAcrossSignal([line], voicedIntervals: []), [line])
-    }
-
     func testInstrumentOnsetDetectorFindsTwoBurstsSeparatedBySilence() {
         let sampleRate = 8_000.0
         let silence = [Float](repeating: 0, count: Int(sampleRate))  // 1s
@@ -1460,255 +1240,6 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(out[0].words.map(\.start), [1.04, 1.18])
     }
 
-    func testDistributionIgnoresPreviousPhrasesLeakedTail() {
-        // Doc Holiday, at the source. The line's window is padded 0.5 s and clipped at the
-        // previous line's ASR end (27.56), but that line's audio decays to 27.78 — so the
-        // previous phrase's voiced region 27.00-27.78 survives clipping as a 0.22 s sliver
-        // (28 % of itself). Words pack from the first region onward, so "He" was pinned to that
-        // sliver, 1.1 s before the 28.65-29.65 run that acoustically sings "He walks in".
-        // The majority-overlap rule drops the sliver, so every word lands on its own phrase.
-        let previous = TimedLyricSegment(
-            start: 25.38, end: 27.56, text: "up",
-            words: [TimedLyricWord(text: "up", start: 27.32, end: 27.56, characterRange: 0..<2)])
-        // NOTE: this 4-word line is the grouper's PRE-2026-07-31 output. Grouping now
-        // keeps the engine's own boundary and emits "He walks in" / "Whiskey ..."
-        // separately (see LyricGroupingDiagnosticTests). The shape is retained here
-        // because it is still a valid stress case for the re-timing pass under test.
-        let line = TimedLyricSegment(
-            start: 27.570, end: 30.480, text: "He walks in Whiskey",
-            words: [
-                TimedLyricWord(text: "He", start: 27.570, end: 27.760, characterRange: 0..<2),
-                TimedLyricWord(text: "walks", start: 28.680, end: 29.383, characterRange: 3..<8),
-                TimedLyricWord(text: "in", start: 29.320, end: 29.650, characterRange: 9..<11),
-                TimedLyricWord(
-                    text: "Whiskey", start: 29.750, end: 30.480, characterRange: 12..<19),
-            ])
-        let voiced: [ClosedRange<TimeInterval>] = [27.00...27.78, 28.65...29.65, 29.75...30.45]
-        let out = VocalAlignmentCorrector.distributeAcrossSignal(
-            [previous, line], voicedIntervals: voiced)
-        let words = out[1].words
-        // "He" now starts on its own phrase, not on the leaked tail.
-        XCTAssertGreaterThanOrEqual(words[0].start, 28.65)
-        // Every word sits inside a voiced region.
-        for word in words {
-            XCTAssertTrue(
-                voiced.contains { $0.contains(word.start) },
-                "\(word.text) at \(word.start) is not on signal")
-        }
-        // Order and count preserved.
-        XCTAssertEqual(words.map(\.text), ["He", "walks", "in", "Whiskey"])
-        XCTAssertEqual(words, words.sorted { $0.start < $1.start })
-    }
-
-    func testDistributionKeepsRegionsMostlyInsideTheWindow() {
-        // Guard the other direction: a region the line genuinely owns must NOT be dropped just
-        // because the window clips a little off its edge.
-        let line = TimedLyricSegment(
-            start: 10.0, end: 11.0, text: "one two",
-            words: [
-                TimedLyricWord(text: "one", start: 10.0, end: 10.4, characterRange: 0..<3),
-                TimedLyricWord(text: "two", start: 10.6, end: 11.0, characterRange: 4..<7),
-            ])
-        // 9.6...11.4 is 1.8 s; the window (9.5...11.5) keeps all of it.
-        let out = VocalAlignmentCorrector.distributeAcrossSignal(
-            [line], voicedIntervals: [9.6...11.4])
-        XCTAssertGreaterThanOrEqual(out[0].words[0].start, 9.6)
-        XCTAssertLessThanOrEqual(out[0].words[1].end, 11.4)
-    }
-
-    // MARK: - StrandedLeadingWordRepairer
-
-    private func oceansSegment() -> TimedLyricSegment {
-        // The real Summertime defect: "Oceans" 59.54-59.76 stranded on a bleed blip; the line
-        // body starts at 62.12; the gap 59.76-62.12 is unvoiced.
-        TimedLyricSegment(
-            start: 59.54, end: 63.86, text: "Oceans moving the waves alive",
-            words: [
-                TimedLyricWord(text: "Oceans", start: 59.54, end: 59.76, characterRange: 0..<6),
-                TimedLyricWord(text: "moving", start: 62.12, end: 62.63, characterRange: 7..<13),
-                TimedLyricWord(text: "the", start: 62.74, end: 62.92, characterRange: 14..<17),
-            ])
-    }
-
-    func testStrandedLeadingWordPulledForwardAcrossUnvoicedGap() {
-        let voiced: [ClosedRange<TimeInterval>] = [59.45...59.80, 61.80...63.90]
-        let out = StrandedLeadingWordRepairer.repaired([oceansSegment()], voicedIntervals: voiced)
-        let oceans = out[0].words[0]
-        // Translated forward to abut the body at 62.12 (duration 0.22 preserved).
-        XCTAssertEqual(oceans.end, 62.04, accuracy: 0.01)
-        XCTAssertEqual(oceans.end - oceans.start, 0.22, accuracy: 1e-6)
-        XCTAssertEqual(out[0].start, oceans.start, accuracy: 1e-9)
-        XCTAssertEqual(out[0].words[1].start, 62.12, accuracy: 1e-9)
-    }
-
-    func testDocHolidayLeadingWordStrandedOnPreviousLineTailIsRepaired() {
-        // The real Doc Holiday defect, and the reason the minimum gap moved 1.0 -> 0.8.
-        // ASR timed "He" at 27.570-27.760, which lands on the DECAYING TAIL of the previous
-        // line ("...swung up"), not on its own phrase. Measuring the vocals stem shows silence
-        // 27.78-28.65 and then one continuous 1.0 s sung run 28.65-29.65 that acoustically holds
-        // "He walks in". The 0.920 s gap sat just under the old 1.0 s threshold, so the repairer
-        // never fired and the chart drew a phantom pause between "He" and "walks" instead of the
-        // real one before "Whiskey".
-        // NOTE: this 4-word line is the grouper's PRE-2026-07-31 output. Grouping now
-        // keeps the engine's own boundary and emits "He walks in" / "Whiskey ..."
-        // separately (see LyricGroupingDiagnosticTests). The shape is retained here
-        // because it is still a valid stress case for the re-timing pass under test.
-        let segment = TimedLyricSegment(
-            start: 27.570, end: 30.480, text: "He walks in Whiskey",
-            words: [
-                TimedLyricWord(text: "He", start: 27.570, end: 27.760, characterRange: 0..<2),
-                TimedLyricWord(text: "walks", start: 28.680, end: 29.383, characterRange: 3..<8),
-                TimedLyricWord(text: "in", start: 29.320, end: 29.650, characterRange: 9..<11),
-                TimedLyricWord(
-                    text: "Whiskey", start: 29.750, end: 30.480, characterRange: 12..<19),
-            ])
-        let voiced: [ClosedRange<TimeInterval>] = [27.00...27.78, 28.65...29.65, 29.75...30.45]
-        let out = StrandedLeadingWordRepairer.repaired([segment], voicedIntervals: voiced)
-        let he = out[0].words[0]
-        // Pulled forward to abut the body (28.680 - 0.08), duration preserved.
-        XCTAssertEqual(he.end, 28.600, accuracy: 0.01)
-        XCTAssertEqual(he.end - he.start, 0.190, accuracy: 1e-6)
-        // The rest of the line is untouched, so the real pause before "Whiskey" survives.
-        XCTAssertEqual(out[0].words[1].start, 28.680, accuracy: 1e-9)
-        XCTAssertEqual(out[0].words[3].start, 29.750, accuracy: 1e-9)
-        XCTAssertEqual(out[0].start, he.start, accuracy: 1e-9)
-    }
-
-    func testHeldNoteVoicedGapIsNotRepaired() {
-        // Same shape, but the gap is SUNG (a held "Ocea—ns"): fully voiced → untouched.
-        let voiced: [ClosedRange<TimeInterval>] = [59.45...63.90]
-        let out = StrandedLeadingWordRepairer.repaired([oceansSegment()], voicedIntervals: voiced)
-        XCTAssertEqual(out[0].words[0].start, 59.54, accuracy: 1e-9)
-    }
-
-    func testShortGapAndLargeLeadingClustersAreNotRepaired() {
-        // Gap under the minimum: untouched.
-        var segment = oceansSegment()
-        segment.words[0].start = 61.30
-        segment.words[0].end = 61.52
-        let voiced: [ClosedRange<TimeInterval>] = [61.80...63.90]
-        let out = StrandedLeadingWordRepairer.repaired([segment], voicedIntervals: voiced)
-        XCTAssertEqual(out[0].words[0].start, 61.30, accuracy: 1e-9)
-        // A 3-word leading cluster exceeds maximumLeadingWords (2): untouched.
-        let big = TimedLyricSegment(
-            start: 10, end: 20, text: "one two three four",
-            words: [
-                TimedLyricWord(text: "one", start: 10.0, end: 10.2, characterRange: 0..<3),
-                TimedLyricWord(text: "two", start: 10.3, end: 10.5, characterRange: 4..<7),
-                TimedLyricWord(text: "three", start: 10.6, end: 10.8, characterRange: 8..<13),
-                TimedLyricWord(text: "four", start: 15.0, end: 15.3, characterRange: 14..<18),
-            ])
-        let out2 = StrandedLeadingWordRepairer.repaired(
-            [big], voicedIntervals: [15.0...16.0])
-        XCTAssertEqual(out2[0].words[0].start, 10.0, accuracy: 1e-9)
-    }
-
-    // MARK: - TornContinuationLineRejoiner
-
-    /// The real Settle Down defect (2026-08-10): ASR emitted no words for the sung intro
-    /// doo-doos but timestamped "I used" into that region; the grouper split the phrase.
-    private func settleDownTornPair() -> [TimedLyricSegment] {
-        [
-            TimedLyricSegment(
-                start: 2.20, end: 4.82, text: "I used",
-                words: [
-                    TimedLyricWord(text: "I", start: 2.20, end: 2.46, characterRange: 0..<1),
-                    TimedLyricWord(text: "used", start: 3.56, end: 4.82, characterRange: 2..<6),
-                ]),
-            TimedLyricSegment(
-                start: 22.71, end: 25.24, text: "to stay out late at night",
-                words: [
-                    TimedLyricWord(text: "to", start: 22.71, end: 22.95, characterRange: 0..<2),
-                    TimedLyricWord(text: "stay", start: 22.84, end: 23.46, characterRange: 3..<7),
-                    TimedLyricWord(text: "out", start: 23.40, end: 23.84, characterRange: 8..<11),
-                    TimedLyricWord(text: "late", start: 23.77, end: 24.35, characterRange: 12..<16),
-                    TimedLyricWord(text: "at", start: 24.41, end: 24.60, characterRange: 17..<19),
-                    TimedLyricWord(
-                        text: "night", start: 24.63, end: 25.24, characterRange: 20..<25),
-                ]),
-        ]
-    }
-
-    private let settleDownVoiced: [ClosedRange<TimeInterval>] = [
-        1.90...5.00, 8.26...10.46, 22.60...25.30,
-    ]
-
-    func testTornContinuationFragmentRejoinsItsBodyLine() {
-        let out = TornContinuationLineRejoiner.rejoined(
-            settleDownTornPair(), voicedIntervals: settleDownVoiced)
-        XCTAssertEqual(out.count, 1)
-        let line = out[0]
-        XCTAssertEqual(line.text, "I used to stay out late at night")
-        // Fragment words translated forward (durations preserved) to abut the body at 22.71.
-        XCTAssertEqual(line.words[1].end, 22.63, accuracy: 0.01)
-        XCTAssertEqual(line.words[0].end - line.words[0].start, 0.26, accuracy: 1e-6)
-        XCTAssertEqual(line.start, line.words[0].start, accuracy: 1e-9)
-        // Body words untouched; their character ranges re-based into the merged text.
-        XCTAssertEqual(line.words[2].start, 22.71, accuracy: 1e-9)
-        XCTAssertEqual(line.words[2].characterRange, 7..<9)
-        XCTAssertEqual(line.words.last?.characterRange, 27..<32)
-        XCTAssertNil(line.confidence)
-    }
-
-    func testTornRejoinVacatesIntroVocalsForUntranscribedDetection() {
-        // End-to-end with the detector: once "I used" moves to its phrase, the doo-doo
-        // region it was covering is flagged as sung-but-untranscribed.
-        let out = TornContinuationLineRejoiner.rejoined(
-            settleDownTornPair(), voicedIntervals: settleDownVoiced)
-        let regions = UntranscribedVocalRegionDetector.regions(
-            voicedIntervals: settleDownVoiced, lyrics: out)
-        XCTAssertTrue(
-            regions.contains { $0.lowerBound <= 2.0 && $0.upperBound >= 4.9 },
-            "intro doo-doos should surface: \(regions)")
-    }
-
-    func testCapitalizedNextLineIsNotRejoined() {
-        var pair = settleDownTornPair()
-        pair[1].text = "To stay out late at night"
-        let out = TornContinuationLineRejoiner.rejoined(
-            pair, voicedIntervals: settleDownVoiced)
-        XCTAssertEqual(out.count, 2)
-    }
-
-    func testShortGapOrVoicedGapIsNotRejoined() {
-        // Gap under the minimum: a real pair of nearby lines stays split.
-        var pair = settleDownTornPair()
-        pair[0].words[0].start = 20.0
-        pair[0].words[0].end = 20.26
-        pair[0].words[1].start = 20.4
-        pair[0].words[1].end = 21.0
-        pair[0].start = 20.0
-        pair[0].end = 21.0
-        XCTAssertEqual(
-            TornContinuationLineRejoiner.rejoined(
-                pair, voicedIntervals: settleDownVoiced
-            ).count, 2)
-        // A mostly-VOICED gap (the singer sounds through it) is never crossed.
-        XCTAssertEqual(
-            TornContinuationLineRejoiner.rejoined(
-                settleDownTornPair(), voicedIntervals: [1.90...25.30]
-            ).count, 2)
-    }
-
-    func testInterjectionAndUserStateAreNotRejoined() {
-        // "Oh yeah" is a real standalone line even before a lowercase continuation.
-        var pair = settleDownTornPair()
-        pair[0].text = "Oh yeah"
-        pair[0].words[0].text = "Oh"
-        pair[0].words[1].text = "yeah"
-        XCTAssertEqual(
-            TornContinuationLineRejoiner.rejoined(
-                pair, voicedIntervals: settleDownVoiced
-            ).count, 2)
-        // An accepted line is user-reviewed state — never restructured.
-        var accepted = settleDownTornPair()
-        accepted[0].accepted = true
-        XCTAssertEqual(
-            TornContinuationLineRejoiner.rejoined(
-                accepted, voicedIntervals: settleDownVoiced
-            ).count, 2)
-    }
-
     // MARK: - VocalWordSpanNormalizer (audit RC-3: melisma phantom pauses)
 
     private func summertimesSegment() -> TimedLyricSegment {
@@ -1743,18 +1274,6 @@ final class AudioAnalysisTests: XCTestCase {
         let out = VocalWordSpanNormalizer.normalized(
             [summertimesSegment()], voicedIntervals: voiced)
         XCTAssertEqual(out[0].words[0].end, 46.23, accuracy: 1e-9)
-    }
-
-    func testLateOnsetPulledBackToVoicedReentryEdge() {
-        // Mostly-unvoiced gap, but the voice re-enters at 47.60 while ASR put "here" at
-        // 48.21 → onset pulled back to the audible edge.
-        let voiced: [ClosedRange<TimeInterval>] = [45.9...46.3, 47.60...50.0]
-        let out = VocalWordSpanNormalizer.normalized(
-            [summertimesSegment()], voicedIntervals: voiced)
-        XCTAssertEqual(out[0].words[1].start, 47.60, accuracy: 1e-9)
-        // Duration stays positive and order nondecreasing.
-        XCTAssertLessThan(out[0].words[1].start, out[0].words[1].end)
-        XCTAssertGreaterThanOrEqual(out[0].words[1].start, out[0].words[0].end)
     }
 
     func testShortGapsAndEmptyVADAreUntouched() {
@@ -1822,9 +1341,16 @@ final class AudioAnalysisTests: XCTestCase {
             languageCode: nil,
             sourceDuration: 226,
             completedAt: Date(timeIntervalSince1970: 0),
-            segments: spans.map {
+            // Coverage counts words, not segment spans: one short word every half second.
+            segments: spans.map { span in
                 TimedTranscriptionSegment(
-                    text: "x", startTime: $0.0, endTime: $0.1, tokens: [], confidence: 0.9)
+                    text: "x", startTime: span.0, endTime: span.1,
+                    tokens: stride(from: span.0, to: span.1, by: 0.5).map {
+                        TimedTranscriptionToken(
+                            text: "la", startTime: $0, endTime: min($0 + 0.5, span.1),
+                            confidence: 0.9)
+                    },
+                    confidence: 0.9)
             },
             engine: TranscriptionEngineMetadata(
                 engineName: "test", modelName: "test", modelVersion: nil,
@@ -1849,11 +1375,12 @@ final class AudioAnalysisTests: XCTestCase {
 
     func testOverlappingSegmentsDoNotDoubleCountCoverage() {
         let voiced: [ClosedRange<TimeInterval>] = [0.0...100.0]
-        // Two fully-overlapping 50s segments must count once (0.5), not twice.
+        // Two fully-overlapping 50s segments must count once (0.5 plus the last word's 0.25 s
+        // padding), not twice.
         let overlapping = coverageResult([(0, 50), (0, 50)])
         XCTAssertEqual(
             TranscriptionVoicedCoverage.fraction(of: overlapping, voicedIntervals: voiced) ?? 0,
-            0.5, accuracy: 1e-9)
+            0.5025, accuracy: 1e-9)
     }
 
     // MARK: - VocalTailCutoffResolver: sustained voiced tails are real singing
@@ -2184,5 +1711,64 @@ final class VocalPitchSalienceTests: XCTestCase {
         let sung = VocalPitchSalience.sungIntervals(
             samples: [Float](repeating: 0, count: 44_100 * 3), sampleRate: sampleRate)
         XCTAssertTrue(sung.isEmpty)
+    }
+}
+
+// MARK: - Pitch evidence protects soft singing from the energy gate
+
+extension AudioAnalysisTests {
+    func testHallucinationGateKeepsPitchSupportedLineTheEnergyVADMissed() {
+        let body = sentenceSegment("verse line here", start: 10)
+        let soft = sentenceSegment("doo doo da", start: 30)
+        let energy: [ClosedRange<TimeInterval>] = [9.5...13.0]
+
+        XCTAssertEqual(
+            VocalHallucinationGate.filtered([body, soft], voicedIntervals: energy).map(\.text),
+            ["verse line here"])
+        XCTAssertEqual(
+            VocalHallucinationGate.filtered(
+                [body, soft], voicedIntervals: energy, sungIntervals: [29.8...32.0]
+            ).map(\.text),
+            ["verse line here", "doo doo da"])
+    }
+
+    func testHallucinationGateDropsALineBothEnergyAndPitchReject() {
+        let stray = sentenceSegment("thank you", start: 60)
+        XCTAssertEqual(
+            VocalHallucinationGate.filtered(
+                [stray], voicedIntervals: [9.5...13.0], sungIntervals: [20.0...25.0]
+            ).count, 0)
+    }
+
+    func testTailCutoffMovesPastPitchedSingingOnly() {
+        XCTAssertEqual(
+            VocalHallucinationGate.pitchExtended(50, sungIntervals: [10...20, 55...58]), 58)
+        XCTAssertEqual(VocalHallucinationGate.pitchExtended(50, sungIntervals: [10...20]), 50)
+        XCTAssertEqual(VocalHallucinationGate.pitchExtended(50, sungIntervals: []), 50)
+        XCTAssertNil(VocalHallucinationGate.pitchExtended(nil, sungIntervals: [55...58]))
+    }
+}
+
+// MARK: - Adjacent lines never overlap
+
+extension AudioAnalysisTests {
+    func testOverlappingAdjacentLinesClipOnlyTheEarlierLinesEnds() {
+        let first = TimedLyricSegment(
+            start: 30.32, end: 35.00, text: "held note",
+            words: [
+                TimedLyricWord(text: "held", start: 30.32, end: 34.49, characterRange: 0..<4),
+                TimedLyricWord(text: "note", start: 34.49, end: 35.00, characterRange: 5..<9),
+            ])
+        let second = TimedLyricSegment(
+            start: 34.93, end: 36, text: "next",
+            words: [TimedLyricWord(text: "next", start: 34.93, end: 36, characterRange: 0..<4)])
+
+        let clipped = LyricLineOverlapClipper.clipped([second, first])
+
+        XCTAssertEqual(clipped.map(\.text), ["held note", "next"])
+        XCTAssertEqual(clipped[0].end, 34.93, accuracy: 1e-9)
+        XCTAssertEqual(clipped[0].words.map(\.start), [30.32, 34.49])
+        XCTAssertEqual(clipped[0].words.last?.end ?? 0, 34.93, accuracy: 1e-9)
+        XCTAssertEqual(clipped[1], second)
     }
 }

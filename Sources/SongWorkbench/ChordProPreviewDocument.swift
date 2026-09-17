@@ -516,8 +516,9 @@ extension ChordProPreviewDocument {
                 if character == "\n" || character == "\r\n" || character == "\r" {
                     flushLyricLine(includingBlank: true)
                 } else if character == "\\" {
+                    // `ChordProText.escaped` lyric syntax: \\ \[ \] \{ \}.
                     let next = text.index(after: index)
-                    if next < text.endIndex, text[next] == "[" || text[next] == "]" {
+                    if next < text.endIndex, "\\[]{}".contains(text[next]) {
                         lyric.append(text[next])
                         hasLineContent = true
                         index = next

@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import XCTest
 
@@ -75,6 +76,64 @@ final class TranscriptionTests: XCTestCase {
                 retryStart: 10,
                 replacementEnd: 20
             ),
+            primary
+        )
+    }
+
+    func testWordlessGapRescueFindsTheSungStretchBeforeALine() {
+        let primary = transcriptionResult(
+            segments: [
+                transcriptionSegment("Earlier words", start: 10, end: 11),
+                transcriptionSegment("me and you", start: 19.6, end: 20.5),
+            ],
+            sourceDuration: 60
+        )
+
+        let gaps = WordlessVocalGapRescuer.gaps(in: primary, sungIntervals: [13...20.5])
+
+        XCTAssertEqual(gaps.count, 1)
+        XCTAssertEqual(gaps.first?.lowerBound ?? 0, 13, accuracy: 1e-9)
+        XCTAssertEqual(gaps.first?.upperBound ?? 0, 19.35, accuracy: 1e-9)
+    }
+
+    func testWordlessGapRescueAddsOnlyWordsInsideTheGap() {
+        let primary = transcriptionResult(
+            segments: [
+                transcriptionSegment("Earlier words", start: 10, end: 11),
+                transcriptionSegment("me and you", start: 19.6, end: 20.5),
+            ],
+            sourceDuration: 60
+        )
+        // A clip from 12 s: the missing phrase, then the already-placed line again.
+        let retry = transcriptionResult(
+            segments: [
+                transcriptionSegment("the end you", start: 1, end: 2.5),
+                transcriptionSegment("me and you", start: 7.6, end: 8.5),
+            ],
+            sourceDuration: 9
+        )
+
+        let merged = WordlessVocalGapRescuer.merged(
+            primary: primary, retry: retry, retryStart: 12, gap: 13...19.35)
+
+        XCTAssertEqual(merged.segments.map(\.text), ["Earlier words", "the end you", "me and you"])
+        XCTAssertEqual(merged.segments[1].tokens[0].startTime, 13, accuracy: 1e-9)
+        XCTAssertEqual(merged.segments[2], primary.segments[1])
+    }
+
+    func testWordlessGapRescueIgnoresALoneHallucinatedWord() {
+        let primary = transcriptionResult(
+            segments: [transcriptionSegment("me and you", start: 19.6, end: 20.5)],
+            sourceDuration: 60
+        )
+        let retry = transcriptionResult(
+            segments: [transcriptionSegment("Thanks.", start: 2, end: 3)],
+            sourceDuration: 9
+        )
+
+        XCTAssertEqual(
+            WordlessVocalGapRescuer.merged(
+                primary: primary, retry: retry, retryStart: 12, gap: 13...19.35),
             primary
         )
     }
@@ -1136,20 +1195,12 @@ final class StretchedWordRetimerTests: XCTestCase {
         return VocalAttackEnvelope(decibels: decibels, hopSeconds: 0.01)
     }
 
-    func testAStretchedWordMovesToTheAttackInsideItAndThePreviousWordMeetsIt() {
-        let attacks = singing(attacks: [58.47])
+    func testAStretchedWordIsFlaggedButNeverMoved() {
+        let line = breezeLine()
         let (segments, findings) = StretchedWordRetimer.retimed(
-            [breezeLine()], attacks: attacks, beatLength: 0.5728)
-        let words = segments[0].words
-        XCTAssertEqual(words[1].start, 58.45, accuracy: 0.02)
-        XCTAssertEqual(words[1].end, 60.65, accuracy: 1e-9, "the end is left as transcribed")
-        XCTAssertEqual(words[0].end, words[1].start, accuracy: 1e-9, "the voice never stopped")
-        XCTAssertEqual(findings.map(\.kind), [.retimed])
-        XCTAssertEqual(findings.first?.transcribedStart ?? 0, 57.77, accuracy: 1e-9)
-
-        let again = StretchedWordRetimer.retimed(segments, attacks: attacks, beatLength: 0.5728)
-        XCTAssertEqual(again.segments, segments, "a second run changes nothing")
-        XCTAssertEqual(again.findings, [])
+            [line], attacks: singing(attacks: [58.47]), beatLength: 0.5728)
+        XCTAssertEqual(segments, [line], "word times never change")
+        XCTAssertEqual(findings.map(\.kind), [.suspect])
     }
 
     func testWordsTheVocalsAlreadySupportAreLeftAlone() {
@@ -1172,46 +1223,6 @@ final class StretchedWordRetimerTests: XCTestCase {
             ).findings, [])
     }
 
-    /// Vague vocals (only weak attacks inside) resolve toward the bar position where the word's
-    /// rhyme lands: a later "breeze" starts on beat 1, so this one moves to its beat-1 attack.
-    func testVagueVocalsFollowTheRhymeTiming() {
-        // 120 BPM, 4/4 from 0 s: beat 1 of a bar every 2 s.
-        let grid = MeasureGrid(
-            beatTimes: (0..<200).map { Double($0) * 0.5 }, bpm: 120, beatsPerBar: 4, barPhase: 0)
-        let stretched = TimedLyricSegment(
-            start: 10, end: 13.4, text: "cool summer breeze",
-            words: [
-                TimedLyricWord(text: "cool", start: 10, end: 10.4, characterRange: 0..<4),
-                TimedLyricWord(text: "summer", start: 10.4, end: 11, characterRange: 5..<11),
-                TimedLyricWord(text: "breeze", start: 11, end: 13.4, characterRange: 12..<18),
-            ])
-        let rhyme = TimedLyricSegment(
-            start: 19, end: 20.6, text: "feel the breeze",
-            words: [
-                TimedLyricWord(text: "feel", start: 19, end: 19.4, characterRange: 0..<4),
-                TimedLyricWord(text: "the", start: 19.4, end: 19.7, characterRange: 5..<8),
-                TimedLyricWord(text: "breeze", start: 20, end: 20.6, characterRange: 9..<15),
-            ])
-        // Weak attacks inside "breeze": 11.5 s (beat 4) and 12.0 s (beat 1).
-        var decibels = [Float](repeating: -10, count: 3_000)
-        for attack in [11.5, 12.0] {
-            let frame = Int((attack / 0.01).rounded())
-            for dip in (frame - 3)..<frame { decibels[dip] = -14 }
-        }
-        let attacks = VocalAttackEnvelope(decibels: decibels, hopSeconds: 0.01)
-        let detector = RhymeDetector(table: ["breeze": "IY1 Z"])
-
-        let (segments, findings) = StretchedWordRetimer.retimed(
-            [stretched, rhyme], attacks: attacks, beatLength: 0.5, grid: grid, rhymes: detector)
-        XCTAssertEqual(segments[0].words[2].start, 11.98, accuracy: 0.03)
-        XCTAssertEqual(findings.map(\.kind), [.rhymeAligned])
-
-        let withoutRhymes = StretchedWordRetimer.retimed(
-            [stretched, rhyme], attacks: attacks, beatLength: 0.5, grid: nil, rhymes: nil)
-        XCTAssertEqual(
-            withoutRhymes.findings.map(\.kind), [.suspect], "no rhyme evidence: flag only")
-    }
-
     func testAStretchedWordWithNoClearAttackInsideIsOnlyFlagged() {
         let line = breezeLine()
         let (segments, findings) = StretchedWordRetimer.retimed(
@@ -1223,5 +1234,286 @@ final class StretchedWordRetimerTests: XCTestCase {
                 WordTimingFinding(
                     kind: .suspect, text: "breeze", start: 57.77, transcribedStart: 57.77)
             ])
+    }
+}
+
+// MARK: - Missing phrases hidden by stretched tokens; evidence for recovered words
+
+extension TranscriptionTests {
+    private func token(
+        _ text: String, _ start: TimeInterval, _ end: TimeInterval, _ confidence: Float?
+    )
+        -> TimedTranscriptionToken
+    {
+        TimedTranscriptionToken(text: text, startTime: start, endTime: end, confidence: confidence)
+    }
+
+    func testWordlessGapRescueFindsAPhraseHiddenInsideAStretchedToken() {
+        // Whisper glued "hold" to the next line and stretched it 10.0-16.0 s; the singer sang a
+        // whole phrase from 11 s that no token names.
+        let stretched = TimedTranscriptionSegment(
+            text: "hold on", startTime: 10, endTime: 16.4,
+            tokens: [token("hold", 10, 16, 0.9), token("on", 16, 16.4, 0.9)], confidence: 0.9)
+        let primary = transcriptionResult(segments: [stretched], sourceDuration: 60)
+
+        let gaps = WordlessVocalGapRescuer.gaps(in: primary, sungIntervals: [10...16.4])
+
+        XCTAssertEqual(gaps.count, 1)
+        XCTAssertEqual(gaps.first?.lowerBound ?? 0, 10.85, accuracy: 1e-9)
+        XCTAssertEqual(gaps.first?.upperBound ?? 0, 15.75, accuracy: 1e-9)
+        // Raw spans called this stretch fully transcribed; supported word spans do not.
+        let coverage = TranscriptionVoicedCoverage.fraction(
+            of: primary, voicedIntervals: [10...16.4])
+        XCTAssertEqual(coverage ?? 1, 1.5 / 6.4, accuracy: 1e-9)
+    }
+
+    func testWordlessGapRescueRejectsLowConfidenceAndUnsungRetryWords() {
+        let primary = transcriptionResult(
+            segments: [transcriptionSegment("me and you", start: 19.6, end: 20.5)],
+            sourceDuration: 60)
+        let unsure = TimedTranscriptionSegment(
+            text: "the end you", startTime: 1, endTime: 2.5,
+            tokens: [
+                token("the", 1, 1.5, 0.2), token("end", 1.5, 2, 0.2), token("you", 2, 2.5, 0.2),
+            ],
+            confidence: 0.2)
+        let lowConfidence = transcriptionResult(segments: [unsure], sourceDuration: 9)
+        XCTAssertEqual(
+            WordlessVocalGapRescuer.merged(
+                primary: primary, retry: lowConfidence, retryStart: 12, gap: 13...19.35),
+            primary)
+
+        let confident = transcriptionResult(
+            segments: [transcriptionSegment("the end you", start: 1, end: 2.5)],
+            sourceDuration: 9)
+        // Sung audio only from 17 s: the retry words at 13-14.5 s have no acoustic support.
+        XCTAssertEqual(
+            WordlessVocalGapRescuer.merged(
+                primary: primary, retry: confident, retryStart: 12, gap: 13...19.35,
+                sungIntervals: [17...19.35]),
+            primary)
+        let supported = WordlessVocalGapRescuer.merged(
+            primary: primary, retry: confident, retryStart: 12, gap: 13...19.35,
+            sungIntervals: [12.9...19.35])
+        XCTAssertEqual(supported.segments.map(\.text), ["the end you", "me and you"])
+    }
+
+    /// Slowed decoding renders the audio at `rate` and scales timestamps back by `rate`. Clicks at
+    /// known times must come back where they were: no constant offset from the time-stretch
+    /// unit's latency, and no drift that grows through the song.
+    func testSlowDecodeExportAndTimestampScalingNeitherOffsetNorDrift() async throws {
+        let sampleRate: Double = 44_100
+        var clickTimes: [TimeInterval] = []
+        for index in 0..<40 {
+            clickTimes.append(0.5 + Double(index) * 1.37 + Double(index % 3) * 0.11)
+        }
+        let duration: TimeInterval = clickTimes[clickTimes.count - 1] + 2
+        let format = try XCTUnwrap(
+            AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
+        let frames = AVAudioFrameCount(duration * sampleRate)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        let burstLength = Int(0.03 * sampleRate)
+        for time in clickTimes {
+            let first = Int(time * sampleRate)
+            for index in 0..<burstLength {
+                // A 1 kHz burst with a hard attack and short decay.
+                let seconds = Double(index) / sampleRate
+                let value: Double = sin(2 * Double.pi * 1_000 * seconds) * exp(-seconds / 0.008)
+                samples[first + index] = Float(value * 0.8)
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("clicks.wav")
+        let slowURL = directory.appendingPathComponent("slow.wav")
+        try AVAudioFile(forWriting: sourceURL, settings: format.settings).write(from: buffer)
+
+        // The stage quantizes the Accuracy decode rate to what the time-stretch really plays.
+        let rate = OfflineExportSettings.timeStretchRate(0.85)
+        try await OfflineAudioExporter().export(
+            sourceURL: sourceURL, destinationURL: slowURL,
+            settings: OfflineExportSettings(pitchSemitones: 0, tempoRate: rate))
+
+        let slow = try AVAudioFile(forReading: slowURL)
+        let slowBuffer = try XCTUnwrap(
+            AVAudioPCMBuffer(
+                pcmFormat: slow.processingFormat, frameCapacity: AVAudioFrameCount(slow.length)))
+        try slow.read(into: slowBuffer)
+        let slowSamples = try XCTUnwrap(slowBuffer.floatChannelData?[0])
+        let slowRate = slow.processingFormat.sampleRate
+        // Onsets: the first sample over 0.3 after half a second without one.
+        var onsets: [TimeInterval] = []
+        var lastLoud: TimeInterval = -1
+        for index in 0..<Int(slowBuffer.frameLength) where abs(slowSamples[index]) > 0.3 {
+            let time = Double(index) / slowRate
+            if time - lastLoud > 0.5 { onsets.append(time) }
+            lastLoud = time
+        }
+        XCTAssertEqual(onsets.count, clickTimes.count)
+        guard onsets.count == clickTimes.count else { return }
+
+        // The same mapping the transcription stage applies to slowed-decode timestamps.
+        let tokens = onsets.map { token("x", $0, $0, nil) }
+        let slowed = transcriptionResult(
+            segments: [
+                TimedTranscriptionSegment(
+                    text: "x", startTime: onsets[0], endTime: onsets[onsets.count - 1],
+                    tokens: tokens, confidence: nil)
+            ],
+            sourceDuration: Double(slow.length) / slowRate)
+        let mapped = TranscriptionTimeScaler.scaled(slowed, by: rate).segments[0].tokens
+        var errors: [Double] = []
+        for (mappedToken, click) in zip(mapped, clickTimes) {
+            errors.append(mappedToken.startTime - click)
+        }
+        let meanError = errors.reduce(0, +) / Double(errors.count)
+        let meanTime = clickTimes.reduce(0, +) / Double(clickTimes.count)
+        var covariance: Double = 0
+        var variance: Double = 0
+        for (time, error) in zip(clickTimes, errors) {
+            covariance += (time - meanTime) * (error - meanError)
+            variance += (time - meanTime) * (time - meanTime)
+        }
+        let drift = covariance / variance * duration
+        let worst = errors.map { Swift.abs($0) }.max() ?? 0
+        print(
+            String(
+                format: "slow decode: mean offset %.4f s, drift over song %.4f s, worst %.4f s",
+                meanError, drift, worst))
+        XCTAssertLessThan(Swift.abs(meanError), 0.02, "constant offset")
+        XCTAssertLessThan(Swift.abs(drift), 0.02, "drift across the song")
+        XCTAssertLessThan(worst, 0.04)
+    }
+}
+
+// MARK: - MANUAL: slowed-decode timing sweep
+
+extension TranscriptionTests {
+    /// Measures where `OfflineAudioExporter`'s time-stretch puts known clicks, per rate, sample
+    /// rate and length. `SW_SLOW_DECODE_SWEEP=1 swift test --filter testSlowDecodeTimingSweep`
+    func testSlowDecodeTimingSweep() async throws {
+        guard ProcessInfo.processInfo.environment["SW_SLOW_DECODE_SWEEP"] == "1" else {
+            throw XCTSkip("manual sweep; set SW_SLOW_DECODE_SWEEP=1")
+        }
+        for sampleRate in [44_100.0, 48_000.0] {
+            for seconds in [60.0, 240.0] {
+                for rate in [0.75, 0.85, 0.95] {
+                    let result = try await clickRoundTrip(
+                        sampleRate: sampleRate, seconds: seconds, rate: rate)
+                    print(
+                        String(
+                            format:
+                                "sweep sr=%.0f len=%.0f rate=%.2f offset=%.4f slope=%.7f outLen/expected=%.7f",
+                            sampleRate, seconds, rate, result.offset, result.slope,
+                            result.lengthRatio))
+                }
+            }
+        }
+    }
+
+    private func clickRoundTrip(sampleRate: Double, seconds: Double, rate: Double) async throws
+        -> (offset: Double, slope: Double, lengthRatio: Double)
+    {
+        var clickTimes: [TimeInterval] = []
+        var time = 0.5
+        while time < seconds - 2 {
+            clickTimes.append(time)
+            time += 1.37
+        }
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let frames = AVAudioFrameCount(seconds * sampleRate)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        let samples = buffer.floatChannelData![0]
+        for click in clickTimes {
+            let first = Int(click * sampleRate)
+            for index in 0..<Int(0.03 * sampleRate) {
+                let t = Double(index) / sampleRate
+                samples[first + index] = Float(
+                    sin(2 * Double.pi * 1_000 * t) * exp(-t / 0.008) * 0.8)
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceURL = directory.appendingPathComponent("clicks.wav")
+        let slowURL = directory.appendingPathComponent("slow.wav")
+        try AVAudioFile(forWriting: sourceURL, settings: format.settings).write(from: buffer)
+        try await OfflineAudioExporter().export(
+            sourceURL: sourceURL, destinationURL: slowURL,
+            settings: OfflineExportSettings(pitchSemitones: 0, tempoRate: rate))
+        let slow = try AVAudioFile(forReading: slowURL)
+        let slowBuffer = AVAudioPCMBuffer(
+            pcmFormat: slow.processingFormat, frameCapacity: AVAudioFrameCount(slow.length))!
+        try slow.read(into: slowBuffer)
+        let slowSamples = slowBuffer.floatChannelData![0]
+        let slowRate = slow.processingFormat.sampleRate
+        var onsets: [TimeInterval] = []
+        var lastLoud: TimeInterval = -1
+        for index in 0..<Int(slowBuffer.frameLength) where Swift.abs(slowSamples[index]) > 0.3 {
+            let t = Double(index) / slowRate
+            if t - lastLoud > 0.5 { onsets.append(t) }
+            lastLoud = t
+        }
+        let count = min(onsets.count, clickTimes.count)
+        var errors: [Double] = []
+        for index in 0..<count { errors.append(onsets[index] * rate - clickTimes[index]) }
+        let meanError = errors.reduce(0, +) / Double(max(count, 1))
+        let meanTime = clickTimes.prefix(count).reduce(0, +) / Double(max(count, 1))
+        var covariance = 0.0
+        var variance = 0.0
+        for index in 0..<count {
+            covariance += (clickTimes[index] - meanTime) * (errors[index] - meanError)
+            variance += (clickTimes[index] - meanTime) * (clickTimes[index] - meanTime)
+        }
+        let slope = covariance / max(variance, 1e-9)
+        return (meanError - slope * meanTime, slope, Double(slow.length) / (Double(frames) / rate))
+    }
+}
+
+// MARK: - Decode loops
+
+extension TranscriptionTests {
+    private func repeatedSegment(_ text: String, start: TimeInterval, duration: TimeInterval)
+        -> TimedTranscriptionSegment
+    {
+        transcriptionSegment(text, start: start, end: start + duration)
+    }
+
+    func testDecodeLoopGuardRemovesUnsingableRepeatsAndReportsTheirSpan() {
+        let phrase = "one two three four five six seven eight nine ten"
+        let segments =
+            [transcriptionSegment("before the loop", start: 90, end: 94)]
+            + (0..<5).map { repeatedSegment(phrase, start: 94.7 + Double($0) * 0.5, duration: 0.5) }
+        let looped = transcriptionResult(segments: segments, sourceDuration: 225)
+
+        let guarded = DecodeLoopGuard.removingLoops(looped, vocalOnsets: [])
+
+        XCTAssertEqual(guarded.result.segments.count, 2)
+        XCTAssertEqual(guarded.removed.count, 1)
+        XCTAssertEqual(guarded.removed.first?.lowerBound ?? 0, 95.2, accuracy: 1e-9)
+        XCTAssertEqual(guarded.removed.first?.upperBound ?? 0, 97.2, accuracy: 1e-9)
+    }
+
+    func testDecodeLoopGuardKeepsARepeatedChorusLineTheVocalsSing() {
+        let line = "hold me close tonight my dear"
+        let chorus = transcriptionResult(
+            segments: [
+                repeatedSegment(line, start: 10, duration: 3),
+                repeatedSegment(line, start: 13.2, duration: 3),
+            ],
+            sourceDuration: 60)
+        let onsets = stride(from: 13.2, to: 16.2, by: 0.5).map { $0 }
+
+        XCTAssertEqual(
+            DecodeLoopGuard.removingLoops(chorus, vocalOnsets: onsets).result, chorus)
+        // The same repeat with no vocal onsets under it on a stem is not sung.
+        XCTAssertEqual(
+            DecodeLoopGuard.removingLoops(chorus, vocalOnsets: [1, 2, 3]).result.segments.count, 1)
     }
 }

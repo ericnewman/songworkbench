@@ -62,10 +62,7 @@ final class LyricRetimingDiagnosticTests: XCTestCase {
             print(
                 "\n== \(hash.prefix(8))  lines=\(lyrics.count)  voicedRegions=\(voiced.count) ==")
 
-            let distributed = VocalAlignmentCorrector.distributeAcrossSignal(
-                lyrics, voicedIntervals: voiced)
-            let repaired = StrandedLeadingWordRepairer.repaired(
-                distributed, voicedIntervals: voiced)
+            let repaired = lyrics
 
             let limit = min(lyrics.count, Int(environment["SW_LYRIC_RETIME_LINES"] ?? "") ?? 4)
             for index in 0..<limit {
@@ -80,5 +77,45 @@ final class LyricRetimingDiagnosticTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// MANUAL: prints the vocal evidence the transcription stage gates words with, for one audio
+    /// file (a vocals stem or a full mix): strict-VAD voiced intervals, pitch-salience sung
+    /// intervals, and the resolved tail cutoff.
+    ///
+    ///     SW_VAD_DIAG_FILE=/path/to/audio swift test --filter testPrintVocalEvidence
+    func testPrintVocalEvidence() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["SW_VAD_DIAG_FILE"] else {
+            throw XCTSkip("manual diagnostic; set SW_VAD_DIAG_FILE")
+        }
+        let url = URL(fileURLWithPath: path)
+        func total(_ intervals: [ClosedRange<TimeInterval>]) -> Double {
+            intervals.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+        }
+        func show(_ name: String, _ intervals: [ClosedRange<TimeInterval>]) {
+            print(
+                String(
+                    format: "%@: %d intervals, %.1f s total", name, intervals.count,
+                    total(intervals)))
+            print(
+                "  "
+                    + intervals.prefix(40).map {
+                        String(format: "%.1f-%.1f", $0.lowerBound, $0.upperBound)
+                    }
+                    .joined(separator: " "))
+        }
+        let strict = try VocalActivityEnvelope.voicedIntervals(
+            url: url, configuration: .strictVocalPresence)
+        show("strict VAD", strict)
+        show("pitch salience", (try? VocalPitchSalience.sungIntervals(url: url)) ?? [])
+        let file = try AVAudioFile(forReading: url)
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        let cutoff = VocalTailCutoffResolver.resolve(
+            detectedOffset: try? VocalOffsetDetector.lastOffset(url: url),
+            strictVoicedIntervals: strict, sourceDuration: duration)
+        print(
+            "duration \(duration) effectiveOffset \(String(describing: cutoff.effectiveOffset)) lastVoicedEnd \(String(describing: cutoff.lastVoicedEnd))"
+        )
     }
 }
