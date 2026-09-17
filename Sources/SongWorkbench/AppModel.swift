@@ -243,6 +243,7 @@ final class AppModel: ObservableObject {
     /// write it back: the beat tracker's raw answer (when a retune fired) and the
     /// `AnalysisTimingPostPasses` stamp. See `PreReconciliationTiming`.
     private var preReconciliationTiming: PreReconciliationTiming?
+    private var preRecutLineOnsets: PreRecutLineOnsets?
     private var timingPostPassTag: String?
     /// Word timings the stretched-word check retimed or flagged, and the check version that last
     /// ran on the current lyrics (`StretchedWordRetimer`).
@@ -3306,6 +3307,7 @@ final class AppModel: ObservableObject {
         // indexes the published beat grid.
         barGrid = analysis.barGrid
         preReconciliationTiming = analysis.preReconciliationTiming
+        preRecutLineOnsets = analysis.preRecutLineOnsets
         timingPostPassTag = analysis.timingPostPassTag
         wordTimingFindings = analysis.wordTimingFindings
         wordTimingCheckTag = analysis.wordTimingCheckTag
@@ -3472,6 +3474,7 @@ final class AppModel: ObservableObject {
             estimatedBPM: estimatedBPM,
             beatTimes: beatTimes,
             preReconciliationTiming: preReconciliationTiming,
+            preRecutLineOnsets: preRecutLineOnsets,
             timingPostPassTag: timingPostPassTag,
             bassNotes: bassNotes,
             vocalHarmonyNotes: vocalHarmonyNotes,

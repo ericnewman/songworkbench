@@ -483,7 +483,9 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     //     regroup/reconcile/recut trio from every load into the pipeline; the document now
     //     stores the DISPLAYED values, with the beat tracker's raw answer preserved beside
     //     them). Optional, no migration required — an unstamped document is migrated on load.
-    static let currentSchemaVersion = 12
+    // 13: added preRecutLineOnsets (the line starts the post-passes read before recutting, so a
+    //     re-run does not regroup its own recut). Optional, no migration required.
+    static let currentSchemaVersion = 13
 
     var schemaVersion = currentSchemaVersion
     var lyrics: [TimedLyricSegment] = []
@@ -546,6 +548,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// a re-run of the post-passes (tag bump) restores this first, so reconciliation never
     /// feeds on its own output — the loop that once walked a song 101.3 → 152.0 → 81.1.
     var preReconciliationTiming: PreReconciliationTiming?
+    /// The lyric line starts `AnalysisTimingPostPasses` reconciled and recut from, beside the
+    /// starts it published — the lyric half of `preReconciliationTiming`. `nil` until the passes
+    /// have run.
+    var preRecutLineOnsets: PreRecutLineOnsets?
     /// Version stamp of the `AnalysisTimingPostPasses` that produced the stored lyrics/beats.
     /// `nil` (older documents, or fresh stage output) means the passes still need to run.
     var timingPostPassTag: String?
@@ -600,6 +606,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case estimatedBPM
         case beatTimes
         case preReconciliationTiming
+        case preRecutLineOnsets
         case timingPostPassTag
         case bassNotes
         case vocalHarmonyNotes
@@ -638,6 +645,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         estimatedBPM: Double? = nil,
         beatTimes: [TimeInterval] = [],
         preReconciliationTiming: PreReconciliationTiming? = nil,
+        preRecutLineOnsets: PreRecutLineOnsets? = nil,
         timingPostPassTag: String? = nil,
         bassNotes: [BassNoteObservation] = [],
         vocalHarmonyNotes: [VocalHarmonyObservation] = [],
@@ -674,6 +682,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.estimatedBPM = estimatedBPM
         self.beatTimes = beatTimes
         self.preReconciliationTiming = preReconciliationTiming
+        self.preRecutLineOnsets = preRecutLineOnsets
         self.timingPostPassTag = timingPostPassTag
         self.bassNotes = bassNotes
         self.vocalHarmonyNotes = vocalHarmonyNotes
@@ -724,6 +733,8 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         beatTimes = try container.decodeIfPresent([TimeInterval].self, forKey: .beatTimes) ?? []
         preReconciliationTiming = try container.decodeIfPresent(
             PreReconciliationTiming.self, forKey: .preReconciliationTiming)
+        preRecutLineOnsets = try container.decodeIfPresent(
+            PreRecutLineOnsets.self, forKey: .preRecutLineOnsets)
         timingPostPassTag = try container.decodeIfPresent(
             String.self, forKey: .timingPostPassTag)
         bassNotes =
@@ -777,6 +788,17 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         instrumentChords = try container.decodeIfPresent(
             InstrumentChordTimeline.self, forKey: .instrumentChords)
     }
+}
+
+/// Line starts (first-word onsets) around `AnalysisTimingPostPasses`' recut. The recut rewrites
+/// `lyrics`, and `regroup` keeps stored line starts, so without `raw` a re-run would reconcile
+/// from its own recut — the 2026-08-05 feedback loop, through the lyrics instead of the beats.
+struct PreRecutLineOnsets: Codable, Equatable, Sendable {
+    /// Starts of the regrouped lines the reconciler and recut read.
+    var raw: [TimeInterval]
+    /// Starts of the lines the passes published. `raw` describes `lyrics` only while they still
+    /// start exactly here; anything else rewrote them.
+    var published: [TimeInterval]
 }
 
 /// The beat tracker's original answer, set aside by `AnalysisTimingPostPasses` when a metrical

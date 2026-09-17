@@ -954,3 +954,19 @@ lane palette, so a note's color could disagree with the corresponding waveform a
 
 **Rule:** Render source-derived note and tab rows with `StemID.laneColor`; do not introduce
 per-view color constants for a stem-backed artifact.
+
+## 2026-09-15 — Restoring one raw input does not close a loop that has two
+
+**Mistake:** the 2026-08-05 fix set aside the tracker's raw tempo/beats/bar grid and restored them
+before every `AnalysisTimingPostPasses` run, but the reconciler's OTHER input — line onsets — still
+came from `document.lyrics`, which the same passes had already recut on the published grid.
+`regroup` keeps stored line starts, so the recut fed the next verdict: Don't Forget Me walked
+127.6 -> 143.6 -> 71.8 on repeated runs, with the raw beats faithfully restored each time.
+
+**Rule:** a pass is only re-runnable when EVERY field it reads is either untouched by it or
+recoverable as raw. List the inputs of each verdict and check each one against what the pass
+writes. Detect staleness of a set-aside raw copy by output (the stored lines still start where the
+pass published them), not by hunting every code path that rewrites the field.
+
+**Detection:** run `apply` at least three times on stored documents and compare pass 2+ against
+pass 1 — tempo AND line starts. A one-shot replay cannot see the loop.

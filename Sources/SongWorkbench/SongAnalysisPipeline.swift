@@ -345,7 +345,11 @@ enum AnalysisTimingPostPasses {
     // timing-2: rows are recut on `SongBeatsPerLine.rowBeats` (the preview's period) instead of
     // the raw fit, so stored lines re-derive onto the period they are framed at.
     // timing-3: an anchored (guessed) bar grid is re-estimated after a retune, not rescaled.
-    static let versionTag = "timing-3"
+    // timing-6: reconcile and recut read the lines as they stood BEFORE the previous recut
+    // (`preRecutLineOnsets`). 4 and 5 are taken by fix/retuned-bar-meter and fix/reconciler-gates.
+    // timing-7: a function-word orphan that opens the next line no longer merges back across a
+    // gap break, so `regroup` is idempotent (fix/idempotent-regroup).
+    static let versionTag = "timing-7"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag
@@ -360,7 +364,19 @@ enum AnalysisTimingPostPasses {
             document.barGrid = raw.barGrid
             document.preReconciliationTiming = nil
         }
-        let regrouped = TimedLyricSegmentGrouper.regroup(document.lyrics)
+        // …and from the RAW lines. The stored ones were recut on the previously published grid,
+        // and `regroup` keeps stored line starts, so reading them fed that recut to this verdict
+        // (Don't Forget Me walked 127.6 -> 143.6 -> 71.8). Lines that no longer start where these
+        // passes published them were rewritten since (fresh transcription, Lyric Blend, a row
+        // pick) and are raw themselves.
+        var rawLineStarts: Set<TimeInterval>?
+        if let stored = document.preRecutLineOnsets,
+            stored.published == lineOnsets(document.lyrics)
+        {
+            rawLineStarts = Set(stored.raw)
+        }
+        let regrouped = TimedLyricSegmentGrouper.regroup(
+            document.lyrics, lineStartOnsets: rawLineStarts)
         let verdict = MetricalLevelReconciler.reconcile(
             bpm: document.estimatedBPM ?? 0,
             beatTimes: document.beatTimes,
@@ -386,15 +402,21 @@ enum AnalysisTimingPostPasses {
             regrouped, beatTimes: document.beatTimes, tempo: document.estimatedBPM)
         document.lyrics = TimedLyricSegment.reconciled(
             newSegments: recut, against: document.lyrics)
+        document.preRecutLineOnsets = PreRecutLineOnsets(
+            raw: lineOnsets(regrouped), published: lineOnsets(document.lyrics))
         // A pre-`SongBarGrid` document gets its one grid here, on the final beat grid — the
         // single fallback for every consumer.
         if document.barGrid == nil {
             document.barGrid = SongBarGridEstimator.estimate(
                 beatTimes: document.beatTimes,
                 beatStrengths: [],
-                lyricLineOnsets: document.lyrics.map { $0.words.first?.start ?? $0.start })
+                lyricLineOnsets: lineOnsets(document.lyrics))
         }
         document.timingPostPassTag = versionTag
+    }
+
+    private static func lineOnsets(_ lines: [TimedLyricSegment]) -> [TimeInterval] {
+        lines.map { $0.words.first?.start ?? $0.start }
     }
 }
 
