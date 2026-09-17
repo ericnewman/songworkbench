@@ -350,8 +350,11 @@ enum AnalysisTimingPostPasses {
     // timing-2: rows are recut on `SongBeatsPerLine.rowBeats` (the preview's period) instead of
     // the raw fit, so stored lines re-derive onto the period they are framed at.
     // timing-3: an anchored (guessed) bar grid is re-estimated after a retune, not rescaled.
+    // timing-5: the reconciler declines octave ties and retunes only when both halves of the
+    // song reject the tracker's tempo (fix/reconciler-gates). timing-4 is taken by
+    // fix/retuned-bar-meter.
     // timing-6: reconcile and recut read the lines as they stood BEFORE the previous recut
-    // (`preRecutLineOnsets`). 4 and 5 are taken by fix/retuned-bar-meter and fix/reconciler-gates.
+    // (`preRecutLineOnsets`, fix/raw-lyric-onsets).
     // timing-7: a function-word orphan that opens the next line no longer merges back across a
     // gap break, so `regroup` is idempotent (fix/idempotent-regroup).
     static let versionTag = "timing-7"

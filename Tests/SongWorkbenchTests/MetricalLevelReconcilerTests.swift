@@ -346,38 +346,12 @@ final class MetricalLevelReconcilerTests: XCTestCase {
 
     // MARK: Tie-breaking prefers the slower tempo
 
-    func testAnExactMultipleTieResolvesToTheSlowerTempo() {
-        // Eric's rule (2026-08-05). Two tempos an exact multiple apart explain line spacing
-        // equally well BY CONSTRUCTION — an 8-beat phrase at 2x is a 4-beat phrase at 1x — so the
-        // fit cannot separate them and the slower reading is the one a player counts.
-        let trueBPM = 168.0
-        let reportedBPM = trueBPM * 2 / 3  // 112.0
-        let onsets = lineOnsets(bpm: trueBPM, beatsPerLine: 8, lineCount: 22, jitter: 0.03)
-        let verdict = try! XCTUnwrap(
-            MetricalLevelReconciler.reconcile(
-                bpm: reportedBPM,
-                beatTimes: uniformBeats(bpm: reportedBPM, duration: 140),
-                lineOnsets: onsets))
-        guard verdict.isRetune, !verdict.ambiguousWith.isEmpty else { return }
-        // Whenever a candidate tied with the winner, no tied candidate may be SLOWER than it.
-        for tied in verdict.ambiguousWith {
-            XCTAssertGreaterThanOrEqual(
-                tied.value, verdict.ratio.value,
-                "a tied candidate at \(tied) is slower than the chosen \(verdict.ratio)")
-        }
-    }
-
-    func testSlowerWinsAThreeHalvesVersusThreeQuartersTie() {
-        // The concrete shape of the real-song tie: x3/4 (slower) against x3/2 (faster).
-        XCTAssertLessThan(MetricalRatio(3, 4).value, MetricalRatio(3, 2).value)
-    }
-
-    // MARK: Ambiguity is reported, not hidden
-
-    func testTiedCandidatesAreSurfacedOnTheVerdict() {
-        // A song whose lines are 8 beats apart at the true tempo is ALSO explicable as 4 beats
-        // apart at 3/4 the tempo. When two levels score within epsilon, the winner stays
-        // deterministic but the tie must be visible so an independent signal can arbitrate.
+    func testAnOctaveTieDeclinesAndReportsBothCandidates() {
+        // Lines 8 beats apart at the true tempo are ALSO 4 beats apart at half of it, so x3/2 and
+        // x3/4 score identically by construction. Field case (2026-09-15 corpus): Jessie was a
+        // dead man and Something to believe v2 took x3/4 on the slower tie-break (97.5 -> 73.1)
+        // when the catalog says x3/2 (144); Moving on and both Another day takes took it when the
+        // tracker was already right. A tie has not decided anything, so it must decline.
         let trueBPM = 168.5
         let reportedBPM = trueBPM * 2 / 3
         let onsets = lineOnsets(bpm: trueBPM, beatsPerLine: 8, lineCount: 22, jitter: 0.03)
@@ -386,12 +360,53 @@ final class MetricalLevelReconcilerTests: XCTestCase {
                 bpm: reportedBPM,
                 beatTimes: uniformBeats(bpm: reportedBPM, duration: 140),
                 lineOnsets: onsets))
-        XCTAssertTrue(verdict.isRetune)
-        // Whatever wins, a verdict that had a near-tie must say so rather than present a coin
-        // flip as a decision.
-        if !verdict.ambiguousWith.isEmpty {
-            XCTAssertFalse(verdict.ambiguousWith.contains(verdict.ratio))
-        }
+        XCTAssertFalse(verdict.isRetune)
+        XCTAssertEqual(verdict.bpm, reportedBPM)
+        XCTAssertTrue(
+            verdict.ambiguousWith.contains(MetricalRatio(3, 2))
+                || verdict.ambiguousWith.contains(MetricalRatio(3, 4)),
+            "the declined tie must be reported, got \(verdict.ambiguousWith)")
+    }
+
+    func testSlowerWinsAThreeHalvesVersusThreeQuartersTie() {
+        // The tie-break still fixes which tied winner a declined verdict reports.
+        XCTAssertLessThan(MetricalRatio(3, 4).value, MetricalRatio(3, 2).value)
+    }
+
+    // MARK: Both halves must reject the incumbent
+
+    func testARetuneCarriedByOneHalfOfTheSongDeclines() {
+        // Field case, Good friends and a beer or two (2026-09-15 corpus, catalog 108): x3/2 won
+        // 105.5 -> 158.2 on the whole song while one half of its lines still fit x1. Here 24
+        // lines sit on a clean x3/2 grid and the last 10 on the incumbent's own 8-beat phrases.
+        let reportedBPM = 100.0
+        let fastBPM = reportedBPM * 3 / 2
+        let fast = lineOnsets(bpm: fastBPM, beatsPerLine: 4, lineCount: 24, jitter: 0.04)
+        let slow = lineOnsets(
+            bpm: reportedBPM, beatsPerLine: 8, lineCount: 10, jitter: 0.04,
+            start: fast.last! + 60.0 / reportedBPM * 8)
+        let onsets = fast + slow
+        let beats = uniformBeats(bpm: reportedBPM, duration: slow.last! + 5)
+
+        // Precondition: on the whole song x3/2 clears both fit gates.
+        let intervals = zip(onsets, onsets.dropFirst()).map { $1 - $0 }
+        let atFast = try! XCTUnwrap(
+            MetricalLevelReconciler.bestDyadicFit(intervals: intervals.map { $0 / (60 / fastBPM) }))
+        let atIncumbent = try! XCTUnwrap(
+            MetricalLevelReconciler.bestDyadicFit(
+                intervals: intervals.map { $0 / (60 / reportedBPM) }))
+        XCTAssertLessThanOrEqual(atFast.fitError, 0.15)
+        XCTAssertLessThanOrEqual(atFast.fitError, atIncumbent.fitError * 0.6)
+
+        let verdict = try! XCTUnwrap(
+            MetricalLevelReconciler.reconcile(
+                bpm: reportedBPM, beatTimes: beats, lineOnsets: onsets))
+        XCTAssertFalse(verdict.isRetune, "the second half fits the incumbent")
+        XCTAssertTrue(
+            MetricalLevelReconciler.reconcile(
+                bpm: reportedBPM, beatTimes: beats, lineOnsets: Array(fast.prefix(17)))?.isRetune
+                ?? false,
+            "the first half alone would retune")
     }
 
     // MARK: bestDyadicFit

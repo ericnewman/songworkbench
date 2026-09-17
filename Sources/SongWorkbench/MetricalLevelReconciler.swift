@@ -101,8 +101,8 @@ enum MetricalLevelReconciler {
         /// …and must beat the incumbent by this factor. Both gates must pass: absolute quality
         /// alone would retune songs whose lines are simply too broken to judge.
         var improvementFactor: Double = 0.6
-        /// Runner-up within this much of the winner counts as a tie, and is reported rather than
-        /// silently resolved.
+        /// Runner-up within this much of the winner counts as a tie: the retune declines and the
+        /// tied candidates are reported.
         var ambiguityEpsilon: Double = 0.02
         /// Ignore line intervals outside this range — below is a mis-split, above is a section break.
         var minimumInterval: TimeInterval = 0.2
@@ -121,14 +121,31 @@ enum MetricalLevelReconciler {
         let fit: BeatsPerLineFit
         /// The incumbent tempo's own fit, for comparison and logging.
         let currentFit: BeatsPerLineFit
-        /// True when a different metrical level won and cleared both gates.
+        /// True when a different metrical level won and cleared every gate.
         let isRetune: Bool
-        /// Another candidate scored within `ambiguityEpsilon`. The winner is still deterministic,
-        /// but a caller with an independent signal (the chord-loop period) should arbitrate.
+        /// Candidates that scored within `ambiguityEpsilon` of a non-identity winner. Non-empty
+        /// means the retune DECLINED on a tie; a caller with an independent signal (the chord-loop
+        /// period) could arbitrate between them.
         let ambiguousWith: [MetricalRatio]
     }
 
     /// Returns the reconciled metrical level, or `nil` when there is not enough evidence to judge.
+    ///
+    /// A retune must clear four gates: the absolute fit, the improvement over the incumbent, no
+    /// rival within `ambiguityEpsilon`, and each HALF of the song's lines rejecting the incumbent
+    /// on its own. The last two were added on the 2026-09-15 corpus (25 songs against reviewed
+    /// catalog tempos), where 7 of 10 shipped retunes moved away from the catalog:
+    ///
+    /// - **Ties decline.** x3/2 and x3/4 are an octave apart, so they score IDENTICALLY by
+    ///   construction (as do x4/3 and x2/3) — the same octave blindness the type doc excludes 2:1
+    ///   for. Five of the seven harmful retunes won exactly that tie on the slower-tempo tie-break
+    ///   (two of them should have gone x3/2, three not at all) and a sixth a 0.012 near-tie. A tie
+    ///   means the fit has not decided, so the tracker's answer stands.
+    /// - **Both halves must agree the incumbent is wrong.** A metrical-level error comes from one
+    ///   global lag, so it shows throughout the song; a winner carried by one noisy stretch of
+    ///   segmentation does not. This stopped the remaining harmful retune (105.5 -> 158.2, with
+    ///   one half fitting x1) and costs no new threshold: each half uses the same two fit gates.
+    ///   The halves need not agree on WHICH ratio — the whole song picks that.
     ///
     /// - Parameters:
     ///   - bpm: the incumbent tempo.
@@ -141,13 +158,68 @@ enum MetricalLevelReconciler {
         lineOnsets: [TimeInterval],
         configuration: Configuration = Configuration()
     ) -> Verdict? {
+        guard
+            let whole = rankedFits(
+                bpm: bpm, beatTimes: beatTimes, lineOnsets: lineOnsets,
+                configuration: configuration)
+        else { return nil }
+        let winner = whole.ranked[0]
+        let rivals = whole.ranked.dropFirst()
+            .filter { abs($0.fit.fitError - winner.fit.fitError) <= configuration.ambiguityEpsilon }
+            .map(\.ratio)
+        let sorted = lineOnsets.sorted()
+        let halves = [Array(sorted[..<(sorted.count / 2)]), Array(sorted[(sorted.count / 2)...])]
+        let isRetune =
+            clearsFitGates(winner, current: whole.current, configuration: configuration)
+            && rivals.isEmpty
+            && halves.allSatisfy { half in
+                guard
+                    let scored = rankedFits(
+                        bpm: bpm, beatTimes: beatTimes, lineOnsets: half,
+                        configuration: configuration)
+                else { return false }
+                return clearsFitGates(
+                    scored.ranked[0], current: scored.current, configuration: configuration)
+            }
+
+        let accepted = isRetune ? winner : (ratio: MetricalRatio.identity, fit: whole.current)
+        return Verdict(
+            ratio: accepted.ratio,
+            bpm: bpm * accepted.ratio.value,
+            fit: accepted.fit,
+            currentFit: whole.current,
+            isRetune: isRetune,
+            ambiguousWith: winner.ratio.isIdentity ? [] : rivals
+        )
+    }
+
+    private typealias ScoredRatio = (ratio: MetricalRatio, fit: BeatsPerLineFit)
+
+    /// The absolute and improvement gates. Identity never "clears": it is not a retune.
+    private static func clearsFitGates(
+        _ candidate: ScoredRatio,
+        current: BeatsPerLineFit,
+        configuration: Configuration
+    ) -> Bool {
+        !candidate.ratio.isIdentity
+            && candidate.fit.fitError <= configuration.maximumFitError
+            && candidate.fit.fitError <= current.fitError * configuration.improvementFactor
+    }
+
+    /// Every candidate ratio's dyadic fit, best first, plus the incumbent's own fit.
+    private static func rankedFits(
+        bpm: Double,
+        beatTimes: [TimeInterval],
+        lineOnsets: [TimeInterval],
+        configuration: Configuration
+    ) -> (ranked: [ScoredRatio], current: BeatsPerLineFit)? {
         guard bpm > 0 else { return nil }
         guard let beatLength = medianBeatLength(beatTimes: beatTimes, bpm: bpm) else { return nil }
 
         let intervals = lineIntervals(lineOnsets, configuration: configuration)
         guard intervals.count >= configuration.minimumSamples else { return nil }
 
-        var scored: [(ratio: MetricalRatio, fit: BeatsPerLineFit)] = []
+        var scored: [ScoredRatio] = []
         for ratio in candidateRatios {
             // A faster candidate tempo means a SHORTER beat.
             let candidateBeatLength = beatLength / ratio.value
@@ -161,40 +233,16 @@ enum MetricalLevelReconciler {
 
         // Deterministic ordering: lowest error first, then the SLOWER tempo.
         //
-        // Preferring the slower candidate is Eric's call (2026-08-05) and it is the right default
-        // for a genuine tie: two tempos an exact multiple apart explain the line spacing equally
-        // well by construction — an 8-beat phrase at 2x is a 4-beat phrase at 1x — so the fit
-        // CANNOT separate them, and the slower reading is the one a player counts. It also fails
-        // safe: too slow shows more bars per line, too fast subdivides every beat.
+        // Preferring the slower candidate is Eric's call (2026-08-05): two tempos an exact
+        // multiple apart explain the line spacing equally well by construction — an 8-beat phrase
+        // at 2x is a 4-beat phrase at 1x — so the fit CANNOT separate them. Since 2026-09-15 such
+        // a tie declines in `reconcile`, so this only fixes which winner the verdict reports.
         let ranked = scored.sorted {
             if $0.fit.fitError != $1.fit.fitError { return $0.fit.fitError < $1.fit.fitError }
             if $0.ratio.value != $1.ratio.value { return $0.ratio.value < $1.ratio.value }
             return $0.ratio.numerator < $1.ratio.numerator
         }
-        guard let winner = ranked.first else { return nil }
-
-        let clearsAbsolute = winner.fit.fitError <= configuration.maximumFitError
-        let clearsImprovement =
-            winner.fit.fitError <= currentFit.fitError * configuration.improvementFactor
-        let isRetune = !winner.ratio.isIdentity && clearsAbsolute && clearsImprovement
-
-        let accepted = isRetune ? winner : (ratio: MetricalRatio.identity, fit: currentFit)
-        let acceptedError = accepted.fit.fitError
-        let epsilon = configuration.ambiguityEpsilon
-        let ambiguous =
-            ranked
-            .filter { $0.ratio != accepted.ratio }
-            .filter { abs($0.fit.fitError - acceptedError) <= epsilon }
-            .map(\.ratio)
-
-        return Verdict(
-            ratio: accepted.ratio,
-            bpm: bpm * accepted.ratio.value,
-            fit: accepted.fit,
-            currentFit: currentFit,
-            isRetune: isRetune,
-            ambiguousWith: isRetune ? ambiguous : []
-        )
+        return (ranked, currentFit)
     }
 
     /// Best dyadic beats-per-line for a set of line intervals already expressed in beats.
