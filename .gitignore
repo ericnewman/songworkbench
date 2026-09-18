@@ -28,3 +28,7 @@ tools/karaoke_export/.probevenv/
 .scratch/
 BundledModels/HTDemucs6S_FP16.mlpackage/
 BundledModels/LyricsAlignmentMTL.mlpackage/
+
+# Xcode build products and intermediates, kept inside the project
+# (SYMROOT/OBJROOT in project.pbxproj) rather than a shared external folder.
+build/

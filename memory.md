@@ -410,3 +410,10 @@
   strip, playhead — shifted right by two beats. One invented number moved the whole display.
   The intended replacement is forced alignment (text + audio -> measured frame assignment), not
   better heuristics. Re-analysis to adopt a better algorithm is expected and fine (Eric).
+- 2026-09-18: Xcode build products now land in `build/` INSIDE the checkout (`SYMROOT`/`OBJROOT` in
+  the project, `build/` gitignored). Xcode's GLOBAL preference was `IDEBuildLocationStyle = Custom`
+  with an ABSOLUTE `/Volumes/SSD/XCODE-BUILD-SCRAPS`, so every project and every worktree on the
+  machine wrote to one directory and any build replaced the single shared app bundle;
+  `-derivedDataPath` does not override it. The global preference is untouched and still affects
+  other projects. Independent of location: a build REPLACES the bundle a running instance was
+  launched from, so never build while a long analysis run is in progress.
