@@ -1,0 +1,11 @@
+# Vendored upstream clone (MIT, jhuang448/LyricsAlignment-MTL) — re-clone, do not vendor.
+LyricsAlignment-MTL/
+.venv/
+# Large local artefacts: stems, converted models, per-song intermediates.
+*.wav
+*.mlpackage/
+_batch_*.txt
+*.aligned.json
+batch_results.json
+# Extracted lyric text is the songs' copyrighted content — local input only, never committed.
+*.txt
