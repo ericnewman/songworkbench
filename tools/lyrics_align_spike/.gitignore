@@ -9,3 +9,7 @@ _batch_*.txt
 batch_results.json
 # Extracted lyric text is the songs' copyrighted content — local input only, never committed.
 *.txt
+# A/B experiment artefacts: downloaded separator weights and generated stems.
+polarformer/
+ab_stems/
+vocal_ab_results.json
