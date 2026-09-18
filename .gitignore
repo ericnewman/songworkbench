@@ -11,7 +11,10 @@ Derived/
 **/.swiftpm/xcode/xcuserdata/
 .swiftpm/xcode/
 SongWorkbench.xcodeproj/project.xcworkspace/xcuserdata/
-.claude/
+# Local Claude config stays out, but project skills are shared.
+# `.claude/*` (not `.claude/`) so the negation below can re-include one child.
+.claude/*
+!.claude/skills/
 .worktrees/
 
 # Large exported model artifact (regenerate via tools/demucs_export)
