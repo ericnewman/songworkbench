@@ -81,6 +81,7 @@
 		557C385015AA57AE281A1281 /* TuistBundle+SongWorkbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = AACBB5B9B55AA7CF37C85ABA /* TuistBundle+SongWorkbench.swift */; };
 		55865B65C50CBF826CE030B7 /* KaraokeModelProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F67676BABC8D4C47FA7DA6 /* KaraokeModelProbeTests.swift */; };
 		55B20F1597FC6956C474FCBD /* ChartPickupGutter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 861DC39E9A17EC50BDEC7609 /* ChartPickupGutter.swift */; };
+		B5B1B9B1C819094AE4FADEE2 /* CTCForcedAlignment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CC2FFABA0CA62349CE0D97 /* CTCForcedAlignment.swift */; };
 		59AD514CE069F09A9273C07C /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5EE3986D26B33A2D552E0272 /* AppIntents.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
 		5C1B4DFD3B003B2EE9427967 /* HybridDemucsFrequencyFeaturesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FCE4E349CC70342F8F968C7 /* HybridDemucsFrequencyFeaturesTests.swift */; };
 		5CB7A0652A5E3C1CC63A7AD3 /* RealSongChartGeometryAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = F18692FC20FC45C8700EB9C9 /* RealSongChartGeometryAudit.swift */; };
@@ -142,6 +143,7 @@
 		9EDC67A1EF4A3535AA00C032 /* ChordProDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F15C005C5A300E17BAD601 /* ChordProDocument.swift */; };
 		A033E70855AB08AA746B6D2E /* AudioAnalysisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E88139F0249FEA595F0DDD /* AudioAnalysisTests.swift */; };
 		A15062E318871A8DADDB9647 /* ChartPickupGutterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82F4F24CC2112C293B73A9D1 /* ChartPickupGutterTests.swift */; };
+		6696CC8DC83A4FF07AC7CECD /* CTCForcedAlignmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6D0E720D7087347ED1740DA /* CTCForcedAlignmentTests.swift */; };
 		A37F0704E644745A084245AE /* MusicalKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17BEAFFD79310A70EE044CF /* MusicalKey.swift */; };
 		A52AE9A0967D56D794627715 /* ThemeContrastTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01B543182F7E6FAE706DB09F /* ThemeContrastTests.swift */; };
 		A5B0746BD932A47E97DE4862 /* StemPlaybackService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C72557949867ABB059D603 /* StemPlaybackService.swift */; };
@@ -366,10 +368,12 @@
 		808FF66A2A46F9EFDA926558 /* ChordDecoderOfflineValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordDecoderOfflineValidationTests.swift; sourceTree = "<group>"; };
 		82DB22CB65816C3C841EC993 /* LyricBlendRowBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricBlendRowBuilderTests.swift; sourceTree = "<group>"; };
 		82F4F24CC2112C293B73A9D1 /* ChartPickupGutterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartPickupGutterTests.swift; sourceTree = "<group>"; };
+		D6D0E720D7087347ED1740DA /* CTCForcedAlignmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CTCForcedAlignmentTests.swift; sourceTree = "<group>"; };
 		832A726678A9655BE2960BB2 /* ChordProChartScaleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProChartScaleTests.swift; sourceTree = "<group>"; };
 		840EC782D1F91B658C1815E9 /* CoreMLStemSeparationEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLStemSeparationEngine.swift; sourceTree = "<group>"; };
 		84656EC8A66FEE2902A41EE6 /* StemSeparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemSeparationTests.swift; sourceTree = "<group>"; };
 		861DC39E9A17EC50BDEC7609 /* ChartPickupGutter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartPickupGutter.swift; sourceTree = "<group>"; };
+		58CC2FFABA0CA62349CE0D97 /* CTCForcedAlignment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CTCForcedAlignment.swift; sourceTree = "<group>"; };
 		86FA853C6E393CB60C175DDA /* SongWorkbenchTests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "SongWorkbenchTests-Info.plist"; sourceTree = "<group>"; };
 		8864F69E9E6D8284C4A348E4 /* PracticeWorkspaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PracticeWorkspaceTests.swift; sourceTree = "<group>"; };
 		89F0D9935FD526026A7B05C1 /* SongAnalysisPipelineFactoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongAnalysisPipelineFactoryTests.swift; sourceTree = "<group>"; };
@@ -549,6 +553,7 @@
 				25BAD6AC10B9CFACB46DDDF1 /* BeatTracking.swift */,
 				43119F884C0C9130D0BF79A0 /* BucketNoteAnalysis.swift */,
 				861DC39E9A17EC50BDEC7609 /* ChartPickupGutter.swift */,
+				58CC2FFABA0CA62349CE0D97 /* CTCForcedAlignment.swift */,
 				13ACE737C45116476698E7F1 /* ChordClassification.swift */,
 				B27E5C7CFBA91AB79E2B4AB6 /* ChordEventReducer.swift */,
 				50294DF8770C07CDE73A0DBE /* ChordEvidenceAudit.swift */,
@@ -674,6 +679,7 @@
 				5EE99A876925AE2C91D8D1CC /* BucketNoteAnalyzerTests.swift */,
 				9F3AE2306FFB93C4C3F43060 /* ChartGeometryInvariantTests.swift */,
 				82F4F24CC2112C293B73A9D1 /* ChartPickupGutterTests.swift */,
+				D6D0E720D7087347ED1740DA /* CTCForcedAlignmentTests.swift */,
 				76BC89AC1DFA02E0276F8040 /* ChartPixelRenderAudit.swift */,
 				808FF66A2A46F9EFDA926558 /* ChordDecoderOfflineValidationTests.swift */,
 				A817A749A2666F86B7EB2603 /* ChordEvidenceAuditTests.swift */,
@@ -958,6 +964,7 @@
 				54B24FF88EBEDC0C65E91180 /* BeatTracking.swift in Sources */,
 				8CCE627A97799D1E3F241623 /* BucketNoteAnalysis.swift in Sources */,
 				55B20F1597FC6956C474FCBD /* ChartPickupGutter.swift in Sources */,
+				B5B1B9B1C819094AE4FADEE2 /* CTCForcedAlignment.swift in Sources */,
 				D546EF0EE813A63A091C29C0 /* ChordClassification.swift in Sources */,
 				2D7A1EAD22DFDE4D95E7BEA8 /* ChordEventReducer.swift in Sources */,
 				2F015EBB096422F1D0E72B7F /* ChordEvidenceAudit.swift in Sources */,
@@ -1067,6 +1074,7 @@
 				73E83306DD7892137C05C4A8 /* BucketNoteAnalyzerTests.swift in Sources */,
 				28422ED3FCE7E144EC1408C9 /* ChartGeometryInvariantTests.swift in Sources */,
 				A15062E318871A8DADDB9647 /* ChartPickupGutterTests.swift in Sources */,
+				6696CC8DC83A4FF07AC7CECD /* CTCForcedAlignmentTests.swift in Sources */,
 				DEA87CE94C8D2CA6C9E474A7 /* ChartPixelRenderAudit.swift in Sources */,
 				66A392DCF7203DEB183AFB74 /* ChordDecoderOfflineValidationTests.swift in Sources */,
 				D5DD837DC5EB54B770F87774 /* ChordEvidenceAuditTests.swift in Sources */,
