@@ -1012,3 +1012,26 @@ conservative 4 at the beat level the reconciler has just rejected, so rescaling 
 **Rule:** after a retune, re-estimate the bar on the final grid; keep a measured phase only when
 its rescaled bar equals the re-estimate (`timing-4`). Replay a post-pass fix through the real
 `AnalysisTimingPostPasses.apply` on stored documents, not a Python model of one branch.
+
+## 2026-09-18 — An MLMultiArray's shape does not tell you where its elements are
+
+**Mistake:** `CoreMLLyricsAcousticModel` read the model's `[1, 683, 41]` output as if it were
+packed, computing offsets as `frame * 41 + class`. Core ML pads rows for alignment: the actual
+strides are `[32784, 48, 1]`, so the frame stride is **48**, not 41. Every frame after the first
+was read from the wrong offset. Nothing crashed and nothing looked obviously broken — the model
+"worked", producing a posteriorgram that was 4.2 % blank where the reference implementation gave
+91.9 %, and forced alignment then spread 249 words evenly from 0.03 s across the song. A confident,
+plausible, completely wrong answer.
+
+**Rule:** address an `MLMultiArray` through its OWN `strides`, never through arithmetic derived
+from `shape`. The same applies to inputs; ours happened to be packed, which is luck, not a
+guarantee. `count` includes the padding, so deriving a frame count from `count / classes` is wrong
+too — take it from `shape`.
+
+**Detection:** unit tests cannot catch this, because a stub model returns ordinary Swift arrays and
+never exercises Core ML's layout. The bug was found by bisecting layer by layer against a reference
+implementation on the SAME input: dump the Swift feature matrix to disk, run the reference model on
+it in Python, and compare. Swift's mel through PyTorch gave 91.8 % blank (so the mel was right);
+Swift's mel through Swift's own Core ML call gave 4.2 % (so the feeding was wrong). One comparison
+localised it exactly. Keep a reference implementation runnable for anything ported to Core ML, and
+compare intermediate tensors, not just final outputs.

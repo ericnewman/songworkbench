@@ -27,3 +27,4 @@ tools/karaoke_export/.probevenv/
 
 .scratch/
 BundledModels/HTDemucs6S_FP16.mlpackage/
+BundledModels/LyricsAlignmentMTL.mlpackage/
