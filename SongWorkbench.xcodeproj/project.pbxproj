@@ -82,6 +82,7 @@
 		557C385015AA57AE281A1281 /* TuistBundle+SongWorkbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = AACBB5B9B55AA7CF37C85ABA /* TuistBundle+SongWorkbench.swift */; };
 		55865B65C50CBF826CE030B7 /* KaraokeModelProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F67676BABC8D4C47FA7DA6 /* KaraokeModelProbeTests.swift */; };
 		55B20F1597FC6956C474FCBD /* ChartPickupGutter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 861DC39E9A17EC50BDEC7609 /* ChartPickupGutter.swift */; };
+		B71285B9B15A1716AC8B97EF /* MeasuredLyricTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62B670C00985CEC2A3A728AA /* MeasuredLyricTiming.swift */; };
 		E7AA578FAD8FB83226C1D662 /* CoreMLLyricsAcousticModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 904296593212E0A9FB40A3F1 /* CoreMLLyricsAcousticModel.swift */; };
 		DEE9DC093248A4B4CEFE6DCB /* ForcedLyricAligner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3349510BA5DB8A3E0C7BA49 /* ForcedLyricAligner.swift */; };
 		8687983215F407C751B851E3 /* LyricPhonemizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC530EDD551E3F78F761BA9 /* LyricPhonemizer.swift */; };
@@ -387,6 +388,7 @@
 		840EC782D1F91B658C1815E9 /* CoreMLStemSeparationEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLStemSeparationEngine.swift; sourceTree = "<group>"; };
 		84656EC8A66FEE2902A41EE6 /* StemSeparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemSeparationTests.swift; sourceTree = "<group>"; };
 		861DC39E9A17EC50BDEC7609 /* ChartPickupGutter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartPickupGutter.swift; sourceTree = "<group>"; };
+		62B670C00985CEC2A3A728AA /* MeasuredLyricTiming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeasuredLyricTiming.swift; sourceTree = "<group>"; };
 		904296593212E0A9FB40A3F1 /* CoreMLLyricsAcousticModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLLyricsAcousticModel.swift; sourceTree = "<group>"; };
 		A3349510BA5DB8A3E0C7BA49 /* ForcedLyricAligner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForcedLyricAligner.swift; sourceTree = "<group>"; };
 		7DC530EDD551E3F78F761BA9 /* LyricPhonemizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricPhonemizer.swift; sourceTree = "<group>"; };
@@ -572,6 +574,7 @@
 				25BAD6AC10B9CFACB46DDDF1 /* BeatTracking.swift */,
 				43119F884C0C9130D0BF79A0 /* BucketNoteAnalysis.swift */,
 				861DC39E9A17EC50BDEC7609 /* ChartPickupGutter.swift */,
+				62B670C00985CEC2A3A728AA /* MeasuredLyricTiming.swift */,
 				904296593212E0A9FB40A3F1 /* CoreMLLyricsAcousticModel.swift */,
 				A3349510BA5DB8A3E0C7BA49 /* ForcedLyricAligner.swift */,
 				7DC530EDD551E3F78F761BA9 /* LyricPhonemizer.swift */,
@@ -993,6 +996,7 @@
 				54B24FF88EBEDC0C65E91180 /* BeatTracking.swift in Sources */,
 				8CCE627A97799D1E3F241623 /* BucketNoteAnalysis.swift in Sources */,
 				55B20F1597FC6956C474FCBD /* ChartPickupGutter.swift in Sources */,
+				B71285B9B15A1716AC8B97EF /* MeasuredLyricTiming.swift in Sources */,
 				E7AA578FAD8FB83226C1D662 /* CoreMLLyricsAcousticModel.swift in Sources */,
 				DEE9DC093248A4B4CEFE6DCB /* ForcedLyricAligner.swift in Sources */,
 				8687983215F407C751B851E3 /* LyricPhonemizer.swift in Sources */,

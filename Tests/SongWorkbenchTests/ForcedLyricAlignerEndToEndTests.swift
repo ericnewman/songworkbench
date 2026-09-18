@@ -115,6 +115,59 @@ final class ForcedLyricAlignerEndToEndTests: XCTestCase {
         return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
     }
 
+    /// The pipeline seam: `MeasuredLyricTiming` is what the analysis stage calls, so this checks
+    /// that lyric SEGMENTS come back re-timed — not just that the aligner works in isolation.
+    func testMeasuredLyricTimingRetimesRealSegments() throws {
+        let environment = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(environment["SW_ALIGN_E2E"] == "1", "manual; set SW_ALIGN_E2E=1")
+        let stemPath = try XCTUnwrap(environment["SW_ALIGN_STEM"])
+        let wordsPath = try XCTUnwrap(environment["SW_ALIGN_WORDS"])
+
+        let model = try loadModel()
+        let text = try String(contentsOfFile: wordsPath, encoding: .utf8)
+        let words = text.split(whereSeparator: { $0 == " " || $0.isNewline }).map(String.init)
+
+        // Rebuild the failure: every word claiming a time from 0, evenly spread, as the ASR gave.
+        var timed: [TimedLyricWord] = []
+        var built = ""
+        for (index, word) in words.enumerated() {
+            if !built.isEmpty { built += " " }
+            let lower = built.count
+            built += word
+            let start = Double(index) * 0.5
+            timed.append(
+                TimedLyricWord(
+                    text: word, start: start, end: start + 0.4, characterRange: lower..<built.count)
+            )
+        }
+        let before = [
+            TimedLyricSegment(
+                start: 0, end: timed.last?.end ?? 0, text: built, words: timed)
+        ]
+
+        let result = MeasuredLyricTiming.applied(
+            to: before, stemURL: URL(fileURLWithPath: stemPath), onsets: [],
+            model: model, phonemizer: try loadPhonemizer())
+
+        XCTAssertTrue(result.outcome.ran, "alignment did not run")
+        print(
+            "measured \(result.outcome.measured), from onsets \(result.outcome.filledFromOnsets), "
+                + "kept transcriber time \(result.outcome.keptTranscriberTime)")
+
+        let after = result.lyrics.flatMap(\.words)
+        XCTAssertEqual(after.count, timed.count, "no word may be added or lost")
+        XCTAssertEqual(after.map(\.text), timed.map(\.text), "text must be untouched")
+
+        let firstStart = try XCTUnwrap(after.first?.start)
+        print("first word: \(timed[0].start)s -> \(firstStart)s")
+        XCTAssertGreaterThan(
+            firstStart, 5.0,
+            "the opening word must move off 0 onto where it is actually sung")
+        XCTAssertEqual(
+            result.lyrics[0].start, firstStart, accuracy: 1e-6,
+            "the line must start where its first word does")
+    }
+
     func testAlignsARealStemAndMatchesThePythonReference() throws {
         let environment = ProcessInfo.processInfo.environment
         try XCTSkipUnless(environment["SW_ALIGN_E2E"] == "1", "manual; set SW_ALIGN_E2E=1")

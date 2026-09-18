@@ -561,6 +561,7 @@ struct TranscriptionStage: AnalysisStageRunning {
                         + "|line-tail-sustain-1"
                         + "|words-stay-on-asr-times-1"
                         + "|no-start-shifts-1"
+                        + "|forced-alignment-1"
                         + "|pitch-supported-gate-1"
                         + "|mix-no-energy-gate-1"
                         + "|line-overlap-clip-1"
@@ -680,11 +681,20 @@ struct TranscriptionStage: AnalysisStageRunning {
             } else {
                 lyrics = textCorrected
             }
+            // MEASURE the word times. Up to here the times are the transcriber's, which are a
+            // by-product of decoding rather than a measurement — the failure that put nine words
+            // at 0.00 s against singing that began at 18.8 s. Forced alignment takes the words as
+            // known and finds where each is sung, from the audio. A word it cannot measure keeps
+            // the transcriber's time; it is never given a computed one. No-op without a vocals
+            // stem or the bundled model.
+            let measured = MeasuredLyricTiming.applied(
+                to: lyrics, stemURL: hasStems ? audioURL : nil, onsets: vocalOnsets)
             // FINAL precision pass: snap each word's onset to the nearest vocal-stem energy onset
             // so words (and everything anchored to them — the ChordPro strip, the bouncing ball,
             // and chords placed over words) land on the actual vocal energy. No-op without a
             // vocals stem (`vocalOnsets` empty).
-            let alignedLyrics = VocalWordOnsetAligner.snapped(lyrics, toOnsets: vocalOnsets)
+            let alignedLyrics = VocalWordOnsetAligner.snapped(
+                measured.lyrics, toOnsets: vocalOnsets)
             // Melisma repair (audit RC-3): bridge held words across continuously-voiced
             // inter-word gaps, so held notes stop rendering as phantom mid-line pauses. Runs LAST, on the final
             // word timings. No-op when strict VAD is unavailable.

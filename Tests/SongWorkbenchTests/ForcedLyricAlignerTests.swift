@@ -114,6 +114,73 @@ final class ForcedLyricAlignerTests: XCTestCase {
         ) { XCTAssertEqual($0 as? ForcedLyricAligner.Failure, .noPronounceableWords) }
     }
 
+    // MARK: - Filling holes from measured onsets
+
+    private func word(_ text: String, _ start: Double?, _ end: Double?)
+        -> ForcedLyricAligner
+        .AlignedWord
+    {
+        ForcedLyricAligner.AlignedWord(
+            text: text, start: start, end: end, reason: start == nil ? .unpronounceable : nil)
+    }
+
+    /// One unmeasured word, one onset in the gap: the audio says where it is, so take it.
+    func testFillsAHoleWhenTheGapHoldsExactlyOneOnset() {
+        let words = [word("a", 1.0, 1.5), word("zzz", nil, nil), word("b", 3.0, 3.5)]
+        let filled = ForcedLyricAligner.filledFromOnsets(words, onsets: [1.0, 2.1, 3.0])
+
+        XCTAssertEqual(
+            filled[1].start, 2.1, "the onset inside the gap is the word's measured start")
+        XCTAssertEqual(filled[1].end, 3.0, "it lasts until the next measured event")
+        XCTAssertNil(filled[1].reason)
+    }
+
+    func testFillsARunWhenOnsetCountMatchesWordCount() {
+        let words = [
+            word("a", 1.0, 1.5), word("x", nil, nil), word("y", nil, nil), word("b", 4.0, 4.5),
+        ]
+        let filled = ForcedLyricAligner.filledFromOnsets(words, onsets: [1.0, 2.0, 3.0, 4.0])
+
+        XCTAssertEqual(filled[1].start, 2.0)
+        XCTAssertEqual(filled[2].start, 3.0)
+        XCTAssertEqual(filled[1].end, 3.0, "each word ends at the next measured onset")
+    }
+
+    /// The refusal that keeps this measurement rather than guesswork: with more onsets than words
+    /// we would be CHOOSING which onset belongs to the word.
+    func testLeavesHoleUnmeasuredWhenTheGapIsAmbiguous() {
+        let words = [word("a", 1.0, 1.5), word("zzz", nil, nil), word("b", 5.0, 5.5)]
+
+        let tooMany = ForcedLyricAligner.filledFromOnsets(
+            words, onsets: [1.0, 2.0, 3.0, 4.0, 5.0])
+        XCTAssertNil(tooMany[1].start, "three candidate onsets, one word — do not pick one")
+
+        let none = ForcedLyricAligner.filledFromOnsets(words, onsets: [1.0, 5.0])
+        XCTAssertNil(none[1].start, "no onset in the gap means the audio does not say")
+    }
+
+    func testNeverInterpolatesBetweenNeighbours() {
+        let words = [word("a", 1.0, 1.5), word("zzz", nil, nil), word("b", 5.0, 5.5)]
+        let filled = ForcedLyricAligner.filledFromOnsets(words, onsets: [1.0, 5.0])
+        // The midpoint 3.25 is exactly the plausible-looking answer this must never produce.
+        XCTAssertNil(filled[1].start)
+        XCTAssertNotEqual(filled[1].start, 3.25)
+    }
+
+    func testMeasuredWordsAreNeverDisturbed() {
+        let words = [word("a", 1.0, 1.5), word("zzz", nil, nil), word("b", 3.0, 3.5)]
+        let filled = ForcedLyricAligner.filledFromOnsets(words, onsets: [1.0, 2.1, 3.0])
+        XCTAssertEqual(filled[0], words[0])
+        XCTAssertEqual(filled[2], words[2])
+    }
+
+    func testHandlesHolesAtTheStartAndEnd() {
+        let words = [word("first", nil, nil), word("a", 2.0, 2.5), word("last", nil, nil)]
+        let filled = ForcedLyricAligner.filledFromOnsets(words, onsets: [0.5, 2.0, 9.0])
+        XCTAssertEqual(filled[0].start, 0.5, "a leading hole is measurable from an onset before it")
+        XCTAssertEqual(filled[2].start, 9.0, "so is a trailing one")
+    }
+
     // MARK: - Windowing
 
     /// A song longer than one window must still produce one frame per three mel frames, with no

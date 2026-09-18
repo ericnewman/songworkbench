@@ -91,6 +91,61 @@ enum ForcedLyricAligner {
         }
     }
 
+    /// Gives an unmeasured word a time when the vocal stem says, unambiguously, where it is sung.
+    ///
+    /// A word we cannot pronounce is never in the token sequence, so the aligner has nothing to
+    /// measure it with — but the audio still does. Between its measured neighbours the stem has
+    /// onsets, and an onset is a measured fact about when singing started.
+    ///
+    /// The whole discipline is in refusing the ambiguous case. A run of `n` unmeasured words is
+    /// filled ONLY when the gap holds exactly `n` onsets: then the assignment is forced by the
+    /// audio and nothing is chosen. With more or fewer onsets than words we would be picking among
+    /// candidates, which is a guess wearing a measurement's clothes, so those words stay
+    /// unmeasured. Nothing here interpolates, spreads, or derives a time from another word's time.
+    ///
+    /// - Parameter onsets: measured vocal-stem onsets, ascending — the same ones the final onset
+    ///   snap uses.
+    static func filledFromOnsets(_ words: [AlignedWord], onsets: [TimeInterval]) -> [AlignedWord] {
+        guard !onsets.isEmpty, words.contains(where: { $0.start == nil }) else { return words }
+        var result = words
+
+        var index = 0
+        while index < result.count {
+            guard result[index].start == nil else {
+                index += 1
+                continue
+            }
+            // The maximal run of unmeasured words, and the measured times bracketing it.
+            var end = index
+            while end + 1 < result.count, result[end + 1].start == nil { end += 1 }
+            let lowerBound = index > 0 ? result[index - 1].end : 0
+            let upperBound =
+                end + 1 < result.count
+                ? result[end + 1].start : TimeInterval.greatestFiniteMagnitude
+
+            if let lowerBound, let upperBound, upperBound > lowerBound {
+                let inside = onsets.filter { $0 >= lowerBound && $0 < upperBound }
+                let runLength = end - index + 1
+                if inside.count == runLength {
+                    for offset in 0..<runLength {
+                        let start = inside[offset]
+                        // The word lasts until the next measured event — the following onset, or
+                        // the next measured word. That boundary is measured too, not assumed.
+                        let next =
+                            offset + 1 < inside.count ? inside[offset + 1] : upperBound
+                        result[index + offset] = AlignedWord(
+                            text: result[index + offset].text,
+                            start: start,
+                            end: max(start, next),
+                            reason: nil)
+                    }
+                }
+            }
+            index = end + 1
+        }
+        return result
+    }
+
     /// Runs the fixed-length model across the whole song and splices the result.
     ///
     /// The model sees a bounded window, but its three bidirectional LSTMs use the whole window for
