@@ -682,6 +682,30 @@ final class LyricBlendRowBuilderTests: XCTestCase {
 // MARK: - Output lines never overlap or repeat words
 
 extension LyricBlendRowBuilderTests {
+    /// Two engines transcribing the SAME singing with DIFFERENT words must not both survive.
+    /// Beach Weather 2026-09-17: the accuracy pick heard "blame my youth" where another mode heard
+    /// "me and you", and because the repeat filter only drops words matching by TEXT, every word of
+    /// both survived and interleaved by onset into
+    /// "try to blame Me and you, my me youth and you if approve I" — a line nobody sang.
+    /// A moment of audio is sung once, so it gets ONE line's words.
+    func testOverlappingLinesWithDifferentWordsDoNotInterleave() {
+        let heardOneWay = wordsLine(["blame", "my", "youth"], from: 16.5, step: 1.2)
+        let heardAnother = wordsLine(["me", "and", "you"], from: 16.8, step: 0.3)
+
+        let resolved = LyricBlendRowBuilder.withoutOverlaps([heardOneWay, heardAnother])
+
+        let produced = resolved.flatMap(\.words).map { $0.text.lowercased() }
+        let fromFirst = Set(["blame", "my", "youth"])
+        let fromSecond = Set(["me", "and", "you"])
+        let usedFirst = produced.contains { fromFirst.contains($0) }
+        let usedSecond = produced.contains { fromSecond.contains($0) }
+
+        XCTAssertFalse(
+            usedFirst && usedSecond,
+            "the overlap kept words from both transcripts: \(produced.joined(separator: " "))")
+        XCTAssertTrue(usedFirst || usedSecond, "the overlap dropped both transcripts")
+    }
+
     private func wordsLine(_ words: [String], from start: TimeInterval, step: TimeInterval)
         -> TimedLyricSegment
     {
@@ -746,14 +770,25 @@ extension LyricBlendRowBuilderTests {
         XCTAssertEqual(lyrics.flatMap(\.words).map(\.text), lyricWords)
     }
 
-    func testInterleavedDistinctWordsFromTwoPicksMergeIntoOneLine() {
-        let first = wordsLine(["one", "two", "three"], from: 0, step: 1)  // 0 ... 2.9
-        let second = wordsLine(["four", "five"], from: 1.5, step: 1)  // 1.5 ... 3.4
+    /// Two picks combine only where they cover DIFFERENT singing.
+    ///
+    /// This previously expected "one two four three five" — every word of both picks, interleaved
+    /// by onset. That expectation was written in d42a925, the same commit whose message records
+    /// "the blend still builds overlapping rows that repeat words on chart lines 9-11", so it
+    /// codified the unfinished behaviour rather than a requirement. Interleaving is what produced
+    /// Beach Weather's "try to blame Me and you, my me youth and you if approve I".
+    ///
+    /// "four" starts at 1.5, inside the stretch the first pick already transcribed (0 ... 2.0), so
+    /// it is a second opinion about that singing and is dropped. "five" starts at 2.5, past
+    /// everything the first pick heard, so it is new singing and is kept.
+    func testOnlyWordsBeyondATranscribedStretchJoinFromASecondPick() {
+        let first = wordsLine(["one", "two", "three"], from: 0, step: 1)  // starts 0, 1, 2
+        let second = wordsLine(["four", "five"], from: 1.5, step: 1)  // starts 1.5, 2.5
 
         let lyrics = LyricBlendRowBuilder.withoutOverlaps([first, second])
 
         XCTAssertEqual(lyrics.count, 1)
-        XCTAssertEqual(lyrics[0].text, "one two four three five")
+        XCTAssertEqual(lyrics[0].text, "one two three five")
         assertNoOverlapsOrRepeats(lyrics)
     }
 

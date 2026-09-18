@@ -306,6 +306,10 @@ enum LyricBlendRowBuilder {
                     blocks[index].start, min(blocks[index].end, blocks[index + 1].start))
             }
             var accepted: [TimedLyricWord] = []
+            // The span each accepted line already transcribed, first word start to last. A later
+            // line's word starting inside one of these is a SECOND OPINION about singing we have
+            // already written down, not a second word.
+            var transcribedSpans: [ClosedRange<TimeInterval>] = []
             let plain = cluster.filter { !isCorrected($0) }
             for line in plain {
                 let tail = accepted.indices.filter {
@@ -320,15 +324,31 @@ enum LyricBlendRowBuilder {
                 }
                 let dropped = Set(repeats.map(\.1))
                 let placed = accepted
+                let placedCount = accepted.count
                 accepted += line.words.indices.filter { !dropped.contains($0) }.map {
                     line.words[$0]
                 }.filter { word in
-                    // Order alignment can pair a repeat with a different copy; a word sounding
-                    // at the same moment as an accepted word of the same text is still one word.
-                    !placed.contains { earlier in
-                        earlier.start < word.end && word.start < earlier.end
-                            && LyricWordRanges.key(earlier.text) == LyricWordRanges.key(word.text)
-                    }
+                    // A stretch of singing is transcribed ONCE. This used to drop only words
+                    // matching by TEXT, so two engines that heard the same stretch differently
+                    // ("blame my youth" against "me and you") both survived and interleaved by
+                    // onset into a line nobody sang (Beach Weather, 2026-09-17).
+                    //
+                    // Compared on STARTS, not spans: held-note extensions deliberately run a
+                    // word's end past the next word's start, so overlapping spans are normal and
+                    // would drop genuine words. A word starting beyond every transcribed span is
+                    // new singing and is kept, which is how a long segment and the shorter lines
+                    // after it still combine.
+                    !transcribedSpans.contains { $0.contains(word.start) }
+                        && !placed.contains { earlier in
+                            earlier.start < word.end && word.start < earlier.end
+                                && LyricWordRanges.key(earlier.text)
+                                    == LyricWordRanges.key(word.text)
+                        }
+                }
+                if let first = accepted.count > placedCount ? accepted[placedCount].start : nil,
+                    let last = accepted.last?.start, first <= last
+                {
+                    transcribedSpans.append(first...last)
                 }
             }
             accepted = accepted.filter { word in
