@@ -394,3 +394,19 @@
 - 2026-09-15: Generated charts persist `PersistedChartLayout` (row windows with stable ids + the digest
   of the words they were cut from). Row timing survives text edits on the same lines; a kept chart
   over different words is stale and gets no lyric timing.
+- 2026-09-17: **There is no such thing as a legitimate word stretch, and there never will be.**
+  Word times are MEASURED off the vocal stem, never computed, spread, redistributed, nudged to
+  fit a row, or reconciled against a layout. A word whose timing is unknown is unknown — it is
+  not a word to be placed by arithmetic. Every pass that ever "fixed" a time by moving it
+  (`distributeAcrossSignal`, `StretchedWordRetimer` spreading, `VocalOnsetReanchor`,
+  `StrandedLeadingWordRepairer`, late-onset pullback) was repairing a number the ASR guessed,
+  and each one shipped a new class of wrong. **Detection:** any code that derives a word time
+  from another word's time, from a row width, from a beat count, or from an even division of a
+  span is the bug — no matter how reasonable the surrounding argument sounds.
+  The 2026-09-17 failure is the canonical example: the ASR had no word timestamps for the
+  opening row, spread nine words evenly 1.21 s apart from 0.00 while the singing began at
+  ~18.8 s, and the fabricated 0.00 word manufactured a 1.46-beat pickup that `ChartPickupGutter`
+  rounded to its 2-beat cap. Every element on that row — words, chords, beat dots, waveform
+  strip, playhead — shifted right by two beats. One invented number moved the whole display.
+  The intended replacement is forced alignment (text + audio -> measured frame assignment), not
+  better heuristics. Re-analysis to adopt a better algorithm is expected and fine (Eric).
