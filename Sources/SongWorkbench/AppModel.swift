@@ -1481,6 +1481,12 @@ final class AppModel: ObservableObject {
                 self.currentAnalyzedSongID = nil
                 self.projectErrorMessage = message
                 completion?(false)
+                // `beginAnalysis` never ran, so its `onFinish` — the one place that normally
+                // starts the next queued song — will never fire for this song. Without this the
+                // queue stops dead on the FIRST song whose source cannot be read, silently
+                // abandoning every song behind it: a 39-song re-analysis ended at 16, and then
+                // at 11, because a handful of sources had moved (2026-09-18/19).
+                self.startNextQueuedAnalysisIfIdle()
             }
         }
     }

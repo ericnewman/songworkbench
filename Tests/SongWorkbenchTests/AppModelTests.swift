@@ -331,6 +331,41 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.isSongAnalysisRunning)
     }
 
+    /// One unreadable source must not abandon every song behind it in the queue.
+    ///
+    /// The preflight that rejects an unreadable file returns BEFORE `beginAnalysis`, and
+    /// `beginAnalysis.onFinish` was the only thing starting the next queued song — so the queue
+    /// stopped dead on the first song whose file had moved, with no indication that the rest were
+    /// never attempted. Two 39-song re-analyses ended at 16 and at 11 this way.
+    func testQueueContinuesPastASongWhoseSourceIsUnreadable() async throws {
+        let goodURL = try makeSilentWAV()
+        let doomedURL = try makeSilentWAV()
+        defer { try? FileManager.default.removeItem(at: goodURL) }
+
+        let model = AppModel(
+            store: DelayedProjectStore(document: ProjectLibraryDocument()),
+            storageRoot: makeTestStorageRoot())
+        model.importSongs(from: [doomedURL, goodURL])
+        try await waitUntil { model.songs.count >= 2 }
+
+        // Make the first song's source unreadable AFTER import, so the queue meets it mid-drain.
+        try? FileManager.default.removeItem(at: doomedURL)
+
+        model.reanalyzeAllSongs()
+        XCTAssertTrue(model.isSongAnalysisRunning, "fixture must start a run")
+
+        // The queue must not be left holding songs with nothing draining them.
+        try await waitUntil {
+            !model.isSongAnalysisRunning || model.reanalyzeAllStatus != nil
+        }
+        XCTAssertFalse(
+            model.isSongAnalysisRunning && model.reanalyzeAllStatus == nil,
+            "running with no status means the drain was abandoned")
+
+        model.select(try XCTUnwrap(model.songs.first))
+        XCTAssertFalse(model.isSongAnalysisRunning)
+    }
+
     func testRemovingSelectedSongPreservesSourceFileSelectsNeighborAndPersists() async throws {
         let firstURL = try makeSilentWAV()
         let secondURL = try makeSilentWAV()
