@@ -689,6 +689,12 @@ struct TranscriptionStage: AnalysisStageRunning {
             // stem or the bundled model.
             let measured = MeasuredLyricTiming.applied(
                 to: lyrics, stemURL: hasStems ? audioURL : nil, onsets: vocalOnsets)
+            // Counts only, never text. `ran=false` means every word below is still the ASR's guess.
+            AnalysisResourceLog.checkpoint(
+                stage: "word-timing",
+                event: "ran=\(measured.outcome.ran) measured=\(measured.outcome.measured)"
+                    + " from-onsets=\(measured.outcome.filledFromOnsets)"
+                    + " kept-asr=\(measured.outcome.keptTranscriberTime)")
             // FINAL precision pass: snap each word's onset to the nearest vocal-stem energy onset
             // so words (and everything anchored to them — the ChordPro strip, the bouncing ball,
             // and chords placed over words) land on the actual vocal energy. No-op without a
@@ -1015,6 +1021,10 @@ struct HarmonyStage: AnalysisStageRunning {
                         // grid. Mixed drums contain fills and cymbal attacks that must not make
                         // the practice metronome wander from beat to beat.
                         + "|reduce-30-kick-steady-grid"
+                        // reduce-31: the steady grid's tempo is resolved on the drum onsets past
+                        // the tracker's integer-lag quantization (`DrumBeatGrid.refinedBPM`); at
+                        // the quantized tempo the rigid grid rotated off the drums on every song.
+                        + "|reduce-31-refined-tempo"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1025,7 +1035,8 @@ struct HarmonyStage: AnalysisStageRunning {
                     result.chords.map(\.confidence)),
                 loadedFromCache: loadedFromCache
             )
-            let estimatedBPM: Double? = result.beat?.bpm
+            let trackedBPM: Double? = result.beat?.bpm
+            var refinedBPM = trackedBPM
             let beatTimes = result.beat?.beatTimes ?? []
             // Phase-lock the steady practice grid to the refined kick when available. A kick may
             // mark every second or fourth beat, so the analysis BPM remains the tempo authority;
@@ -1036,14 +1047,22 @@ struct HarmonyStage: AnalysisStageRunning {
                 context.document.stemSet?.resolved().assetsByID[.drumKick]?.audioURL
                 ?? context.document.stems?.resolved().drums
             if let timingStemURL,
-                let bpm = estimatedBPM, bpm > 0,
+                let trackedBPM, trackedBPM > 0,
                 let onsets = try? InstrumentOnsetDetector.onsets(url: timingStemURL),
                 !onsets.isEmpty
             {
+                // The tracker's tempo is quantized to an integer autocorrelation lag (~2 %); a
+                // rigid grid at that tempo drifts whole beats over a song. Same metrical level,
+                // resolved on the onsets — or unchanged when no rigid tempo fits.
+                let bpm = DrumBeatGrid.refinedBPM(onsets: onsets, bpm: trackedBPM)
                 let duration = max(onsets.last ?? 0, beatTimes.last ?? 0)
                 let derived = DrumBeatGrid.beatTimes(onsets: onsets, bpm: bpm, duration: duration)
-                if !derived.isEmpty { drumBeatTimes = derived }
+                if !derived.isEmpty {
+                    drumBeatTimes = derived
+                    refinedBPM = bpm
+                }
             }
+            let estimatedBPM = refinedBPM
             let resolvedBeatTimes = drumBeatTimes
             let estimatedKey: MusicalKey? =
                 result.estimatedKey ?? MusicalKeyEstimator().estimate(from: result.chords)

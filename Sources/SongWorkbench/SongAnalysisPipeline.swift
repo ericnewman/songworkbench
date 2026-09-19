@@ -660,11 +660,7 @@ struct SongAnalysisPipeline: Sendable {
                 harmony.apply(&document)
                 // Timing post-passes run HERE — where the data was made — so the ChordPro
                 // stage and the persisted document see the same lyrics/beats the app displays.
-                AnalysisTimingPostPasses.apply(to: &document)
-                // Bucket notes are cut on the grid the post-passes just settled, so they run last.
-                BucketNotePass.apply(to: &document, force: true)
-                SoloTranscriptionPass.apply(to: &document, force: true)
-                InstrumentChordPass.apply(to: &document, force: true)
+                applyDerivedPasses(to: &document, force: true)
 
                 completedStages += 1
                 progress(
@@ -825,10 +821,7 @@ struct SongAnalysisPipeline: Sendable {
             if stage == .transcription || stage == .harmony,
                 document.stageRecords[stage]?.state == .succeeded
             {
-                AnalysisTimingPostPasses.apply(to: &document)
-                BucketNotePass.apply(to: &document, force: stage == .harmony)
-                SoloTranscriptionPass.apply(to: &document, force: stage == .harmony)
-                InstrumentChordPass.apply(to: &document, force: stage == .harmony)
+                applyDerivedPasses(to: &document, force: stage == .harmony)
             }
 
             completedStages += 1
@@ -844,6 +837,21 @@ struct SongAnalysisPipeline: Sendable {
         }
 
         return SongAnalysisPipelineResult(document: document, wasCancelled: wasCancelled)
+    }
+
+    /// The timing post-passes, then the note and chord passes cut on the grid they settle (so the
+    /// order is fixed). Each is timed: together they were a 60–300 s stretch per song that no
+    /// `analysis-performance` line accounted for (2026-09-19).
+    private func applyDerivedPasses(to document: inout SongAnalysisDocument, force: Bool) {
+        func timed(_ name: String, _ pass: (inout SongAnalysisDocument) -> Void) {
+            let startedAt = ContinuousClock.now
+            pass(&document)
+            AnalysisResourceLog.checkpoint(stage: name, event: "finished", startedAt: startedAt)
+        }
+        timed("timing-post-passes") { AnalysisTimingPostPasses.apply(to: &$0) }
+        timed("bucket-notes") { BucketNotePass.apply(to: &$0, force: force) }
+        timed("solo-transcription") { SoloTranscriptionPass.apply(to: &$0, force: force) }
+        timed("instrument-chords") { InstrumentChordPass.apply(to: &$0, force: force) }
     }
 
     private func runStage(

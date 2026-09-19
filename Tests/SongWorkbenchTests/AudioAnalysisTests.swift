@@ -1141,6 +1141,66 @@ final class AudioAnalysisTests: XCTestCase {
         }
     }
 
+    /// Deterministic ±`spread` jitter, so the tests need no random source.
+    private func jitter(_ index: Int, spread: Double) -> Double {
+        (Double((index * 37) % 17) / 16 - 0.5) * 2 * spread
+    }
+
+    func testRefinedBPMKeepsARigidGridOnTheDrumsToTheEndOfTheSong() {
+        // The tracker reports 5168/52 = 99.38 for a song played at 99.01 — the measured case
+        // (2026-09-19). At 99.38 a rigid grid is 0.9 s (1.5 beats) off by the last bar of 4 min.
+        let trueInterval = 60 / 99.01
+        let beatCount = Int(240 / trueInterval)
+        var onsets: [TimeInterval] = []
+        for beat in 0..<beatCount {
+            let time = 1.3 + Double(beat) * trueInterval
+            onsets.append(time + jitter(beat, spread: 0.008))
+            // Off-beat eighths on most beats, as a hi-hat would add.
+            if beat % 3 != 0 {
+                onsets.append(time + trueInterval / 2 + jitter(beat + 5, spread: 0.008))
+            }
+        }
+
+        let refined = DrumBeatGrid.refinedBPM(onsets: onsets, bpm: 5168.0 / 52)
+
+        XCTAssertEqual(refined, 99.01, accuracy: 99.01 * 0.0002)
+        let lastTrueBeat = 1.3 + Double(beatCount - 1) * trueInterval
+        let beats = DrumBeatGrid.beatTimes(onsets: onsets, bpm: refined, duration: lastTrueBeat + 1)
+        let nearest = beats.min { abs($0 - lastTrueBeat) < abs($1 - lastTrueBeat) }
+        XCTAssertEqual(try XCTUnwrap(nearest), lastTrueBeat, accuracy: 0.03)
+    }
+
+    func testRefinedBPMLocksOnAKickThatOnlyMarksEveryOtherBeat() {
+        let trueInterval = 60 / 86.0
+        let onsets = (0..<170).map {
+            0.4 + Double($0) * 2 * trueInterval + jitter($0, spread: 0.006)
+        }
+
+        // 5168/59 = 87.59: the tracker's answer for the measured 86.00 song.
+        let refined = DrumBeatGrid.refinedBPM(onsets: onsets, bpm: 5168.0 / 59)
+
+        XCTAssertEqual(refined, 86.0, accuracy: 86.0 * 0.0002)
+    }
+
+    func testRefinedBPMKeepsTheTrackedTempoWhenNoRigidTempoFits() {
+        // A performance that speeds up 8 % has no rigid tempo; an arbitrary "best" candidate is
+        // worse than the tracker's answer because it looks measured.
+        var onsets: [TimeInterval] = []
+        var time = 0.5
+        for beat in 0..<400 {
+            onsets.append(time)
+            time += 0.55 * (1 - 0.08 * Double(beat) / 400)
+        }
+
+        XCTAssertEqual(DrumBeatGrid.refinedBPM(onsets: onsets, bpm: 112.35), 112.35)
+    }
+
+    func testRefinedBPMReturnsTheInputForDegenerateInput() {
+        XCTAssertEqual(DrumBeatGrid.refinedBPM(onsets: [], bpm: 120), 120)
+        XCTAssertEqual(DrumBeatGrid.refinedBPM(onsets: [0.5, 1.0, 1.5], bpm: 120), 120)
+        XCTAssertEqual(DrumBeatGrid.refinedBPM(onsets: Array(repeating: 1, count: 64), bpm: 0), 0)
+    }
+
     func testDrumBeatGridReturnsEmptyForDegenerateInput() {
         XCTAssertTrue(DrumBeatGrid.beatTimes(onsets: [], bpm: 120, duration: 2.5).isEmpty)
         XCTAssertTrue(DrumBeatGrid.beatTimes(onsets: [0.5, 1.0], bpm: 0, duration: 2.5).isEmpty)

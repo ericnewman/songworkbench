@@ -4013,3 +4013,106 @@ and measure before/after on a real corpus with the shipped models.
 - [ ] Forced-alignment stage (monotonic audio-text alignment with confidence and raw fallback).
 - [ ] Word-first Lyric Blend (align candidates by word before building rows).
 - [ ] Recognition configuration experiments (language, vocabulary hints, alternate models, chunking).
+
+## 2026-09-19 — Slow analysis; chords and lyrics against the drawn audio (measured)
+
+Brief (Eric): analysis is very slow, and chords/lyrics do not convincingly sit where the audio
+visualization says they should. Measured on the live re-analysis of 2026-09-19 (17:21–18:13, the
+Sep 18 10:56 Debug build) before changing anything. Scratch scripts, not committed: `placement.py`,
+`placement3.py`, `drift.py`, `refine2.py` (timings only, no lyric text).
+
+### Findings — speed
+
+- [x] Per song with cached stems: transcription 45–67 s ‖ harmony 32–50 s, then **57–94 s that no
+      `analysis-performance` line accounted for** (one song 305 s) before `chordPro` (0.01 s). The
+      gap is `AnalysisTimingPostPasses` + `BucketNotePass` + `SoloTranscriptionPass` +
+      `InstrumentChordPass`, run serially on the pipeline task. They re-read the same stems
+      several times (`stemAudio` per pass, plus the solo pass's vocal reference).
+- [x] The app that runs library re-analyses is a **Debug (`-Onone`) build** — `rerun-app` builds
+      `-configuration Debug`. `sample` inside the gap: hottest frames are unspecialized-generic
+      runtime (`Collection.formIndex(after:)`, `IndexingIterator.next`, metadata lookups), and
+      `MonoAudioFile.samples` — a per-sample `append` loop that only DECODES a stem — held 3.8 s
+      of a 6.1 s sample. ML inference (Core ML Demucs, whisper.cpp) is precompiled and unaffected;
+      every hand-written DSP pass is.
+- [x] Full separation: 163 s base + 147 s deferred refiners. During the deferred pass the process
+      footprint climbed **1.7 GB → 19.8 GB on a 24 GB Mac** (swap 9.5 of 10 GB used, load 20).
+      It fell to 15.4 GB when transcription finished and to 1.5 GB only when HARMONY finished, so
+      ~14 GB belongs to the harmony stage, not the refiner. Harmony took 187 s on that song against
+      32–50 s on cached-stem songs. Not yet localized (footprint is only logged at checkpoints).
+
+### Findings — placement
+
+- [x] No constant offset: word − vocal energy rise median +3 ms (n = 1,436), chord − instrument
+      rise median −5 ms (n = 903), `chordProTimingOffsetMS` = 0 on every song.
+- [x] **The stored beat grid does not stay on the drums on any song (0 of 16).** Every grid is
+      perfectly rigid (interval sd 0.0 ms) at a tempo quantized to `5168 / integer`
+      (`BeatTracker`: `60 * envelopeRate / lag`, hop 512 @ 44.1 kHz — 87.59 ×3, 112.35 ×2…). One
+      lag step is ~2 % at 112 BPM; a rigid grid needs ~0.02 % to hold for 4 minutes. Drums-vs-grid
+      shift by eighth of the song ramps and wraps (e.g. +23 +58 +198 +278 −227 −112 −7 +68 ms);
+      spread 101–244 ms. Chord phase within the beat is FLAT across 8 bins (14/12/12/12/13/14/11/12 %)
+      where music peaks on the beat and half-beat. Beat dots, bar lines, fixed-period row windows
+      and the chord decode grid all inherit this.
+- [x] **Line-opening words are one-sidedly late.** Against an unambiguous vocal entry (≥ 0.5 s
+      after the previous word; breath-proof detector): 108 of 209 within ±50 ms, 93 later than
+      +50 ms (60 later than +150 ms), 8 early. Cause NOT established — `MeasuredLyricTiming`'s
+      outcome was discarded, so there was no record of which words were measured, onset-filled,
+      or still the ASR's guess. Hypotheses: CTC emits a token's first frame after its acoustic
+      onset; the ±0.15 s nearest-onset snap then picks a later flicker.
+- [x] Chart strip: both slicers floored the row window to bucket indices and the bars were drawn
+      across the exact window, so the drawn audio sat 0–1 bucket LATE per row (≤ 60 ms at 4,000
+      buckets / 4 min; ≤ 200 ms on the 1,200-bucket mix fallback) against unquantized words and
+      chords.
+- [ ] Not verified by me (code survey only): main `WaveformView` strokes bucket i centred on its
+      LEFT edge (half a bucket early vs the chart strip); the white word ball rides the squeezed/
+      nudged label axis while the amber chord ball rides the ruler; no output-latency compensation.
+
+### Done
+
+- [x] `DrumBeatGrid.refinedBPM`: resolves the tempo on the drum onsets (mean resultant length over
+      beat/eighth/sixteenth grids, ±2 lag steps, same metrical level, grid stays rigid); returns
+      the tracked tempo when no rigid tempo fits (coherence < max(0.08, 3/√N)). Simulated on the
+      16 songs with the shipped recipe first: locked (< 40 ms spread over the whole song) 0 → 7;
+      lockable songs scored ≥ 0.094, drifting ones ≤ 0.068, the stored tempo ≤ 0.034 everywhere.
+      Harmony `reduce-31-refined-tempo`. 4 new tests + 4 existing `DrumBeatGrid` tests pass.
+- [x] Derived passes are timed individually (`timing-post-passes`, `bucket-notes`,
+      `solo-transcription`, `instrument-chords`); word timing logs
+      `ran/measured/from-onsets/kept-asr` counts (never text).
+- [x] Strip slicer cuts at the nearest bucket edge (zero-mean, ≤ half a bucket); the duplicate
+      vocal slicer now calls the shared one.
+
+### Open — needs Eric
+
+- [ ] 9 of 16 songs fit NO rigid tempo (live drummer). A grid that follows them means re-fitting
+      period + phase per section, which revises the 2026-09-08 "tempo stays rigid" decision.
+- [ ] Run library re-analyses on a Release build (see Review for the measured difference).
+- [ ] The songs re-analysed today carry quantized-tempo grids; they need harmony re-run on a build
+      with `reduce-31`.
+
+### Review (2026-09-19)
+
+Benchmark — one 219 s song, stems reused, Whisper and chroma caches warm for both, quiet machine
+(load 4), headless `analyze --stages transcription,harmony,chordPro`:
+
+| | Debug (`-Onone`, Sep 18 bundle) | Release (`-O`, this change) |
+|---|---|---|
+| harmony | 31.7 s | 0.5 s |
+| transcription (cached ASR + post-ASR passes + forced alignment) | 53.6 s | 1.4 s |
+| derived passes | 64 s | 1.0 s (0.07 + 0.39 + 0.43 + 0.13) |
+| wall | **120 s** | **6 s** |
+
+The Debug run reproduced the live re-analysis numbers for the same song (31.4 / 53.4 / 94 s under
+load), so load was not the cause. Same work, checked: word starts identical 341/341, harmony notes
+719 = 719, bass 216 = 216; the only differences are the intended ones (BPM 99.384 -> 99.004,
+chords 130 -> 133, bucket notes 1,473 -> 1,467). Separation (Core ML) is precompiled and was not
+measured here; expect it unchanged at ~160 s + refiners.
+
+Beat grid, same song, shipped Swift path end to end: drums-vs-grid by eighth of the song
++23 +58 +198 +278 -227 -112 -7 +68 ms -> -8 -8 -8 -8 -8 -13 -13 -13 ms. Chord phase within the
+beat (8 bins) 20 19 9 12 22 16 16 16 -> 46 6 13 5 33 9 15 6. `word-timing ran=true measured=341
+from-onsets=0 kept-asr=0`, so on this song every word is aligner-measured and the late line
+openers are NOT leftover ASR guesses.
+
+Not verified: the three render changes (strip slicing, two waveform bar positions) compile in
+Release but were not looked at in the running app. The 14 GB harmony-stage footprint did not
+reproduce with reused stems (peak RSS 485 MB), so it belongs to the path that waits on the deferred
+refiners; not localized.

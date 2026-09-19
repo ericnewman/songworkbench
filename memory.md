@@ -417,3 +417,24 @@
   `-derivedDataPath` does not override it. The global preference is untouched and still affects
   other projects. Independent of location: a build REPLACES the bundle a running instance was
   launched from, so never build while a long analysis run is in progress.
+- 2026-09-19: `BeatTracker` reports tempo as `60 * envelopeRate / integerLag` (hop 512 @ 44.1 kHz →
+  `5168 / n`: 87.59, 99.38, 112.35…; one step ≈ 2 % at 112 BPM). `DrumBeatGrid` lays a RIGID grid
+  at that tempo, which needs ~0.02 % to hold for four minutes: measured on 16 songs, none stayed
+  on its drums (spread 101–244 ms across the song; chord phase within the beat was flat).
+  `DrumBeatGrid.refinedBPM` resolves the period on the drum onsets (harmony `reduce-31`) and keeps
+  the tracked tempo when no rigid tempo fits. **Detection:** beat-interval sd of 0.0 ms with a BPM
+  equal to `5168 / integer` means the grid is unrefined; drums-vs-grid shift by eighth of the song
+  that ramps and wraps means the tempo is off, a shift that wanders means the performance drifts
+  and no rigid grid can fit (9 of 16 songs — open decision, revises the 2026-09-08 rigid grid).
+- 2026-09-19: Library re-analyses have been running on a Debug (`-Onone`) build (`rerun-app`
+  builds Debug). The Release configuration does not build as configured: it needs
+  `SONGWORKBENCH_DEVELOPMENT_TEAM` + an Apple Distribution identity, and it compiles x86_64, where
+  `Float16` (`CoreMLNativeSixStemEngine`) is unavailable. A local optimized build needs
+  `DEVELOPMENT_TEAM=65FBMF6CMD CODE_SIGN_IDENTITY="Apple Development" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES`.
+  Measured on one 219 s song with stems and caches warm: Debug 120 s (harmony 31.7, transcription
+  53.6, derived passes 64) against Release 6 s (0.5 / 1.4 / 1.0), identical output. Hand-written
+  Swift DSP is 20–60x slower at `-Onone`; Core ML and whisper.cpp are precompiled and unaffected.
+- 2026-09-19: `analysis-performance` now times the derived passes that follow transcription and
+  harmony (`timing-post-passes`, `bucket-notes`, `solo-transcription`, `instrument-chords`) and
+  logs `word-timing ran/measured/from-onsets/kept-asr`. Read it with `/usr/bin/log show` — in zsh
+  bare `log` is a builtin and fails with "too many arguments".

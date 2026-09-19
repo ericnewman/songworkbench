@@ -46,6 +46,64 @@ enum DrumBeatGrid {
         return (firstIndex...lastIndex).map { phase + Double($0) * interval }
     }
 
+    /// Resolves the tracker's tempo past its autocorrelation-lag quantization.
+    ///
+    /// `BeatTracker` reports `60 * envelopeRate / lag` for an INTEGER lag, so at hop 512 / 44.1 kHz
+    /// every tempo is `5168 / n`: 87.59, 99.38, 112.35… One lag step is ~2 % at 112 BPM. A rigid
+    /// grid needs ~0.02 % to stay on the drums for four minutes; at the quantized tempo it rotates
+    /// through whole beats instead. Measured 2026-09-19 on 16 library songs: none held its drums
+    /// (section-to-section spread 101–244 ms), and the onsets' coherence with the stored grid was
+    /// ≤ 0.034 — no better than random.
+    ///
+    /// The onsets span the whole song, so they resolve the period far more finely than the lag
+    /// does: the candidate whose beat, eighth and sixteenth grids the onsets agree with most
+    /// (mean resultant length) is the tempo. The grid stays rigid and at the same metrical level —
+    /// the search covers ±2 lag steps only.
+    ///
+    /// Returns `bpm` unchanged when no rigid tempo fits (a performance whose tempo drifts): on the
+    /// same songs every lockable one reached coherence ≥ 0.094 and every drifting one ≤ 0.068.
+    static func refinedBPM(
+        onsets: [TimeInterval],
+        bpm: Double,
+        lagStep: TimeInterval = 512.0 / 44_100,
+        minimumCoherence: Double = 0.08
+    ) -> Double {
+        guard bpm > 0, lagStep > 0, onsets.count >= 32 else { return bpm }
+        let prior = 60 / bpm
+        let lowest = prior - 2 * lagStep
+        guard lowest > 0 else { return bpm }
+        // ponytail: one exhaustive pass, ~2,300 candidates x 3 harmonics x onsets (~20M trig calls,
+        // well under a second optimized). Go coarse-to-fine if this ever shows up in a profile.
+        let step = 0.000_02
+        let candidateCount = Int((4 * lagStep / step).rounded(.down))
+        var bestCoherence = 0.0
+        var bestInterval = prior
+        for index in 0...candidateCount {
+            let interval = lowest + Double(index) * step
+            var total = 0.0
+            for harmonic in [1.0, 2.0, 4.0] {
+                let angular = 2 * Double.pi * harmonic / interval
+                var x = 0.0
+                var y = 0.0
+                for onset in onsets {
+                    x += cos(angular * onset)
+                    y += sin(angular * onset)
+                }
+                total += (x * x + y * y).squareRoot()
+            }
+            let coherence = total / (3 * Double(onsets.count))
+            if coherence > bestCoherence {
+                bestCoherence = coherence
+                bestInterval = interval
+            }
+        }
+        // Chance coherence falls as 1/sqrt(N), and the best of thousands of candidates sits well
+        // above the mean, so a sparse (kick-only) stem needs a higher bar than the ~1,000–1,700
+        // onset stems the floor was calibrated on. 3/sqrt(N) meets the floor at N ≈ 1,400.
+        let required = max(minimumCoherence, 3 / Double(onsets.count).squareRoot())
+        return bestCoherence >= required ? 60 / bestInterval : bpm
+    }
+
     /// Chooses the phase offset φ in `[0, interval)` that best aligns a uniform grid to the onsets.
     /// Histograms each onset's residual (`onset mod interval`) into a handful of bins, picks the
     /// densest bin, and refines φ to the mean of the residuals that fell in it (handling wrap-around
