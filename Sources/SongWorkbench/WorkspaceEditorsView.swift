@@ -3023,8 +3023,11 @@ struct ChordProAppPreview: View {
     ) -> [Float] {
         guard showWaveform, envelope.duration > 0, !envelope.peaks.isEmpty else { return [] }
         let count = envelope.peaks.count
-        let lo = Int((window.start / envelope.duration) * Double(count))
-        let hi = Int((window.end / envelope.duration) * Double(count))
+        // The strip draws this slice across exactly `window`, so cut at the NEAREST bucket edges.
+        // Flooring drew every row's audio up to a whole bucket late (60 ms on a 4-minute stem,
+        // 200 ms on the 1,200-bucket mix) against words and chords, which are not quantized.
+        let lo = Int(((window.start / envelope.duration) * Double(count)).rounded())
+        let hi = Int(((window.end / envelope.duration) * Double(count)).rounded())
         let start = max(0, min(count - 1, lo))
         let end = max(start + 1, min(count, hi))
         return Array(envelope.peaks[start..<end])
@@ -3082,17 +3085,10 @@ struct ChordProAppPreview: View {
     /// Normalized audio peaks covering a lyric line's time window (for its strip), or [] when the
     /// strip is off or no envelope/window is available.
     private func vocalPeaks(forLyricOrdinal ordinal: Int?) -> [Float] {
-        guard showWaveform, let ordinal,
-            lyricLineWindows.indices.contains(ordinal),
-            let envelope = audioEnvelope, envelope.duration > 0, !envelope.peaks.isEmpty
+        guard let ordinal, lyricLineWindows.indices.contains(ordinal), let envelope = audioEnvelope
         else { return [] }
         let window = lyricLineWindows[ordinal]
-        let count = envelope.peaks.count
-        let lo = Int((window.lowerBound / envelope.duration) * Double(count))
-        let hi = Int((window.upperBound / envelope.duration) * Double(count))
-        let start = max(0, min(count - 1, lo))
-        let end = max(start + 1, min(count, hi))
-        return Array(envelope.peaks[start..<end])
+        return peaks(in: (window.lowerBound, window.upperBound), from: envelope)
     }
 
     var body: some View {

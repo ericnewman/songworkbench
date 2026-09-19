@@ -63,7 +63,9 @@ struct WaveformView: View {
         let step = size.width / CGFloat(envelope.peaks.count)
         var path = Path()
         for (index, peak) in envelope.peaks.enumerated() {
-            let x = CGFloat(index) * step
+            // Bucket `index` covers [index, index + 1) * step, so its bar is centred there. Stroking
+            // at the left edge drew the audio half a bucket early against the exact-time playhead.
+            let x = (CGFloat(index) + 0.5) * step
             let height = max(CGFloat(peak) * size.height * 0.9, 1)
             path.move(to: CGPoint(x: x, y: centerY - height / 2))
             path.addLine(to: CGPoint(x: x, y: centerY + height / 2))
@@ -180,7 +182,9 @@ struct StemWaveformLane: View {
         let step = laneWidth / CGFloat(envelope.peaks.count)
         var path = Path()
         for (index, peak) in envelope.peaks.enumerated() {
-            let x = CGFloat(index) * step
+            // Bucket `index` covers [index, index + 1) * step, so its bar is centred there. Stroking
+            // at the left edge drew the audio half a bucket early against the exact-time playhead.
+            let x = (CGFloat(index) + 0.5) * step
             let barHeight = max(CGFloat(peak) * size.height * 0.9, 1)
             path.move(to: CGPoint(x: x, y: centerY - barHeight / 2))
             path.addLine(to: CGPoint(x: x, y: centerY + barHeight / 2))
