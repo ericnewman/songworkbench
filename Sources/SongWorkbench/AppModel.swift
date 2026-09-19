@@ -1351,10 +1351,31 @@ final class AppModel: ObservableObject {
     private func enqueueForAnalysis(_ newSongs: [Song]) {
         let queuedIDs = Set(analysisQueue.map(\.id))
         let additions = newSongs.filter { !queuedIDs.contains($0.id) }
-        guard !additions.isEmpty else { return }
+        guard !additions.isEmpty else {
+            // Everything asked for is already queued — but the QUEUE may be stalled, holding
+            // songs with nothing draining them. Returning here leaves it stalled forever: the
+            // user clicks "Re-analyze All" and nothing happens at all, not even an error, which
+            // is indistinguishable from the app ignoring them. Always give the drain a nudge.
+            startNextQueuedAnalysisIfIdle()
+            return
+        }
         if analysisQueue.isEmpty { analysisQueueCompletedCount = 0 }
         analysisQueue.append(contentsOf: additions)
         startNextQueuedAnalysisIfIdle()
+    }
+
+    /// Drops the "an analysis is running" state, but ONLY when nothing actually is.
+    ///
+    /// `isSongAnalysisRunning` gates the Analysis menu, so a path that returns early while it is
+    /// still set leaves the app unable to start any analysis at all — and it fails silently, which
+    /// is what makes it expensive: there is no error to read and no way back except relaunching.
+    /// Every early exit from an analysis run calls this rather than clearing the flag directly,
+    /// so the "is anything still running?" test lives in one place.
+    private func clearAnalysisStateIfNothingRunning() {
+        guard activeAnalysisRunID == nil else { return }
+        isSongAnalysisRunning = false
+        currentAnalyzedSongID = nil
+        songAnalysisProgress = nil
     }
 
     /// Starts the next queued song's analysis, but only if nothing is already running — safe to
@@ -1433,9 +1454,19 @@ final class AppModel: ObservableObject {
                     ) ?? sourceURL
                 return (url: recovered, availability: AppModel.sourceAvailability(of: recovered))
             }.value
-            guard let self, !Task.isCancelled,
-                analysisPreflightGeneration == preflightGeneration
-            else { return }
+            guard let self else { return }
+            guard !Task.isCancelled, analysisPreflightGeneration == preflightGeneration else {
+                // Only the preflight that still owns the generation may clear up after itself;
+                // a newer one has taken over otherwise and owns the flag now. Without this the
+                // flag set just above survives a cancellation that has no replacement.
+                if analysisPreflightGeneration == preflightGeneration {
+                    analysisPreflightTask = nil
+                    analysisPreflightGeneration = nil
+                    clearAnalysisStateIfNothingRunning()
+                    completion?(true)
+                }
+                return
+            }
             analysisPreflightTask = nil
             analysisPreflightGeneration = nil
             switch preflight.availability {
@@ -1546,6 +1577,15 @@ final class AppModel: ObservableObject {
             onFinish: { [weak self] runID, outcome in
                 guard let self else { return }
                 guard activeAnalysisRunID == runID else {
+                    // A run that is no longer the active one just finished. If a NEWER run is
+                    // active it owns the flag and must not be disturbed — but if nothing is
+                    // active, leaving the flag set disables every future analysis silently: no
+                    // error, no message, just a permanently greyed-out "Re-analyze All", with
+                    // relaunching the app the only way back. That is what stranded a 39-song
+                    // re-analysis at 16 on 2026-09-18.
+                    if activeAnalysisRunID == nil {
+                        clearAnalysisStateIfNothingRunning()
+                    }
                     completion?(true)
                     return
                 }

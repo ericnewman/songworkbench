@@ -286,6 +286,51 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.isSongAnalysisRunning)
     }
 
+    /// The flag that gates the Analysis menu must never outlive the work it describes.
+    ///
+    /// On 2026-09-18 a 39-song re-analysis stopped at 16 and "Re-analyze All Songs" stayed
+    /// greyed out for a day. There was no error and no message: `isSongAnalysisRunning` had been
+    /// left set by an early exit, and the only recovery was relaunching the app. The cost of this
+    /// class of bug is that it is INVISIBLE — the UI looks fine, it just refuses to do anything.
+    ///
+    /// This drives the queue and then cancels it, asserting the app is left able to start work
+    /// again. It does not reproduce the original stale-run race (that needs a real pipeline
+    /// finishing after its run is superseded); it pins the invariant that race violated.
+    func testCancellingAnalysisLeavesTheAppAbleToStartAgain() async throws {
+        let firstURL = try makeSilentWAV()
+        let secondURL = try makeSilentWAV()
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let model = AppModel(
+            store: DelayedProjectStore(document: ProjectLibraryDocument()),
+            storageRoot: makeTestStorageRoot())
+        model.importSongs(from: [firstURL, secondURL])
+        try await waitUntil { model.songs.count >= 2 }
+
+        model.reanalyzeAllSongs()
+        XCTAssertTrue(model.isSongAnalysisRunning, "fixture must actually start a run")
+
+        // Cancel the drain the way selecting another song does.
+        model.select(try XCTUnwrap(model.songs.first))
+
+        XCTAssertFalse(
+            model.isSongAnalysisRunning,
+            "the menu stays disabled while this is true, with no error to explain why")
+        XCTAssertNil(model.songAnalysisProgress)
+
+        // The real test: the app can start work again rather than being wedged.
+        model.reanalyzeAllSongs()
+        XCTAssertTrue(
+            model.isSongAnalysisRunning,
+            "a second run must be startable — this is what was broken")
+        XCTAssertNotNil(model.reanalyzeAllStatus)
+
+        model.select(try XCTUnwrap(model.songs.first))
+        XCTAssertFalse(model.isSongAnalysisRunning)
+    }
+
     func testRemovingSelectedSongPreservesSourceFileSelectsNeighborAndPersists() async throws {
         let firstURL = try makeSilentWAV()
         let secondURL = try makeSilentWAV()
