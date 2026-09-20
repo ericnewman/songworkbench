@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 
 @testable import SongWorkbench
@@ -336,5 +337,47 @@ final class BucketNoteAnalyzerTests: XCTestCase {
     private func mix(_ parts: [Float]...) -> [Float] {
         let count = parts.map(\.count).min() ?? 0
         return (0..<count).map { index in parts.reduce(0) { $0 + $1[index] } / Float(parts.count) }
+    }
+
+    // MARK: - Phantom instruments
+
+    /// A constant-level stereo WAV: only its LEVEL matters to the leakage gate.
+    private func writeLevelWAV(_ name: String, level: Float, in directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let frames = AVAudioFrameCount(44_100)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        for channel in 0..<2 {
+            buffer.floatChannelData![channel].update(repeating: level, count: Int(frames))
+        }
+        try file.write(from: buffer)
+        return url
+    }
+
+    func testAnInstrumentStemThatIsOnlyResidueGetsNoNoteRow() throws {
+        // Seven Bridges Road, 2026-09-20: the piano stem sat 56 dB below the guitar on a recording
+        // with no piano; self-normalisation amplified the bleed and reported 40 notes on it.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let entries: [(id: StemID, url: URL)] = [
+            (StemID(.guitar), try writeLevelWAV("guitar.wav", level: 0.1, in: directory)),
+            (StemID(.piano), try writeLevelWAV("piano.wav", level: 0.000_15, in: directory)),
+            (StemID(.other), try writeLevelWAV("other.wav", level: 0.02, in: directory)),
+            (StemID(.vocals), try writeLevelWAV("vocals.wav", level: 0.000_15, in: directory)),
+            (
+                StemID(rawValue: "accompaniment"),
+                try writeLevelWAV("accompaniment.wav", level: 0.5, in: directory)
+            ),
+        ]
+
+        let kept = BucketNotePass.withoutPhantomInstruments(entries).map(\.id.rawValue)
+
+        // Piano (-56 dB) goes. `other` (-14 dB) is a quiet real instrument and stays. The voice
+        // is not an instrument stem, and the loud accompaniment SUM must not set the bar.
+        XCTAssertEqual(kept, ["guitar", "other", "vocals", "accompaniment"])
     }
 }

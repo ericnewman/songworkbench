@@ -4282,9 +4282,20 @@ build against this change (separate BUILD_DIR; no separation ran during it).
 
 ### Open
 
-- [ ] Per-stem bucket notes still report parts on stems that are not playing: on Seven Bridges,
-      40 notes on `piano` (a -85 dB stem; there is no piano) and 62 on `other`. Same class of bug,
-      in `BucketNoteAnalyzer`; not covered by this change.
+- [x] Per-stem bucket notes reported parts on stems that are not playing. Cause: the analyzer
+      peak-normalises each stem to ITSELF before its silence threshold, so pure residue is
+      amplified to full scale — the pairing `HarmonyStemMix` warns about, without its leakage gate.
+      `BucketNotePass.withoutPhantomInstruments` applies `keptAfterLeakageGate` (-25 dB, the
+      existing constant) among guitar / piano / other; the summed accompaniment is left out of
+      the comparison. Library: drops 14 stems on 13 songs, 12 of them a "piano" 34-57 dB down —
+      108 notes on The Winery Dogs (a trio with no keys), 40 on Seven Bridges, 47 on Salt in our
+      hair. Verified end to end on four songs; real rows unchanged.
+- [ ] Two drops sit at the floor and want ears, not a threshold: Just get up and dance `piano`
+      (-28.4 dB, 30 notes) and Eight Miles High `other` (-25.4 dB, 117 notes). The stems near the
+      floor are continuous (19 kept between -25 and -15 dB, 3 dropped between -35 and -25), so
+      unlike the chord and bass gates this one does not sit in an empty band.
+- [ ] Still reported: Seven Bridges `other`, 62 notes, some of them vocal bleed (-15 dB whole-song,
+      so it passes the leakage gate).
 - [ ] The main chord line's chroma still reads guitar + piano only, so where `other` carries the
       harmony the chords come from residue in the guitar stem. Adding `other` to the source changes
       ~20 % of a song (Benchmarks/STEM_SOURCE_CHORD_ACCURACY.md) and needs the ground-truth harness.

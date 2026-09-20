@@ -60,7 +60,8 @@ struct StemBucketNotes: Codable, Equatable, Sendable {
 /// metronome grid at compute time — so bucket k spans `clickTimes[k]..<clickTimes[k+1]`.
 struct BucketNoteTimeline: Codable, Equatable, Sendable {
     /// Bump when detection or aggregation semantics change so stored timelines recompute.
-    // buckets-3: a bass stem that is only a shadow of the singing is left out (`VocalShadowGate`).
+    // buckets-3: a bass stem that is only a shadow of the singing is left out (`VocalShadowGate`),
+    // and so is an instrument stem that is only separation residue (`withoutPhantomInstruments`).
     static let currentVersionTag = "buckets-3"
 
     var versionTag: String
@@ -369,12 +370,41 @@ enum BucketNotePass {
         }
         // A bass stem that is only a shadow of the singing has no part to show (`VocalShadowGate`).
         let vocalsURL = document.stems?.resolved().vocals
-        return entries.filter { entry in
+        let pitched = entries.filter { entry in
             guard let role = BucketNoteAnalyzer.role(for: entry.id) else { return false }
             guard role == .bass, let vocalsURL else { return true }
             return !VocalShadowGate.isShadow(stemURL: entry.url, vocalsURL: vocalsURL)
         }
-        .sorted { $0.id < $1.id }
+        return withoutPhantomInstruments(pitched).sorted { $0.id < $1.id }
+    }
+
+    /// Drops an instrument stem that is only separation residue.
+    ///
+    /// The analyzer peak-normalises each stem to ITSELF before its silence threshold, so a stem
+    /// holding nothing but bleed is amplified to full scale and reports a part: 40 notes on Seven
+    /// Bridges Road's piano stem, which sits at -85 dB on a recording with no piano. This is the
+    /// pairing `HarmonyStemMix` documents — normalisation is only safe behind the leakage gate —
+    /// and the same gate, `HarmonyStemMix.keptAfterLeakageGate`, that `InstrumentChordPass` uses.
+    ///
+    /// Compared among the separate instrument stems only. The summed `accompaniment` is left out
+    /// of the comparison (as the loudest it would set the bar for the stems it is made of), and
+    /// so are voice and bass, which answer to their own tests.
+    static func withoutPhantomInstruments(_ entries: [(id: StemID, url: URL)])
+        -> [(id: StemID, url: URL)]
+    {
+        let instruments = entries.indices.filter {
+            BucketNoteAnalyzer.role(for: entries[$0].id) == .polyphonic
+                && !entries[$0].id.rawValue.hasPrefix("accompaniment")
+        }
+        guard instruments.count > 1 else { return entries }
+        // An unreadable stem measures 0 and drops out, exactly as the analyzer would skip it.
+        let levels = instruments.map { index -> Float in
+            guard let audio = try? MonoAudioFile.samples(url: entries[index].url) else { return 0 }
+            return HarmonyStemMix.rootMeanSquare(audio.samples)
+        }
+        let kept = HarmonyStemMix.keptAfterLeakageGate(levels)
+        let dropped = Set(instruments.indices.filter { !kept.contains($0) }.map { instruments[$0] })
+        return entries.indices.filter { !dropped.contains($0) }.map { entries[$0] }
     }
 
     /// Cuts every pitched stem on the document's current metronome grid. `nil` when there is
