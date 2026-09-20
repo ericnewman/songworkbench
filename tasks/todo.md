@@ -4224,3 +4224,67 @@ that, load 2.5–10 (Backblaze), no app instance running.
       it would give back the 330 s -> 230 s the overlap bought. Revisit if DrumSep is enabled: its
       arena alone is ~11.6 GB for a 40 s segment, leak or no leak.
 - [ ] Re-run `Analysis > Re-analyze All Songs` for the 6 songs the interrupted run did not reach.
+
+## 2026-09-20 — Parts from their own stem only: phantom chords and bass notes
+
+Brief (Eric): Seven Bridges Road (Live) is mostly a cappella, yet it showed chord changes and bass
+notes that are not in the audio. "We can't afford to synthetically introduce notes on other
+instruments" — chord and note extraction reads the separated stems ONLY, and each player must get
+the exact part heard in the recording.
+
+### Findings
+
+- [x] In the a cappella stretches guitar and piano sit at -88 dB (digital silence), yet 27 of the
+      song's 133 chords were placed there and 56 bass notes (confidence 0.7-0.9) on a song with no
+      bass instrument.
+- [x] Chords: scoring is cosine similarity between chroma and template, which is blind to level,
+      and the residue in a resting stem is the vocal harmony. The only leakage gate
+      (`HarmonyStemMix.leakageFloorDecibels`) compares WHOLE-SONG levels, so a stem that plays for
+      half the song is trusted in the half where it rests.
+- [x] Bass: the separator puts a low voice's fundamentals in the `bass` stem. The stem's envelope
+      follows the vocal (r = 0.45; guitar -0.13) and it drops to -92 dB whenever the singing stops.
+- [x] First attempt REJECTED by the corpus run: gating on the chord source (guitar + piano) alone
+      removed 273 chords at rests but also stripped real sections — on 7 of 35 songs guitar + piano
+      rest for 18-43 % of the song while `other` carries the harmony at -5...-8 dB of its loud level.
+- [x] Tried and failed for telling vocal bleed in `other` from an instrument: the rest-shadow test
+      (Seven Bridges' `other` also holds crowd and guitar bleed, so it does not vanish with the
+      voice) and envelope correlation with the vocal (NEGATIVE, -0.2...-0.56, for bleed and
+      instrument alike).
+
+### Done
+
+- [x] `ChordalRestGate` (harmony stage, on the cached raw frames — no re-chroma): a frame is a
+      rest only when guitar + piano + other TOGETHER are > 40 dB below the song's loud level; its
+      chord evidence drops to confidence 0. Library-wide 68 of 5,993 chords sat below that floor and
+      the band around it is nearly empty (76 chords between -50 and -30 dB).
+- [x] `SoundingFrameGate` inside `analyzeFrames`, opt-in, used by `InstrumentChordPass`: one
+      instrument's chord track is empty where THAT instrument rests.
+- [x] `VocalShadowGate`: a bass stem whose level falls > 15 dB below its own loud level whenever
+      the vocals rest (>= 10 s of rest needed for a verdict) yields no bass notes, no bucket-note
+      row, and nothing for the chord decoder's switch cues or bass-informed re-rooting. Library:
+      every song with a bass instrument -0.5...-6.5 dB; the quartet -22 dB; Seven Bridges -57 dB.
+- [x] Harmony `reduce-32-rests-and-vocal-shadow`, `buckets-3`, `instrument-chords-2`.
+
+### Review
+
+Corpus: all 35 library songs with stems, headless `analyze --stages harmony --reuse-stems`, HEAD
+build against this change (separate BUILD_DIR; no separation ran during it).
+
+- Chords 5,993 -> 5,944. Removed at true rests 102; removed elsewhere 40 and added 93, which is
+  mostly one chord moving > 0.2 s near a rest boundary and being counted on both sides; 23 relabeled.
+- The seven "harmony in `other`" songs are untouched: A thousand little ways 278 -> 277, Moving on
+  271 -> 268, Beach Weather 84 -> 84, Theres a place 148 -> 147, One night on Broadway 207 -> 208.
+- Bass notes changed on exactly two songs: Seven Bridges 56 -> 0, the quartet 3 -> 0. The other 33
+  are identical.
+- Seven Bridges Road: chords where guitar + piano are silent 27 -> 4 (at 25.9, 26.9, 27.3 and
+  44.0 s — the known limit: `other` holds vocal bleed at a level a quiet keyboard could have).
+- 1,198 tests, 0 failures (9 new).
+
+### Open
+
+- [ ] Per-stem bucket notes still report parts on stems that are not playing: on Seven Bridges,
+      40 notes on `piano` (a -85 dB stem; there is no piano) and 62 on `other`. Same class of bug,
+      in `BucketNoteAnalyzer`; not covered by this change.
+- [ ] The main chord line's chroma still reads guitar + piano only, so where `other` carries the
+      harmony the chords come from residue in the guitar stem. Adding `other` to the source changes
+      ~20 % of a song (Benchmarks/STEM_SOURCE_CHORD_ACCURACY.md) and needs the ground-truth harness.

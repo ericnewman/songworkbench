@@ -60,7 +60,8 @@ struct StemBucketNotes: Codable, Equatable, Sendable {
 /// metronome grid at compute time — so bucket k spans `clickTimes[k]..<clickTimes[k+1]`.
 struct BucketNoteTimeline: Codable, Equatable, Sendable {
     /// Bump when detection or aggregation semantics change so stored timelines recompute.
-    static let currentVersionTag = "buckets-2"
+    // buckets-3: a bass stem that is only a shadow of the singing is left out (`VocalShadowGate`).
+    static let currentVersionTag = "buckets-3"
 
     var versionTag: String
     var gridKey: BucketGridKey
@@ -366,8 +367,14 @@ enum BucketNotePass {
                 entries.append((StemID(rawValue: "accompaniment"), accompaniment))
             }
         }
-        return entries.filter { BucketNoteAnalyzer.role(for: $0.id) != nil }
-            .sorted { $0.id < $1.id }
+        // A bass stem that is only a shadow of the singing has no part to show (`VocalShadowGate`).
+        let vocalsURL = document.stems?.resolved().vocals
+        return entries.filter { entry in
+            guard let role = BucketNoteAnalyzer.role(for: entry.id) else { return false }
+            guard role == .bass, let vocalsURL else { return true }
+            return !VocalShadowGate.isShadow(stemURL: entry.url, vocalsURL: vocalsURL)
+        }
+        .sorted { $0.id < $1.id }
     }
 
     /// Cuts every pitched stem on the document's current metronome grid. `nil` when there is

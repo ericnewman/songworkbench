@@ -462,3 +462,14 @@
   pbxproj lines by hand. **Detection:** `footprint_mb` climbing with
   `chunk-N-of-M` in the SECOND separation block of a song, and `heap <pid> -sortBySize` showing
   hundreds of equal non-object blocks at multiples of 8,192 KB (4 x 2048 x 256 floats).
+- 2026-09-20: **Parts come from their own stem, measured or absent.** Chord scoring is cosine
+  similarity, blind to level, and a resting stem holds a faint copy of whatever else sounds — so
+  silence decoded as confident chords (Seven Bridges Road: 27 chords and 56 bass notes under a
+  cappella singing). `ChordalRestGate` strips chord evidence where guitar + piano + other TOGETHER
+  are > 40 dB below the song's loud level; gating on guitar + piano alone is WRONG (on 7 of 35
+  songs `other` carries the harmony for 18-43 % of the song). `VocalShadowGate` drops a bass stem
+  that falls > 15 dB below its own loud level whenever the vocals rest: a real bass plays through
+  the rests (-0.5...-6.5 dB on every library song with one), a low voice cannot (-22, -57 dB).
+  **Detection:** a part that appears only while someone sings, on a stem whose level at that moment
+  is far below its own loud level. Level CANNOT separate vocal bleed in `other` from a quiet
+  keyboard; rest-shadowing and envelope correlation were both tried and failed for `other`.

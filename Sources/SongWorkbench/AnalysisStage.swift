@@ -828,10 +828,13 @@ struct HarmonyStage: AnalysisStageRunning {
         // `isReadableFile` here — that returns false for a security-scoped
         // bookmark URL whose access hasn't been started, which silently skipped
         // detection. A nil/empty result leaves existing bassNotes untouched.
-        guard let bassURL = context.document.stems?.resolved().bass,
-            let notes = try? bassLineAnalyzer.analyze(url: bassURL),
-            !notes.isEmpty
-        else {
+        guard let stems = context.document.stems?.resolved() else { return nil }
+        let bassURL = stems.bass
+        // A bass stem that only ever sounds while someone sings is the low voice, not a bass:
+        // report NO notes (an empty list replaces stale ones; `nil` would keep them). Phantom
+        // bass notes also feed the chord decoder's switch cues and the bass-informed re-rooting.
+        if VocalShadowGate.isShadow(stemURL: bassURL, vocalsURL: stems.vocals) { return [] }
+        guard let notes = try? bassLineAnalyzer.analyze(url: bassURL), !notes.isEmpty else {
             return nil
         }
         return notes
@@ -940,13 +943,13 @@ struct HarmonyStage: AnalysisStageRunning {
                     harmonyEngine.metadata.version
                     + "|schema-\(SongAnalysisDocument.currentSchemaVersion)"
             )
-            let result: SongAudioAnalysis
+            let rawResult: SongAudioAnalysis
             let loadedFromCache: Bool
             if let cached: SongAudioAnalysis = try await cache?.value(
                 forSourceHash: sourceHash,
                 engine: cacheEngine
             ) {
-                result = cached
+                rawResult = cached
                 loadedFromCache = true
             } else {
                 // Weighted stem mix, not a single file: guitar leads, piano supports, and the
@@ -954,10 +957,25 @@ struct HarmonyStage: AnalysisStageRunning {
                 // mix is reflected in `source.configurationIdentifier`, which is part of the
                 // cache key above — so a weighting change re-analyses instead of reusing a chord
                 // analysis derived from different audio.
-                result = try await harmonyEngine.analyze(weighted: source.weightedURLs)
-                try await cache?.store(result, forSourceHash: sourceHash, engine: cacheEngine)
+                rawResult = try await harmonyEngine.analyze(weighted: source.weightedURLs)
+                try await cache?.store(rawResult, forSourceHash: sourceHash, engine: cacheEngine)
                 loadedFromCache = false
             }
+            // Chord evidence only where a chordal instrument is actually sounding. Cosine chord
+            // scoring is blind to level, so the residue in resting stems (the vocal harmony, on an
+            // a cappella stretch) scored as confidently as playing. Applied to the cached raw
+            // frames, so it needs no re-chroma. Stems only: on a full-mix fallback the voice is in
+            // the signal and a level says nothing about the instruments.
+            let result: SongAudioAnalysis = {
+                guard let stems = context.document.stems?.resolved() else { return rawResult }
+                let chordal = [stems.guitar, stems.piano, stems.other].compactMap { $0 }
+                guard !chordal.isEmpty else { return rawResult }
+                return SongAudioAnalysis(
+                    beat: rawResult.beat,
+                    chords: ChordalRestGate.applied(to: rawResult.chords, stemURLs: chordal),
+                    estimatedKey: rawResult.estimatedKey,
+                    harmonicChangePoints: rawResult.harmonicChangePoints)
+            }()
             try Task.checkCancellation()
             stageProgress(0.75, "reducing chords")
             let record = AnalysisStageRecordFactory.successfulRecord(
@@ -1025,6 +1043,10 @@ struct HarmonyStage: AnalysisStageRunning {
                         // the tracker's integer-lag quantization (`DrumBeatGrid.refinedBPM`); at
                         // the quantized tempo the rigid grid rotated off the drums on every song.
                         + "|reduce-31-refined-tempo"
+                        // reduce-32: no chord evidence where every chordal stem rests
+                        // (`ChordalRestGate`), and a bass stem that is only a shadow of the singing
+                        // yields no bass notes (`VocalShadowGate`), so none reach the decoder either.
+                        + "|reduce-32-rests-and-vocal-shadow"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,

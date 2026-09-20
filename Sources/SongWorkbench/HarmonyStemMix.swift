@@ -181,7 +181,8 @@ struct InstrumentChordTrack: Codable, Equatable, Sendable {
 /// `BucketNoteTimeline`: check `isCurrent(for:)` against the current grid key before showing it.
 struct InstrumentChordTimeline: Codable, Equatable, Sendable {
     /// Bump when detection changes so stored timelines recompute.
-    static let currentVersionTag = "instrument-chords-1"
+    // instrument-chords-2: a stem's resting frames carry no chord evidence (`SoundingFrameGate`).
+    static let currentVersionTag = "instrument-chords-2"
 
     var versionTag: String
     var gridKey: BucketGridKey
@@ -258,8 +259,9 @@ enum InstrumentChordPass {
         guard beats.count >= 2, let bpm = document.estimatedBPM, bpm > 0 else { return [] }
         let configuration = try AudioAnalysisConfiguration(
             sampleRate: sampleRate, frameLength: 8_192, hopLength: 4_096)
+        // One instrument's track: no chords where THAT instrument rests.
         let frames = try ChordAnalysisPipeline(configuration: configuration).analyzeFrames(
-            samples: samples)
+            samples: samples, gatesRestingFrames: true)
         let changePoints = ChromaChangePointDetector.changePoints(frames: frames.chroma)
         let analysis = SongAudioAnalysis(
             beat: nil, chords: frames.observations, estimatedKey: document.estimatedKey,

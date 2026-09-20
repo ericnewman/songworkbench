@@ -1094,6 +1094,138 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(snapped.count, 2)
     }
 
+    // MARK: - SoundingFrameGate
+
+    /// A C major triad at `amplitude`, so the chroma is a clean chord at any level.
+    private func triad(seconds: Double, amplitude: Float, sampleRate: Double = 44_100) -> [Float] {
+        let frequencies: [Double] = [261.63, 329.63, 392.00]
+        return (0..<Int(seconds * sampleRate)).map { index in
+            let time = Double(index) / sampleRate
+            return amplitude
+                * Float(frequencies.reduce(0) { $0 + sin(2 * .pi * $1 * time) })
+                / Float(frequencies.count)
+        }
+    }
+
+    func testAChordAtResidueLevelIsNotEvidenceOfAChord() throws {
+        // Seven Bridges Road (2026-09-20): the guitar stem rested at -88 dB under an a cappella
+        // stretch, its residue was the vocal harmony, and cosine scoring called it a chord as
+        // confidently as the real playing. 6 s of playing, then 6 s of the same chord 60 dB down.
+        let samples = triad(seconds: 6, amplitude: 0.5) + triad(seconds: 6, amplitude: 0.0005)
+        let configuration = try AudioAnalysisConfiguration(
+            sampleRate: 44_100, frameLength: 8_192, hopLength: 4_096)
+
+        let observations = try ChordAnalysisPipeline(configuration: configuration)
+            .analyzeFrames(samples: samples, gatesRestingFrames: true).observations
+
+        let playing = observations.filter { $0.timestamp < 5.5 }
+        let resting = observations.filter { $0.timestamp > 6.5 && $0.timestamp < 11.5 }
+        XCTAssertFalse(playing.isEmpty)
+        XCTAssertFalse(resting.isEmpty)
+        XCTAssertTrue(playing.allSatisfy { $0.confidence >= 0.45 }, "real playing was gated")
+        XCTAssertTrue(resting.allSatisfy { $0.confidence == 0 }, "residue still scored as a chord")
+    }
+
+    func testAQuietPassageOfRealPlayingStillCounts() throws {
+        // 20 dB down is a player backing off, not a rest.
+        let samples = triad(seconds: 6, amplitude: 0.5) + triad(seconds: 6, amplitude: 0.05)
+        let configuration = try AudioAnalysisConfiguration(
+            sampleRate: 44_100, frameLength: 8_192, hopLength: 4_096)
+
+        let observations = try ChordAnalysisPipeline(configuration: configuration)
+            .analyzeFrames(samples: samples, gatesRestingFrames: true).observations
+
+        let quiet = observations.filter { $0.timestamp > 6.5 && $0.timestamp < 11.5 }
+        XCTAssertFalse(quiet.isEmpty)
+        XCTAssertTrue(quiet.allSatisfy { $0.confidence >= 0.45 })
+    }
+
+    func testSoundingGateMeasuresASparseInstrumentAgainstItsOwnPlaying() {
+        // Plays 5 % of the song. A median or 90th-percentile reference would be a REST, and every
+        // rest would then pass as sounding.
+        let levels = [Float](repeating: 0.000_02, count: 950) + [Float](repeating: 0.3, count: 50)
+        let sounding = SoundingFrameGate.sounding(frameLevels: levels)
+        XCTAssertEqual(sounding.filter { $0 }.count, 50)
+        XCTAssertTrue(sounding.suffix(50).allSatisfy { $0 })
+    }
+
+    func testSoundingGateCallsDigitalSilenceSilent() {
+        XCTAssertEqual(SoundingFrameGate.sounding(frameLevels: [0, 0, 0]), [false, false, false])
+        XCTAssertEqual(SoundingFrameGate.sounding(frameLevels: []), [])
+        XCTAssertEqual(SoundingFrameGate.level(of: [1, 1], from: 5, count: 4), 0)
+    }
+
+    func testTheMainChordLineIsNotGatedUnlessAsked() throws {
+        // Its source mix can rest while another chordal stem carries the harmony; that line is
+        // gated on every chordal stem together (`ChordalRestGate`), not on its own samples.
+        let samples = triad(seconds: 6, amplitude: 0.5) + triad(seconds: 6, amplitude: 0.0005)
+        let configuration = try AudioAnalysisConfiguration(
+            sampleRate: 44_100, frameLength: 8_192, hopLength: 4_096)
+        let observations = try ChordAnalysisPipeline(configuration: configuration)
+            .analyze(samples: samples)
+        XCTAssertTrue(
+            observations.filter { $0.timestamp > 6.5 && $0.timestamp < 11.5 }
+                .allSatisfy { $0.confidence >= 0.45 })
+    }
+
+    func testChordalRestGateStripsEvidenceOnlyWhereEveryChordalStemRests() {
+        let chord = Chord(root: .c, quality: .major)
+        let observations = (0..<200).map {
+            ChordObservation(timestamp: Double($0) * 0.1, chord: chord, confidence: 0.8)
+        }
+        // Frames 0-99: guitar playing. 100-149: guitar rests but `other` plays 12 dB down (the
+        // summed level). 150-199: everything rests, 60 dB down.
+        let levels =
+            [Float](repeating: 0.2, count: 100) + [Float](repeating: 0.05, count: 50)
+            + [Float](repeating: 0.000_2, count: 50)
+
+        let gated = ChordalRestGate.applied(to: observations, frameLevels: levels)
+
+        XCTAssertTrue(gated.prefix(150).allSatisfy { $0.confidence == 0.8 })
+        XCTAssertTrue(gated.suffix(50).allSatisfy { $0.confidence == 0 })
+        XCTAssertEqual(gated.map(\.timestamp), observations.map(\.timestamp))
+    }
+
+    // MARK: - VocalShadowGate
+
+    /// 60 s of per-hop levels: the vocals sing, rest for 15 s, and sing again.
+    private func vocalLevels() -> [Float] {
+        [Float](repeating: 0.2, count: 250) + [Float](repeating: 0.000_01, count: 150)
+            + [Float](repeating: 0.2, count: 200)
+    }
+
+    func testABassStemThatOnlySoundsWhileSomeoneSingsIsAShadow() {
+        // Seven Bridges Road: the "bass" was the low voice, 57 dB down whenever the singing stopped.
+        let bass =
+            [Float](repeating: 0.02, count: 250) + [Float](repeating: 0.000_03, count: 150)
+            + [Float](repeating: 0.02, count: 200)
+        XCTAssertTrue(VocalShadowGate.isShadow(stemLevels: bass, vocalLevels: vocalLevels()))
+    }
+
+    func testABassThatPlaysThroughTheVocalRestsIsAnInstrument() {
+        let steady = [Float](repeating: 0.1, count: 600)
+        XCTAssertFalse(VocalShadowGate.isShadow(stemLevels: steady, vocalLevels: vocalLevels()))
+
+        // It may even sit out most of the rest: playing through a fifth of it is still playing.
+        let mostlyResting =
+            [Float](repeating: 0.1, count: 250) + [Float](repeating: 0.000_03, count: 120)
+            + [Float](repeating: 0.1, count: 230)
+        XCTAssertFalse(
+            VocalShadowGate.isShadow(stemLevels: mostlyResting, vocalLevels: vocalLevels()))
+    }
+
+    func testTooLittleVocalRestGivesNoVerdict() {
+        // 5 s of rest cannot distinguish a shadow from a bass that happened to breathe there.
+        let vocals =
+            [Float](repeating: 0.2, count: 300) + [Float](repeating: 0.000_01, count: 50)
+            + [Float](repeating: 0.2, count: 250)
+        let bass =
+            [Float](repeating: 0.02, count: 300) + [Float](repeating: 0.000_03, count: 50)
+            + [Float](repeating: 0.02, count: 250)
+        XCTAssertFalse(VocalShadowGate.isShadow(stemLevels: bass, vocalLevels: vocals))
+        XCTAssertFalse(VocalShadowGate.isShadow(stemLevels: [], vocalLevels: []))
+    }
+
     // MARK: - DrumBeatGrid
 
     func testDrumBeatGridPhaseLocksAndSnapsToDrumOnsets() {
