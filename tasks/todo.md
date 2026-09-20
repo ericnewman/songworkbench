@@ -4154,3 +4154,15 @@ failed although Accessibility was granted). 39 songs.
       12–24 GB). Karaoke model outputs against the ones the leaking build wrote at 19:58: max
       |diff| 4.0e-6, signal-to-difference 117 dB (vocals) / 107 dB (other). 1,189 tests, 0 failures.
 - [ ] When the Swift package publishes ONNX Runtime >= 1.30, re-test the CPU path and DrumSep.
+
+**Correction to commit 692a725 (2026-09-19, 21:50).** Its message describes only the Core ML
+provider change, but it also contains a second, independent fix written by the parallel session
+"Fix ONNX refiner memory growth" whose uncommitted edits were in this checkout and were swept in by
+`git add -A Sources`: `ORTShortLivedThread` and its use around `session.run` in the karaoke, drum
+and six-stem engines. That session's diagnosis is the sharper one — KleidiAI keeps a `thread_local`
+map of input indirection tables on the CALLING thread, keyed on a hash of the input, freed only
+when the thread exits — and it agrees with the evidence above (a Python variant calling `run` from
+a fresh thread each time stayed flat). The end-to-end numbers above were measured with BOTH changes
+in the binary; neither was measured alone in the app. Its test file and Xcode project registration
+were left for that session to commit. **Rule:** stage by explicit path, never `git add -A <dir>`,
+and check `git worktree list` and `git status` for foreign changes before committing.
