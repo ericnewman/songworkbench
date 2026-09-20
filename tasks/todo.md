@@ -4223,7 +4223,13 @@ that, load 2.5–10 (Backblaze), no app instance running.
       2.0 GB (4.8 GB on the CPU path) the overlap no longer swaps on this machine, and serialising
       it would give back the 330 s -> 230 s the overlap bought. Revisit if DrumSep is enabled: its
       arena alone is ~11.6 GB for a 40 s segment, leak or no leak.
-- [ ] Re-run `Analysis > Re-analyze All Songs` for the 6 songs the interrupted run did not reach.
+- [x] Re-ran `Analysis > Re-analyze All Songs` on 2026-09-20, 17:44–17:57, Release build of
+      3120ae7, machine heavily loaded by unrelated builds. 5 of the 6 missed songs rewritten, 4 with
+      fresh separation + refiner. Peak footprint over the whole run 3,324 MB (the same run's
+      predecessor reached 24.2 GB); slowest transcription 260 s, separation 28–49 s.
+- [ ] `The Chain 9_10_19` was NOT re-analysed and has no chords or lyrics: its song document has
+      no `bookmarkData`, and its source is on Google Drive (`~/My Drive/...`), which the sandboxed
+      app cannot read without a security-scoped bookmark. Needs Eric to add the file again.
 
 ## 2026-09-20 — Parts from their own stem only: phantom chords and bass notes
 
