@@ -473,3 +473,11 @@
   **Detection:** a part that appears only while someone sings, on a stem whose level at that moment
   is far below its own loud level. Level CANNOT separate vocal bleed in `other` from a quiet
   keyboard; rest-shadowing and envelope correlation were both tried and failed for `other`.
+- 2026-09-20: `other` joins the chord source PER SONG (Eric: "if Other is not a significant driver
+  of content we should just exclude it completely"). Significant = it carries the music alone
+  (guitar + piano resting, `other` within 20 dB of its loud level) for >= 10 % of the song, and
+  the bass stem is not a vocal shadow; then frames with guitar + piano resting read `other`
+  (`ChordSourceFallback`) and it counts in the rest test. Otherwise it is out of both. Do NOT add
+  `other` as an always-on mix weight: measured against the ground-truth charts it lowered root F1
+  on every song (mean 51.1 -> 48.3 at 0.6, 50.3 at 0.3). Level cannot separate vocal bleed in
+  `other` from a played `other` (three tests, all failed) — only the per-song verdict does.

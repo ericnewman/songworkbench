@@ -4302,6 +4302,53 @@ build against this change (separate BUILD_DIR; no separation ran during it).
       unlike the chord and bass gates this one does not sit in an empty band.
 - [ ] Still reported: Seven Bridges `other`, 62 notes, some of them vocal bleed (-15 dB whole-song,
       so it passes the leakage gate).
-- [ ] The main chord line's chroma still reads guitar + piano only, so where `other` carries the
-      harmony the chords come from residue in the guitar stem. Adding `other` to the source changes
-      ~20 % of a song (Benchmarks/STEM_SOURCE_CHORD_ACCURACY.md) and needs the ground-truth harness.
+- [x] `other` in the chord source — done per song, see the next section.
+
+## 2026-09-20 — `other` in the chord source: per song, only where it drives
+
+Brief (Eric): "add `other` to the chord source and test it", then, on the results: "if Other is
+not a significant driver of content we should just exclude it completely."
+
+### Measured
+
+- [x] ALWAYS-ON is worse. Ground-truth charts (the harness's two arms fed rendered mixes: today's
+      guitar 1.0 + piano 0.6 against the same plus `other`), root F1:
+
+      | chart | today | other 0.6 | other 0.3 |
+      | --- | ---: | ---: | ---: |
+      | Summertime's here with you (reviewed) | 43.9 | 39.3 | 43.7 |
+      | Key West Bar (transcribed) | 65.3 | 63.5 | 65.0 |
+      | Flip Flops and Barbeque (automated) | 44.0 | 42.0 | 42.2 |
+      | mean | 51.1 | 48.3 | 50.3 |
+
+      More over-segmentation, lower precision. All three are guitar-led songs, so this says
+      `other` hurts where the guitar already carries the harmony; it cannot score the songs where
+      `other` carries it.
+- [x] ALWAYS-FALLBACK (read `other` in any frame where guitar + piano rest and `other` sounds):
+      guitar-led regions 6,043 -> 6,080 chords; across 686 s of `other`-led music, chord roots
+      matching the bass note being played 47.4 % -> 62.5 %, chords inside the song's own guitar-led
+      vocabulary 84.1 % -> 90.6 %; the two readings name the same chord only 14-45 % of the time.
+      But Seven Bridges Road went 4 -> 7 chords under a cappella singing, read from vocal bleed,
+      and `other`'s level there (-11 dB of its loud level) is inside the range of a genuinely
+      played `other` (-5...-13) — a third test that level cannot separate them.
+- [x] Significance across the library — share of the song where guitar + piano rest and `other`
+      is within 20 dB of its loud level: nine songs 10.4-35.4 %; then 8.2, 7.9 (Seven Bridges),
+      5.5, 5.2 ... 0. Not an empty band at the boundary.
+
+### Done
+
+- [x] `ChordSourceFallback`: `other` is significant when it carries the music alone for >= 10 % of
+      the song and the song's bass stem is not a vocal shadow. Significant: frames with guitar +
+      piano resting take their chord evidence from `other`, and `other` counts in
+      `ChordalRestGate`. Not significant: `other` is out of both. Harmony `reduce-33`.
+
+### Review
+
+38 library songs, HEAD against this change: guitar-led 6,043 -> 6,062 chords (+0.3 %);
+`other`-led bass-root match 47.4 % -> 61.0 %, own-vocabulary 84.1 % -> 89.4 %. Seven Bridges Road:
+chords under silent guitar 4 -> 1 (27 before today), bass notes 0. Songs where `other` is not
+significant lose the few residue-read chords they had in `other`-only stretches (The Winery Dogs
+13 -> 2, Summer on the lake 10 -> 4), which is what excluding it means. 1,202 tests, 0 failures.
+
+Not verified against truth: no chart covers an `other`-led song. The bass-root and vocabulary
+checks are independent of both readings but are proxies.

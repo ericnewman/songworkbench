@@ -821,7 +821,9 @@ struct HarmonyStage: AnalysisStageRunning {
     /// `bassNotes` unchanged) when there is no bass stem, and swallows any
     /// failure so bass detection can never fail the harmony stage. Honors
     /// cancellation.
-    private func detectBassNotes(_ context: AnalysisStageContext) -> [BassNoteObservation]? {
+    private func detectBassNotes(_ context: AnalysisStageContext, bassIsVocalShadow: Bool)
+        -> [BassNoteObservation]?
+    {
         guard (try? Task.checkCancellation()) != nil else { return nil }
         // Resolve the bass stem and analyze it. The analyzer opens the file with
         // security-scoped access itself, so we must NOT pre-gate on
@@ -833,7 +835,7 @@ struct HarmonyStage: AnalysisStageRunning {
         // A bass stem that only ever sounds while someone sings is the low voice, not a bass:
         // report NO notes (an empty list replaces stale ones; `nil` would keep them). Phantom
         // bass notes also feed the chord decoder's switch cues and the bass-informed re-rooting.
-        if VocalShadowGate.isShadow(stemURL: bassURL, vocalsURL: stems.vocals) { return [] }
+        if bassIsVocalShadow { return [] }
         guard let notes = try? bassLineAnalyzer.analyze(url: bassURL), !notes.isEmpty else {
             return nil
         }
@@ -966,13 +968,39 @@ struct HarmonyStage: AnalysisStageRunning {
             // a cappella stretch) scored as confidently as playing. Applied to the cached raw
             // frames, so it needs no re-chroma. Stems only: on a full-mix fallback the voice is in
             // the signal and a level says nothing about the instruments.
+            // One verdict, two uses. A recording where the separator mistook a voice for a bass
+            // is a recording where voices leak into the instrument stems, `other` included — and
+            // no level or envelope test could tell that bleed from a quietly played keyboard. So
+            // such a song yields no bass notes AND does not read chords from `other`.
+            let bassIsVocalShadow: Bool = {
+                guard let stems = context.document.stems?.resolved() else { return false }
+                return VocalShadowGate.isShadow(stemURL: stems.bass, vocalsURL: stems.vocals)
+            }()
             let result: SongAudioAnalysis = {
                 guard let stems = context.document.stems?.resolved() else { return rawResult }
-                let chordal = [stems.guitar, stems.piano, stems.other].compactMap { $0 }
-                guard !chordal.isEmpty else { return rawResult }
+                // Where guitar + piano rest and `other` plays, read `other` — not the residue it
+                // leaves in the guitar stem. Only when the source IS the guitar/piano mix.
+                let primary = [stems.guitar, stems.piano].compactMap { $0 }
+                // No guitar or piano stem: `other` IS the source, so it counts.
+                guard !primary.isEmpty else {
+                    return SongAudioAnalysis(
+                        beat: rawResult.beat,
+                        chords: ChordalRestGate.applied(
+                            to: rawResult.chords, stemURLs: [stems.other]),
+                        estimatedKey: rawResult.estimatedKey,
+                        harmonicChangePoints: rawResult.harmonicChangePoints)
+                }
+                let sourced =
+                    bassIsVocalShadow
+                    ? (observations: rawResult.chords, otherIsSignificant: false)
+                    : ChordSourceFallback.applied(
+                        to: rawResult.chords, primaryURLs: primary, fallbackURL: stems.other)
+                // `other` is a member of the band or it is not: in both tests, or in neither.
+                let chordal = sourced.otherIsSignificant ? primary + [stems.other] : primary
                 return SongAudioAnalysis(
                     beat: rawResult.beat,
-                    chords: ChordalRestGate.applied(to: rawResult.chords, stemURLs: chordal),
+                    chords: ChordalRestGate.applied(
+                        to: sourced.observations, stemURLs: chordal),
                     estimatedKey: rawResult.estimatedKey,
                     harmonicChangePoints: rawResult.harmonicChangePoints)
             }()
@@ -1047,6 +1075,11 @@ struct HarmonyStage: AnalysisStageRunning {
                         // (`ChordalRestGate`), and a bass stem that is only a shadow of the singing
                         // yields no bass notes (`VocalShadowGate`), so none reach the decoder either.
                         + "|reduce-32-rests-and-vocal-shadow"
+                        // reduce-33: `other` is in or out per song. Where it carries a tenth of the
+                        // song alone, frames with guitar + piano resting take their chord evidence
+                        // from it (`ChordSourceFallback`) and it counts in the rest test; otherwise
+                        // it is excluded from both.
+                        + "|reduce-33-other-when-significant"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1092,7 +1125,8 @@ struct HarmonyStage: AnalysisStageRunning {
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
             stageProgress(0.82, "detecting bass")
-            let detectedBassNotes = detectBassNotes(context)
+            let detectedBassNotes = detectBassNotes(
+                context, bassIsVocalShadow: bassIsVocalShadow)
             stageProgress(0.88, "detecting harmony notes")
             let detectedVocalHarmonyNotes = await detectVocalHarmonies(context)
             stageProgress(0.92, "aligning chord changes")

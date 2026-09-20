@@ -1186,6 +1186,75 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(gated.map(\.timestamp), observations.map(\.timestamp))
     }
 
+    func testOtherSuppliesTheChordOnlyWhereTheMainSourceRestsAndOtherPlays() {
+        let guitarChord = Chord(root: .c, quality: .major)
+        let otherChord = Chord(root: .f, quality: .major)
+        let primary = (0..<300).map {
+            ChordObservation(timestamp: Double($0) * 0.1, chord: guitarChord, confidence: 0.8)
+        }
+        let fallback = (0..<300).map {
+            ChordObservation(timestamp: Double($0) * 0.1, chord: otherChord, confidence: 0.7)
+        }
+        // 0-99 guitar plays (and so does `other`); 100-199 guitar rests, `other` plays;
+        // 200-299 both rest.
+        let primaryLevels =
+            [Float](repeating: 0.2, count: 100) + [Float](repeating: 0.000_2, count: 200)
+        let fallbackLevels =
+            [Float](repeating: 0.1, count: 200) + [Float](repeating: 0.000_1, count: 100)
+
+        let result = ChordSourceFallback.applied(
+            primary: primary, primaryLevels: primaryLevels,
+            fallback: fallback, fallbackLevels: fallbackLevels)
+
+        // Guitar-led frames are untouched even though `other` is playing under them.
+        XCTAssertTrue(result.prefix(100).allSatisfy { $0.chord == guitarChord })
+        XCTAssertTrue(result[100..<200].allSatisfy { $0.chord == otherChord })
+        // Nobody playing: the primary's evidence stands, for `ChordalRestGate` to strip.
+        XCTAssertTrue(result.suffix(100).allSatisfy { $0.chord == guitarChord })
+    }
+
+    func testOtherIsADriverOnlyWhenItCarriesATenthOfTheSongAlone() {
+        let guitarPlays = [Float](repeating: 0.2, count: 850)
+        let guitarRests = [Float](repeating: 0.000_2, count: 150)
+        // `other` plays at full level through all 150 frames (15 %) where the guitar rests.
+        let drives = ChordSourceFallback.carriedShare(
+            primaryLevels: guitarPlays + guitarRests,
+            fallbackLevels: [Float](repeating: 0.1, count: 1_000))
+        XCTAssertEqual(drives, 0.15, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(drives, ChordSourceFallback.minimumCarriedShare)
+
+        // Same rests, but what sits in `other` there is 26 dB below its own loud level: bleed.
+        let bleed = ChordSourceFallback.carriedShare(
+            primaryLevels: guitarPlays + guitarRests,
+            fallbackLevels: [Float](repeating: 0.1, count: 850)
+                + [Float](repeating: 0.005, count: 150))
+        XCTAssertEqual(bleed, 0, accuracy: 0.001)
+
+        // `other` plays all song long but never alone: it drives nothing the guitar does not.
+        let never = ChordSourceFallback.carriedShare(
+            primaryLevels: [Float](repeating: 0.2, count: 1_000),
+            fallbackLevels: [Float](repeating: 0.1, count: 1_000))
+        XCTAssertEqual(never, 0, accuracy: 0.001)
+    }
+
+    func testOtherOnADifferentFrameClockSuppliesNothing() {
+        let chord = Chord(root: .c, quality: .major)
+        let primary = (0..<150).map {
+            ChordObservation(timestamp: Double($0) * 0.1, chord: chord, confidence: 0.8)
+        }
+        let shifted = (0..<150).map {
+            ChordObservation(
+                timestamp: Double($0) * 0.1 + 0.05, chord: Chord(root: .f, quality: .major),
+                confidence: 0.7)
+        }
+        let primaryLevels =
+            [Float](repeating: 0.2, count: 50) + [Float](repeating: 0.000_2, count: 100)
+        let result = ChordSourceFallback.applied(
+            primary: primary, primaryLevels: primaryLevels,
+            fallback: shifted, fallbackLevels: [Float](repeating: 0.1, count: 150))
+        XCTAssertEqual(result, primary)
+    }
+
     // MARK: - VocalShadowGate
 
     /// 60 s of per-hop levels: the vocals sing, rest for 15 s, and sing again.
