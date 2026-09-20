@@ -388,7 +388,8 @@ actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
         try options.setIntraOpNumThreads(threadCount)
         #if os(macOS)
             // Keep this model's convolutions OFF ONNX Runtime's CPU kernels. In 1.24.x
-            // `ArmKleidiAI::MlasConv` leaks every buffer it `new`s: ~300 MB per run, 24.2 GB by the
+            // `ArmKleidiAI::MlasConv` caches an indirection table per new input on the calling
+            // thread and never evicts it (see `ORTShortLivedThread`): ~300 MB per run, 24.2 GB by the
             // end of one song on a 24 GB Mac, outside the arena (so no arena or run option touches
             // it) and outliving the session by minutes. Refiners overlap Whisper, so each
             // fresh-separation song swapped harder than the last (transcription 46 s -> 2,381 s

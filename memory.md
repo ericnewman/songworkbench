@@ -448,6 +448,17 @@
   on the Python reproduction). Fixed upstream by 1.30.0; the Swift package stops at 1.24.2. The
   karaoke predictor therefore runs through the Core ML provider (`MLProgram`, `CPUAndGPU`): same
   stems to 4e-6, flat 2 GB, 28 chunks in 6 s. Never use the NeuralNetwork format there (-44 dB).
-  DrumSep does not leak and crashes under the Core ML provider. **Detection:** `footprint_mb` climbing with
+  DrumSep crashes under the Core ML provider. Mechanism (read from the 1.24.2 source,
+  `mlas/lib/kleidiai/convolve_kleidiai.cpp`): a `thread_local`, never-evicted map of input
+  indirection tables on the thread that CALLS `Run`, keyed on a hash of the convolution input's
+  first 16 floats — new audio adds 8 bytes x output positions x kernel taps per 3x3+ convolution;
+  the same input twice adds nothing, which is why reproductions looked intermittent. Only thread
+  exit frees it, so `ORTShortLivedThread.run` puts every `ORTSession.run` of the karaoke, drum and
+  six-stem predictors on a thread that exits with the call (the only fix on iPad and for DrumSep,
+  which DOES grow: +107 MB/run; six-stem ONNX +16 MB/run; Basic Pitch flat). Thread fix alone in
+  the app: refiner 4.1 -> 4.8 GB flat against 4.2 -> 13.1 GB, lead vocal bit-identical. Base Core
+  ML stems differ 46–56 dB between ANY two runs, so compare refiner outputs, not file hashes.
+  `tuist generate` stomps hand-made pbxproj edits (model-copy phase, signing): add new files'
+  pbxproj lines by hand. **Detection:** `footprint_mb` climbing with
   `chunk-N-of-M` in the SECOND separation block of a song, and `heap <pid> -sortBySize` showing
   hundreds of equal non-object blocks at multiples of 8,192 KB (4 x 2048 x 256 floats).

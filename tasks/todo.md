@@ -4166,3 +4166,61 @@ a fresh thread each time stayed flat). The end-to-end numbers above were measure
 in the binary; neither was measured alone in the app. Its test file and Xcode project registration
 were left for that session to commit. **Rule:** stage by explicit path, never `git add -A <dir>`,
 and check `git worktree list` and `git status` for foreign changes before committing.
+
+### Refiner memory growth — trigger, thread fix measured alone (2026-09-19, 21:25–21:55)
+
+Session "Fix ONNX refiner memory growth". Machine: the library run was at song 33 of 39 when this
+started; the app quit itself at 21:26:19 (SIGTERM from its own pid — a normal quit, not a crash or
+jetsam) mid-refiner on song 34, so **6 songs were not re-analysed**. Measurements below ran after
+that, load 2.5–10 (Backblaze), no app instance running.
+
+- [x] Trigger, read from the 1.24.2 source (`onnxruntime/core/mlas/lib/kleidiai/
+      convolve_kleidiai.cpp`, `LhsPackImageDataSme`): a `thread_local
+      std::unordered_map<LhsCacheKey, shared_ptr<const void*[]>> lhs_ptrs_cache` on the thread that
+      calls `Run`, whose key includes `HashWeights(in)` — a hash of the first 16 floats of the
+      convolution's INPUT. New audio = new key = one more indirection table per 3x3-or-larger
+      convolution, never evicted. Table size is 8 bytes x output positions x kernel taps:
+      2048 x 256 x 9 x 8 = 36,864 KB and 1024 x 128 x 9 x 8 = 9,216 KB — exactly the `heap` block
+      sizes. `thread_local` is why it outlives `session = nil` (it dies with the Swift cooperative
+      thread, minutes later). Upstream `main` dropped `data_hash` from the key.
+- [x] This explains "intermittent": the SAME input twice hits the cache. Python, 8 runs, footprint
+      via `proc_pid_rusage`: same input 4,511 MB flat; new random input each run 4,597 -> 6,575 MB
+      (+330/run); new input, each `run` on a fresh `threading.Thread` 4,286 -> 4,294 MB flat. Same
+      time (7.0 s vs 6.9 s) and identical output checksum.
+- [x] Other models, same probe: `drumsep.onnx` DOES grow, +107 MB/run (11,340 -> 12,265 MB over
+      10 runs; fresh thread flat at 11,652 MB) — the "no trend" reading above most likely reused
+      one input. `demucsv4.onnx` +16 MB/run. `nmp.onnx` (Basic Pitch) flat at 43 MB over 300
+      windows, so it is not wrapped.
+- [x] Fix: `ORTShortLivedThread.run` — each `ORTSession.run` executes on a `Thread` that exits when
+      the call returns, which is the only thing that frees the cache. Wraps the karaoke, drum and
+      six-stem predictors. It is the only fix on iPad (the Core ML provider lines are macOS-only)
+      and for DrumSep (crashes under the Core ML provider).
+- [x] Measured ALONE in the app (worktree build with the Core ML provider lines disabled, not
+      committed), headless `analyze --stages separation`, 177 s song, 31 refiner chunks:
+
+      | | unfixed (bf08941) | thread fix only | thread fix + Core ML provider (HEAD) |
+      |---|---|---|---|
+      | refiner footprint, chunk 1 -> 31 | 4,185 -> 13,108 MB | 4,109 -> 4,766 MB (flat from chunk 8) | 2,002 -> 2,002 MB |
+      | peak footprint | 13,197 / 13,706 MB (2 runs) | 4,766 MB | 2,643 MB |
+      | refiner pass | 55.5 s | 24.8 s | 5.8 s |
+      | wall | 87 s / 56 s | 53 s | 37 s / 33 s |
+      | refined lead vocal vs unfixed | — (2 unfixed runs: identical) | max diff 0, bit-identical | max diff 3.4e-6, 116.5 dB |
+
+- [x] Stems unchanged: the six base stems differ between ANY two runs by 46–56 dB
+      signal-to-difference (two runs of the unfixed bundle: 46.5–56.3 dB; unfixed vs fixed:
+      45.4–55.1 dB) — Core ML Demucs is not bit-deterministic, and this change does not touch it.
+      The refined `other` is `vocals - lead`, so it inherits exactly that base-vocal difference.
+- [x] A first version used `withoutActuallyEscaping` and trapped in Release ("non-escaping closure
+      has escaped": the `Thread` still owns its block when the scope ends). The closure is
+      `@escaping` now. 2 tests (`ORTShortLivedThreadTests`).
+- [x] `tuist generate` was NOT usable to register the new files: it rewrites the hand-maintained
+      `Copy Bundled CoreML Model` phase (drops `LyricsAlignmentMTL`), the signing settings and
+      `objectVersion`. The 8 pbxproj lines were added by hand (commit 100291d).
+- [ ] NOT verified in the app: the drum refiner (`SongWorkbench.drumPieceSeparation` is off in
+      Eric's preferences; not flipped for a test) and the six-stem ONNX engine (the Core ML engine
+      is the production path). Both verified only with the Python probe above.
+- [ ] Not done: gating the refiner against Whisper when memory is tight. With the refiner flat at
+      2.0 GB (4.8 GB on the CPU path) the overlap no longer swaps on this machine, and serialising
+      it would give back the 330 s -> 230 s the overlap bought. Revisit if DrumSep is enabled: its
+      arena alone is ~11.6 GB for a 40 s segment, leak or no leak.
+- [ ] Re-run `Analysis > Re-analyze All Songs` for the 6 songs the interrupted run did not reach.
