@@ -443,6 +443,11 @@
   `session = nil` by minutes. Because refiners overlap transcription and harmony, a fresh-separation
   song pushes the machine into swap and each later song is slower (transcription 46 s -> 1,099 s
   within one library run). Reproduces in Python with the same model and ORT version, intermittently.
-  `memory.enable_memory_arena_shrinkage` does NOT help. **Detection:** `footprint_mb` climbing with
+  `memory.enable_memory_arena_shrinkage` does NOT help: the leak is `ArmKleidiAI::MlasConv` calling
+  `operator new` outside the arena (found with `MallocStackLogging=lite` + `malloc_history -allBySize`
+  on the Python reproduction). Fixed upstream by 1.30.0; the Swift package stops at 1.24.2. The
+  karaoke predictor therefore runs through the Core ML provider (`MLProgram`, `CPUAndGPU`): same
+  stems to 4e-6, flat 2 GB, 28 chunks in 6 s. Never use the NeuralNetwork format there (-44 dB).
+  DrumSep does not leak and crashes under the Core ML provider. **Detection:** `footprint_mb` climbing with
   `chunk-N-of-M` in the SECOND separation block of a song, and `heap <pid> -sortBySize` showing
   hundreds of equal non-object blocks at multiples of 8,192 KB (4 x 2048 x 256 floats).

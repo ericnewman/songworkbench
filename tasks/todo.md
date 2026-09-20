@@ -4137,6 +4137,20 @@ failed although Accessibility was granted). 39 songs.
       earlier runs of the same script held flat at ~3.2 GB.
 - [x] Tried and rejected: run option `memory.enable_memory_arena_shrinkage = cpu:0` — identical
       trace with and without it. Reverted; not committed.
-- [ ] Untested candidates: keep the refiner from overlapping Whisper (the overlap is what turns the
-      growth into a swap storm); a different ONNX Runtime version; disabling the KleidiAI kernels;
-      the Core ML execution provider for the refiners. Needs an otherwise idle machine.
+- [x] Root cause (malloc stack logging on the Python reproduction, idle machine): ONNX Runtime
+      1.24.x `ArmKleidiAI::MlasConv` calls `operator new` directly and never frees — 167 live
+      allocations, 1.79 GB after 6 runs. Outside the BFC arena, so disabling the arena, the memory
+      pattern, graph optimization, and arena shrinkage all left the ~300 MB/run growth unchanged;
+      1.24.2 has no runtime switch for KleidiAI. 1.24.4 still leaks; 1.30.0 is flat at 1.67 GB and
+      twice as fast, but onnxruntime-swift-package-manager publishes only 1.20.0 / 1.24.1 / 1.24.2.
+- [x] Fix: the karaoke predictor appends the Core ML execution provider (`ModelFormat: MLProgram`,
+      `MLComputeUnits: CPUAndGPU`, macOS only), so its convolutions never reach the leaking kernel.
+      Measured on the model: max error 3.4e-5 (-108 dB) against the CPU path, flat ~2 GB over 14
+      runs, 0.12 s/run against 0.88 s. NOT used: the default NeuralNetwork format (half precision
+      off-CPU, -44 dB). DrumSep does not leak on CPU (6.3–7.9 GB, no trend) and crashes under the
+      Core ML provider, so it is unchanged.
+- [x] End to end, headless `analyze --stages separation`, 159 s song: refiner pass 28 chunks in
+      6.1 s with the footprint flat at 2.0 GB; whole separation 32 s, peak footprint 2.6 GB (was
+      12–24 GB). Karaoke model outputs against the ones the leaking build wrote at 19:58: max
+      |diff| 4.0e-6, signal-to-difference 117 dB (vocals) / 107 dB (other). 1,189 tests, 0 failures.
+- [ ] When the Swift package publishes ONNX Runtime >= 1.30, re-test the CPU path and DrumSep.
