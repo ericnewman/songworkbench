@@ -500,17 +500,21 @@ enum BucketNoteRowFormatter {
                 rows.append((stemID: stem.stemID, cells: cells))
             }
         }
-        // The chord the whole beat makes ends the stack: appended to the lowest row sounding in
-        // that bucket (the bass whenever it plays), unless that cell already names it.
-        for (bucket, chord) in combinedChordNames(stems: visible, transposedBy: semitones) {
-            guard let row = rows.lastIndex(where: { $0.cells.contains { $0.bucket == bucket } }),
-                let index = rows[row].cells.firstIndex(where: { $0.bucket == bucket })
-            else { continue }
-            let cell = rows[row].cells[index].cell
-            let suffix = " (\(chord))"
-            guard !cell.text.hasSuffix(suffix) else { continue }
-            rows[row].cells[index].cell = BucketNoteRowCell(
-                time: cell.time, text: cell.text + suffix, isDim: cell.isDim)
+        // The chord the instruments make together ends the stack, on a row of ITS OWN. It used to
+        // be appended to the lowest row sounding — the bass — so a single bass note read "A (Am)",
+        // as if the bassist played the chord (Eric, 2026-09-20). Each row is one player's part.
+        var chordCells: [Cell] = []
+        for (bucket, chord) in combinedChordNames(stems: visible, transposedBy: semitones)
+        where clicks.indices.contains(bucket) && window.contains(clicks[bucket]) {
+            chordCells.append(
+                (
+                    bucket: bucket,
+                    cell: BucketNoteRowCell(time: clicks[bucket], text: chord, isDim: false)
+                ))
+        }
+        if !chordCells.isEmpty {
+            rows.append(
+                (stemID: combinedChordRowID, cells: chordCells.sorted { $0.bucket < $1.bucket }))
         }
         return rows.map {
             BucketNoteRow(
@@ -534,15 +538,24 @@ enum BucketNoteRowFormatter {
         return "\(names) (\(chord))"
     }
 
-    /// Each bucket's chord across every stem in `stems` (monophonic notes and polyphonic classes
-    /// pooled), keyed by bucket index; buckets that spell no chord are absent. The bass note, when
-    /// one sounds, is the preferred root.
+    /// The row that carries the beat's combined chord. Not a stem: it has no lane color of its own.
+    static let combinedChordRowID: StemID = "chord"
+
+    /// Each bucket's chord across the GUITAR, PIANO and BASS stems in `stems` (and their refined
+    /// children), keyed by bucket index; buckets that spell no chord are absent. The bass note,
+    /// when one sounds, is the preferred root. Those are the three players the chart is for: a
+    /// chord nobody among them plays is omitted. Voices are out (a sung third must not turn the
+    /// band's power chord into a major), and so are `other` and the summed accompaniment.
     static func combinedChordNames(stems: [StemBucketNotes], transposedBy semitones: Int)
         -> [Int: String]
     {
         var classes: [Int: [Int]] = [:]
         var bassNotes: [Int: Int] = [:]
+        let players: Set<StemKind> = [.guitar, .piano, .bass]
         for stem in stems {
+            // A refined child ("guitar.lead") belongs to its parent's player.
+            let root = stem.stemID.rawValue.split(separator: ".").first.map(String.init) ?? ""
+            guard let kind = StemKind(rawValue: root), players.contains(kind) else { continue }
             let isBass = BucketNoteAnalyzer.role(for: stem.stemID) == .bass
             for note in stem.notes {
                 let pitches = note.midiNote.map { [$0] } ?? note.pitchClasses
@@ -562,6 +575,7 @@ enum BucketNoteRowFormatter {
     /// Two-letter row tags, short enough to sit in the row's left gutter without pushing the
     /// first cell off its beat.
     static func label(for stemID: StemID) -> String {
+        if stemID == combinedChordRowID { return "Ch" }
         switch stemID {
         case .vocalLead: return "Ld"
         case .vocalBacking: return "Bk"

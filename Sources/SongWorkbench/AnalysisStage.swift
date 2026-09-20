@@ -968,39 +968,20 @@ struct HarmonyStage: AnalysisStageRunning {
             // a cappella stretch) scored as confidently as playing. Applied to the cached raw
             // frames, so it needs no re-chroma. Stems only: on a full-mix fallback the voice is in
             // the signal and a level says nothing about the instruments.
-            // One verdict, two uses. A recording where the separator mistook a voice for a bass
-            // is a recording where voices leak into the instrument stems, `other` included — and
-            // no level or envelope test could tell that bleed from a quietly played keyboard. So
-            // such a song yields no bass notes AND does not read chords from `other`.
+            // A bass stem that only ever sounds while someone sings is the low voice, not a bass.
             let bassIsVocalShadow: Bool = {
                 guard let stems = context.document.stems?.resolved() else { return false }
                 return VocalShadowGate.isShadow(stemURL: stems.bass, vocalsURL: stems.vocals)
             }()
             let result: SongAudioAnalysis = {
                 guard let stems = context.document.stems?.resolved() else { return rawResult }
-                // Where guitar + piano rest and `other` plays, read `other` — not the residue it
-                // leaves in the guitar stem. Only when the source IS the guitar/piano mix.
-                let primary = [stems.guitar, stems.piano].compactMap { $0 }
-                // No guitar or piano stem: `other` IS the source, so it counts.
-                guard !primary.isEmpty else {
-                    return SongAudioAnalysis(
-                        beat: rawResult.beat,
-                        chords: ChordalRestGate.applied(
-                            to: rawResult.chords, stemURLs: [stems.other]),
-                        estimatedKey: rawResult.estimatedKey,
-                        harmonicChangePoints: rawResult.harmonicChangePoints)
-                }
-                let sourced =
-                    bassIsVocalShadow
-                    ? (observations: rawResult.chords, otherIsSignificant: false)
-                    : ChordSourceFallback.applied(
-                        to: rawResult.chords, primaryURLs: primary, fallbackURL: stems.other)
-                // `other` is a member of the band or it is not: in both tests, or in neither.
-                let chordal = sourced.otherIsSignificant ? primary + [stems.other] : primary
+                // A chord must be attributable to the guitarist or the pianist. A legacy stem set
+                // with neither stem has nobody to attribute to, and is left as it was.
+                let players = [stems.guitar, stems.piano].compactMap { $0 }
+                guard !players.isEmpty else { return rawResult }
                 return SongAudioAnalysis(
                     beat: rawResult.beat,
-                    chords: ChordalRestGate.applied(
-                        to: sourced.observations, stemURLs: chordal),
+                    chords: ChordalRestGate.applied(to: rawResult.chords, stemURLs: players),
                     estimatedKey: rawResult.estimatedKey,
                     harmonicChangePoints: rawResult.harmonicChangePoints)
             }()
@@ -1080,6 +1061,9 @@ struct HarmonyStage: AnalysisStageRunning {
                         // from it (`ChordSourceFallback`) and it counts in the rest test; otherwise
                         // it is excluded from both.
                         + "|reduce-33-other-when-significant"
+                        // reduce-34: a chord must be attributable to the guitarist or the pianist.
+                        // `other` is out of the chord source and the rest test on every song.
+                        + "|reduce-34-guitar-or-piano-only"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,

@@ -311,13 +311,36 @@ enum InstrumentEnergyLanes {
         return lanePeaks.indices.filter { (lanePeaks[$0].max() ?? 0) >= threshold }
     }
 
+    /// Pitched stems the analysis refused to treat as a part: present in the stem set but without
+    /// a row in the note timeline. That is a bass stem that is only the low voice
+    /// (`VocalShadowGate`) or an instrument stem that is only separation residue
+    /// (`BucketNotePass.withoutPhantomInstruments`). Their audio is real and stays in the mixer;
+    /// drawn as INSTRUMENT ENERGY under an a cappella line it says a bass is playing (Eric,
+    /// 2026-09-20). Drums have no note row by design and are never listed. Nothing is listed
+    /// without a timeline to judge by.
+    static func stemsWithoutAPart(
+        _ stems: [StemWaveformLaneModel], timeline: BucketNoteTimeline?
+    ) -> Set<StemID> {
+        guard let timeline, !timeline.stems.isEmpty else { return [] }
+        let withRows = Set(timeline.stems.map(\.stemID))
+        return Set(
+            stems.map(\.id).filter { id in
+                guard let role = BucketNoteAnalyzer.role(for: id), role != .voice else {
+                    return false
+                }
+                return !withRows.contains(id)
+            })
+    }
+
     static func lanes(
-        from stems: [StemWaveformLaneModel], perStem: Bool, hidden: Set<StemID>
+        from stems: [StemWaveformLaneModel], perStem: Bool, hidden: Set<StemID>,
+        withoutAPart: Set<StemID> = []
     ) -> [StemWaveformLaneModel] {
         let vocalPrefix = StemKind.vocals.rawValue + "."
         let instruments = stems.filter {
             $0.id != StemKind.vocals.id && !$0.id.rawValue.hasPrefix(vocalPrefix)
                 && $0.envelope.duration > 0 && !$0.envelope.peaks.isEmpty
+                && !withoutAPart.contains($0.id)
         }
         if perStem { return instruments.filter { !hidden.contains($0.id) } }
         guard

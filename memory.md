@@ -481,3 +481,14 @@
   `other` as an always-on mix weight: measured against the ground-truth charts it lowered root F1
   on every song (mean 51.1 -> 48.3 at 0.6, 50.3 at 0.3). Level cannot separate vocal bleed in
   `other` from a played `other` (three tests, all failed) — only the per-song verdict does.
+- 2026-09-20: **DESIGN OBJECTIVE — "What did the Guitarist, Bassist, and Pianist play on this
+  song?"** Other musicians and sounds are omitted by design (Eric). Recorded in CONTEXT.md and as
+  CHORD-007/008. A chord or note is reported only when attributable to guitar, bass or piano, read
+  from that stem, where that stem is sounding; otherwise omitted even if the harmony is right.
+  Consequences already applied: the main chord line is gated on guitar + piano only
+  (`ChordalRestGate`, harmony `reduce-34`); the `other`-stem chord source (`ChordSourceFallback`,
+  c77d6b0) was REMOVED the same day although it raised bass-root agreement 47 -> 61 %, because
+  "what is the harmony?" is not the question; the preview's beat-chord row pools guitar, piano
+  and bass only and sits on its own row ("Ch") instead of on the bass cell, where "A (Am)" read as
+  the bassist playing a chord. **Detection:** any result whose source is the mix, the vocals,
+  `other`, or the summed accompaniment is out of scope, however well it scores.

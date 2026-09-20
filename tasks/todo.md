@@ -4352,3 +4352,51 @@ significant lose the few residue-read chords they had in `other`-only stretches 
 
 Not verified against truth: no chart covers an `other`-led song. The bass-root and vocabulary
 checks are independent of both readings but are proxies.
+
+## 2026-09-20 (evening) — The design objective, and what it undid
+
+**"What did the Guitarist, Bassist, and Pianist play on this song?"** Other musicians and sounds
+are omitted by design (Eric). Recorded in CONTEXT.md (Design objective) and REQUIREMENTS.md
+(CHORD-007, CHORD-008; CHORD-002 revised).
+
+Eric, on the bass rows in the preview: "it's showing bass CHORDS when I'm pretty sure it's a single
+note", and "significant waveform activity on the bass tracks when only vocal is present". Then the
+objective: "if we cannot identify which of these three instruments is responsible, we can omit the
+detected chord."
+
+### Done
+
+- [x] The preview's beat chord sat on the lowest row sounding — the bass — so one bass note read
+      "A (Am)". It now has a row of its own ("Ch"); the bass row shows the note it plays. This was
+      deliberate and test-pinned behaviour (2026-09-14), changed on purpose.
+- [x] That beat chord pooled EVERY stem, vocals included. It now pools guitar, piano and bass (and
+      their refined children) only.
+- [x] The preview drew instrument energy for every non-vocal stem. A pitched stem the analysis
+      refused as a part (no row in the note timeline: a bass stem that is the low voice, or a
+      residue-only piano) is no longer drawn as instrument energy. Its audio stays in the mixer.
+- [x] `ChordalRestGate` gates the main chord line on guitar + piano ONLY. `other` is out of the
+      chord source and the rest test on every song. `ChordSourceFallback` (c77d6b0, committed the
+      same afternoon) is REMOVED: it answered "what is the harmony?" — bass-root agreement
+      47 -> 61 % in `other`-led stretches — which is not the question. Harmony `reduce-34`.
+
+### Consequence to expect
+
+On the songs where guitar and piano rest while `other` carries the music (9 songs, 10-35 % of the
+song) those stretches now show NO chords. That is the intended result, not a regression: nobody
+among the three players is playing there.
+
+### Review
+
+1,200 tests, 0 failures. End to end, headless `analyze --stages harmony --reuse-stems`, this change
+against the library documents written an hour earlier by `reduce-33`:
+
+| song | chords | chords where guitar + piano rest |
+| --- | ---: | ---: |
+| Beach Weather (`other`-led 35 %) | 116 -> 64 | 49 -> 3 |
+| Moving on (`other`-led 27 %) | 287 -> 205 | 71 -> 3 |
+| Key West Bar (guitar-led) | 156 -> 155 | 0 -> 0 |
+| Seven Bridges Road | 106 -> 106 | 1 -> 1 |
+
+The leftovers sit on rest boundaries. Not verified in the running app: the "Ch" row, the bass row
+without its chord suffix, and the instrument-energy lanes — they compile and their formatter and
+lane logic are unit-tested, but nobody has looked at them on screen.

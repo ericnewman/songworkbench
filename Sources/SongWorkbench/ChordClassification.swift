@@ -598,26 +598,25 @@ private final class ErrorBox: @unchecked Sendable {
     }
 }
 
-/// Strips chord evidence from the song's main chord line wherever NO chordal stem is sounding.
+/// Strips chord evidence from the song's main chord line wherever neither GUITAR nor PIANO is
+/// sounding.
 ///
-/// The main line's chroma comes from guitar + piano, but those can rest while the separator's
-/// `other` stem carries the harmony (keys, pads, a guitar it did not recognise): on 7 of 35 library
-/// songs that is 18-43 % of the song, and gating on guitar + piano alone deleted real chords
-/// there. So on a song where `other` is a significant driver (`ChordSourceFallback`) the rest test
-/// sums guitar, piano AND other; on every other song `other` is left out entirely. A frame is a
-/// rest only when the SUM is more than `SoundingFrameGate.floorDecibels` below its loud level.
-/// Library-wide (2026-09-20) 68 of 5,993 chords sit below that floor and the band around it is
-/// nearly empty (76 chords between -50 and -30 dB); on Seven Bridges Road it clears 23 of the
-/// chords placed under a cappella singing.
+/// The app exists to tell the guitarist, the bassist and the pianist what to play. A chord that
+/// cannot be attributed to one of them is omitted (Eric, 2026-09-20) — so a frame counts only when
+/// the guitar + piano sum is within `SoundingFrameGate.floorDecibels` of its loud level. The
+/// separator's `other` stem takes no part: it is nobody's chair, and what it holds under a cappella
+/// singing is vocal bleed that no level or envelope test could tell from a played keyboard.
 ///
-/// Known limit: where `other` holds vocal bleed at a level a quiet keyboard could also have, the
-/// frame still counts as sounding. Level cannot separate those, and neither did the two content
-/// tests tried (rest-shadowing; envelope correlation with the vocal, which is NEGATIVE for bleed
-/// and instrument alike). A few a cappella chords can survive on such songs.
+/// History, so it is not rebuilt: gating on guitar + piano was the first version and was REJECTED
+/// because on 7 of 35 songs those stems rest for 18-43 % of the song while `other` carries the
+/// harmony, and the gate left those stretches chordless. `other` was then added to the rest test
+/// (9cb410d) and made a per-song chord source (c77d6b0: bass-root match 47 % -> 61 % in those
+/// stretches). Both were answers to "what is the harmony?", which is not the question. Chordless
+/// where no guitarist or pianist is playing is the intended result.
 enum ChordalRestGate {
     /// - Parameters:
-    ///   - stemURLs: every chordal stem that exists (guitar, piano, other). Summed one at a time,
-    ///     so peak memory is one stem plus the sum.
+    ///   - stemURLs: the guitar and piano stems that exist. Summed one at a time, so peak memory
+    ///     is one stem plus the sum.
     ///   - frameLength: samples per chroma frame, at the stems' sample rate.
     static func applied(
         to observations: [ChordObservation], stemURLs: [URL], frameLength: Int = 8_192
@@ -657,126 +656,6 @@ enum ChordalRestGate {
                     timestamp: observations[index].timestamp,
                     chord: observations[index].chord, confidence: 0)
         }
-    }
-}
-
-/// Reads the chord from `other` in the frames where the main chord source is resting.
-///
-/// The main chord line listens to guitar + piano. On 7 of 35 library songs those stems rest for
-/// 18-43 % of the song while the separator's `other` stem — keys, pads, a guitar it did not
-/// recognise — carries the harmony at full level, and the chords there were being read off the
-/// faint residue in the guitar stem. The part should come from the stem that is sounding.
-///
-/// Conditional, not a mix weight: adding `other` to the mix everywhere was measured against the
-/// ground-truth charts on 2026-09-20 and made every guitar-led song worse (root F1 43.9 -> 39.3,
-/// 65.3 -> 63.5, 44.0 -> 42.0 at weight 0.6) through over-segmentation. Here a frame changes hands
-/// only when the primary source is more than `SoundingFrameGate.floorDecibels` below its own loud
-/// level AND `other` is sounding by the same test, so guitar-led passages are untouched.
-///
-/// Measured on the library (38 songs): guitar-led regions 6,043 -> 6,080 chords; across 686 s of
-/// `other`-led music, chord roots matching the bass note being played rose 47 % -> 63 % and chords
-/// inside the song's own guitar-led vocabulary 84 % -> 91 %. The two readings name the same chord
-/// only 14-45 % of the time, so this is a different answer, not a louder copy of the old one.
-///
-/// `other` is in or out PER SONG (Eric, 2026-09-20: "if Other is not a significant driver of
-/// content we should just exclude it completely"). It is significant when it carries the music
-/// ALONE — guitar + piano resting, `other` within 20 dB of its own loud level — for at least a
-/// tenth of the song. Library: nine songs at 10-35 %; everything else at 8 % or below, including
-/// Seven Bridges Road at 7.9 %, where the "playing" is vocal bleed at the same relative level
-/// (-11 dB) as a genuinely played `other` (-5...-13) and reading it put chords under the a
-/// cappella singing (4 -> 7). The boundary is not an empty band (10.4 / 8.2 / 7.9 %), so the
-/// caller also withholds `other` from any song whose bass stem is a vocal shadow. A song where
-/// `other` is not significant leaves it out of the rest test too (`ChordalRestGate`).
-enum ChordSourceFallback {
-    /// `other` must carry the music alone for this share of the song to count as a driver.
-    static let minimumCarriedShare = 0.10
-    /// ...while sounding this close to its own loud level (bleed and residue sit lower).
-    static let carryingDecibels: Float = -20
-
-    /// Share of frames where the primary source rests and the fallback is clearly playing.
-    static func carriedShare(primaryLevels: [Float], fallbackLevels: [Float]) -> Double {
-        let count = min(primaryLevels.count, fallbackLevels.count)
-        guard count > 0 else { return 0 }
-        let primarySounding = SoundingFrameGate.sounding(
-            frameLevels: Array(primaryLevels.prefix(count)))
-        let sorted = fallbackLevels.prefix(count).sorted()
-        let loud = sorted[min(sorted.count - 1, Int(Float(sorted.count) * 0.99))]
-        guard loud > 0 else { return 0 }
-        let carrying = loud * pow(10, carryingDecibels / 20)
-        let carried = (0..<count).filter { !primarySounding[$0] && fallbackLevels[$0] >= carrying }
-        return Double(carried.count) / Double(count)
-    }
-
-    /// - Parameters:
-    ///   - primaryLevels / fallbackLevels: per-frame RMS of each source, one per observation.
-    ///   - fallback: the fallback stem's own frame observations, on the same frame clock.
-    static func applied(
-        primary: [ChordObservation], primaryLevels: [Float],
-        fallback: [ChordObservation], fallbackLevels: [Float]
-    ) -> [ChordObservation] {
-        guard primary.count == primaryLevels.count, fallback.count == fallbackLevels.count else {
-            return primary
-        }
-        let primarySounding = SoundingFrameGate.sounding(frameLevels: primaryLevels)
-        let fallbackSounding = SoundingFrameGate.sounding(frameLevels: fallbackLevels)
-        return primary.indices.map { index in
-            guard !primarySounding[index], index < fallback.count, fallbackSounding[index],
-                // Same frame, or the two analyses are not on one clock and nothing is swapped.
-                abs(fallback[index].timestamp - primary[index].timestamp) < 0.001
-            else { return primary[index] }
-            return fallback[index]
-        }
-    }
-
-    /// Best-effort: an unreadable, residue-only or insignificant `other` leaves the primary
-    /// evidence as it was and reports `otherIsSignificant == false`.
-    static func applied(
-        to primary: [ChordObservation], primaryURLs: [URL], fallbackURL: URL,
-        frameLength: Int = 8_192, hopLength: Int = 4_096
-    ) -> (observations: [ChordObservation], otherIsSignificant: Bool) {
-        var primarySum: [Float] = []
-        for url in primaryURLs {
-            guard let audio = try? MonoAudioFile.samples(url: url), !audio.samples.isEmpty else {
-                continue
-            }
-            if primarySum.isEmpty {
-                primarySum = audio.samples
-            } else {
-                let length = min(primarySum.count, audio.samples.count)
-                vDSP_vadd(primarySum, 1, audio.samples, 1, &primarySum, 1, vDSP_Length(length))
-            }
-        }
-        guard !primarySum.isEmpty,
-            let other = try? MonoAudioFile.samples(url: fallbackURL), !other.samples.isEmpty,
-            // Residue-only `other` is no source at all (the whole-song leakage gate).
-            HarmonyStemMix.keptAfterLeakageGate([
-                HarmonyStemMix.rootMeanSquare(primarySum),
-                HarmonyStemMix.rootMeanSquare(other.samples),
-            ]).contains(1),
-            let configuration = try? AudioAnalysisConfiguration(
-                sampleRate: other.sampleRate, frameLength: frameLength, hopLength: hopLength),
-            let fallback = try? ChordAnalysisPipeline(configuration: configuration)
-                .analyze(samples: other.samples)
-        else { return (primary, false) }
-        func levels(_ samples: [Float], _ observations: [ChordObservation]) -> [Float] {
-            observations.map {
-                SoundingFrameGate.level(
-                    of: samples, from: Int(($0.timestamp * other.sampleRate).rounded()),
-                    count: frameLength)
-            }
-        }
-        let primaryLevels = levels(primarySum, primary)
-        let fallbackLevels = levels(other.samples, fallback)
-        guard
-            carriedShare(primaryLevels: primaryLevels, fallbackLevels: fallbackLevels)
-                >= minimumCarriedShare
-        else { return (primary, false) }
-        return (
-            applied(
-                primary: primary, primaryLevels: primaryLevels,
-                fallback: fallback, fallbackLevels: fallbackLevels),
-            true
-        )
     }
 }
 

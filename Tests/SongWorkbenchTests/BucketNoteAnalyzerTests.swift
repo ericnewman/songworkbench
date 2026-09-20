@@ -245,11 +245,11 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         let rows = BucketNoteRowFormatter.rows(
             timeline: timeline, inWindow: 1.0...2.0, transposedBy: 1)
 
-        // Voice, guitar, then bass last; the empty piano stem is dropped.
-        XCTAssertEqual(rows.map(\.label), ["Ld", "Gt", "Bs"])
+        // Voice, guitar, bass, then the beat's chord on a row of its own; the empty piano stem is
+        // dropped.
+        XCTAssertEqual(rows.map(\.label), ["Ld", "Gt", "Bs", "Ch"])
         XCTAssertEqual(rows[0].cells, [BucketNoteRowCell(time: 1.0, text: "F", isDim: false)])
-        // Guitar E·G#·B transposed up one spells F major; the bucket's combined chord is that same F
-        // on the same cell, so it is not repeated.
+        // Guitar E·G#·B transposed up one spells F major.
         XCTAssertEqual(
             rows[1].cells, [BucketNoteRowCell(time: 1.5, text: "F·A·C (F)", isDim: true)])
         XCTAssertEqual(rows[2].cells.map(\.time), [1.0])  // bucket 6 at 3.0 s is outside
@@ -257,7 +257,7 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertEqual(
             BucketNoteRowFormatter.rows(
                 timeline: timeline, hiddenStems: [StemID(.bass)], inWindow: 0...4
-            ).map(\.label), ["Ld", "Gt"])
+            ).map(\.label), ["Ld", "Gt", "Ch"])
     }
 
     func testChordNamingIsExactAndPrefersTheGivenRoot() {
@@ -278,7 +278,7 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertNil(BucketChordNaming.name(pitchClasses: [0, 4, 7, 2]))
     }
 
-    func testBucketChordAcrossRowsEndsOnTheBassCellAndSkipsHiddenStems() {
+    func testBucketChordAcrossRowsGetsItsOwnRowAndSkipsHiddenStems() {
         let key = BucketGridKey(bpm: 120, anchor: 0, duration: 2)
         let clicks: [TimeInterval] = [0, 0.5, 1.0, 1.5, 2.0]
         let timeline = BucketNoteTimeline(
@@ -307,21 +307,73 @@ final class BucketNoteAnalyzerTests: XCTestCase {
             ])
 
         let rows = BucketNoteRowFormatter.rows(timeline: timeline, inWindow: 0...2)
-        XCTAssertEqual(rows.map(\.label), ["Gt", "Bs"])
+        XCTAssertEqual(rows.map(\.label), ["Gt", "Bs", "Ch"])
         // Beat 0: guitar C·E alone is an interval; with the bass A the beat spells Am.
-        // Beat 1: guitar names its own C, and the bass cell carries the beat's C as well.
         XCTAssertEqual(rows[0].cells.map(\.text), ["C·E", "C·E·G (C)"])
-        XCTAssertEqual(rows[1].cells.map(\.text), ["A (Am)", "C (C)"])
+        // The bass plays ONE note. "A (Am)" on its row read as the bassist playing the chord.
+        XCTAssertEqual(rows[1].cells.map(\.text), ["A", "C"])
+        XCTAssertEqual(rows[2].cells.map(\.text), ["Am", "C"])
+        XCTAssertEqual(rows[2].cells.map(\.time), [0, 0.5])
 
-        // Hiding the bass leaves beat 0 an interval, and beat 1's chord already sits on its cell.
+        // Hiding the bass leaves beat 0 an interval, so only beat 1 has a chord.
         let guitarOnly = BucketNoteRowFormatter.rows(
             timeline: timeline, hiddenStems: [StemID(.bass)], inWindow: 0...2)
-        XCTAssertEqual(guitarOnly.map { $0.cells.map(\.text) }, [["C·E", "C·E·G (C)"]])
+        XCTAssertEqual(guitarOnly.map { $0.cells.map(\.text) }, [["C·E", "C·E·G (C)"], ["C"]])
 
         // Transposed with the chart.
+        let transposed = BucketNoteRowFormatter.rows(
+            timeline: timeline, inWindow: 0...2, transposedBy: 2)
+        XCTAssertEqual(transposed[1].cells.map(\.text), ["B", "D"])
+        XCTAssertEqual(transposed[2].cells.map(\.text), ["Bm", "D"])
+    }
+
+    func testTheBeatChordComesFromTheInstrumentsNeverTheVoices() {
+        // Guitar plays a bare fifth (C·G). A sung E must not turn the band's C5 into C major.
+        let timeline = BucketNoteTimeline(
+            gridKey: BucketGridKey(bpm: 120, anchor: 0, duration: 1), clickTimes: [0, 0.5, 1.0],
+            stems: [
+                StemBucketNotes(
+                    stemID: StemID(.guitar),
+                    notes: [
+                        StemBucketNote(
+                            bucketIndex: 0, midiNote: nil, pitchClasses: [0, 7], confidence: 0.9,
+                            coverage: 1)
+                    ]),
+                StemBucketNotes(
+                    stemID: StemID(.vocals),
+                    notes: [
+                        StemBucketNote(
+                            bucketIndex: 0, midiNote: 64, pitchClasses: [4], confidence: 0.9,
+                            coverage: 1)
+                    ]),
+            ])
+        XCTAssertTrue(
+            BucketNoteRowFormatter.combinedChordNames(stems: timeline.stems, transposedBy: 0)
+                .isEmpty)
+
+        // Nor from `other` or the summed accompaniment: nobody among guitarist, pianist and
+        // bassist plays that chord, so there is no one to give it to.
+        let strays = [
+            StemBucketNotes(
+                stemID: StemID(.other),
+                notes: [
+                    StemBucketNote(
+                        bucketIndex: 0, midiNote: nil, pitchClasses: [0, 4, 7], confidence: 0.9,
+                        coverage: 1)
+                ]),
+            StemBucketNotes(
+                stemID: StemID(rawValue: "accompaniment"),
+                notes: [
+                    StemBucketNote(
+                        bucketIndex: 0, midiNote: nil, pitchClasses: [0, 4, 7], confidence: 0.9,
+                        coverage: 1)
+                ]),
+        ]
+        XCTAssertTrue(
+            BucketNoteRowFormatter.combinedChordNames(stems: strays, transposedBy: 0).isEmpty)
         XCTAssertEqual(
-            BucketNoteRowFormatter.rows(timeline: timeline, inWindow: 0...2, transposedBy: 2)[1]
-                .cells.map(\.text), ["B (Bm)", "D (D)"])
+            BucketNoteRowFormatter.rows(timeline: timeline, inWindow: 0...1).map(\.label),
+            ["Vx", "Gt"])
     }
 
     // MARK: - Helpers

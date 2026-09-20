@@ -1501,7 +1501,9 @@ struct ChordProTabEditor: View {
                             instrumentLanes: config.showsReviewAffordances
                                 ? InstrumentEnergyLanes.lanes(
                                     from: model.stemWaveforms, perStem: instrumentEnergyPerStem,
-                                    hidden: hiddenEnergyStems) : [],
+                                    hidden: hiddenEnergyStems,
+                                    withoutAPart: InstrumentEnergyLanes.stemsWithoutAPart(
+                                        model.stemWaveforms, timeline: model.bucketNotes)) : [],
                             instrumentEnergyPerStem: instrumentEnergyPerStem,
                             wordTimingFindings: config.showsReviewAffordances
                                 ? model.wordTimingFindings : [],
@@ -1708,7 +1710,9 @@ struct ChordProTabEditor: View {
                         Menu("Energy Stems") {
                             ForEach(
                                 InstrumentEnergyLanes.lanes(
-                                    from: model.stemWaveforms, perStem: true, hidden: []),
+                                    from: model.stemWaveforms, perStem: true, hidden: [],
+                                    withoutAPart: InstrumentEnergyLanes.stemsWithoutAPart(
+                                        model.stemWaveforms, timeline: model.bucketNotes)),
                                 id: \.id
                             ) { lane in
                                 Toggle(

@@ -9,6 +9,24 @@ installed. Generated analysis is a draft until the user reviews it.
 
 Source recordings and downloaded model artifacts are not repository content.
 
+## Design objective
+
+**"What did the Guitarist, Bassist, and Pianist play on this song?"**
+
+Every analysis result is an answer to that question for one of those three players, so that each
+can recreate the exact part heard in the recording. Other musicians and sounds are omitted by
+design (Eric, 2026-09-20).
+
+- A chord or note is reported only when it can be attributed to the guitar, the bass or the piano,
+  and it is read from THAT instrument's separated stem — never from the composite signal, the
+  vocals, or the separator's `other` stem.
+- A part that cannot be attributed to one of the three is omitted, even when the harmony it names
+  is correct. "What is the harmony here?" is a different question and is not the product.
+- Nothing is invented for a player who is not playing: a resting stem holds a faint copy of
+  whatever else is sounding, and that residue is not a part. Missing is better than phantom — a
+  musician would learn a part nobody played.
+- Vocals are transcribed as lyrics and sung harmony, never as chords.
+
 ## Glossary
 
 ### Recording
@@ -53,7 +71,8 @@ content only when the user explicitly marks it reviewed.
 ### Chord timeline
 
 Editable timestamped chord observations plus an estimated tempo. Machine chord
-classification produces confidence-bearing draft events.
+classification produces confidence-bearing draft events, read from the guitar and piano stems and
+present only where one of them is sounding (see Design objective).
 
 ### ChordPro draft
 
@@ -83,3 +102,5 @@ processing alone never implies review.
 - Lyrics and chords remain editable regardless of model availability.
 - ChordPro generation is deterministic for the same reviewed inputs and options.
 - UI progress begins when planning or model preparation visibly starts.
+- A machine-detected chord or note is attributable to the guitar, bass or piano stem and sits
+  where that stem is sounding; otherwise it is omitted.
