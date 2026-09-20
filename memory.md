@@ -438,3 +438,11 @@
   harmony (`timing-post-passes`, `bucket-notes`, `solo-transcription`, `instrument-chords`) and
   logs `word-timing ran/measured/from-onsets/kept-asr`. Read it with `/usr/bin/log show` — in zsh
   bare `log` is a builtin and fails with "too many arguments".
+- 2026-09-19: The karaoke refiner's `ORTSession.run` (ONNX Runtime 1.24.2, `ArmKleidiAI::MlasConv`)
+  grows the process ~330 MB per chunk — to 24.2 GB on the 24 GB Mac — and the memory outlives
+  `session = nil` by minutes. Because refiners overlap transcription and harmony, a fresh-separation
+  song pushes the machine into swap and each later song is slower (transcription 46 s -> 1,099 s
+  within one library run). Reproduces in Python with the same model and ORT version, intermittently.
+  `memory.enable_memory_arena_shrinkage` does NOT help. **Detection:** `footprint_mb` climbing with
+  `chunk-N-of-M` in the SECOND separation block of a song, and `heap <pid> -sortBySize` showing
+  hundreds of equal non-object blocks at multiples of 8,192 KB (4 x 2048 x 256 floats).

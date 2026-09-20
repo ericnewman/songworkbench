@@ -4116,3 +4116,27 @@ Not verified: the three render changes (strip slicing, two waveform bar position
 Release but were not looked at in the running app. The 14 GB harmony-stage footprint did not
 reproduce with reused stems (peak RSS 485 MB), so it belongs to the path that waits on the deferred
 refiners; not localized.
+
+### Library re-analysis on the Release build (2026-09-19, 19:01 onward)
+
+Started with `Analysis > Re-analyze All Songs` (AppleScript; the computer-use permission check
+failed although Accessibility was granted). 39 songs.
+
+- [x] Cached-stem songs: ~2 s each (harmony 0.4–0.5 s, transcription 1.0 s, derived passes < 1 s).
+      17 songs in the first minute. Every song logged `word-timing ran=true ... kept-asr=0`.
+- [x] Fresh-separation songs get slower as the run goes on: refiner pace 1.7 s/chunk -> 13 s/chunk,
+      base separation 30 s -> 178 s, transcription 46 s -> 538 s -> 1,099 s, harmony (which waits
+      on the refiners) 43 s -> 597 s. No thermal warning recorded. Swap pinned at 9–10 of ~10 GB.
+- [x] Cause of the memory, corrected from the entry above: it is NOT the harmony stage. Growth is
+      inside the karaoke refiner's `ORTSession.run` (`ArmKleidiAI::MlasConv`), ~330 MB per chunk,
+      to 24.2 GB on a 24 GB Mac. `heap`: C `malloc` blocks at exact tensor sizes (227 x 36 MB,
+      231 x 9 MB, 44 x 48 MB). It outlives `session = nil` by minutes (13 GB four minutes later,
+      while Whisper decoded inside it) and drains slowly.
+- [x] Reproduced OUTSIDE the app: Python `onnxruntime==1.24.2`, same `UVR_MDXNET_KARA_2.onnx`,
+      random input, ~315 MB per run (3.4 -> 6.5 GB over 9 runs, then sagging). Intermittent: two
+      earlier runs of the same script held flat at ~3.2 GB.
+- [x] Tried and rejected: run option `memory.enable_memory_arena_shrinkage = cpu:0` — identical
+      trace with and without it. Reverted; not committed.
+- [ ] Untested candidates: keep the refiner from overlapping Whisper (the overlap is what turns the
+      growth into a swap storm); a different ONNX Runtime version; disabling the KleidiAI kernels;
+      the Core ML execution provider for the refiners. Needs an otherwise idle machine.
