@@ -492,3 +492,7 @@
   and bass only and sits on its own row ("Ch") instead of on the bass cell, where "A (Am)" read as
   the bassist playing a chord. **Detection:** any result whose source is the mix, the vocals,
   `other`, or the summed accompaniment is out of scope, however well it scores.
+- 2026-09-20: the separator's `other` stem has no note row, no solo tab and no instrument-energy
+  lane when the song has a guitar or piano stem (`BucketNotePass.withoutOtherMusicians`,
+  `buckets-4`) — Eric, applying the design objective. A legacy four-stem set keeps `other`: it is
+  the only instrument stem there. The stem's AUDIO is untouched and still in the mixer.

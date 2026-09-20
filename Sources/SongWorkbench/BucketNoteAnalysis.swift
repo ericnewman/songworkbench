@@ -62,7 +62,8 @@ struct BucketNoteTimeline: Codable, Equatable, Sendable {
     /// Bump when detection or aggregation semantics change so stored timelines recompute.
     // buckets-3: a bass stem that is only a shadow of the singing is left out (`VocalShadowGate`),
     // and so is an instrument stem that is only separation residue (`withoutPhantomInstruments`).
-    static let currentVersionTag = "buckets-3"
+    // buckets-4: no row for the separator's `other` stem when a guitar or piano stem exists.
+    static let currentVersionTag = "buckets-4"
 
     var versionTag: String
     var gridKey: BucketGridKey
@@ -370,12 +371,30 @@ enum BucketNotePass {
         }
         // A bass stem that is only a shadow of the singing has no part to show (`VocalShadowGate`).
         let vocalsURL = document.stems?.resolved().vocals
-        let pitched = entries.filter { entry in
+        let pitched = withoutOtherMusicians(entries).filter { entry in
             guard let role = BucketNoteAnalyzer.role(for: entry.id) else { return false }
             guard role == .bass, let vocalsURL else { return true }
             return !VocalShadowGate.isShadow(stemURL: entry.url, vocalsURL: vocalsURL)
         }
         return withoutPhantomInstruments(pitched).sorted { $0.id < $1.id }
+    }
+
+    /// Drops the separator's `other` stem (and any refined child of it).
+    ///
+    /// The timeline answers "what did the guitarist, bassist and pianist play?" (CONTEXT.md, Design
+    /// objective); `other` is nobody's chair, so it gets no row — and, since the solo pass reads
+    /// this list, no solo tab either. A legacy stem set with neither a guitar nor a piano stem
+    /// keeps it: there `other` is the only instrument stem the song has.
+    static func withoutOtherMusicians(_ entries: [(id: StemID, url: URL)])
+        -> [(id: StemID, url: URL)]
+    {
+        func root(_ id: StemID) -> StemKind? {
+            StemKind(rawValue: id.rawValue.split(separator: ".").first.map(String.init) ?? "")
+        }
+        guard entries.contains(where: { root($0.id) == .guitar || root($0.id) == .piano }) else {
+            return entries
+        }
+        return entries.filter { root($0.id) != .other }
     }
 
     /// Drops an instrument stem that is only separation residue.

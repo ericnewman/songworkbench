@@ -4400,3 +4400,15 @@ against the library documents written an hour earlier by `reduce-33`:
 The leftovers sit on rest boundaries. Not verified in the running app: the "Ch" row, the bass row
 without its chord suffix, and the instrument-energy lanes — they compile and their formatter and
 lane logic are unit-tested, but nobody has looked at them on screen.
+
+### 2026-09-20 (later) — `other` out of the note timeline
+
+Eric: "remove the `other` rows from the note timeline too."
+
+- [x] `BucketNotePass.withoutOtherMusicians`: no note row for the separator's `other` stem (or a
+      refined child) when the song has a guitar or piano stem. A legacy four-stem set keeps it —
+      there `other` is the only instrument stem. `buckets-4`.
+- [x] Follows from it, by design: the solo pass reads the same stem list, so `other` gets no solo
+      tab; and the preview hides instrument energy for a pitched stem without a note row
+      (`InstrumentEnergyLanes.stemsWithoutAPart`), so `other` leaves the energy strip too.
+- [x] 1,201 tests, 0 failures.

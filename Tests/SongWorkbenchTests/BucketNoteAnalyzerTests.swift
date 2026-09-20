@@ -408,6 +408,20 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         return url
     }
 
+    func testTheOtherStemGetsNoNoteRowWhenThereIsAGuitaristOrPianistToSpeakFor() {
+        let url = URL(fileURLWithPath: "/dev/null")
+        func ids(_ raw: [String]) -> [String] {
+            BucketNotePass.withoutOtherMusicians(raw.map { (StemID(rawValue: $0), url) })
+                .map(\.id.rawValue)
+        }
+        // Six-stem set: `other` is some other musician, omitted by design — children included.
+        XCTAssertEqual(
+            ids(["vocals", "bass", "guitar.lead", "piano", "other", "other.synth"]),
+            ["vocals", "bass", "guitar.lead", "piano"])
+        // Legacy four-stem set: `other` is the only instrument stem there is.
+        XCTAssertEqual(ids(["vocals", "bass", "other"]), ["vocals", "bass", "other"])
+    }
+
     func testAnInstrumentStemThatIsOnlyResidueGetsNoNoteRow() throws {
         // Seven Bridges Road, 2026-09-20: the piano stem sat 56 dB below the guitar on a recording
         // with no piano; self-normalisation amplified the bleed and reported 40 notes on it.
