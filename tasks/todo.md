@@ -4412,3 +4412,66 @@ Eric: "remove the `other` rows from the note timeline too."
       tab; and the preview hides instrument energy for a pitched stem without a note row
       (`InstrumentEnergyLanes.stemsWithoutAPart`), so `other` leaves the energy strip too.
 - [x] 1,201 tests, 0 failures.
+
+## 2026-09-20 (night) — Two sets of chords, the blue Am, and the late line-openers
+
+Eric, with a screenshot of a Chorus row: "why two sets of chords, and where is the blue Am coming
+from, as there is no bass being played here", and "look into why opening words land late".
+
+### What the row shows
+
+- The large chords are the song's MAIN chord line (decoded from the guitar + piano mix, then
+  bass-informed re-rooting, chorus consensus, audits). The small chords on the row labelled "GtC"
+  are the GUITAR'S OWN chord track (`InstrumentChordPass`, that stem alone). Two detectors.
+- A main-line chord is colored by the one instrument whose own track has it sounding at that
+  moment. With no such instrument the label fell back to the accent tint — `swAccent`, which is
+  ALSO the bass lane color. The blue Am is not a bass chord: it is a chord nobody is credited with.
+- The "D" printed over "GtC": the row label is drawn at x = 0 and so is any cell at the row's
+  first instant, including every chord row's dimmed carried-over cell.
+
+### Measured (39 songs, 6,364 main-line chords)
+
+| | chords | share |
+| --- | ---: | ---: |
+| same chord sounding on an instrument's own track at that moment | 4,699 | 73.8 % |
+| same chord on a track, starting within 2 beats (the two detectors disagree on WHEN) | 482 | 7.6 % |
+| same root within 2 beats, different quality (Am vs A) | 143 | 2.2 % |
+| a chord no instrument track plays anywhere in the song | 87 | 1.4 % |
+| a chord the tracks do play, but nowhere near this moment | 953 | 15.0 % |
+
+So ~16 % of main-line chords (1,040) have no support from any player's own track even with a
+2-beat tolerance. Guitar-only songs are the worst (34 % unconfirmed strictly) although both
+detectors listen to the same stem there, so the difference is in the main line's later passes.
+
+### Done
+
+- [x] An uncredited chord is drawn dim neutral, a chord guitar AND piano both play in primary
+      text, one player's chord in that lane's color. The accent tint remains only when a song has
+      no instrument tracks to consult.
+- [x] A cell that would print over its row label clears it.
+
+### Open — Eric's call
+
+- [ ] CHORD-007 says an unattributable chord is omitted. Applying it to the main line means
+      dropping ~16 % of chords (or re-deriving the main line as the union of the players' own
+      tracks, which is the cleaner end state and a larger change). Not done: the instrument tracks
+      are themselves detectors, and a main-line chord they miss is not proven wrong.
+
+### Late line-openers — the earlier claim does not hold up
+
+Yesterday's "93 of 209 line openers land > 50 ms late, 8 early" measured each word against the
+sharpest energy rise within 0.4 s. Re-examined on Beach Weather with the alignment model itself
+(PyTorch reference, saved raw aligner output, the vocal stem):
+
+- [x] On all 38 line openers the aligner puts the word on the FIRST frame where the model hears any
+      phoneme. No opener had >= 70 ms of phoneme activity before its aligned start. The Viterbi
+      search adds no delay.
+- [x] Measured against the vocal level instead, most openers "saturated": the stem is never quiet
+      in the 0.6 s before the line (backing vocals, ad-libs, reverb). The rise yesterday's metric
+      latched onto was usually NOT the transcribed word's. That metric over-reports lateness on any
+      stem with continuous vocal activity, which is most of them.
+- [x] On the 8-10 openers with real silence beforehand: raw aligner about +40 ms (one 34.8 ms model
+      frame — CTC models spike inside a phoneme, not at its acoustic start), final app time about
+      +25 ms after the onset snap.
+- [ ] So the defensible statement is: line openers are about one model frame late, not 150 ms.
+      Anything stronger needs tap-annotated ground truth, which still does not exist.

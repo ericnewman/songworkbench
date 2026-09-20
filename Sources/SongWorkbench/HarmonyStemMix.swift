@@ -337,9 +337,19 @@ enum InstrumentChordAgreement {
     static func instrument(
         forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack]
     ) -> StemID? {
-        let agreeing = tracks.filter { sounding(in: $0, at: time)?.chord == chord }.map(\.stemID)
+        let agreeing = agreeingStems(forChord: chord, at: time, tracks: tracks)
         let kinds = Set(agreeing.map { $0.rawValue.split(separator: ".").first.map(String.init) })
         return kinds.count == 1 ? agreeing.first : nil
+    }
+
+    /// Every stem whose own chord track has `chord` sounding at `time`. Empty means no player
+    /// can be credited with the chord — which must not LOOK like a credit: the label used to fall
+    /// back to the accent tint, the same blue as the bass lane, and read as "the bass plays Am"
+    /// on a passage with no bass (Eric, 2026-09-20).
+    static func agreeingStems(
+        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack]
+    ) -> [StemID] {
+        tracks.filter { sounding(in: $0, at: time)?.chord == chord }.map(\.stemID)
     }
 }
 

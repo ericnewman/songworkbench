@@ -146,6 +146,13 @@ final class InstrumentChordPassTests: XCTestCase {
             InstrumentChordAgreement.instrument(forChord: "C", at: 1, tracks: tracks),
             "a chord both instruments play belongs to neither")
         XCTAssertNil(InstrumentChordAgreement.instrument(forChord: "F", at: 1, tracks: tracks))
+        // "Belongs to neither" hides two opposite cases the label must tell apart: both players
+        // have the chord (credited), or nobody does (uncredited — not to be drawn in a lane color).
+        XCTAssertEqual(
+            InstrumentChordAgreement.agreeingStems(forChord: "C", at: 1, tracks: tracks),
+            [StemID(.guitar), StemID(.piano)])
+        XCTAssertTrue(
+            InstrumentChordAgreement.agreeingStems(forChord: "F", at: 1, tracks: tracks).isEmpty)
         let refined = [
             track(.guitarLead, [(0, "C")]), track(.guitarRhythm, [(0, "C")]),
             track(StemID(.piano), [(0, "F")]),

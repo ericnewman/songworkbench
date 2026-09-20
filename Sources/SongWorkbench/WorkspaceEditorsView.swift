@@ -4826,11 +4826,15 @@ private struct ChordProPreviewLineView: View {
                 .font(.swDisplay(scale.scaled(9), weight: .semibold))
                 .foregroundStyle(rowColor.opacity(0.85))
                 .offset(x: 0, y: rowY)
+            // The label sits at x = 0, and so does any cell at the row's first instant — every
+            // chord row's dimmed "still sounding from the row before" cell among them — which
+            // printed one on top of the other ("D" over "GtC"). A colliding cell clears the label.
+            let labelReserve = scale.scaled(26)
             ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
                 Text(cell.text)
                     .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
                     .foregroundStyle(rowColor.opacity(cell.isDim ? 0.45 : 1))
-                    .offset(x: entry.xs[index], y: rowY)
+                    .offset(x: max(entry.xs[index], labelReserve), y: rowY)
             }
         }
         ForEach(Array(soloBlocks.enumerated()), id: \.offset) { blockIndex, entry in
@@ -4993,12 +4997,20 @@ private struct ChordProPreviewLineView: View {
         soundingChordIndex == index
     }
 
-    /// Foreground for a chord label: amber while sounding; otherwise the color of the one
-    /// instrument playing that chord when instrument chords are shown; else the accent tint.
+    /// Foreground for a chord label: amber while sounding. With instrument chords shown, the
+    /// color says who plays it — that instrument's lane color for one player, primary text when
+    /// guitar AND piano both play it, and a dim neutral when NO player's own track has it. The
+    /// accent tint is only the fallback when there are no instrument tracks to consult: it is the
+    /// bass lane's blue, and used for "nobody" it read as a bass chord.
     private func chordLabelStyle(at index: Int) -> AnyShapeStyle {
         if isChordSounding(at: index) { return AnyShapeStyle(Color.swAmber) }
         if let color = instrumentChordColor(at: index) { return AnyShapeStyle(color) }
-        return AnyShapeStyle(.tint)
+        guard !instrumentChordTracks.isEmpty, rowChordEvents.indices.contains(index),
+            rowChordTimes.indices.contains(index), let event = rowChordEvents[index]
+        else { return AnyShapeStyle(.tint) }
+        let credited = InstrumentChordAgreement.agreeingStems(
+            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks)
+        return AnyShapeStyle(credited.isEmpty ? Color.swTextSecondary.opacity(0.6) : .swTextPrimary)
     }
 
     private func instrumentChordColor(at index: Int) -> Color? {
