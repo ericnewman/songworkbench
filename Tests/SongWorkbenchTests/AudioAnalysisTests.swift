@@ -1186,6 +1186,18 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(gated.map(\.timestamp), observations.map(\.timestamp))
     }
 
+    func testAnAttackDetectedWhileThePlayersRestIsNotAnAttack() {
+        // The onset detector thresholds against local level, so it fires on noise in a rest.
+        let reference = [Float](repeating: 0.2, count: 90) + [Float](repeating: 0.000_2, count: 10)
+        let kept = ChordalRestGate.sounding(
+            [0.55, 1.02, 2.0, 2.4], levels: [0.000_2, 0.000_3, 0.05, 0.2],
+            referenceLevels: reference)
+        XCTAssertEqual(kept, [2.0, 2.4])
+        // Nothing to judge by: every attack is kept.
+        XCTAssertEqual(
+            ChordalRestGate.sounding([0.5], levels: [0], referenceLevels: []), [0.5])
+    }
+
     // MARK: - VocalShadowGate
 
     /// 60 s of per-hop levels: the vocals sing, rest for 15 s, and sing again.

@@ -645,6 +645,48 @@ enum ChordalRestGate {
             })
     }
 
+    /// The `times` at which the summed stems are sounding (a short window centred on each), by the
+    /// same floor. With no readable stem nothing is known, and every time is kept.
+    static func sounding(_ times: [TimeInterval], stemURLs: [URL], windowSeconds: Double = 0.1)
+        -> [TimeInterval]
+    {
+        var sum: [Float] = []
+        var sampleRate = 0.0
+        for url in stemURLs {
+            guard let audio = try? MonoAudioFile.samples(url: url), !audio.samples.isEmpty else {
+                continue
+            }
+            if sum.isEmpty {
+                sum = audio.samples
+                sampleRate = audio.sampleRate
+            } else {
+                let length = min(sum.count, audio.samples.count)
+                vDSP_vadd(sum, 1, audio.samples, 1, &sum, 1, vDSP_Length(length))
+            }
+        }
+        guard !sum.isEmpty, sampleRate > 0 else { return times }
+        let window = max(1, Int(windowSeconds * sampleRate))
+        // The loud level comes from the whole stem, not from the attack moments alone.
+        let reference = stride(from: 0, to: sum.count, by: window).map {
+            SoundingFrameGate.level(of: sum, from: $0, count: window)
+        }
+        let levels = times.map {
+            SoundingFrameGate.level(
+                of: sum, from: max(0, Int($0 * sampleRate)), count: window)
+        }
+        return sounding(times, levels: levels, referenceLevels: reference)
+    }
+
+    static func sounding(_ times: [TimeInterval], levels: [Float], referenceLevels: [Float])
+        -> [TimeInterval]
+    {
+        let sorted = referenceLevels.sorted()
+        guard let last = sorted.last, last > 0, times.count == levels.count else { return times }
+        let loud = sorted[min(sorted.count - 1, Int(Float(sorted.count) * 0.99))]
+        let floor = loud * pow(10, SoundingFrameGate.floorDecibels / 20)
+        return times.indices.filter { levels[$0] >= floor }.map { times[$0] }
+    }
+
     static func applied(to observations: [ChordObservation], frameLevels: [Float])
         -> [ChordObservation]
     {

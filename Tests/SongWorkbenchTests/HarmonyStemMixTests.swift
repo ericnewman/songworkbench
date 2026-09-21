@@ -128,6 +128,26 @@ final class InstrumentChordPassTests: XCTestCase {
         XCTAssertEqual(StemKind.piano.laneColor, .swTeal)
     }
 
+    func testPlayerRestsAreSustainedSilencesNotTheSpaceBetweenStrums() {
+        // 0.1 s hops: 3 s playing, a 0.4 s dip between strums, 2 s playing, a 4 s rest, 1 s playing.
+        let levels =
+            [Float](repeating: 0.2, count: 30) + [Float](repeating: 0.000_1, count: 4)
+            + [Float](repeating: 0.2, count: 20) + [Float](repeating: 0.000_1, count: 40)
+            + [Float](repeating: 0.2, count: 10)
+        let rests = PlayerRests.intervals(levels: levels)
+        XCTAssertEqual(rests.count, 1)
+        XCTAssertEqual(rests[0].lowerBound, 5.4, accuracy: 0.001)
+        XCTAssertEqual(rests[0].upperBound, 9.4, accuracy: 0.001)
+
+        // A chord struck at 4 s is cut off by that rest; one struck after it is not.
+        XCTAssertTrue(PlayerRests.interrupts(rests, chordTime: 4, at: 7))
+        XCTAssertTrue(PlayerRests.interrupts(rests, chordTime: 4, at: 9.8), "cut off, not resumed")
+        XCTAssertFalse(PlayerRests.interrupts(rests, chordTime: 4, at: 5))
+        XCTAssertFalse(PlayerRests.interrupts(rests, chordTime: 9.5, at: 10))
+        XCTAssertEqual(PlayerRests.end(of: 4, rests: rests), 5.4)
+        XCTAssertNil(PlayerRests.end(of: 9.5, rests: rests))
+    }
+
     func testAChordBelongsToTheOneInstrumentPlayingIt() {
         func track(_ id: StemID, _ chords: [(TimeInterval, String)]) -> InstrumentChordTrack {
             InstrumentChordTrack(

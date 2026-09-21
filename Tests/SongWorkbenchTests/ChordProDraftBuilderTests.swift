@@ -340,6 +340,29 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertFalse(document.contains("[C]Cool sand"), document)
     }
 
+    func testAChordIsNotRestatedOnceThePlayerHasStopped() {
+        // Same song as above, but the guitarist stops at 10 s and the verse is a cappella — Seven
+        // Bridges Road. Restating [C] on the sung line tells the player to play what nobody plays.
+        var input = ChordProDraftInput(
+            title: "A cappella verse",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 16, end: 18, text: "Warm sun kisses my nose"),
+                TimedLyricSegment(start: 18, end: 20, text: "Cool sand under my toes"),
+            ],
+            chords: [EditableChordEvent(time: 2, chord: "C", confidence: 0.9)],
+            beatTimes: stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        )
+        input.playerRests = [10...20]
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertFalse(document.contains("[C]Warm sun"), document)
+        XCTAssertTrue(document.contains("Warm sun kisses my nose"), document)
+
+        // A rest that ended BEFORE the chord was struck interrupts nothing.
+        input.playerRests = [0...1.5]
+        XCTAssertTrue(ChordProDraftBuilder().build(input).contains("[C]Warm sun"))
+    }
+
     func testRestatementSkippedWhenLineAlreadyStartsWithChord() {
         let input = ChordProDraftInput(
             title: "Already Chorded",

@@ -13,6 +13,9 @@ struct ChordProDraftInput: Equatable, Sendable {
     /// Sung-but-untranscribed spans (audit RC-4); rows overlapping these are flagged on the
     /// timeline so consumers don't present them as purely instrumental.
     var untranscribedVocalRegions: [ClosedRange<TimeInterval>] = []
+    /// Stretches where guitar and piano are not playing (`InstrumentChordTimeline.rests`). A held
+    /// chord is never restated inside one, or after one has cut it off.
+    var playerRests: [ClosedRange<TimeInterval>] = []
     /// Detected key, emitted as a `{key: …}` directive (reconstruction plan B1).
     var estimatedKey: MusicalKey? = nil
     /// The song's ONE bar grid. Supplied rather than re-derived: this builder used to estimate
@@ -572,10 +575,14 @@ struct ChordProDraftBuilder: Sendable {
             if !lines.isEmpty { lines.append("") }
             lines.append("{comment: \(directiveValue("\(label) · \(barCount(bars)) bars"))}")
         }
+        // The chord the player is STILL holding at `time`. A rest ends the hold: restating "Am"
+        // on a row inside an a cappella passage tells the guitarist to play what nobody plays.
         func held(at time: TimeInterval) -> RenderableChordEvent? {
-            chords.last { $0.time < time }.map {
-                RenderableChordEvent(time: time, label: $0.label, confidence: $0.confidence)
-            }
+            guard let chord = chords.last(where: { $0.time < time }),
+                !PlayerRests.interrupts(input.playerRests, chordTime: chord.time, at: time)
+            else { return nil }
+            return RenderableChordEvent(
+                time: time, label: chord.label, confidence: chord.confidence)
         }
 
         let firstLyricSpan = spans.firstIndex { $0.line != nil }

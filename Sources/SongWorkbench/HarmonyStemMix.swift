@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 /// Builds the single mono signal that chord detection listens to, by weighting several isolated
@@ -182,16 +183,26 @@ struct InstrumentChordTrack: Codable, Equatable, Sendable {
 struct InstrumentChordTimeline: Codable, Equatable, Sendable {
     /// Bump when detection changes so stored timelines recompute.
     // instrument-chords-2: a stem's resting frames carry no chord evidence (`SoundingFrameGate`).
-    static let currentVersionTag = "instrument-chords-2"
+    // instrument-chords-3: records `rests`, the stretches where guitar and piano are not playing.
+    static let currentVersionTag = "instrument-chords-3"
 
     var versionTag: String
     var gridKey: BucketGridKey
     var tracks: [InstrumentChordTrack]
+    /// Stretches of at least `PlayerRests.minimumSeconds` where guitar + piano together are not
+    /// sounding. The chord timeline stores CHANGES only, so without these nothing says "stop":
+    /// the chart restated a held chord across an a cappella passage and could not end a chord's
+    /// hold line. Optional so timelines stored before it still decode.
+    var rests: [ClosedRange<TimeInterval>]?
 
-    init(gridKey: BucketGridKey, tracks: [InstrumentChordTrack]) {
+    init(
+        gridKey: BucketGridKey, tracks: [InstrumentChordTrack],
+        rests: [ClosedRange<TimeInterval>] = []
+    ) {
         self.versionTag = Self.currentVersionTag
         self.gridKey = gridKey
         self.tracks = tracks
+        self.rests = rests
     }
 
     /// True when this timeline was detected on `key` by the current detector.
@@ -230,7 +241,9 @@ enum InstrumentChordPass {
         }
         let found = tracks(for: loaded, document: document)
         guard !found.isEmpty else { return nil }
-        return InstrumentChordTimeline(gridKey: key, tracks: found)
+        return InstrumentChordTimeline(
+            gridKey: key, tracks: found,
+            rests: PlayerRests.intervals(stems: loaded.map { ($0.samples, $0.sampleRate) }))
     }
 
     /// One track per stem that clears the leakage gate and yields chords.
@@ -322,6 +335,67 @@ enum InstrumentChordPass {
 }
 
 /// Which instrument a chart chord belongs to, from the per-instrument tracks.
+/// When the guitarist and the pianist are NOT playing: runs where the guitar + piano sum stays more
+/// than `SoundingFrameGate.floorDecibels` below its loud level.
+enum PlayerRests {
+    static let hopSeconds = 0.1
+    /// Shorter dips are the space between strums, not a rest.
+    static let minimumSeconds = 1.0
+
+    static func intervals(stems: [(samples: [Float], sampleRate: Double)])
+        -> [ClosedRange<TimeInterval>]
+    {
+        guard let sampleRate = stems.first?.sampleRate, sampleRate > 0 else { return [] }
+        var sum: [Float] = []
+        for stem in stems where stem.sampleRate == sampleRate {
+            if sum.isEmpty {
+                sum = stem.samples
+            } else {
+                let length = min(sum.count, stem.samples.count)
+                vDSP_vadd(sum, 1, stem.samples, 1, &sum, 1, vDSP_Length(length))
+            }
+        }
+        let hop = max(1, Int(hopSeconds * sampleRate))
+        let levels = stride(from: 0, to: sum.count, by: hop).map {
+            SoundingFrameGate.level(of: sum, from: $0, count: hop)
+        }
+        return intervals(levels: levels)
+    }
+
+    static func intervals(levels: [Float]) -> [ClosedRange<TimeInterval>] {
+        let sounding = SoundingFrameGate.sounding(frameLevels: levels)
+        var rests: [ClosedRange<TimeInterval>] = []
+        var runStart: Int?
+        for index in 0...sounding.count {
+            let resting = index < sounding.count && !sounding[index]
+            if resting {
+                runStart = runStart ?? index
+            } else if let start = runStart {
+                let from = Double(start) * hopSeconds
+                let to = Double(index) * hopSeconds
+                if to - from >= minimumSeconds { rests.append(from...to) }
+                runStart = nil
+            }
+        }
+        return rests
+    }
+
+    /// True when the player is not holding a chord struck at `chordTime` any more at `time`:
+    /// `time` is inside a rest, or a rest began after the chord and before `time`.
+    static func interrupts(
+        _ rests: [ClosedRange<TimeInterval>], chordTime: TimeInterval, at time: TimeInterval
+    ) -> Bool {
+        rests.contains { $0.lowerBound > chordTime && $0.lowerBound <= time || $0.contains(time) }
+    }
+
+    /// Where a chord struck at `chordTime` stops being held: the first rest that begins after it.
+    static func end(of chordTime: TimeInterval, rests: [ClosedRange<TimeInterval>])
+        -> TimeInterval?
+    {
+        rests.map(\.lowerBound).filter { $0 > chordTime }.min()
+    }
+}
+
 enum InstrumentChordAgreement {
     /// The chord `track` has sounding at `time`: its latest visible change at or before
     /// `time + grace`, so a change landing just after the chart chord's onset still counts.

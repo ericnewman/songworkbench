@@ -496,3 +496,11 @@
   lane when the song has a guitar or piano stem (`BucketNotePass.withoutOtherMusicians`,
   `buckets-4`) — Eric, applying the design objective. A legacy four-stem set keeps `other`: it is
   the only instrument stem there. The stem's AUDIO is untouched and still in the mixer.
+- 2026-09-20: a chord event sits on the first decode window that HAS evidence for it
+  (`ChordTimelineDecoder.events(path:windows:)`); an event at confidence exactly 0.6 was the old
+  default for "no evidence" and meant the chord had been backfilled into a rest. Attacks for the
+  main chord line come from guitar + piano only and only where they sound — the onset detector
+  thresholds against local level and fires on noise in silence. `InstrumentChordTimeline.rests`
+  (`PlayerRests`, >= 1 s) is the only record of when the players stop: the chart builder does not
+  restate a held chord through one, a chord's hold line ends at one, and the same chord returning
+  after one is a new event. A chord name is never drawn in the accent tint (it is the bass blue).

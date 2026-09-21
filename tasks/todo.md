@@ -4488,3 +4488,64 @@ sharpest energy rise within 0.4 s. Re-examined on Beach Weather with the alignme
 - [ ] Still true underneath: the chart line and a player's own track are two detectors and can
       place the same chord up to two beats apart (7.6 % of chords). One chord line built from the
       players' tracks would end that; see the open item above.
+
+## 2026-09-20 (21:30) — Chords arrive with the strum; rests; hold lines
+
+Eric, on Seven Bridges Road's opening: "why is the chord not arriving at the time of the visual
+audio onset"; "fix the blue D restated on row 2"; "if bass notes are turned off from the view menu,
+then I wouldn't expect to be seeing any blue notes"; "don't restate a chord while the player is
+resting — similar to the vocal continuation lines ... can we try similar lines for held chords".
+
+### Findings
+
+- The guitar sits at -59...-73 dB until 2.00 s, then -14 and -5 dB: the strum is at ~2.0 s. The
+  opening D was stored at 0.11 s with confidence exactly 0.6 — the decoder's default for a window
+  with NO evidence. The grid is extended back to the song start, `ChordalRestGate` blanks those
+  windows, and the Viterbi finds it cheaper to be on D from the first window than to pay a switch
+  penalty when D arrives. The event then took the run's first window.
+- `InstrumentOnsetDetector` thresholds against LOCAL level, so it fires on noise in near-silence:
+  "attacks" at 0.55, 1.02, 1.33, 1.64 s under a -60 dB guitar. Attacks came from guitar, piano AND
+  `other`, and chords are snapped to them: the re-entry chord sat on a noise attack at 45.61 s.
+- The blue D on row 2 was the chart builder restating the held chord "so no row is blank". No
+  event stands behind a restatement, so the label fell through to the accent tint (= bass blue).
+- The chord timeline stores CHANGES only. Nothing said "the player stopped", so a held chord was
+  restated across an a cappella passage, and a hold line would have had nowhere to end.
+
+### Done
+
+- [x] `ChordTimelineDecoder.events(path:windows:)`: an event sits on the first window of its run
+      that has evidence for it; a run with none yields no event; no-chord ends the run, so the
+      same chord coming back after a rest is a new arrival.
+- [x] Attacks for the main chord line come from guitar + piano only, and only where those stems
+      are sounding (`ChordalRestGate.sounding`). Harmony `reduce-35`.
+- [x] `InstrumentChordTimeline.rests` (`PlayerRests`): stretches >= 1 s where guitar + piano are
+      not sounding. `instrument-chords-3`. Threaded to every `ChordProDraftInput` (the stage and
+      six sites in AppModel) as `playerRests`.
+- [x] `ChordProDraftBuilder.held(at:)` returns nothing inside a rest or after one has cut the
+      chord off.
+- [x] Preview: chord hold lines (to the next chord or the next rest, clipped like word hold
+      lines, in the chord's own color); a chord name is never the accent tint — a restatement is
+      dim, an uncredited chord dimmer, a chord both players have is primary text.
+
+### Review
+
+39 songs, the library's `reduce-34` documents against this change:
+
+| | before | after |
+| --- | ---: | ---: |
+| chords | 6,364 | 5,695 |
+| chords placed where guitar + piano rest | 84 | 24 |
+| chord vs nearest strike, IQR | -83...+131 ms | -16...+85 ms |
+| more than 100 ms from a strike | 50.3 % | 40.8 % |
+
+Seven Bridges: opening D 0.11 -> 1.95 s (strum ~2.0); re-entry 45.61 -> 45.97 s (the guitar's own
+track: 45.98); rests 0-2.0, 7.8-44.5, 44.6-45.7, 133.6-184.9 s; the a cappella verse rows carry no
+chords and nothing is restated there.
+
+The 10.5 % fewer chords is NOT spread evenly: -16...-25 % on the songs where `other` plays (One
+night on Broadway, Moving on, You and me in paradise, Settle Down), whose `other` attacks — 29 % of
+all attacks library-wide — had been licensing chord changes; about 0 % elsewhere. Chords per bar
+there fall ~1.6 -> ~1.25. Consistent with the objective and with the measured 2x over-segmentation,
+but not checked against a chart for those songs. 1,208 tests, 0 failures.
+
+Not seen on screen: hold lines, dim restatements, the no-blue rule.

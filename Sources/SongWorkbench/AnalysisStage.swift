@@ -1064,6 +1064,10 @@ struct HarmonyStage: AnalysisStageRunning {
                         // reduce-34: a chord must be attributable to the guitarist or the pianist.
                         // `other` is out of the chord source and the rest test on every song.
                         + "|reduce-34-guitar-or-piano-only"
+                        // reduce-35: a chord event starts at the first window with evidence for it
+                        // (no backfilling into a rest); attacks come from guitar + piano only and
+                        // count only where those stems are sounding.
+                        + "|reduce-35-chords-arrive-with-the-strum"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1129,14 +1133,24 @@ struct HarmonyStage: AnalysisStageRunning {
             // major, drums are broadband noise, and bass moves under held chords.
             // Loaded one stem at a time (each is released before the next) so this costs no
             // extra peak memory over the single-stem version.
+            // Guitar and piano only (Design objective): an attack in the separator's `other` stem
+            // is nobody's strum, and chords were being snapped to it. A legacy stem set with
+            // neither stem keeps its old sources.
+            let playerStems: [URL] = {
+                guard let stems = context.document.stems?.resolved() else { return [] }
+                return [stems.guitar, stems.piano].compactMap { $0 }
+            }()
             let onsetStems: [URL] = {
                 guard let stems = context.document.stems?.resolved() else { return [] }
-                let candidates = [stems.guitar, stems.piano, stems.other]
-                let present = candidates.compactMap { $0 }
-                return present.isEmpty ? [stems.accompaniment].compactMap { $0 } : present
+                guard playerStems.isEmpty else { return playerStems }
+                return [stems.other, stems.accompaniment].compactMap { $0 }
             }()
-            let instrumentOnsets: [TimeInterval] = InstrumentOnsetDetector.mergedOnsets(
-                urls: onsetStems)
+            // The detector thresholds against LOCAL level, so in near-silence it fires on noise:
+            // Seven Bridges Road had "attacks" at 0.55, 1.02, 1.33, 1.64 s under a guitar at
+            // -60 dB, and its re-entry chord was snapped to one at 45.61 s, 0.15 s before the
+            // strum. An attack counts only where guitar + piano are sounding.
+            let instrumentOnsets: [TimeInterval] = ChordalRestGate.sounding(
+                InstrumentOnsetDetector.mergedOnsets(urls: onsetStems), stemURLs: playerStems)
             // Key-aware Viterbi decoding over beat windows: a diatonic prior scales frame
             // evidence and a switch penalty smooths window-to-window flicker, with a no-chord
             // state absorbing weak-evidence windows (quiet intros/fades). Replaces independent
@@ -1393,6 +1407,7 @@ struct ChordProStage: AnalysisStageRunning {
                     beatTimes: document.beatTimes,
                     sourceDuration: document.sourceDuration,
                     untranscribedVocalRegions: document.untranscribedVocalRegions,
+                    playerRests: document.instrumentChords?.rests ?? [],
                     estimatedKey: document.estimatedKey,
                     barGrid: document.barGrid,
                     bassNotes: document.bassNotes,

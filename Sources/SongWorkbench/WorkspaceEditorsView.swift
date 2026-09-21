@@ -3308,6 +3308,7 @@ struct ChordProAppPreview: View {
         let rowWordStarts = Set(lineWords.map(\.start))
         let rowWordFindings = wordTimingFindings.filter { rowWordStarts.contains($0.start) }
         let rowInstrumentChordTracks = visibleInstrumentChordTracks
+        let rowPlayerRests = instrumentChords?.rests ?? []
         // Every argument below is pre-computed into its own `let`
         // (rather than inlined as an expression in the call) —
         // this view's `ChordProPreviewBlockView(...)` call has
@@ -3376,6 +3377,7 @@ struct ChordProAppPreview: View {
             instrumentEnergyOutlined: instrumentEnergyPerStem,
             wordTimingFindings: rowWordFindings,
             instrumentChordTracks: rowInstrumentChordTracks,
+            playerRests: rowPlayerRests,
             lineNumber: item.displayLineNumber,
             trailingRestSeconds: itemTrailingRest,
             hasUntranscribedVocals: itemHasUntranscribed,
@@ -4156,6 +4158,8 @@ private struct ChordProPreviewBlockView: View {
     var wordTimingFindings: [WordTimingFinding] = []
     /// The instrument chord tracks this row's chord names are colored by.
     var instrumentChordTracks: [InstrumentChordTrack] = []
+    /// Stretches where guitar and piano are not playing; a chord's hold line ends at one.
+    var playerRests: [ClosedRange<TimeInterval>] = []
     /// 1-based number shown in a left gutter for lyric lines, so they can be referenced ("line 7").
     var lineNumber: Int?
     /// Seconds of true silence after this line's last word (< 4 bars) — rendered as a rest
@@ -4322,6 +4326,7 @@ private struct ChordProPreviewBlockView: View {
                         instrumentEnergyOutlined: instrumentEnergyOutlined,
                         wordTimingFindings: wordTimingFindings,
                         instrumentChordTracks: instrumentChordTracks,
+                        playerRests: playerRests,
                         trailingRestSeconds: trailingRestSeconds,
                         rowChordTimes: rowChordTimes,
                         rowChordEvents: rowChordEvents,
@@ -4700,6 +4705,8 @@ private struct ChordProPreviewLineView: View {
     var wordTimingFindings: [WordTimingFinding] = []
     /// The instrument chord tracks this row's chord names are colored by.
     var instrumentChordTracks: [InstrumentChordTrack] = []
+    /// Stretches where guitar and piano are not playing; a chord's hold line ends at one.
+    var playerRests: [ClosedRange<TimeInterval>] = []
     /// Seconds of TRUE vocal silence after this line's last word (≥ 2 beats, < 4 bars) —
     /// drawn as a rest marker so short real breaks are visible (audit RC-4). 0 = none.
     var trailingRestSeconds: TimeInterval = 0
@@ -5013,14 +5020,23 @@ private struct ChordProPreviewLineView: View {
     /// accent tint is only the fallback when there are no instrument tracks to consult: it is the
     /// bass lane's blue, and used for "nobody" it read as a bass chord.
     private func chordLabelStyle(at index: Int) -> AnyShapeStyle {
-        if isChordSounding(at: index) { return AnyShapeStyle(Color.swAmber) }
-        if let color = instrumentChordColor(at: index) { return AnyShapeStyle(color) }
-        guard !instrumentChordTracks.isEmpty, rowChordEvents.indices.contains(index),
-            rowChordTimes.indices.contains(index), let event = rowChordEvents[index]
-        else { return AnyShapeStyle(.tint) }
+        AnyShapeStyle(chordLabelColor(at: index))
+    }
+
+    /// NEVER the accent tint: it is the bass lane's blue, and a chord name is not a bass note
+    /// (Eric, 2026-09-20: "If bass notes are turned off from the view menu, then I wouldn't
+    /// expect to be seeing any blue notes"). A label with no event behind it is the chart
+    /// RESTATING a chord that is still held — a continuation, drawn dim, not an arrival.
+    private func chordLabelColor(at index: Int) -> Color {
+        if isChordSounding(at: index) { return .swAmber }
+        if let color = instrumentChordColor(at: index) { return color }
+        guard rowChordEvents.indices.contains(index), rowChordTimes.indices.contains(index),
+            let event = rowChordEvents[index]
+        else { return Color.swTextSecondary.opacity(0.75) }
+        guard !instrumentChordTracks.isEmpty else { return .swTextPrimary }
         let credited = InstrumentChordAgreement.agreeingStems(
             forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks)
-        return AnyShapeStyle(credited.isEmpty ? Color.swTextSecondary.opacity(0.6) : .swTextPrimary)
+        return credited.isEmpty ? Color.swTextSecondary.opacity(0.6) : .swTextPrimary
     }
 
     private func instrumentChordColor(at index: Int) -> Color? {
@@ -5617,6 +5633,17 @@ private struct ChordProPreviewLineView: View {
                         y: lyricBandOffset + topReserve + harmonyReserve + bucketReserve
                             + soloReserve + bassReserve + scale.lyricSize * 0.9)
             }
+            // How long each chord is HELD: to the next chord, or to where the player stops.
+            ForEach(Array(chordHoldLines(chordXs: chordXs).enumerated()), id: \.offset) {
+                _, hold in
+                Rectangle()
+                    .fill(chordLabelColor(at: hold.index).opacity(0.55))
+                    .frame(width: hold.width, height: max(1, scale.scaled(1.2)))
+                    .offset(
+                        x: hold.x,
+                        y: topReserve + harmonyReserve + bucketReserve + soloReserve + bassReserve
+                            + scale.chordSize * 0.62)
+            }
             ForEach(Array(line.chords.enumerated()), id: \.offset) { index, chord in
                 Text(chord.name)
                     .font(
@@ -6081,6 +6108,37 @@ private struct ChordProPreviewLineView: View {
                 finding.transcribedStart, finding.start)
         case .suspect:
             return "Timing looks stretched, but the vocals show no clear attack to move it to"
+        }
+    }
+
+    /// Extender lines for held CHORDS, the chord-row counterpart of the word hold lines (Eric,
+    /// 2026-09-20). A chord is held until the next chord anywhere in the song, or until the
+    /// player stops (`playerRests`) — whichever comes first — and the line stops short of the
+    /// next label and at the row's edge, exactly as a word's does.
+    private func chordHoldLines(chordXs: [CGFloat]) -> [(index: Int, x: CGFloat, width: CGFloat)] {
+        guard pixelsPerBeat > 0, chordXs.count == line.chords.count,
+            rowChordTimes.count == line.chords.count
+        else { return [] }
+        let gap = characterWidth / 2
+        let labelEnds = chordXs.indices.map {
+            chordXs[$0] + CGFloat(line.chords[$0].name.count) * characterWidth
+        }
+        let endXs = rowChordTimes.map { time -> CGFloat in
+            let nextChord = songChordTimes.first { $0 > time + 0.001 }
+            let rest = PlayerRests.end(of: time, rests: playerRests)
+            guard let end = [nextChord, rest].compactMap({ $0 }).min() else {
+                return fixedFramePx ?? .greatestFiniteMagnitude
+            }
+            return rhythmicX(forTime: end)
+        }
+        return chordXs.indices.compactMap { index in
+            // One chord at a time, so each surviving line keeps its chord's index (and color).
+            let next = index + 1 < chordXs.count ? [chordXs[index], chordXs[index + 1]] : []
+            return ChordProPreviewLineLayout.holdLineSpans(
+                labelEnds: [labelEnds[index]], wordEndXs: [endXs[index]],
+                labelStarts: next.isEmpty ? [chordXs[index]] : next, frameEnd: fixedFramePx,
+                gap: gap, minimumLength: pixelsPerBeat
+            ).first.map { (index: index, x: $0.x, width: $0.width) }
         }
     }
 
