@@ -4475,3 +4475,16 @@ sharpest energy rise within 0.4 s. Re-examined on Beach Weather with the alignme
       +25 ms after the onset snap.
 - [ ] So the defensible statement is: line openers are about one model frame late, not 150 ms.
       Anything stronger needs tap-annotated ground truth, which still does not exist.
+
+### 2026-09-20 (21:10) — "Still getting double chords"
+
+- [x] The per-player chord rows ("GtC"/"PnC") and the player COLORS on the chart's chord names were
+      one switch ("Instrument Chords", `reviewShowInstrumentChords`). Off gave one chord line but
+      every name in accent blue — the bass lane's color; on gave the colors plus a second copy of
+      the guitar's chords. They are now separate: the chart's ONE chord line is always colored by
+      who plays each chord; the option only adds the per-player rows, for comparing detectors.
+      Hiding a player's row no longer strips that player's credit from the chart either.
+- [x] Eric's stored option was ON; switched off in the app's preferences at relaunch.
+- [ ] Still true underneath: the chart line and a player's own track are two detectors and can
+      place the same chord up to two beats apart (7.6 % of chords). One chord line built from the
+      players' tracks would end that; see the open item above.
