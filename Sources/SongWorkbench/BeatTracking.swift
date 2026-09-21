@@ -104,6 +104,133 @@ enum DrumBeatGrid {
         return bestCoherence >= required ? 60 / bestInterval : bpm
     }
 
+    // MARK: - Following a drummer whose tempo drifts
+
+    /// The share of on-grid onsets a followed grid must gain over the rigid one — on all the
+    /// onsets AND on onsets the fit never saw. Measured 2026-09-21 on the 39 library songs, on the
+    /// onsets the stage itself uses: the four that truly drift gained 29–43 points on both; no
+    /// other song passed 18 on both, and several LOST points on the held-out half.
+    static let minimumFollowGain = 0.25
+
+    /// A grid that follows the drummer, or nil when the rigid grid should stay.
+    ///
+    /// Some performances fit no rigid tempo (`refinedBPM` returns its input). Following them is
+    /// dangerous: a tracker free to move will chase noise, which is why the grid went rigid
+    /// (2026-09-14, "a hit can no longer pull an individual beat early or late"). So the followed
+    /// grid stays rigid in 16-beat stretches, re-fitted every 4 beats, and it must EARN its place:
+    /// fitted on every other onset, it has to land the held-out onsets on the grid far more often
+    /// than the rigid grid does. Real drift generalizes to unseen hits; chased noise does not.
+    static func followedBeatTimes(onsets: [TimeInterval], rigid: [TimeInterval])
+        -> [TimeInterval]?
+    {
+        let sorted = onsets.sorted()
+        guard rigid.count >= 8, sorted.count >= 64 else { return nil }
+        let followed = follow(onsets: sorted, rigid: rigid)
+        let gain = onGridShare(sorted, beats: followed) - onGridShare(sorted, beats: rigid)
+        guard gain >= minimumFollowGain else { return nil }
+        let fitted = stride(from: 0, to: sorted.count, by: 2).map { sorted[$0] }
+        let heldOut = stride(from: 1, to: sorted.count, by: 2).map { sorted[$0] }
+        let heldOutGain =
+            onGridShare(heldOut, beats: follow(onsets: fitted, rigid: rigid))
+            - onGridShare(heldOut, beats: rigid)
+        return heldOutGain >= minimumFollowGain ? followed : nil
+    }
+
+    /// Walks the song four beats at a time, re-fitting period (±2 %) and phase (± an eighth of a
+    /// beat) to the onsets of the next 16 beats. A stretch with too few onsets, or too little
+    /// agreement, keeps the tempo it arrived with.
+    static func follow(onsets: [TimeInterval], rigid: [TimeInterval]) -> [TimeInterval] {
+        guard rigid.count >= 2, let end = rigid.last else { return rigid }
+        let prior = rigid[1] - rigid[0]
+        guard prior > 0 else { return rigid }
+        var beats: [TimeInterval] = []
+        var start = rigid[0]
+        var period = prior
+        while start < end {
+            let window = onsets.filter { $0 >= start - period && $0 < start + 16 * period }
+            if window.count >= 6 {
+                var best = (
+                    score: coherence(window, from: start, period: period), shift: 0.0,
+                    period: period
+                )
+                for periodStep in -10...10 {
+                    let candidate = period * (1 + 0.002 * Double(periodStep))
+                    var shift = -period / 8
+                    while shift <= period / 8 {
+                        // A small cost on moving at all, so a tie keeps the grid where it is.
+                        let score =
+                            coherence(window, from: start + shift, period: candidate)
+                            - 0.015 * abs(shift) / (period / 8) - 0.01 * abs(Double(periodStep))
+                            / 10
+                        if score > best.score { best = (score, shift, candidate) }
+                        shift += 0.004
+                    }
+                }
+                if best.score >= 0.15, abs(best.period / prior - 1) <= 0.08 {
+                    start += best.shift
+                    period = best.period
+                }
+            }
+            for index in 0..<4 { beats.append(start + Double(index) * period) }
+            start += 4 * period
+        }
+        return smoothed(beats.filter { $0 <= end }, first: rigid[0], period: prior)
+    }
+
+    /// Each re-fit may shift the phase by up to an eighth of a beat, which is a hit pulling a
+    /// beat. A drummer's drift is slow, so only the slow part is kept: each beat's departure from
+    /// the rigid grid becomes a Hann-weighted average over 8 beats either side. Measured
+    /// 2026-09-21: the largest change between neighbouring beat lengths fell from 41–94 ms to
+    /// 2–5 ms, and the songs that truly drift kept their gain.
+    private static func smoothed(
+        _ beats: [TimeInterval], first: TimeInterval, period: TimeInterval, reach: Int = 8
+    ) -> [TimeInterval] {
+        guard beats.count > 1 else { return beats }
+        let rigid = beats.indices.map { first + Double($0) * period }
+        let drift = zip(beats, rigid).map { $0 - $1 }
+        let weights = (-reach...reach).map {
+            0.5 + 0.5 * cos(Double.pi * Double($0) / Double(reach + 1))
+        }
+        let total = weights.reduce(0, +)
+        return beats.indices.map { index in
+            var sum = 0.0
+            for (offset, weight) in zip(-reach...reach, weights) {
+                sum += weight * drift[min(max(index + offset, 0), drift.count - 1)]
+            }
+            return rigid[index] + sum / total
+        }
+    }
+
+    /// How well `onsets` agree with the beat, eighth and sixteenth grids counted from `start`.
+    private static func coherence(
+        _ onsets: [TimeInterval], from start: TimeInterval, period: TimeInterval
+    ) -> Double {
+        guard !onsets.isEmpty, period > 0 else { return 0 }
+        var total = 0.0
+        for harmonic in [1.0, 2.0, 4.0] {
+            let angular = 2 * Double.pi * harmonic / period
+            for onset in onsets { total += cos(angular * (onset - start)) }
+        }
+        return total / (3 * Double(onsets.count))
+    }
+
+    /// The share of onsets within 30 ms of the sixteenth-note grid drawn between `beats`.
+    static func onGridShare(_ onsets: [TimeInterval], beats: [TimeInterval]) -> Double {
+        guard beats.count >= 2, let first = beats.first, let last = beats.last else { return 0 }
+        let inside = onsets.filter { $0 >= first && $0 <= last }
+        guard !inside.isEmpty else { return 0 }
+        var beat = 0
+        var hits = 0
+        for onset in inside {
+            while beat + 2 < beats.count, beats[beat + 1] <= onset { beat += 1 }
+            let sixteenth = (beats[beat + 1] - beats[beat]) / 4
+            guard sixteenth > 0 else { continue }
+            let offset = (onset - beats[beat]).truncatingRemainder(dividingBy: sixteenth)
+            if min(offset, sixteenth - offset) <= 0.03 { hits += 1 }
+        }
+        return Double(hits) / Double(inside.count)
+    }
+
     /// Chooses the phase offset φ in `[0, interval)` that best aligns a uniform grid to the onsets.
     /// Histograms each onset's residual (`onset mod interval`) into a handful of bins, picks the
     /// densest bin, and refines φ to the mean of the residuals that fell in it (handling wrap-around

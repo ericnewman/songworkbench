@@ -5035,7 +5035,8 @@ private struct ChordProPreviewLineView: View {
         else { return Color.swTextSecondary.opacity(0.75) }
         guard !instrumentChordTracks.isEmpty else { return .swTextPrimary }
         let credited = InstrumentChordAgreement.agreeingStems(
-            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks)
+            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks,
+            within: beatLengthSeconds)
         return credited.isEmpty ? Color.swTextSecondary.opacity(0.6) : .swTextPrimary
     }
 
@@ -5044,7 +5045,8 @@ private struct ChordProPreviewLineView: View {
             rowChordTimes.indices.contains(index), let event = rowChordEvents[index]
         else { return nil }
         return InstrumentChordAgreement.instrument(
-            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks)?
+            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks,
+            within: beatLengthSeconds)?
             .laneColor
     }
 

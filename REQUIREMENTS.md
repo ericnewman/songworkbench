@@ -115,7 +115,9 @@ text or mark an ID superseded instead of renumbering unrelated requirements.
   Bassist, and Pianist play on this song?" Each result MUST be attributable to the guitar, bass
   or piano and MUST be read from that instrument's separated stem, never from the composite
   signal or the vocals. A result that cannot be attributed to one of the three MUST be omitted.
-  Other musicians and sounds are omitted by design.
+  Other musicians and sounds are omitted by design. A chart chord counts as a player's when that
+  player's own chord track has it within one beat; a chord no player's track has MUST be omitted,
+  except one the user accepted, moved or hid.
 - **CHORD-008** A result MUST NOT be reported for a player who is not sounding at that moment.
   Residue in a resting stem, a voice the separator placed in an instrument stem, and a stem that
   is only separation bleed are not parts. Omission is preferred to a guess. When no separated

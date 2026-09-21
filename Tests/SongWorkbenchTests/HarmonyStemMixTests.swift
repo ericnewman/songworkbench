@@ -128,6 +128,28 @@ final class InstrumentChordPassTests: XCTestCase {
         XCTAssertEqual(StemKind.piano.laneColor, .swTeal)
     }
 
+    func testAChordNoPlayerHasIsOmittedAndASkewedOneIsKept() {
+        func event(_ time: TimeInterval, _ chord: String) -> EditableChordEvent {
+            EditableChordEvent(time: time, chord: chord, confidence: 0.8)
+        }
+        let guitar = InstrumentChordTrack(
+            stemID: StemID(.guitar), chords: [event(0, "G"), event(4.4, "C"), event(12, "G")])
+        var accepted = event(10, "F#")
+        accepted.accepted = true
+        let chart = [
+            event(0, "G"), event(2, "Em"),  // Em: nobody plays it
+            event(3, "G"),  // restates the G still held once Em is gone
+            event(4, "C"),  // the guitar's C, placed 0.4 s apart by the two decodes
+            event(8, "Am"), accepted, event(12, "G"), event(20, "G"),  // re-struck after a rest
+        ]
+        let kept = InstrumentChordPass.playedChords(
+            chart, tracks: [guitar], rests: [14...19], beatLength: 0.5)
+        XCTAssertEqual(kept.map(\.chord), ["G", "C", "F#", "G", "G"])
+        XCTAssertEqual(kept.map(\.time), [0, 4, 10, 12, 20])
+        XCTAssertEqual(
+            InstrumentChordPass.playedChords(chart, tracks: [], rests: [], beatLength: 0.5), chart)
+    }
+
     func testPlayerRestsAreSustainedSilencesNotTheSpaceBetweenStrums() {
         // 0.1 s hops: 3 s playing, a 0.4 s dip between strums, 2 s playing, a 4 s rest, 1 s playing.
         let levels =

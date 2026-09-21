@@ -184,7 +184,8 @@ struct InstrumentChordTimeline: Codable, Equatable, Sendable {
     /// Bump when detection changes so stored timelines recompute.
     // instrument-chords-2: a stem's resting frames carry no chord evidence (`SoundingFrameGate`).
     // instrument-chords-3: records `rests`, the stretches where guitar and piano are not playing.
-    static let currentVersionTag = "instrument-chords-3"
+    // instrument-chords-4: drops chart chords no player's track has (CHORD-007).
+    static let currentVersionTag = "instrument-chords-4"
 
     var versionTag: String
     var gridKey: BucketGridKey
@@ -330,7 +331,40 @@ enum InstrumentChordPass {
         }
         if let fresh = timeline(for: document) {
             document.instrumentChords = fresh
+            let beat =
+                MetricalLevelReconciler.medianBeatLength(
+                    beatTimes: document.beatTimes, bpm: document.estimatedBPM ?? 0) ?? 0
+            document.chords = playedChords(
+                document.chords, tracks: fresh.tracks, rests: fresh.rests ?? [], beatLength: beat)
         }
+    }
+
+    /// CHORD-007: the chart keeps a chord only when a player's own track has it within a beat —
+    /// the two decodes can place one change up to a beat apart, and that is still the player's
+    /// chord. A chord neither the guitar track nor the piano track has is nobody's part: omitted,
+    /// even if the harmony is right. The user's own decisions (accepted, moved) are never dropped.
+    /// Dropping the B of A-B-A leaves the second A restating a chord still held, so it goes too,
+    /// unless the player rested in between and is striking it again.
+    static func playedChords(
+        _ chords: [EditableChordEvent], tracks: [InstrumentChordTrack],
+        rests: [ClosedRange<TimeInterval>], beatLength: TimeInterval
+    ) -> [EditableChordEvent] {
+        guard !tracks.isEmpty else { return chords }
+        var kept: [EditableChordEvent] = []
+        for chord in chords {
+            let isUsers = chord.accepted || chord.manualTime != nil || chord.hidden
+            let played = !InstrumentChordAgreement.agreeingStems(
+                forChord: chord.chord, at: chord.time, tracks: tracks, within: beatLength
+            ).isEmpty
+            guard isUsers || played else { continue }
+            if !isUsers, let last = kept.last(where: { !$0.hidden }), last.chord == chord.chord,
+                !PlayerRests.interrupts(rests, chordTime: last.time, at: chord.time)
+            {
+                continue
+            }
+            kept.append(chord)
+        }
+        return kept
     }
 }
 
@@ -409,9 +443,11 @@ enum InstrumentChordAgreement {
     /// more than one does — a chord both instruments play belongs to neither. Refined children of
     /// one instrument (lead and rhythm guitar) count as that one instrument.
     static func instrument(
-        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack]
+        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack],
+        within tolerance: TimeInterval = 0
     ) -> StemID? {
-        let agreeing = agreeingStems(forChord: chord, at: time, tracks: tracks)
+        let agreeing = agreeingStems(
+            forChord: chord, at: time, tracks: tracks, within: tolerance)
         let kinds = Set(agreeing.map { $0.rawValue.split(separator: ".").first.map(String.init) })
         return kinds.count == 1 ? agreeing.first : nil
     }
@@ -420,10 +456,16 @@ enum InstrumentChordAgreement {
     /// can be credited with the chord — which must not LOOK like a credit: the label used to fall
     /// back to the accent tint, the same blue as the bass lane, and read as "the bass plays Am"
     /// on a passage with no bass (Eric, 2026-09-20).
+    /// `within` widens the match to a beat either side: the chart line and a player's track are
+    /// separate decodes and can place the same change up to a beat apart.
     static func agreeingStems(
-        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack]
+        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack],
+        within tolerance: TimeInterval = 0
     ) -> [StemID] {
-        tracks.filter { sounding(in: $0, at: time)?.chord == chord }.map(\.stemID)
+        let times = tolerance > 0 ? [time, time - tolerance, time + tolerance] : [time]
+        return tracks.filter { track in
+            times.contains { sounding(in: track, at: $0)?.chord == chord }
+        }.map(\.stemID)
     }
 }
 

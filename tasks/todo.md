@@ -4549,3 +4549,61 @@ there fall ~1.6 -> ~1.25. Consistent with the objective and with the measured 2x
 but not checked against a chart for those songs. 1,208 tests, 0 failures.
 
 Not seen on screen: hold lines, dim restatements, the no-blue rule.
+
+## 2026-09-21 — The open items from 2026-09-20: nobody's chords, the drifting drummer, "crashing"
+
+Brief (Eric): "Fix these remaining issues", then "The app is also crashing a lot".
+
+### Crashes — nothing found on this Mac
+
+- [x] `~/Library/Logs/DiagnosticReports`: the only two SongWorkbench crash reports are 2026-09-19
+      21:40/21:41, both the headless CLI, both "non-escaping closure has escaped" in
+      `ONNXKaraokeChunkPredictor.predictRetainingOnlySwiftOutput` — fixed the same evening
+      (`ORTShortLivedThread.run` takes `@escaping`).
+- [x] Every GUI exit in 40 h of `runningboardd` log is `(0,0,0)` (menu Quit, before a rebuild) or
+      SIGTERM from a session; the `.diag` files are disk-write / CPU resource notices from
+      re-analysis runs ("Action taken: none"), not hangs. The app launched 2026-09-20 21:33 was
+      still up 10 h later.
+- [ ] So "crashing" is unexplained: needs what Eric was doing when it happened, or an `.ips`.
+
+### CHORD-007 enforced: a chord nobody's track has is omitted
+
+- [x] Measured on the library (5,752 chords): 79 % have the same chord sounding in a player's own
+      track at that instant, 86 % within a beat (the two decodes place one change up to a beat
+      apart), 14.6 % name a root NEITHER track has. On the three charted songs the unsupported
+      chords' roots are in the chart less often (68–86 %) than the supported ones' (87–93 %).
+- [x] `InstrumentChordPass.playedChords`: keeps a chord when a player's track has it within one
+      beat; never drops an accepted, moved or hidden chord; drops the second A of A-B-A once B is
+      gone, unless a rest lies between. `instrument-chords-4`. The Review colors credit with the
+      same one-beat tolerance, so a kept chord never reads as "nobody's".
+- [x] Corpus: 5,752 -> 4,311 chords (-25 %), 0 unsupported left. Against the charts' chord-change
+      counts: 1.29x -> 0.86x (reviewed), 1.73x -> 1.45x, 2.76x -> 2.38x.
+
+### A grid that follows the drummer — only where it proves itself
+
+- [x] Prototype history (scratchpad `sectioned.py`, `heldout.py`, `follow2.py`): a free tracker
+      chases noise on most songs (tempo wandering 10–20 BPM); a timid one helps nothing and broke
+      three locked songs. What separates real drift from chased noise is held-out onsets: fit on
+      every other onset, score on the rest.
+- [x] First Swift port picked DIFFERENT songs than the Python: the stage times the grid on the KICK
+      stem with the app's detector (264–909 onsets a song), not the full drum stem. Re-measured on
+      the app's own onsets (gated `GridOnsetDumpTests`). Lesson: validate on the detector's real
+      input.
+- [x] `DrumBeatGrid.followedBeatTimes`: 16-beat fits every 4 beats (period ±2 %, phase ± an
+      eighth), then the drift is Hann-smoothed over ±8 beats; adopted only when on-grid share
+      gains >= 25 points on all onsets AND on the held-out half. `reduce-36`.
+      Adopted on 4 of 39: Back To You (90–97 BPM), There's a place in my heart (75–77), The Winery
+      Dogs (111–127), Summer on the lake (82–87); gains +29…+43; largest change between
+      neighbouring beats 2–4 ms (41–94 ms unsmoothed). Next-best song: +18.
+- [x] `MetronomeGrid.clickTimes` returns a smoothly drifting grid as-is (click, note buckets and
+      solo buckets all cut there); a tracker's jittery beats still get the rigid click.
+- [ ] Chord-vs-strike placement on those four is unchanged (one better, three level): chords are
+      placed on strums, so the grid's effect is the click, barlines and buckets. Not heard or seen.
+- [ ] The songs that drift but fail the test (5 had gains of 13–21) stay on a rigid grid.
+
+### Left for ears
+
+- [ ] Just get up and dance `piano`: -52 dB over the song, audible only 3:26–3:31 where the guitar
+      has stopped. Solo it there: a piano ending, or the guitar's last ring.
+
+1,213 tests, 0 failures. Not rebuilt into `build/Release`, not re-analysed, not committed.

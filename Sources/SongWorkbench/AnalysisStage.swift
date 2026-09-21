@@ -1068,6 +1068,9 @@ struct HarmonyStage: AnalysisStageRunning {
                         // (no backfilling into a rest); attacks come from guitar + piano only and
                         // count only where those stems are sounding.
                         + "|reduce-35-chords-arrive-with-the-strum"
+                        // reduce-36: a drummer no rigid tempo fits is followed, when the followed
+                        // grid proves itself on held-out onsets (`DrumBeatGrid.followedBeatTimes`).
+                        + "|reduce-36-follow-a-drifting-drummer"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1101,8 +1104,14 @@ struct HarmonyStage: AnalysisStageRunning {
                 let duration = max(onsets.last ?? 0, beatTimes.last ?? 0)
                 let derived = DrumBeatGrid.beatTimes(onsets: onsets, bpm: bpm, duration: duration)
                 if !derived.isEmpty {
-                    drumBeatTimes = derived
+                    // A drummer no rigid tempo fits is followed — only when the followed grid
+                    // proves itself on onsets it was not fitted to (`followedBeatTimes`).
+                    let followed = DrumBeatGrid.followedBeatTimes(onsets: onsets, rigid: derived)
+                    drumBeatTimes = followed ?? derived
                     refinedBPM = bpm
+                    AnalysisResourceLog.checkpoint(
+                        stage: "beat-grid",
+                        event: followed == nil ? "rigid" : "follows-the-drummer")
                 }
             }
             let estimatedBPM = refinedBPM

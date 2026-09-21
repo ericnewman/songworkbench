@@ -1290,6 +1290,42 @@ final class AudioAnalysisTests: XCTestCase {
         (Double((index * 37) % 17) / 16 - 0.5) * 2 * spread
     }
 
+    /// A drummer who speeds up from 100 to 106 BPM, playing eighths with a few ms of jitter.
+    private func driftingDrummer() -> (beats: [TimeInterval], onsets: [TimeInterval]) {
+        var generator = SystemRandomNumberGenerator()
+        var beats: [TimeInterval] = [1.0]
+        while let last = beats.last, last < 180 {
+            beats.append(last + 60 / (100 + 6 * last / 180))
+        }
+        let onsets = zip(beats, beats.dropFirst()).flatMap { beat, next in
+            [beat, (beat + next) / 2].map {
+                $0 + Double.random(in: -0.004...0.004, using: &generator)
+            }
+        }
+        return (beats, onsets)
+    }
+
+    func testTheGridFollowsADrummerWhoseTempoDrifts() throws {
+        let drummer = driftingDrummer()
+        let rigid = DrumBeatGrid.beatTimes(onsets: drummer.onsets, bpm: 103, duration: 181)
+        let followed = try XCTUnwrap(
+            DrumBeatGrid.followedBeatTimes(onsets: drummer.onsets, rigid: rigid))
+        XCTAssertGreaterThan(DrumBeatGrid.onGridShare(drummer.onsets, beats: followed), 0.9)
+        // Still steady: no beat is pulled more than a sliver from its neighbours' spacing.
+        let intervals = zip(followed.dropFirst(), followed).map { $0 - $1 }
+        let steps = zip(intervals.dropFirst(), intervals).map { abs($0 - $1) }
+        XCTAssertLessThan(try XCTUnwrap(steps.max()), 0.01)
+    }
+
+    func testASteadyDrummerKeepsTheRigidGrid() {
+        var generator = SystemRandomNumberGenerator()
+        let onsets = (0..<720).map {
+            1.0 + Double($0) * 0.25 + Double.random(in: -0.004...0.004, using: &generator)
+        }
+        let rigid = DrumBeatGrid.beatTimes(onsets: onsets, bpm: 120, duration: 181)
+        XCTAssertNil(DrumBeatGrid.followedBeatTimes(onsets: onsets, rigid: rigid))
+    }
+
     func testRefinedBPMKeepsARigidGridOnTheDrumsToTheEndOfTheSong() {
         // The tracker reports 5168/52 = 99.38 for a song played at 99.01 — the measured case
         // (2026-09-19). At 99.38 a rigid grid is 0.9 s (1.5 beats) off by the last bar of 4 min.
@@ -1974,5 +2010,41 @@ extension AudioAnalysisTests {
         XCTAssertEqual(clipped[0].words.map(\.start), [30.32, 34.49])
         XCTAssertEqual(clipped[0].words.last?.end ?? 0, 34.93, accuracy: 1e-9)
         XCTAssertEqual(clipped[1], second)
+    }
+}
+
+/// Gated dump of the onsets the harmony stage times its beat grid on, for offline measurement:
+///     SW_DUMP_GRID_ONSETS=/path/out.json swift test --filter GridOnsetDumpTests
+final class GridOnsetDumpTests: XCTestCase {
+    func testDumpGridOnsets() throws {
+        guard let out = ProcessInfo.processInfo.environment["SW_DUMP_GRID_ONSETS"] else {
+            throw XCTSkip("set SW_DUMP_GRID_ONSETS")
+        }
+        let songs = URL(
+            fileURLWithPath: NSHomeDirectory()
+                + "/Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+        )
+        var dump: [String: [String: [Double]]] = [:]
+        for file in try FileManager.default.contentsOfDirectory(
+            at: songs, includingPropertiesForKeys: nil) where file.pathExtension == "json"
+        {
+            guard let data = try? Data(contentsOf: file),
+                let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let analysis = root["analysis"] as? [String: Any],
+                let document = try? JSONDecoder().decode(
+                    SongAnalysisDocument.self,
+                    from: JSONSerialization.data(withJSONObject: analysis))
+            else { continue }
+            let url =
+                document.stemSet?.resolved().assetsByID[.drumKick]?.audioURL
+                ?? document.stems?.resolved().drums
+            guard let url, let onsets = try? InstrumentOnsetDetector.onsets(url: url) else {
+                continue
+            }
+            dump[String(file.lastPathComponent.prefix(8))] = [
+                "onsets": onsets, "beats": document.beatTimes,
+            ]
+        }
+        try JSONSerialization.data(withJSONObject: dump).write(to: URL(fileURLWithPath: out))
     }
 }
