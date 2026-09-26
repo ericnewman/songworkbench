@@ -877,15 +877,18 @@ struct StoredStemFiles: Codable, Equatable, Sendable {
         accompaniment = files.accompaniment.map(StoredAudioReference.init(url:))
     }
 
-    func resolved() -> StemFiles {
-        StemFiles(
-            vocals: vocals.resolvedURL(),
-            drums: drums.resolvedURL(),
-            bass: bass.resolvedURL(),
-            guitar: guitar?.resolvedURL(),
-            piano: piano?.resolvedURL(),
-            other: other.resolvedURL(),
-            accompaniment: accompaniment?.resolvedURL()
+    /// `followingBookmarks: false` answers from the stored paths (see
+    /// `StoredAudioReference.resolvedURL(followingBookmark:)`).
+    func resolved(followingBookmarks: Bool = true) -> StemFiles {
+        let follow = followingBookmarks
+        return StemFiles(
+            vocals: vocals.resolvedURL(followingBookmark: follow),
+            drums: drums.resolvedURL(followingBookmark: follow),
+            bass: bass.resolvedURL(followingBookmark: follow),
+            guitar: guitar?.resolvedURL(followingBookmark: follow),
+            piano: piano?.resolvedURL(followingBookmark: follow),
+            other: other.resolvedURL(followingBookmark: follow),
+            accompaniment: accompaniment?.resolvedURL(followingBookmark: follow)
         )
     }
 }
@@ -905,10 +908,12 @@ struct StoredStemSetManifest: Codable, Equatable, Sendable {
         self.init(manifest: files.stemSetManifest)
     }
 
-    func resolved() -> StemSetManifest {
+    /// `followingBookmarks: false` answers from the stored paths (see
+    /// `StoredAudioReference.resolvedURL(followingBookmark:)`).
+    func resolved(followingBookmarks: Bool = true) -> StemSetManifest {
         StemSetManifest(
             descriptors: descriptors,
-            assets: assets.map(\.resolved),
+            assets: assets.map { $0.resolved(followingBookmark: followingBookmarks) },
             recipeIdentity: recipeIdentity
         )
     }
@@ -925,8 +930,10 @@ struct StoredStemAsset: Codable, Equatable, Sendable {
         producerID = asset.producerID
     }
 
-    var resolved: StemAsset {
-        StemAsset(id: id, audioURL: audio.resolvedURL(), producerID: producerID)
+    func resolved(followingBookmark: Bool = true) -> StemAsset {
+        StemAsset(
+            id: id, audioURL: audio.resolvedURL(followingBookmark: followingBookmark),
+            producerID: producerID)
     }
 }
 
@@ -939,8 +946,10 @@ struct StoredAudioReference: Codable, Equatable, Sendable {
         bookmarkData = try? url.appScopedBookmarkData()
     }
 
-    func resolvedURL() -> URL {
-        guard let bookmarkData else { return URL(fileURLWithPath: path) }
+    /// `followingBookmark: false` returns the stored path without resolving the bookmark, which
+    /// costs about half a millisecond: enough to matter in a check run on every playback tick.
+    func resolvedURL(followingBookmark: Bool = true) -> URL {
+        guard followingBookmark, let bookmarkData else { return URL(fileURLWithPath: path) }
         var stale = false
         return
             (try? URL(resolvingAppScopedBookmark: bookmarkData, bookmarkDataIsStale: &stale))

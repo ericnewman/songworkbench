@@ -1935,7 +1935,7 @@ final class AppModel: ObservableObject {
             let document = analysisBySongID[selectedSongID]
         else { return false }
         return BucketNotePass.gridKey(for: document) != nil
-            && !BucketNotePass.stemAudio(for: document).isEmpty
+            && !BucketNotePass.stemAudio(for: document, gated: false).isEmpty
     }
 
     /// Recuts the bucket-note timeline from the stems on disk, on the current grid — the same
@@ -1975,7 +1975,7 @@ final class AppModel: ObservableObject {
             let document = analysisBySongID[selectedSongID]
         else { return false }
         return SoloTranscriptionPass.gridKey(for: document) != nil
-            && !SoloTranscriptionPass.stemAudio(for: document).isEmpty
+            && !SoloTranscriptionPass.stemAudio(for: document, gated: false).isEmpty
     }
 
     /// Same shape as `computeBucketNotes`: the pipeline's pass, run detached, stored on the song
@@ -2013,7 +2013,7 @@ final class AppModel: ObservableObject {
             let document = analysisBySongID[selectedSongID]
         else { return false }
         return BucketNotePass.gridKey(for: document) != nil
-            && !InstrumentChordPass.stemAudio(for: document).isEmpty
+            && !InstrumentChordPass.stemAudio(for: document, gated: false).isEmpty
     }
 
     /// Same shape as `computeBucketNotes`: the pipeline's pass, run detached, stored on the song

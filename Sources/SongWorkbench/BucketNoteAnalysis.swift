@@ -354,11 +354,17 @@ enum BucketNotePass {
     /// The audio to listen to: the playable leaves of the stem set (a kept lead/backing split
     /// replaces its parent vocals), else the legacy flat stem files. Drums are excluded here so
     /// the analyzer never even opens them.
-    static func stemAudio(for document: SongAnalysisDocument) -> [(id: StemID, url: URL)] {
+    ///
+    /// `gated: false` skips the two gates that decode audio (vocal shadow, phantom instrument) and
+    /// the bookmark resolution: the menus' enable checks run on every playback tick and must only
+    /// ask whether stems exist.
+    static func stemAudio(for document: SongAnalysisDocument, gated: Bool = true)
+        -> [(id: StemID, url: URL)]
+    {
         var entries: [(id: StemID, url: URL)] = []
-        if let manifest = document.stemSet?.resolved() {
+        if let manifest = document.stemSet?.resolved(followingBookmarks: gated) {
             entries = StemMixGraph(manifest: manifest).activeNodes.map { ($0.id, $0.audioURL) }
-        } else if let files = document.stems?.resolved() {
+        } else if let files = document.stems?.resolved(followingBookmarks: gated) {
             entries = [
                 (StemID(.vocals), files.vocals), (StemID(.bass), files.bass),
                 (StemID(.other), files.other),
@@ -370,13 +376,13 @@ enum BucketNotePass {
             }
         }
         // A bass stem that is only a shadow of the singing has no part to show (`VocalShadowGate`).
-        let vocalsURL = document.stems?.resolved().vocals
+        let vocalsURL = gated ? document.stems?.resolved().vocals : nil
         let pitched = withoutOtherMusicians(entries).filter { entry in
             guard let role = BucketNoteAnalyzer.role(for: entry.id) else { return false }
             guard role == .bass, let vocalsURL else { return true }
             return !VocalShadowGate.isShadow(stemURL: entry.url, vocalsURL: vocalsURL)
         }
-        return withoutPhantomInstruments(pitched).sorted { $0.id < $1.id }
+        return (gated ? withoutPhantomInstruments(pitched) : pitched).sorted { $0.id < $1.id }
     }
 
     /// Drops the separator's `other` stem (and any refined child of it).

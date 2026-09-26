@@ -224,8 +224,10 @@ enum InstrumentChordPass {
     static let instruments: [StemKind] = [.guitar, .piano]
 
     /// The guitar and piano stems (a refined child stands in for its parent).
-    static func stemAudio(for document: SongAnalysisDocument) -> [(id: StemID, url: URL)] {
-        BucketNotePass.stemAudio(for: document).filter { entry in
+    static func stemAudio(for document: SongAnalysisDocument, gated: Bool = true)
+        -> [(id: StemID, url: URL)]
+    {
+        BucketNotePass.stemAudio(for: document, gated: gated).filter { entry in
             instruments.contains { kind in
                 entry.id == StemID(kind) || entry.id.rawValue.hasPrefix(kind.rawValue + ".")
             }

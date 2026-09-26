@@ -207,6 +207,35 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertEqual(document.bucketNotes, current)  // forced but no stems → keeps the old
     }
 
+    /// The Review menu's enable checks run on every playback tick, so the ungated listing must
+    /// never open a stem: files that are not audio at all still count as present. The gated list
+    /// (what the passes use) does open them, and drops the unreadable instruments as silent.
+    func testUngatedStemListingNeverOpensAudio() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func notAudio(_ name: String) throws -> URL {
+            let url = directory.appendingPathComponent("\(name).wav")
+            try Data("not audio".utf8).write(to: url)
+            return url
+        }
+        var document = SongAnalysisDocument(
+            sourceDuration: 4, estimatedBPM: 120, beatTimes: [0.5, 1.0, 1.5, 2.0])
+        document.stems = StoredStemFiles(
+            files: StemFiles(
+                vocals: try notAudio("vocals"), drums: try notAudio("drums"),
+                bass: try notAudio("bass"), guitar: try notAudio("guitar"),
+                piano: try notAudio("piano"), other: try notAudio("other")))
+
+        XCTAssertEqual(
+            InstrumentChordPass.stemAudio(for: document, gated: false).map(\.id),
+            [StemID(.guitar), StemID(.piano)])
+        XCTAssertFalse(SoloTranscriptionPass.stemAudio(for: document, gated: false).isEmpty)
+        XCTAssertFalse(BucketNotePass.stemAudio(for: document, gated: false).isEmpty)
+        XCTAssertTrue(InstrumentChordPass.stemAudio(for: document).isEmpty)
+    }
+
     // MARK: - Review row formatting
 
     func testRowsAreWindowedOrderedAndTransposedWithBassLast() {
