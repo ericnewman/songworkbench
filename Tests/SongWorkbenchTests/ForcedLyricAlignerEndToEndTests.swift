@@ -145,7 +145,7 @@ final class ForcedLyricAlignerEndToEndTests: XCTestCase {
                 start: 0, end: timed.last?.end ?? 0, text: built, words: timed)
         ]
 
-        let result = MeasuredLyricTiming.applied(
+        let result = try MeasuredLyricTiming.applied(
             to: before, stemURL: URL(fileURLWithPath: stemPath), onsets: [],
             model: model, phonemizer: try loadPhonemizer())
 

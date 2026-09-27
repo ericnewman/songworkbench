@@ -449,11 +449,10 @@ struct SongAnalysisPipeline: Sendable {
     private let cache: AnalysisResultDiskCache?
     private let executionPolicy: AnalysisPipelineExecutionPolicy
     private let chordProBuilder = ChordProDraftBuilder()
-    /// The forced-alignment model the transcription stage measures word times with. nil fails
-    /// that stage whenever stems exist; tests inject a stand-in because they have no app bundle.
-    var loadLyricsAcousticModel: @Sendable () -> (any LyricsAcousticModel)? = {
-        CoreMLLyricsAcousticModel.load()
-    }
+    /// How the transcription stage measures word times on the vocals stem. A throw fails that
+    /// stage; there is no fallback to the transcriber's times. Tests inject a stand-in because
+    /// they have no app bundle and no decodable stems.
+    var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
 
     init(
         stemEngine: (any StemSeparationEngine)?,
@@ -935,7 +934,7 @@ struct SongAnalysisPipeline: Sendable {
             chordProBuilder: chordProBuilder,
             chordProReplacementPolicy: request.chordProReplacementPolicy,
             stageProgress: stageProgress,
-            loadLyricsAcousticModel: loadLyricsAcousticModel
+            measureWordTimes: measureWordTimes
         )
     }
 
@@ -995,12 +994,16 @@ enum SongAnalysisPipelineError: LocalizedError, Equatable {
     case chordProReplacementRequiresConfirmation
     /// A model the app bundles is absent or unloadable. There is no fallback: analysis stops.
     case missingBundledModel(String)
+    /// Lyrics need a vocals stem: their word times are measured on it, never kept from the ASR.
+    case noVocalsStemToMeasureLyrics
 
     var errorDescription: String? {
         switch self {
         case .missingBundledModel(let name):
             "SongWorkbench is missing its bundled \(name) model and cannot analyze. Rebuild the "
                 + "app with BundledModels/ present."
+        case .noVocalsStemToMeasureLyrics:
+            "Separate the stems first: lyric timing is measured on the vocals stem."
         case .missingStemEngine:
             "Install the stem-separation model before running separation."
         case .missingTranscriptionEngine(let mode):

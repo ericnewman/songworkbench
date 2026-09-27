@@ -13,9 +13,30 @@ import Foundation
 /// training domain (it was trained on separated vocals), and the measured evidence on our own
 /// library is that a domain mismatch makes alignment WORSE, not merely noisier.
 ///
-/// Degrades to a no-op — keeping the transcriber's times — whenever the model is absent, the audio
-/// cannot be decoded, or alignment throws. A missing bundled model must never fail an analysis.
+/// Never degrades to the transcriber's times (Eric, 2026-09-26: lyric starts are anchored to
+/// onsets in the audio ONLY): a missing model, undecodable audio or a failed alignment throws, and
+/// the transcription stage fails with it.
+/// Measures word times for `lyrics` on the vocals stem at `vocalsURL`; `onsets` are that stem's
+/// measured onsets, used to place words the aligner could not.
+typealias WordTimeMeasurer =
+    @Sendable (_ lyrics: [TimedLyricSegment], _ vocalsURL: URL, _ onsets: [TimeInterval]) throws
+    -> (lyrics: [TimedLyricSegment], outcome: MeasuredLyricTiming.Outcome)
+
 enum MeasuredLyricTiming {
+    enum Failure: Error, Equatable {
+        case emptyVocalsStem
+    }
+
+    /// The pipeline's measuring step: the bundled alignment model over the vocals stem.
+    @Sendable
+    static func measuredWithBundledModel(
+        _ lyrics: [TimedLyricSegment], vocalsURL: URL, onsets: [TimeInterval]
+    ) throws -> (lyrics: [TimedLyricSegment], outcome: Outcome) {
+        guard let model = CoreMLLyricsAcousticModel.load() else {
+            throw SongAnalysisPipelineError.missingBundledModel("LyricsAlignmentMTL")
+        }
+        return try applied(to: lyrics, stemURL: vocalsURL, onsets: onsets, model: model)
+    }
 
     /// What happened, for the stage record and for logging.
     struct Outcome: Equatable, Sendable {
@@ -27,28 +48,23 @@ enum MeasuredLyricTiming {
 
     /// - Parameters:
     ///   - lyrics: lines whose WORDS are trusted but whose TIMES are not.
-    ///   - stemURL: the isolated vocals stem, or nil to skip.
+    ///   - stemURL: the isolated vocals stem.
     ///   - onsets: measured vocal-stem onsets, used to place words the aligner could not.
     static func applied(
         to lyrics: [TimedLyricSegment],
-        stemURL: URL?,
+        stemURL: URL,
         onsets: [TimeInterval],
-        model: LyricsAcousticModel? = CoreMLLyricsAcousticModel.load(),
+        model: LyricsAcousticModel,
         phonemizer: LyricPhonemizer = .shared
-    ) -> (lyrics: [TimedLyricSegment], outcome: Outcome) {
+    ) throws -> (lyrics: [TimedLyricSegment], outcome: Outcome) {
         var outcome = Outcome()
-        guard let stemURL, let model, !lyrics.isEmpty else { return (lyrics, outcome) }
-
         let words = lyrics.flatMap(\.words)
         guard !words.isEmpty else { return (lyrics, outcome) }
 
-        guard let samples = try? monoSamples(at: stemURL), !samples.isEmpty else {
-            return (lyrics, outcome)
-        }
-        guard
-            let aligned = try? ForcedLyricAligner.align(
-                samples: samples, words: words.map(\.text), model: model, phonemizer: phonemizer)
-        else { return (lyrics, outcome) }
+        let samples = try monoSamples(at: stemURL)
+        guard !samples.isEmpty else { throw Failure.emptyVocalsStem }
+        let aligned = try ForcedLyricAligner.align(
+            samples: samples, words: words.map(\.text), model: model, phonemizer: phonemizer)
 
         let beforeFill = aligned.filter { $0.start != nil }.count
         let filled = ForcedLyricAligner.filledFromOnsets(aligned, onsets: onsets)

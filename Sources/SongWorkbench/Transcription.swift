@@ -536,14 +536,20 @@ enum TimedLyricSegmentGrouper {
         // over-merged lyrics are still re-split.
         let lineStartOnsets =
             lineStartOnsets ?? Set(segments.compactMap { $0.words.first?.start })
+        // Stored words already carry their final times (measured by forced alignment), so
+        // re-grouping only re-splits lines: it must never re-time a word.
         return group(
-            tokens: tokens, configuration: configuration, lineStartOnsets: lineStartOnsets)
+            tokens: tokens, configuration: configuration, lineStartOnsets: lineStartOnsets,
+            depadsLongTokens: false)
     }
 
+    /// - Parameter depadsLongTokens: re-time an implausibly long FRESH transcriber token (see
+    ///   `maximumWordDuration`). Off when regrouping stored words, whose starts are measured.
     static func group(
         tokens: [TimedTranscriptionToken],
         configuration: TimedLyricGroupingConfiguration = .init(),
-        lineStartOnsets: Set<TimeInterval> = []
+        lineStartOnsets: Set<TimeInterval> = [],
+        depadsLongTokens: Bool = true
     ) -> [TimedLyricSegment] {
         let orderedTokens = tokens.enumerated()
             .compactMap { index, token -> (Int, TimedTranscriptionToken)? in
@@ -553,7 +559,8 @@ enum TimedLyricSegmentGrouper {
                 // De-pad an implausibly long token (see `maximumWordDuration`): re-time it to a
                 // normal word length anchored at its end so its true onset is restored.
                 let start =
-                    end - token.startTime > configuration.maximumWordDuration
+                    depadsLongTokens
+                        && end - token.startTime > configuration.maximumWordDuration
                     ? max(end - configuration.depaddedWordDuration, 0)
                     : token.startTime
                 return (

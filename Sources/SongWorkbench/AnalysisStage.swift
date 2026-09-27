@@ -42,10 +42,8 @@ struct AnalysisStageContext: Sendable {
     let chordProBuilder: ChordProDraftBuilder
     let chordProReplacementPolicy: ChordProReplacementPolicy
     let stageProgress: @Sendable (Double, String) -> Void
-    /// See `SongAnalysisPipeline.loadLyricsAcousticModel`.
-    var loadLyricsAcousticModel: @Sendable () -> (any LyricsAcousticModel)? = {
-        CoreMLLyricsAcousticModel.load()
-    }
+    /// See `SongAnalysisPipeline.measureWordTimes`.
+    var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
     /// When true, a live separation run executes the BASE engine only and the pipeline runs the
     /// refiners itself, concurrently with transcription and harmony. Cache checks still use the
     /// full base+refiners recipe, so a previously completed refined document is still a hit.
@@ -688,17 +686,17 @@ struct TranscriptionStage: AnalysisStageRunning {
             // MEASURE the word times. Up to here the times are the transcriber's, which are a
             // by-product of decoding rather than a measurement — the failure that put nine words
             // at 0.00 s against singing that began at 18.8 s. Forced alignment takes the words as
-            // known and finds where each is sung, from the audio. A word it cannot measure keeps
-            // the transcriber's time; it is never given a computed one. No-op without a vocals
-            // stem; WITH one, a missing or unloadable model fails the stage — there is no
-            // fallback to the transcriber's times (Eric, 2026-09-26).
-            let alignmentModel = hasStems ? context.loadLyricsAcousticModel() : nil
-            if hasStems, alignmentModel == nil {
-                throw SongAnalysisPipelineError.missingBundledModel("LyricsAlignmentMTL")
+            // known and finds where each is sung, from the audio. There is no fallback to the
+            // transcriber's times (Eric, 2026-09-26): words with no vocals stem to measure on, a
+            // missing model, or a failed alignment fail the stage.
+            let hasWords = lyrics.contains { !$0.words.isEmpty }
+            guard !hasWords || hasStems else {
+                throw SongAnalysisPipelineError.noVocalsStemToMeasureLyrics
             }
-            let measured = MeasuredLyricTiming.applied(
-                to: lyrics, stemURL: hasStems ? audioURL : nil, onsets: vocalOnsets,
-                model: alignmentModel)
+            let measured =
+                hasWords
+                ? try context.measureWordTimes(lyrics, audioURL, vocalOnsets)
+                : (lyrics: lyrics, outcome: MeasuredLyricTiming.Outcome())
             // Counts only, never text. `ran=false` means every word below is still the ASR's guess.
             AnalysisResourceLog.checkpoint(
                 stage: "word-timing",
