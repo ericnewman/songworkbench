@@ -1035,3 +1035,23 @@ it in Python, and compare. Swift's mel through PyTorch gave 91.8 % blank (so the
 Swift's mel through Swift's own Core ML call gave 4.2 % (so the feeding was wrong). One comparison
 localised it exactly. Keep a reference implementation runnable for anything ported to Core ML, and
 compare intermediate tensors, not just final outputs.
+
+## 2026-09-26 — A worktree build has no bundled models, and analysis in it silently degrades
+
+**Mistake:** the Release app built in a `.claude/worktrees/` checkout was handed to Eric to test a
+UI change. The worktree has no `BundledModels/`, so the bundle shipped without
+`LyricsAlignmentMTL.mlpackage` and `HTDemucs6S_FP16.mlpackage`; the copy phase only printed
+`warning: LyricsAlignmentMTL.mlpackage not present; the feature that needs it falls back`. A song
+analysed in that app kept the ASR's word times, which spread its first line's nine words 1.21 s
+apart from 0.00 over the instrumental intro, and the result was saved over the song's analysis.
+
+**Eric's rules this broke (2026-09-26):**
+- A song always starts at the LEFT EDGE of the first row, never in the middle of a line.
+- A lyric start is anchored to an onset measured in the audio ONLY — never a computed, kept-ASR, or
+  spread time.
+
+**Rule:** before handing Eric any build, confirm the bundle holds both models
+(`ls <app>/Contents/Resources | grep mlpackage`) and grep the build log for `not present`. In a
+worktree, copy `BundledModels/` and `Derived/` from the main checkout before building. When lyric
+rows start at 0.00 with evenly spaced words, check the transcription stage's `completedAt` and the
+bundle that ran it before suspecting the view.

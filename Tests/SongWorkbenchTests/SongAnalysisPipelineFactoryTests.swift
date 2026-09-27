@@ -33,6 +33,7 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
         factory.capabilityProfile = .desktopAdvanced
         // The recipe below names the ONNX engine; keep an app-bundled Core ML model out of it.
         factory.nativeModelURL = nil
+        factory.requiresBundledModels = false
         factory.stemRefinementEngineFactory = StemRefinementEngineFactory { context in
             await recorder.makeEngines(context: context)
         }
@@ -133,6 +134,7 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
                     directoryURL: root.appendingPathComponent(UUID().uuidString))
             )
             factory.capabilityProfile = profile
+            factory.requiresBundledModels = false  // the ONNX path; a test has no app bundle
             factory.stemRefinementEngineFactory = StemRefinementEngineFactory { context in
                 await recorder.makeEngines(context: context)
             }
@@ -141,6 +143,28 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
 
             let contextCount = await recorder.contexts().count
             XCTAssertEqual(contextCount, 0)
+        }
+    }
+
+    /// The app does not run without its bundled models: no ONNX or ASR-time fallback.
+    func testFactoryRefusesToAssembleWithoutTheBundledModels() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var factory = SongAnalysisPipelineFactory(
+            modelPackageManager: ModelPackageManager(
+                directoryURL: root.appendingPathComponent("models", isDirectory: true),
+                downloader: EmptyModelDownloader()),
+            harmonyEngine: AudioFileAnalysisService(),
+            cache: AnalysisResultDiskCache(directoryURL: root.appendingPathComponent("cache"))
+        )
+        factory.nativeModelURL = nil
+
+        do {
+            _ = try await factory.makePipeline()
+            XCTFail("assembled a pipeline without the bundled separation model")
+        } catch let error as SongAnalysisPipelineError {
+            XCTAssertEqual(error, .missingBundledModel("HTDemucs6S_FP16"))
         }
     }
 
@@ -168,6 +192,7 @@ final class SongAnalysisPipelineFactoryTests: XCTestCase {
             cache: AnalysisResultDiskCache(directoryURL: root.appendingPathComponent("cache"))
         )
         factory.capabilityProfile = .desktopAdvanced
+        factory.requiresBundledModels = false  // the ONNX path; a test has no app bundle
         factory.stemRefinementEngineFactory = .production
         _ = try await factory.makePipeline()
 

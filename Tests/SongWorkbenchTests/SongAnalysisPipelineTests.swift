@@ -17,12 +17,13 @@ final class SongAnalysisPipelineTests: XCTestCase {
         let vocalsURL = outputDirectory.appendingPathComponent("vocals.wav")
         let transcription = RecordingTranscriptionEngine(result: transcriptionResult())
         let harmony = RecordingHarmonyEngine(result: harmonyResult())
-        let pipeline = SongAnalysisPipeline(
+        var pipeline = SongAnalysisPipeline(
             stemEngine: StubStemEngine(outputDirectory: outputDirectory),
             fastTranscriptionEngine: transcription,
             accuracyTranscriptionEngine: nil,
             harmonyEngine: harmony
         )
+        pipeline.loadLyricsAcousticModel = { UnmeasuringLyricsModel() }
 
         let result = try await pipeline.run(
             SongAnalysisPipelineRequest(
@@ -63,6 +64,40 @@ final class SongAnalysisPipelineTests: XCTestCase {
                 result.document.stageRecords[$0]?.state == .succeeded
             }
         )
+    }
+
+    /// No fallback to the transcriber's word times: with stems and no alignment model, the
+    /// transcription stage fails instead of saving guessed times (Eric, 2026-09-26).
+    func testTranscriptionFailsWithoutTheAlignmentModel() async throws {
+        let sourceURL = try temporarySource()
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: outputDirectory)
+        }
+        var pipeline = SongAnalysisPipeline(
+            stemEngine: StubStemEngine(outputDirectory: outputDirectory),
+            fastTranscriptionEngine: RecordingTranscriptionEngine(result: transcriptionResult()),
+            accuracyTranscriptionEngine: nil,
+            harmonyEngine: RecordingHarmonyEngine(result: harmonyResult())
+        )
+        pipeline.loadLyricsAcousticModel = { nil }
+
+        let result = try await pipeline.run(
+            SongAnalysisPipelineRequest(
+                sourceURL: sourceURL,
+                outputDirectory: outputDirectory,
+                title: "Pipeline Song",
+                stages: [.separation, .transcription],
+                transcriptionMode: .fastDraft,
+                existingDocument: SongAnalysisDocument()
+            )
+        ) { _ in }
+
+        XCTAssertEqual(result.document.stageRecords[.separation]?.state, .succeeded)
+        XCTAssertEqual(result.document.stageRecords[.transcription]?.state, .failed)
+        XCTAssertTrue(result.document.lyrics.isEmpty)
     }
 
     func testHarmonyVotesInBeatWindowsInsteadOfEmittingEveryFrameChange() async throws {
@@ -750,13 +785,14 @@ final class SongAnalysisPipelineTests: XCTestCase {
         let clock = EventClock()
         let transcription = EventRecordingTranscriptionEngine(
             result: transcriptionResult(), clock: clock)
-        let pipeline = SongAnalysisPipeline(
+        var pipeline = SongAnalysisPipeline(
             stemEngine: StubStemEngine(outputDirectory: outputDirectory),
             stemRefiners: [SlowEventRecordingStemRefiner(clock: clock)],
             fastTranscriptionEngine: transcription,
             accuracyTranscriptionEngine: nil,
             harmonyEngine: StubHarmonyEngine()
         )
+        pipeline.loadLyricsAcousticModel = { UnmeasuringLyricsModel() }
 
         let result = try await pipeline.run(
             SongAnalysisPipelineRequest(
@@ -807,13 +843,14 @@ final class SongAnalysisPipelineTests: XCTestCase {
             try? FileManager.default.removeItem(at: sourceURL)
             try? FileManager.default.removeItem(at: outputDirectory)
         }
-        let pipeline = SongAnalysisPipeline(
+        var pipeline = SongAnalysisPipeline(
             stemEngine: StubStemEngine(outputDirectory: outputDirectory),
             stemRefiners: [FailingStemRefiner()],
             fastTranscriptionEngine: RecordingTranscriptionEngine(result: transcriptionResult()),
             accuracyTranscriptionEngine: nil,
             harmonyEngine: StubHarmonyEngine()
         )
+        pipeline.loadLyricsAcousticModel = { UnmeasuringLyricsModel() }
 
         let result = try await pipeline.run(
             SongAnalysisPipelineRequest(
@@ -1532,12 +1569,13 @@ extension SongAnalysisPipelineTests {
             try? FileManager.default.removeItem(at: outputDirectory)
         }
         let engine = StretchedTokenTranscriptionEngine()
-        let pipeline = SongAnalysisPipeline(
+        var pipeline = SongAnalysisPipeline(
             stemEngine: SungVocalsStemEngine(outputDirectory: outputDirectory),
             fastTranscriptionEngine: engine,
             accuracyTranscriptionEngine: nil,
             harmonyEngine: RecordingHarmonyEngine(result: harmonyResult())
         )
+        pipeline.loadLyricsAcousticModel = { UnmeasuringLyricsModel() }
 
         let result = try await pipeline.run(
             SongAnalysisPipelineRequest(
@@ -1656,4 +1694,14 @@ private actor StretchedTokenTranscriptionEngine: TranscriptionEngine {
     func cancel(requestID: UUID) async {}
 
     func requestedDurations() -> [TimeInterval] { durations }
+}
+
+/// Stands in for the bundled alignment model, which a test process cannot load: every evaluation
+/// throws, so forced alignment measures nothing and the words keep the stub transcriber's times.
+private struct UnmeasuringLyricsModel: LyricsAcousticModel {
+    let melFramesPerWindow = 2049
+
+    func logProbabilities(melWindow: [[Float]]) throws -> [[Float]] {
+        throw CancellationError()
+    }
 }

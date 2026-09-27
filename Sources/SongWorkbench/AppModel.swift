@@ -910,7 +910,10 @@ final class AppModel: ObservableObject {
                 )
                 factory.capabilityProfile = AnalysisCapabilityProfile.current
                 factory.stemRefinementEngineFactory = .production
-                if !usesBundledModel { factory.nativeModelURL = nil }
+                if !usesBundledModel {
+                    factory.nativeModelURL = nil
+                    factory.requiresBundledModels = false
+                }
                 return try await factory.makePipeline()
             }
         )

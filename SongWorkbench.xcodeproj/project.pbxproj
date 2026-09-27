@@ -974,7 +974,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "for m in HTDemucs6S_FP16 LyricsAlignmentMTL; do\n  if [ -d \"$SRCROOT/BundledModels/$m.mlpackage\" ]; then\n    rsync -a --delete \"$SRCROOT/BundledModels/$m.mlpackage\" \"$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/\"\n  else\n    echo \"warning: $m.mlpackage not present; the feature that needs it falls back\"\n  fi\ndone\n";
+			shellScript = "for m in HTDemucs6S_FP16 LyricsAlignmentMTL; do\n  if [ -d \"$SRCROOT/BundledModels/$m.mlpackage\" ]; then\n    rsync -a --delete \"$SRCROOT/BundledModels/$m.mlpackage\" \"$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/\"\n  else\n    echo \"error: BundledModels/$m.mlpackage is missing. SongWorkbench does not run without its models; copy BundledModels/ from the main checkout.\"\n    exit 1\n  fi\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

@@ -449,6 +449,11 @@ struct SongAnalysisPipeline: Sendable {
     private let cache: AnalysisResultDiskCache?
     private let executionPolicy: AnalysisPipelineExecutionPolicy
     private let chordProBuilder = ChordProDraftBuilder()
+    /// The forced-alignment model the transcription stage measures word times with. nil fails
+    /// that stage whenever stems exist; tests inject a stand-in because they have no app bundle.
+    var loadLyricsAcousticModel: @Sendable () -> (any LyricsAcousticModel)? = {
+        CoreMLLyricsAcousticModel.load()
+    }
 
     init(
         stemEngine: (any StemSeparationEngine)?,
@@ -929,7 +934,8 @@ struct SongAnalysisPipeline: Sendable {
             harmonyEngine: harmonyEngine,
             chordProBuilder: chordProBuilder,
             chordProReplacementPolicy: request.chordProReplacementPolicy,
-            stageProgress: stageProgress
+            stageProgress: stageProgress,
+            loadLyricsAcousticModel: loadLyricsAcousticModel
         )
     }
 
@@ -987,9 +993,14 @@ enum SongAnalysisPipelineError: LocalizedError, Equatable {
     case missingStemEngine
     case missingTranscriptionEngine(TranscriptionMode)
     case chordProReplacementRequiresConfirmation
+    /// A model the app bundles is absent or unloadable. There is no fallback: analysis stops.
+    case missingBundledModel(String)
 
     var errorDescription: String? {
         switch self {
+        case .missingBundledModel(let name):
+            "SongWorkbench is missing its bundled \(name) model and cannot analyze. Rebuild the "
+                + "app with BundledModels/ present."
         case .missingStemEngine:
             "Install the stem-separation model before running separation."
         case .missingTranscriptionEngine(let mode):

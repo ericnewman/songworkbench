@@ -42,6 +42,10 @@ struct AnalysisStageContext: Sendable {
     let chordProBuilder: ChordProDraftBuilder
     let chordProReplacementPolicy: ChordProReplacementPolicy
     let stageProgress: @Sendable (Double, String) -> Void
+    /// See `SongAnalysisPipeline.loadLyricsAcousticModel`.
+    var loadLyricsAcousticModel: @Sendable () -> (any LyricsAcousticModel)? = {
+        CoreMLLyricsAcousticModel.load()
+    }
     /// When true, a live separation run executes the BASE engine only and the pipeline runs the
     /// refiners itself, concurrently with transcription and harmony. Cache checks still use the
     /// full base+refiners recipe, so a previously completed refined document is still a hit.
@@ -686,9 +690,15 @@ struct TranscriptionStage: AnalysisStageRunning {
             // at 0.00 s against singing that began at 18.8 s. Forced alignment takes the words as
             // known and finds where each is sung, from the audio. A word it cannot measure keeps
             // the transcriber's time; it is never given a computed one. No-op without a vocals
-            // stem or the bundled model.
+            // stem; WITH one, a missing or unloadable model fails the stage — there is no
+            // fallback to the transcriber's times (Eric, 2026-09-26).
+            let alignmentModel = hasStems ? context.loadLyricsAcousticModel() : nil
+            if hasStems, alignmentModel == nil {
+                throw SongAnalysisPipelineError.missingBundledModel("LyricsAlignmentMTL")
+            }
             let measured = MeasuredLyricTiming.applied(
-                to: lyrics, stemURL: hasStems ? audioURL : nil, onsets: vocalOnsets)
+                to: lyrics, stemURL: hasStems ? audioURL : nil, onsets: vocalOnsets,
+                model: alignmentModel)
             // Counts only, never text. `ran=false` means every word below is still the ASR's guess.
             AnalysisResourceLog.checkpoint(
                 stage: "word-timing",
