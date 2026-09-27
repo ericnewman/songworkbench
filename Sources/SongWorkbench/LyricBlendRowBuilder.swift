@@ -234,8 +234,8 @@ enum LyricBlendRowBuilder {
             }
             guard let picked = row.effectiveCandidate() else { return nil }
             let candidate = withBoundaryWordRestored(picked, rows: rows, index: index)
-            let candidateStart = candidate.words.map(\.start).min() ?? row.start
-            let candidateEnd = candidate.words.map(\.end).max() ?? row.end
+            let candidateStart = candidate.words.compactMap(\.start).min() ?? row.start
+            let candidateEnd = candidate.words.compactMap(\.end).max() ?? row.end
             return TimedLyricSegment(
                 start: candidateStart, end: max(candidateEnd, candidateStart),
                 text: candidate.text, words: candidate.words)
@@ -277,8 +277,8 @@ enum LyricBlendRowBuilder {
             var result = line
             result.text = text
             result.words = rebased
-            result.start = rebased.first?.start ?? line.start
-            result.end = max(rebased.map(\.end).max() ?? line.end, result.start)
+            result.start = rebased.firstStart ?? line.start
+            result.end = max(rebased.compactMap(\.end).max() ?? line.end, result.start)
             return result
         }
 
@@ -313,14 +313,17 @@ enum LyricBlendRowBuilder {
             let plain = cluster.filter { !isCorrected($0) }
             for line in plain {
                 let tail = accepted.indices.filter {
-                    accepted[$0].end > line.start - repeatTolerance
+                    (accepted[$0].end ?? -.infinity) > line.start - repeatTolerance
                 }
                 let repeats = LyricWordRanges.matches(tail.count, line.words.count) { i, j in
                     let earlier = accepted[tail[i]]
                     let later = line.words[j]
                     let key = LyricWordRanges.key(later.text)
+                    guard let earlierStart = earlier.start, let laterStart = later.start else {
+                        return false
+                    }
                     return !key.isEmpty && key == LyricWordRanges.key(earlier.text)
-                        && abs(earlier.start - later.start) <= repeatTolerance
+                        && abs(earlierStart - laterStart) <= repeatTolerance
                 }
                 let dropped = Set(repeats.map(\.1))
                 let placed = accepted
@@ -338,27 +341,37 @@ enum LyricBlendRowBuilder {
                     // would drop genuine words. A word starting beyond every transcribed span is
                     // new singing and is kept, which is how a long segment and the shorter lines
                     // after it still combine.
-                    !transcribedSpans.contains { $0.contains(word.start) }
+                    // An untimed word has no start to compare: it is never a second opinion.
+                    guard let start = word.start, let end = word.end else { return true }
+                    return !transcribedSpans.contains { $0.contains(start) }
                         && !placed.contains { earlier in
-                            earlier.start < word.end && word.start < earlier.end
+                            guard let earlierStart = earlier.start, let earlierEnd = earlier.end
+                            else { return false }
+                            return earlierStart < end && start < earlierEnd
                                 && LyricWordRanges.key(earlier.text)
                                     == LyricWordRanges.key(word.text)
                         }
                 }
-                if let first = accepted.count > placedCount ? accepted[placedCount].start : nil,
-                    let last = accepted.last?.start, first <= last
-                {
+                let newStarts = accepted[placedCount...].compactMap(\.start)
+                if let first = newStarts.first, let last = newStarts.last, first <= last {
                     transcribedSpans.append(first...last)
                 }
             }
-            accepted = accepted.filter { word in
-                !blocks.contains { $0.start <= word.start && word.start < $0.end }
-            }.sorted { $0.start < $1.start }
+            accepted = inSungOrder(
+                accepted.filter { word in
+                    guard let start = word.start else { return true }
+                    return !blocks.contains { $0.start <= start && start < $0.end }
+                })
 
             var groups: [[TimedLyricWord]] = []
             for word in accepted {
                 if let last = groups.last?.last,
-                    !blocks.contains(where: { last.start < $0.start && $0.start <= word.start })
+                    !blocks.contains(where: { block in
+                        guard let lastStart = last.start, let start = word.start else {
+                            return false
+                        }
+                        return lastStart < block.start && block.start <= start
+                    })
                 {
                     groups[groups.count - 1].append(word)
                 } else {
@@ -369,14 +382,15 @@ enum LyricBlendRowBuilder {
             for (offset, group) in groups.enumerated() {
                 guard var template = plain.first else { break }
                 if offset > 0 { template.id = UUID() }
-                let limit =
-                    blocks.map(\.start).filter { $0 > group[0].start }.min() ?? .infinity
+                let groupStart = group.firstStart ?? -.infinity
+                let limit = blocks.map(\.start).filter { $0 > groupStart }.min() ?? .infinity
                 pieces.append(
                     rebuilt(
                         template,
                         words: group.map { word in
+                            guard let start = word.start, let end = word.end else { return word }
                             var clipped = word
-                            clipped.end = max(word.start, min(word.end, limit))
+                            clipped.end = max(start, min(end, limit))
                             return clipped
                         }))
             }
@@ -388,6 +402,18 @@ enum LyricBlendRowBuilder {
             result += pieces
         }
         return result
+    }
+
+    /// `words` sorted by start, an untimed word sorting with the placed word before it so it stays
+    /// beside its neighbours. The key orders only; no time is given to the untimed word.
+    private static func inSungOrder(_ words: [TimedLyricWord]) -> [TimedLyricWord] {
+        var carried = -TimeInterval.infinity
+        let keys = words.map { word -> TimeInterval in
+            if let start = word.start { carried = start }
+            return carried
+        }
+        return words.indices.sorted { keys[$0] != keys[$1] ? keys[$0] < keys[$1] : $0 < $1 }
+            .map { words[$0] }
     }
 
     /// Restores a line-final word that two adjacent picks drop between them (Back to New Orleans
@@ -416,7 +442,8 @@ enum LyricBlendRowBuilder {
             tokens(candidate.text).last != boundary,
             tokens(thisModeThere.text).first == boundary,
             tokens(next.text).first != boundary,
-            word.start >= lastKept.start
+            let wordStart = word.start, let lastKeptStart = lastKept.start,
+            wordStart >= lastKeptStart
         else { return candidate }
         var restored = candidate
         let offset = candidate.text.count + 1

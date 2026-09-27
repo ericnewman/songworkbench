@@ -595,7 +595,7 @@ struct ChordProDraftBuilder: Sendable {
             if let line = spans[index].line {
                 let span = spans[index]
                 if index == 0,
-                    let firstSound = line.segment.words.first?.start
+                    let firstSound = line.segment.words.firstStart
                         ?? Optional(line.segment.start),
                     firstSound > span.start
                 {
@@ -728,7 +728,7 @@ struct ChordProDraftBuilder: Sendable {
         // A chord that sounds AFTER the last sung word (a trailing chord folded into this
         // line's tail) belongs past the end of the text, not stacked over the final word —
         // in the audio it lands a beat or two to the right of the word.
-        let lastWordEnd = segment.words.last?.end
+        let lastWordEnd = segment.words.lastEnd
         for event in chords {
             let offset: Int
             if let lastWordEnd, event.time >= lastWordEnd - 0.02 {
@@ -769,8 +769,8 @@ struct ChordProDraftBuilder: Sendable {
         -> TimedLyricWord?
     {
         guard !segment.words.isEmpty else { return nil }
-        return segment.words.last(where: { $0.start <= time && time < $0.end })
-            ?? segment.words.last(where: { $0.start <= time })
+        return segment.words.last(where: { $0.isSounding(at: time) })
+            ?? segment.words.last(where: { $0.hasStarted(by: time) })
             ?? segment.words.first
     }
 
@@ -1059,7 +1059,7 @@ struct ChordProDraftBuilder: Sendable {
             ?? SongBarGridEstimator.estimate(
                 beatTimes: beatTimes,
                 beatStrengths: [],
-                lyricLineOnsets: lyrics.map { $0.words.first?.start ?? $0.start })
+                lyricLineOnsets: lyrics.map { $0.words.firstStart ?? $0.start })
         let grid = MeasureGrid(
             beatTimes: beatTimes, bpm: bpm, beatsPerBar: shared.beatsPerBar,
             barPhase: shared.barPhase)

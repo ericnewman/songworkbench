@@ -211,19 +211,23 @@ final class RealSongChartGeometryAudit: XCTestCase {
             // are not modelled — they only ever push right, so this is a lower bound.)
             var rightEdges: [CGFloat] = []
             for line in lines {
-                let downbeat = grid.nearestDownbeatTime(toTime: line.words[0].start)
+                // An unplaced word has no time; the chart draws it at its display anchor.
+                let downbeat = grid.nearestDownbeatTime(
+                    toTime: line.words.firstStart ?? line.start)
                 let ruler = ChordRowRuler(
                     grid: grid, originTime: downbeat, gutterPx: gutterBeats * pixelsPerBeat,
                     pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
-                let wordEnds = line.words.map { word in
-                    ruler.x(atTime: word.start) + CGFloat(word.text.count) * characterWidth
+                let anchors = line.words.displayAnchors(lineStart: line.start)
+                let wordEnds = zip(line.words, anchors).map { word, anchor in
+                    ruler.x(atTime: anchor) + CGFloat(word.text.count) * characterWidth
                 }
                 rightEdges.append((wordEnds.max() ?? 0) + rowChrome)
             }
             guard !rightEdges.isEmpty else { continue }
 
             // The promise: a row exactly one phrase long ends at the viewport's right edge.
-            let downbeat = grid.nearestDownbeatTime(toTime: lines[0].words[0].start)
+            let downbeat = grid.nearestDownbeatTime(
+                toTime: lines[0].words.firstStart ?? lines[0].start)
             let ruler = ChordRowRuler(
                 grid: grid, originTime: downbeat, gutterPx: gutterBeats * pixelsPerBeat,
                 pixelsPerBeat: pixelsPerBeat, pixelsPerSecond: pixelsPerSecond)
@@ -296,10 +300,12 @@ final class RealSongChartGeometryAudit: XCTestCase {
             var mix = [0, 0, 0]
             var phases: Set<Int> = []
             for (index, line) in lines.enumerated() {
-                let firstWord = line.words[0].start
+                let firstWord = line.words.firstStart ?? line.start
                 let downbeat = grid.nearestDownbeatTime(toTime: firstWord)
                 // Chords belonging to this row: from its own first word up to the next row's.
-                let rowEnd = index + 1 < lines.count ? lines[index + 1].words[0].start : line.end
+                let rowEnd =
+                    index + 1 < lines.count
+                    ? lines[index + 1].words.firstStart ?? lines[index + 1].start : line.end
                 let rowChords = chordTimes.filter { $0 >= line.start && $0 < rowEnd }
                 let earliest = [firstWord, rowChords.min()].compactMap { $0 }.min()
                 let gutterBeats = ChartPickupGutter.beats(

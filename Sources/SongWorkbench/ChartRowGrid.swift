@@ -123,14 +123,21 @@ enum ChartLyricLineCutter {
             let hasOverride =
                 !(line.overrideText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             guard !line.words.isEmpty, !hasOverride else {
-                let window = grid.windowIndex(forTime: line.words.first?.start ?? line.start)
+                let window = grid.windowIndex(
+                    forTime: line.words.lazy.compactMap(\.start).first ?? line.start)
                 pieces.append(
                     Piece(
                         window: window, source: line, words: line.words, isWhole: true,
                         continues: false))
                 continue
             }
-            let windows = line.words.map { grid.windowIndex(forTime: $0.start) }
+            // A word alignment could not place has no time: it stays in the window of the word
+            // before it (the line's first window when it leads).
+            var current = grid.windowIndex(forTime: line.start)
+            let windows = line.words.map { word -> Int in
+                if let start = word.start { current = grid.windowIndex(forTime: start) }
+                return current
+            }
             let lastWindow = windows.last ?? 0
             var start = 0
             while start < line.words.count {
@@ -180,8 +187,8 @@ enum ChartLyricLineCutter {
             let first = rowPieces[0].source
             let segment = TimedLyricSegment(
                 id: first.id,
-                start: words.first?.start ?? first.start,
-                end: words.last?.end ?? first.end,
+                start: words.firstStart ?? first.start,
+                end: words.lastEnd ?? first.end,
                 text: text,
                 words: words.filter { !$0.characterRange.isEmpty },
                 confidence: rowPieces.compactMap(\.source.confidence).min(),

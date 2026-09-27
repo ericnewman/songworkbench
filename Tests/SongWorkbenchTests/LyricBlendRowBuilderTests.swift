@@ -735,8 +735,14 @@ extension LyricBlendRowBuilderTests {
         for (index, word) in words.enumerated() {
             for other in words[(index + 1)...]
             where LyricWordRanges.key(other.text) == LyricWordRanges.key(word.text) {
+                guard let start = word.start, let end = word.end,
+                    let otherStart = other.start, let otherEnd = other.end
+                else {
+                    XCTFail("\(word.text) or its repeat lost its time", file: file, line: line)
+                    continue
+                }
                 XCTAssertFalse(
-                    other.start < word.end && word.start < other.end,
+                    otherStart < end && start < otherEnd,
                     "\(word.text) sung twice at once", file: file, line: line)
             }
         }
@@ -811,8 +817,8 @@ extension LyricBlendRowBuilderTests {
                             step: Double.random(in: 0.2...1.2, using: &generator))
                         return LyricBlendCandidate(mode: mode, text: line.text, words: line.words)
                     }
-                let start = candidates.flatMap(\.words).map(\.start).min() ?? cursor
-                let end = candidates.flatMap(\.words).map(\.end).max() ?? cursor
+                let start = candidates.flatMap(\.words).compactMap(\.start).min() ?? cursor
+                let end = candidates.flatMap(\.words).compactMap(\.end).max() ?? cursor
                 rows.append(
                     LyricBlendRow(
                         start: start, end: end, candidates: candidates,

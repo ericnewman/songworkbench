@@ -1388,7 +1388,7 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertTrue(DrumBeatGrid.beatTimes(onsets: [0.5, 1.0], bpm: 120, duration: 0).isEmpty)
     }
 
-    func testVocalWordOnsetAlignerSnapsNearWordsAndReDerivesSegment() {
+    func testVocalWordOnsetAlignerSnapsNearWordsAndReDerivesSegment() throws {
         let segment = TimedLyricSegment(
             start: 0.50, end: 2.00, text: "Oceans moving",
             words: [
@@ -1399,8 +1399,8 @@ final class AudioAnalysisTests: XCTestCase {
         // "moving" (1.30) is 1.55 at distance 0.25 > tolerance → left unchanged.
         let out = VocalWordOnsetAligner.snapped(
             [segment], toOnsets: [0.40, 1.00, 1.55], tolerance: 0.15)
-        XCTAssertEqual(out[0].words[0].start, 0.40, accuracy: 1e-9)
-        XCTAssertEqual(out[0].words[1].start, 1.30, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[0].start), 0.40, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[1].start), 1.30, accuracy: 1e-9)
         // Segment start is re-derived from the snapped first word.
         XCTAssertEqual(out[0].start, 0.40, accuracy: 1e-9)
     }
@@ -1412,7 +1412,7 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(VocalWordOnsetAligner.snapped([segment], toOnsets: []), [segment])
     }
 
-    func testVocalWordOnsetAlignerKeepsWordsNondecreasingAndPositiveDuration() {
+    func testVocalWordOnsetAlignerKeepsWordsNondecreasingAndPositiveDuration() throws {
         let segment = TimedLyricSegment(
             start: 1.0, end: 1.9, text: "a b",
             words: [
@@ -1423,12 +1423,13 @@ final class AudioAnalysisTests: XCTestCase {
         // before the first, and each must keep a positive duration.
         let out = VocalWordOnsetAligner.snapped(
             [segment], toOnsets: [0.90], tolerance: 0.7)
-        XCTAssertGreaterThanOrEqual(out[0].words[1].start, out[0].words[0].start)
-        XCTAssertLessThan(out[0].words[0].start, out[0].words[0].end)
-        XCTAssertLessThan(out[0].words[1].start, out[0].words[1].end)
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(out[0].words[1].start), try XCTUnwrap(out[0].words[0].start))
+        XCTAssertLessThan(try XCTUnwrap(out[0].words[0].start), try XCTUnwrap(out[0].words[0].end))
+        XCTAssertLessThan(try XCTUnwrap(out[0].words[1].start), try XCTUnwrap(out[0].words[1].end))
     }
 
-    func testVocalWordOnsetAlignerNeverStacksTwoWordsOnTheSameOnset() {
+    func testVocalWordOnsetAlignerNeverStacksTwoWordsOnTheSameOnset() throws {
         // Regression: BOTH words snap to the identical nearest onset (0.90) — a plain
         // "nondecreasing" floor previously let the second word land at EXACTLY the first
         // word's time (0.90 == 0.90), stacking their anchors and inflating onset-corroboration
@@ -1442,10 +1443,11 @@ final class AudioAnalysisTests: XCTestCase {
             ])
         let out = VocalWordOnsetAligner.snapped(
             [segment], toOnsets: [0.90], tolerance: 0.7)
-        XCTAssertGreaterThan(out[0].words[1].start, out[0].words[0].start)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(out[0].words[1].start), try XCTUnwrap(out[0].words[0].start))
     }
 
-    func testVocalWordOnsetAlignerDoesNotFabricateMicroOnsetsFromOneBurst() {
+    func testVocalWordOnsetAlignerDoesNotFabricateMicroOnsetsFromOneBurst() throws {
         // Field shape: one vocal energy burst falls within the correction window for two words.
         // The old clamp snapped both to that burst, then fabricated a second start 20 ms later.
         let segment = TimedLyricSegment(
@@ -1458,9 +1460,9 @@ final class AudioAnalysisTests: XCTestCase {
         let out = VocalWordOnsetAligner.snapped(
             [segment], toOnsets: [0.90], tolerance: 0.7)
 
-        XCTAssertEqual(out[0].words[0].start, 0.90, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[0].start), 0.90, accuracy: 1e-9)
         XCTAssertEqual(
-            out[0].words[1].start, 1.50, accuracy: 1e-9,
+            try XCTUnwrap(out[0].words[1].start), 1.50, accuracy: 1e-9,
             "without a second distinct vocal onset, preserve the second ASR start")
     }
 
@@ -1496,36 +1498,36 @@ final class AudioAnalysisTests: XCTestCase {
             ])
     }
 
-    func testMelismaBridgeExtendsHeldWordAcrossVoicedGap() {
+    func testMelismaBridgeExtendsHeldWordAcrossVoicedGap() throws {
         // Continuously voiced across the whole line: the tiny "Summertime's" span extends
         // to the next word's onset — the hold is sung, not a pause.
         let voiced: [ClosedRange<TimeInterval>] = [45.9...50.0]
         let out = VocalWordSpanNormalizer.normalized(
             [summertimesSegment()], voicedIntervals: voiced)
-        XCTAssertEqual(out[0].words[0].end, 48.21, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[0].end), 48.21, accuracy: 1e-9)
         // Onsets untouched; text/order preserved.
         XCTAssertEqual(out[0].words.map(\.text), ["Summertime's", "here", "with", "you"])
-        XCTAssertEqual(out[0].words[1].start, 48.21, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[1].start), 48.21, accuracy: 1e-9)
     }
 
-    func testRealPauseIsNotBridged() {
+    func testRealPauseIsNotBridged() throws {
         // The gap is genuinely silent: word spans stay put (no fake melisma).
         let voiced: [ClosedRange<TimeInterval>] = [45.9...46.3, 48.15...50.0]
         let out = VocalWordSpanNormalizer.normalized(
             [summertimesSegment()], voicedIntervals: voiced)
-        XCTAssertEqual(out[0].words[0].end, 46.23, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[0].end), 46.23, accuracy: 1e-9)
     }
 
-    func testShortGapsAndEmptyVADAreUntouched() {
+    func testShortGapsAndEmptyVADAreUntouched() throws {
         let segment = summertimesSegment()
         // No voiced intervals → exact passthrough.
         let out = VocalWordSpanNormalizer.normalized([segment], voicedIntervals: [])
-        XCTAssertEqual(out[0].words[0].end, 46.23, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[0].end), 46.23, accuracy: 1e-9)
         // Sub-minimum gap (0.05s "here"→"with") is never touched even when voiced.
         let out2 = VocalWordSpanNormalizer.normalized(
             [segment], voicedIntervals: [45.9...50.0])
-        XCTAssertEqual(out2[0].words[1].end, 48.80, accuracy: 1e-9)
-        XCTAssertEqual(out2[0].words[2].start, 48.85, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out2[0].words[1].end), 48.80, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out2[0].words[2].start), 48.85, accuracy: 1e-9)
     }
 
     // MARK: - LineTailSustainExtender (line-final held notes)
@@ -1546,22 +1548,22 @@ final class AudioAnalysisTests: XCTestCase {
         ]
     }
 
-    func testLineTailSustainExtendsHeldLastWordToEndOfSungInterval() {
+    func testLineTailSustainExtendsHeldLastWordToEndOfSungInterval() throws {
         // Whisper ended the held "two" at 11.0 while the voice sings on to 12.6.
         let out = LineTailSustainExtender.extended(
             heldTailLines(), sungIntervals: [9.9...12.6, 13.9...15.2])
-        XCTAssertEqual(out[0].words[1].end, 12.6, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[1].end), 12.6, accuracy: 1e-9)
         XCTAssertEqual(out[0].end, 12.6, accuracy: 1e-9)
-        XCTAssertEqual(out[0].words[1].start, 10.5, accuracy: 1e-9)
-        XCTAssertEqual(out[1].words[0].end, 15.2, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[1].start), 10.5, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[1].words[0].end), 15.2, accuracy: 1e-9)
     }
 
-    func testLineTailSustainStopsBeforeNextLineAndAtMaximum() {
+    func testLineTailSustainStopsBeforeNextLineAndAtMaximum() throws {
         // One sung interval runs into the next line: stop just short of its first word.
         let out = LineTailSustainExtender.extended(heldTailLines(), sungIntervals: [9.9...20.0])
-        XCTAssertEqual(out[0].words[1].end, 13.95, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[0].words[1].end), 13.95, accuracy: 1e-9)
         // The last line has no next line; the maximum extension bounds it instead.
-        XCTAssertEqual(out[1].words[0].end, 19.0, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(out[1].words[0].end), 19.0, accuracy: 1e-9)
     }
 
     func testLineTailSustainLeavesUnsungTailsAlone() {
@@ -1675,8 +1677,8 @@ final class AudioAnalysisTests: XCTestCase {
 
     func testDoublePhraseLineSplitsAtUnvoicedPause() {
         let segment = settleDownDoubleLine()
-        let pauseStart = segment.words[6].end
-        let pauseEnd = segment.words[7].start
+        let pauseStart = segment.words[6].end!
+        let pauseEnd = segment.words[7].start!
         // Voice everywhere EXCEPT the pause.
         let voiced: [ClosedRange<TimeInterval>] = [54.0...pauseStart, pauseEnd...66.0]
         let out = IntraLinePauseSplitter.split([segment], voicedIntervals: voiced)
@@ -1687,8 +1689,8 @@ final class AudioAnalysisTests: XCTestCase {
         XCTAssertEqual(out[1].words.first?.characterRange, 0..<7)
         XCTAssertEqual(out[1].words.map(\.text), ["trading", "my", "rowdy", "friends"])
         // Timing preserved: the split lines cover the original words exactly.
-        XCTAssertEqual(out[0].start, segment.words[0].start, accuracy: 1e-9)
-        XCTAssertEqual(out[1].start, segment.words[7].start, accuracy: 1e-9)
+        XCTAssertEqual(out[0].start, segment.words[0].start!, accuracy: 1e-9)
+        XCTAssertEqual(out[1].start, segment.words[7].start!, accuracy: 1e-9)
     }
 
     func testHeldNotePauseDoesNotSplit() {
@@ -1704,8 +1706,8 @@ final class AudioAnalysisTests: XCTestCase {
         let shifted = segment.words.enumerated().map { index, word -> TimedLyricWord in
             var w = word
             if index >= 7 {
-                w.start -= 1.4
-                w.end -= 1.4
+                w.start = w.start.map { $0 - 1.4 }
+                w.end = w.end.map { $0 - 1.4 }
             }
             return w
         }

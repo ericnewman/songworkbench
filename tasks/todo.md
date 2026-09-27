@@ -4607,3 +4607,28 @@ Brief (Eric): "Fix these remaining issues", then "The app is also crashing a lot
       has stopped. Solo it there: a piano ending, or the guitar's last ring.
 
 1,213 tests, 0 failures. Not rebuilt into `build/Release`, not re-analysed, not committed.
+
+## 2026-09-27 — A word alignment cannot place has no time
+
+Eric: "store no time" (lyric starts come from onsets measured in the audio ONLY). Until now a
+word that forced alignment could not measure, and no onset filled, kept the ASR's time — including
+reference-lyrics words spread evenly by `ReferenceLyricAligner`.
+
+Acceptance criteria:
+
+- [x] `TimedLyricWord.start`/`end` are optional; nil means "not measured". Older documents decode
+      unchanged (every stored word has a number).
+- [x] `MeasuredLyricTiming` writes nil for an unmeasured word instead of keeping the ASR time.
+- [x] A line's start/end come from its first/last TIMED word only. A line with no timed word keeps
+      its words but gives them to the neighbouring line (previous; the next when it is first),
+      because a line needs a start and none was measured.
+- [x] Every consumer skips untimed words for anything time-based (highlight, balls, recut, blend,
+      onset snapping, normalisers, audits) and still shows their text. No consumer computes a
+      time for an untimed word.
+- [x] Tests: unmeasured word → nil, line bounds from timed words, all-untimed line merged, old
+      document decodes. `swift test` and `swift format lint --strict` pass.
+
+Review (2026-09-27): `swift test` 1214 tests, 0 failures, 34 skipped; lint clean on every changed
+file. New `UnmeasuredLyricWordTests` cover the line join, the uncorrected-word nil time, draw
+anchors, and decoding. Existing tests that asserted interpolated or kept-ASR times now assert nil
+(reference aligner, corrected-line resolution). Not yet verified on a real song in the app.

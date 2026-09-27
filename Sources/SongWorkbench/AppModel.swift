@@ -35,8 +35,12 @@ enum LyricLineEdit {
         guard words.count >= 2 else { return nil }
         var splitAt = 1
         var widestGap = -TimeInterval.infinity
-        for k in 1..<words.count where words[k].start - words[k - 1].end > widestGap {
-            widestGap = words[k].start - words[k - 1].end
+        // The widest measured pause; a pair with an untimed word has no measured gap.
+        for k in 1..<words.count {
+            guard let start = words[k].start, let previousEnd = words[k - 1].end,
+                start - previousEnd > widestGap
+            else { continue }
+            widestGap = start - previousEnd
             splitAt = k
         }
         let chars = Array(segment.text)
@@ -50,10 +54,10 @@ enum LyricLineEdit {
                     .upperBound - cut))
         }
         let first = TimedLyricSegment(
-            start: segment.start, end: firstWords.last?.end ?? segment.start,
+            start: segment.start, end: firstWords.lastEnd ?? segment.start,
             text: String(chars[0..<cut]).trimmingCharacters(in: .whitespaces), words: firstWords)
         let second = TimedLyricSegment(
-            start: secondWords.first?.start ?? segment.end, end: segment.end,
+            start: secondWords.firstStart ?? segment.end, end: segment.end,
             text: String(chars[cut...]), words: secondWords)
         return (first, second)
     }

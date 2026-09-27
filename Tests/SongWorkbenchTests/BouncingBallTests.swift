@@ -79,7 +79,7 @@ final class BouncingBallTests: XCTestCase {
             TimedLyricWord(text: "low", start: 3.0, end: 3.5, characterRange: 9..<12),
             TimedLyricWord(text: "line", start: 4.5, end: 5.0, characterRange: 13..<17),
         ]
-        let beatTimes = words.map(\.start)
+        let beatTimes = words.compactMap(\.start)
         let centers: [CGFloat] = words.map { word in
             (CGFloat(word.characterRange.lowerBound) + CGFloat(word.characterRange.upperBound))
                 / 2 * characterWidth
@@ -87,7 +87,7 @@ final class BouncingBallTests: XCTestCase {
         let ball = BouncingBall(beatTimes: beatTimes, beatX: centers)
 
         for (index, word) in words.enumerated() {
-            let position = ball.position(at: word.start)
+            let position = ball.position(at: word.start!)
             XCTAssertNotNil(position)
             // Tap (lift == 0) exactly at each word's onset.
             XCTAssertEqual(Double(position?.lift ?? -1), 0, accuracy: 0.0001)

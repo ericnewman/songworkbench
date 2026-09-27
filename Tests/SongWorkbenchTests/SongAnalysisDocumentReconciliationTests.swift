@@ -331,10 +331,11 @@ extension SongAnalysisDocumentReconciliationTests {
         XCTAssertEqual(resolved.text, "I've got some troubles now")
         XCTAssertTrue(LyricWordRanges.addressText(resolved.words, resolved.text))
         XCTAssertEqual(resolved.words.map(\.text), ["I've", "got", "some", "troubles", "now"])
-        XCTAssertEqual(resolved.words.map(\.start), [10, 10.2, 10.6, 11, 12])
+        // "now" has no transcribed counterpart: it is unplaced (no time), never interpolated.
+        XCTAssertEqual(resolved.words.map(\.start), [10, 10.2, 10.6, 11, nil])
         XCTAssertEqual(
             resolved.words.map(\.timingSource),
-            [.substituted, .matched, .substituted, .matched, .interpolated])
+            [.substituted, .matched, .substituted, .matched, .unplaced])
         // Only words the transcriber actually heard keep a confidence.
         XCTAssertEqual(
             resolved.words.map { $0.confidence != nil }, [false, true, false, true, false])
@@ -343,7 +344,7 @@ extension SongAnalysisDocumentReconciliationTests {
         XCTAssertEqual(resolved.overrideText, "I've got some troubles now")
     }
 
-    func testResolvedCorrectionSpreadsARewordedRunAcrossTheWordsItReplaces() {
+    func testResolvedCorrectionLeavesARewordedRunUnplaced() {
         let line = timedLine(
             [("I", 1, 1.5), ("wanna", 1.5, 2.5), ("go", 2.5, 3)], override: "I want to go")
 
@@ -351,10 +352,12 @@ extension SongAnalysisDocumentReconciliationTests {
 
         XCTAssertTrue(LyricWordRanges.addressText(resolved.words, resolved.text))
         XCTAssertEqual(resolved.words.map(\.text), ["I", "want", "to", "go"])
-        XCTAssertEqual(resolved.words[1].start, 1.5, accuracy: 1e-9)
-        XCTAssertEqual(resolved.words[2].end, 2.5, accuracy: 1e-9)
-        XCTAssertEqual(resolved.words[1].timingSource, .interpolated)
-        XCTAssertEqual(resolved.words.map(\.start), resolved.words.map(\.start).sorted())
+        // A two-word run replacing one word has no one-to-one counterpart: no time, not spread.
+        XCTAssertNil(resolved.words[1].start)
+        XCTAssertNil(resolved.words[2].end)
+        XCTAssertEqual(resolved.words[1].timingSource, .unplaced)
+        XCTAssertEqual(
+            resolved.words.compactMap(\.start), resolved.words.compactMap(\.start).sorted())
     }
 
     func testResolvedRederivesStaleRangesWithoutMovingWords() {

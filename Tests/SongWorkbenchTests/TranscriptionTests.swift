@@ -747,7 +747,7 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(words.map(\.start), [1.1, 1.5, 2.0])
         XCTAssertEqual(words.map(\.end), [1.4, 1.9, 2.4])
         // Ascending onsets.
-        XCTAssertEqual(words.map(\.start), words.map(\.start).sorted())
+        XCTAssertEqual(words.compactMap(\.start), words.compactMap(\.start).sorted())
     }
 
     func testGroupingWordSpansMultipleTokensForAttachedContraction() {
@@ -794,7 +794,7 @@ final class TranscriptionTests: XCTestCase {
 
     // MARK: - Reference lyric alignment
 
-    func testReferenceAlignerBorrowsASRTimingsAndUsesReferenceLineBreaks() {
+    func testReferenceAlignerBorrowsASRTimingsAndUsesReferenceLineBreaks() throws {
         // ASR produced one run-on line (one word mis-heard); the reference has the correct words
         // and two lines. Output uses the reference words/lines with ASR timings.
         let asr = [
@@ -810,22 +810,25 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(lines.map(\.text), ["Grass between my toes", "Smoke curls"])
         XCTAssertEqual(lines[0].words.map(\.text), ["Grass", "between", "my", "toes"])
         XCTAssertEqual(lines[0].start, 19.0, accuracy: 0.001)  // borrowed from ASR "grass"
-        XCTAssertEqual(lines[1].words[0].start, 23.0, accuracy: 0.001)  // "Smoke" -> ASR "smoke"
+        // "Smoke" -> ASR "smoke"
+        XCTAssertEqual(try XCTUnwrap(lines[1].words[0].start), 23.0, accuracy: 0.001)
     }
 
-    func testReferenceAlignerInterpolatesWordsTheASRMissed() {
-        // ASR only timed "grass" and "toes"; the reference's "between my" are interpolated between.
+    func testReferenceAlignerLeavesWordsTheASRMissedUntimed() throws {
+        // ASR only timed "grass" and "toes"; the reference's "between my" get no time.
         let asr = [lyricSegment([lyricWord("grass", 19.0, 20.0), lyricWord("toes", 22.0, 22.6)])]
         let lines = ReferenceLyricAligner.align(
             referenceText: "Grass between my toes", asrSegments: asr)
 
         let words = lines[0].words
         XCTAssertEqual(words.map(\.text), ["Grass", "between", "my", "toes"])
-        XCTAssertEqual(words[0].start, 19.0, accuracy: 0.001)
-        XCTAssertEqual(words[3].start, 22.0, accuracy: 0.001)
-        XCTAssertGreaterThanOrEqual(words[1].start, 20.0)  // interpolated inside the gap
-        XCTAssertLessThanOrEqual(words[2].end, 22.0001)
-        XCTAssertLessThanOrEqual(words[1].start, words[2].start)  // monotonic
+        XCTAssertEqual(try XCTUnwrap(words[0].start), 19.0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(words[3].start), 22.0, accuracy: 0.001)
+        // A word's time is measured or absent, never interpolated: unmatched words stay nil.
+        XCTAssertNil(words[1].start)
+        XCTAssertNil(words[1].end)
+        XCTAssertNil(words[2].start)
+        XCTAssertNil(words[2].end)
     }
 
     func testReferenceAlignerComputesCharacterRangesAndKeepsPunctuation() {

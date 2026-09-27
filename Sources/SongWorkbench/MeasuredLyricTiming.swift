@@ -25,6 +25,8 @@ typealias WordTimeMeasurer =
 enum MeasuredLyricTiming {
     enum Failure: Error, Equatable {
         case emptyVocalsStem
+        /// Alignment ran but placed no word at all: nothing anchors any line.
+        case nothingMeasured
     }
 
     /// The pipeline's measuring step: the bundled alignment model over the vocals stem.
@@ -42,7 +44,8 @@ enum MeasuredLyricTiming {
     struct Outcome: Equatable, Sendable {
         var measured = 0
         var filledFromOnsets = 0
-        var keptTranscriberTime = 0
+        /// Words neither alignment nor an onset placed: they are stored with no time.
+        var unmeasured = 0
         var ran = false
     }
 
@@ -71,7 +74,8 @@ enum MeasuredLyricTiming {
         outcome.ran = true
         outcome.measured = beforeFill
         outcome.filledFromOnsets = filled.filter { $0.start != nil }.count - beforeFill
-        outcome.keptTranscriberTime = filled.filter { $0.start == nil }.count
+        outcome.unmeasured = filled.filter { $0.start == nil }.count
+        guard outcome.unmeasured < filled.count else { throw Failure.nothingMeasured }
 
         // Write the measured times back, keeping every word and its text exactly as it was.
         var cursor = 0
@@ -79,23 +83,78 @@ enum MeasuredLyricTiming {
             var updated = line
             updated.words = line.words.map { word in
                 defer { cursor += 1 }
+                var copy = word
                 guard cursor < filled.count, let start = filled[cursor].start,
                     let end = filled[cursor].end
                 else {
-                    // Unmeasured: the transcriber's time stands. It is a poor estimate, but it is
-                    // the ASR's own output — we do not invent a replacement for it here.
-                    return word
+                    // Unmeasured: the word has NO time (Eric, 2026-09-27). The transcriber's time
+                    // is a by-product of decoding, not a measurement, and is never kept.
+                    copy.start = nil
+                    copy.end = nil
+                    return copy
                 }
-                var copy = word
                 copy.start = start
                 copy.end = max(start, end)
                 return copy
             }
-            updated.start = updated.words.first?.start ?? line.start
-            updated.end = max(updated.words.last?.end ?? line.end, updated.start)
+            if let start = updated.words.firstStart, let end = updated.words.lastEnd {
+                updated.start = start
+                updated.end = max(end, start)
+            }
             return updated
         }
-        return (rewritten, outcome)
+        return (withUnplacedLinesJoined(rewritten), outcome)
+    }
+
+    /// A line needs a start, and one whose words were ALL unmeasured has none that was measured.
+    /// Its words (text intact, no times) join the line before it — or the line after it when it
+    /// comes first — whose measured bounds stand. `lines` must hold at least one measured word.
+    static func withUnplacedLinesJoined(_ lines: [TimedLyricSegment]) -> [TimedLyricSegment] {
+        func isPlaced(_ line: TimedLyricSegment) -> Bool { line.words.firstStart != nil }
+        var result: [TimedLyricSegment] = []
+        var leading: [TimedLyricSegment] = []
+        for line in lines {
+            if isPlaced(line) {
+                var anchored = line
+                for unplaced in leading.reversed() { anchored = joined(unplaced, before: anchored) }
+                leading = []
+                result.append(anchored)
+            } else if let last = result.popLast() {
+                result.append(joined(line, after: last))
+            } else {
+                leading.append(line)
+            }
+        }
+        return result
+    }
+
+    /// `anchor` with `extra`'s words appended; `anchor`'s id, flags and bounds are kept.
+    private static func joined(_ extra: TimedLyricSegment, after anchor: TimedLyricSegment)
+        -> TimedLyricSegment
+    {
+        var result = anchor
+        let offset = anchor.text.count + 1
+        result.text = anchor.text + " " + extra.text
+        result.words = anchor.words + extra.words.map { shifted($0, by: offset) }
+        return result
+    }
+
+    /// `anchor` with `extra`'s words prepended; `anchor`'s id, flags and bounds are kept.
+    private static func joined(_ extra: TimedLyricSegment, before anchor: TimedLyricSegment)
+        -> TimedLyricSegment
+    {
+        var result = anchor
+        let offset = extra.text.count + 1
+        result.text = extra.text + " " + anchor.text
+        result.words = extra.words + anchor.words.map { shifted($0, by: offset) }
+        return result
+    }
+
+    private static func shifted(_ word: TimedLyricWord, by offset: Int) -> TimedLyricWord {
+        var copy = word
+        copy.characterRange =
+            (word.characterRange.lowerBound + offset)..<(word.characterRange.upperBound + offset)
+        return copy
     }
 
     /// Mono samples at the rate the acoustic model expects.

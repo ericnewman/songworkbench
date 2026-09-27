@@ -6,8 +6,12 @@ import Foundation
 /// owning segment's `text`.
 struct TimedLyricWord: Codable, Equatable, Sendable {
     var text: String
-    var start: TimeInterval
-    var end: TimeInterval
+    /// When the word is sung, measured on the vocals stem by forced alignment (or an onset). nil
+    /// for a word alignment could not place: its time is unknown and is never estimated — it is
+    /// drawn after the word before it, never highlighted, and anchors nothing (Eric, 2026-09-27).
+    /// Always both set or both nil.
+    var start: TimeInterval?
+    var end: TimeInterval?
     var characterRange: Range<Int>
     /// Lowest ASR token confidence among the tokens that render this word (a word is only as
     /// trustworthy as its least certain part). `nil` when the engine reported no per-token
@@ -20,6 +24,36 @@ struct TimedLyricWord: Codable, Equatable, Sendable {
     var timingSource: LyricWordTimingSource? = nil
 }
 
+extension TimedLyricWord {
+    /// True when alignment placed this word and it has started by `time`. An untimed word never
+    /// has: nothing may be inferred about when it is sung.
+    func hasStarted(by time: TimeInterval) -> Bool { start.map { $0 <= time } ?? false }
+
+    /// True when alignment placed this word and `time` falls in its `[start, end)`.
+    func isSounding(at time: TimeInterval) -> Bool {
+        guard let start, let end else { return false }
+        return start <= time && time < end
+    }
+}
+
+extension Sequence where Element == TimedLyricWord {
+    /// Start of the first word alignment placed; nil when it placed none.
+    var firstStart: TimeInterval? { lazy.compactMap(\.start).first }
+    /// End of the last word alignment placed; nil when it placed none.
+    var lastEnd: TimeInterval? { reversed().lazy.compactMap(\.end).first }
+
+    /// Where to DRAW each word on a time axis: its start, or for a word alignment could not place
+    /// the anchor of the word before it (`lineStart` when it leads), so it is drawn right after
+    /// that word. Layout only: never stored, played, highlighted or used to place anything else.
+    func displayAnchors(lineStart: TimeInterval) -> [TimeInterval] {
+        var anchor = lineStart
+        return map { word in
+            if let start = word.start { anchor = start }
+            return anchor
+        }
+    }
+}
+
 /// Provenance of a resolved word's time (see `TimedLyricSegment.resolved`).
 enum LyricWordTimingSource: String, Codable, Sendable {
     /// A corrected word with the same text as a transcribed word: that word's time.
@@ -27,10 +61,9 @@ enum LyricWordTimingSource: String, Codable, Sendable {
     /// A corrected word replacing exactly one transcribed word of different text: the replaced
     /// word's time — still the moment the transcriber heard a word sung there.
     case substituted
-    /// A corrected word with no one-to-one transcribed counterpart, spread by length across the
-    /// transcribed words it replaced or the gap between its matched neighbours. Not acoustic
-    /// evidence of where the word starts.
-    case interpolated
+    /// A corrected word with no one-to-one transcribed counterpart: it has NO time (lyric times
+    /// are measured, never spread — Eric, 2026-09-27). The raw value predates the rename.
+    case unplaced = "interpolated"
 }
 
 /// One transcription mode's candidate text for a `LyricBlendRow`'s time window (backlog #11,
@@ -182,7 +215,7 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
     /// (word ranges re-derived only if they no longer address the text). With one, the corrected
     /// words are matched in order to the transcribed words: equal text keeps the transcribed time
     /// (`.matched`), a one-for-one replacement keeps the replaced word's time (`.substituted`),
-    /// and anything else is spread across the replaced words or the gap (`.interpolated`). A
+    /// and anything else has no time (`.unplaced`). A
     /// correction on a line with no word timings resolves to no words. `overrideText` is kept so
     /// callers can still tell a corrected line apart; the stored segment is never changed.
     var resolved: TimedLyricSegment {
@@ -191,8 +224,7 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         var result = self
         result.text = target
         result.words = LyricWordRanges.words(
-            for: target, from: words, lineStart: start, lineEnd: end,
-            isCorrection: target != text)
+            for: target, from: words, isCorrection: target != text)
         return result
     }
 
@@ -998,8 +1030,7 @@ enum LyricWordRanges {
     }
 
     static func words(
-        for text: String, from raw: [TimedLyricWord], lineStart: TimeInterval,
-        lineEnd: TimeInterval, isCorrection: Bool
+        for text: String, from raw: [TimedLyricWord], isCorrection: Bool
     ) -> [TimedLyricWord] {
         let tokens = tokens(in: text)
         guard !raw.isEmpty, !tokens.isEmpty else { return [] }
@@ -1033,26 +1064,10 @@ enum LyricWordRanges {
                 }
                 continue
             }
-            let low: TimeInterval
-            let high: TimeInterval
-            if !replaced.isEmpty {
-                low = raw[replaced.lowerBound].start
-                high = raw[replaced.upperBound - 1].end
-            } else {
-                low = left.0 >= 0 ? (placed[left.0]?.end ?? lineStart) : lineStart
-                high = right.0 < tokens.count ? raw[right.1].start : lineEnd
-            }
-            let span = max(high - low, 0)
-            let weights = run.map { Double(max(tokens[$0].text.count, 1)) }
-            let total = weights.reduce(0, +)
-            var cursor = 0.0
-            for (offset, i) in run.enumerated() {
-                let wordStart = low + span * cursor / total
-                cursor += weights[offset]
+            for i in run {
                 placed[i] = TimedLyricWord(
-                    text: tokens[i].text, start: wordStart, end: low + span * cursor / total,
-                    characterRange: tokens[i].range, confidence: nil,
-                    timingSource: .interpolated)
+                    text: tokens[i].text, start: nil, end: nil, characterRange: tokens[i].range,
+                    confidence: nil, timingSource: .unplaced)
             }
         }
         return placed.compactMap { $0 }

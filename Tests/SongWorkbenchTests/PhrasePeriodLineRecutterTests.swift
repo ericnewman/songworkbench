@@ -52,7 +52,7 @@ final class PhrasePeriodLineRecutterTests: XCTestCase {
                     characterRange: lower..<text.count))
         }
         return TimedLyricSegment(
-            start: words[0].start, end: words[words.count - 1].end, text: text, words: rebuilt)
+            start: words[0].start!, end: words[words.count - 1].end!, text: text, words: rebuilt)
     }
 
     /// Ten evenly spaced 4-word lines — the "clean song" baseline every fixture perturbs.
@@ -239,8 +239,8 @@ final class PhrasePeriodLineRecutterTests: XCTestCase {
         var narrow = line(start: 0, count: 4)
         narrow.end = 30
         let wide = line(start: 40, count: 16)
-        let narrowSpan = narrow.words[3].end - narrow.words[0].start
-        let wideSpan = wide.words[15].end - wide.words[0].start
+        let narrowSpan = narrow.words[3].end! - narrow.words[0].start!
+        let wideSpan = wide.words[15].end! - wide.words[0].start!
         XCTAssertEqual(
             PhrasePeriodLineRecutter.spanRatio([narrow, narrow, wide]), wideSpan / narrowSpan,
             accuracy: 0.001)

@@ -773,7 +773,10 @@ private struct ChordGridRowView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             } else {
-                TimeAxisRowLayout(times: timedWords.map(\.start), start: row.start, end: axisEnd) {
+                TimeAxisRowLayout(
+                    times: timedWords.displayAnchors(lineStart: row.start), start: row.start,
+                    end: axisEnd
+                ) {
                     ForEach(Array(timedWords.enumerated()), id: \.offset) { _, word in
                         Text(word.text)
                             .font(.swDisplay(12))
@@ -805,9 +808,8 @@ private struct ChordGridRowView: View {
         }
     }
 
-    private var timedWords: [TimedLyricWord] {
-        (row.segment?.words ?? []).sorted { $0.start < $1.start }
-    }
+    /// The row's words in sung order (untimed ones included, drawn after the word before them).
+    private var timedWords: [TimedLyricWord] { row.segment?.words ?? [] }
 
     /// Whether this word is the one being sung, using the same rule as the character-range
     /// helper so the two never disagree about which word is current.
@@ -3263,7 +3265,7 @@ struct ChordProAppPreview: View {
         let strip = lineStrip(for: item, in: document)
         let lineWords = wordTimings(
             forLyricOrdinal: item.lyricOrdinal)
-        let firstWordOnset = lineWords.first?.start
+        let firstWordOnset = lineWords.firstStart
         // Resolving bar downbeat for the shared metric grid (nil
         // when there's no beat grid → first-word-flush fallback).
         // Rows WITHOUT word timings (instrumental rows, untranscribed
@@ -3293,7 +3295,7 @@ struct ChordProAppPreview: View {
         // melody fill may feed into it.
         let pickupGutterSeconds = ChartPickupGutter.seconds(
             downbeat: rowDownbeat,
-            earliestContent: [lineWords.first?.start, chordRow.effectiveTimes.min()]
+            earliestContent: [lineWords.firstStart, chordRow.effectiveTimes.min()]
                 .compactMap { $0 }.min(),
             beatLengthSeconds: beatLengthSeconds)
         // Fixed-period rows have no gutter (see `fixedPeriodGutterSeconds`), so every row starts on
@@ -3311,7 +3313,7 @@ struct ChordProAppPreview: View {
         // — on fixed-period rows exactly to the frame's right edge, one period past the downbeat,
         // so every row's strip ends where its frame does.
         let stripEnd: TimeInterval? = strip.duration > 0 ? strip.start + strip.duration : nil
-        let tailEnd: TimeInterval? = (lineWords.last?.end ?? stripEnd).map {
+        let tailEnd: TimeInterval? = (lineWords.lastEnd ?? stripEnd).map {
             $0 + melodyTailSeconds
         }
         let frameEnd: TimeInterval? = fixedPeriodBeats.flatMap { period in
@@ -3322,7 +3324,7 @@ struct ChordProAppPreview: View {
         let rowEnergy = instrumentEnergy(
             rowAnchor: rowAnchorTime, rowDownbeat: rowDownbeat, gutterSeconds: rowGutterSeconds,
             end: energyEnd)
-        let rowWordStarts = Set(lineWords.map(\.start))
+        let rowWordStarts = Set(lineWords.compactMap(\.start))
         let rowWordFindings = wordTimingFindings.filter { rowWordStarts.contains($0.start) }
         let rowInstrumentChordTracks = visibleInstrumentChordTracks
         let rowPlayerRests = instrumentChords?.rests ?? []
@@ -3347,7 +3349,7 @@ struct ChordProAppPreview: View {
         // Barlines are a pure function of the beat grid — never lyric-gated, never optional.
         let itemShowBarlines = true
         let itemTrailingRest = trailingRestSeconds(
-            lastWordEnd: lineWords.last?.end,
+            lastWordEnd: lineWords.lastEnd,
             nextLineStart: nextLineStart)
         let itemHasUntranscribed: Bool =
             item.displayLineNumber
@@ -5151,7 +5153,7 @@ private struct ChordProPreviewLineView: View {
     /// grid is present, else the first word, else the row's own start (wordless instrumental rows
     /// have no first word, and an origin of 0 would fling a mid-song row's x into the thousands).
     private var gridOriginTime: TimeInterval {
-        rowDownbeatSeconds ?? rhythmicWords.first?.start ?? rowStartTime
+        rowDownbeatSeconds ?? rhythmicWords.firstStart ?? rowStartTime
     }
 
     /// Left px of this row's downbeat column — the pickup gutter width. Zero without a grid, and
@@ -5832,7 +5834,7 @@ private struct ChordProPreviewLineView: View {
         if let word = words.last(where: { $0.characterRange.lowerBound <= chord.column }) {
             return word.end
         }
-        return words.first?.start
+        return words.firstStart
     }
 
     /// The bouncing ball's center in rhythmic mode, positioned over the rhythmic word x-layout
@@ -5857,8 +5859,10 @@ private struct ChordProPreviewLineView: View {
             // so the ball and the lyrics can never disagree. A final tap at the line's end
             // gives the last word a full arc.
             let xs = rhythmicWordXs
-            var taps = words.map(\.start)
-            var tapXs = words.indices.map { index in
+            // Only placed words are tapped: an untimed word has no moment to land on.
+            let placed = words.indices.filter { words[$0].start != nil }
+            var taps = placed.compactMap { words[$0].start }
+            var tapXs = placed.map { index in
                 (xs.indices.contains(index) ? xs[index] : 0)
                     + rhythmicWordWidth(at: index) / 2
             }
@@ -5881,8 +5885,8 @@ private struct ChordProPreviewLineView: View {
         var now = beatBall.currentTime
         // Through the row's lead-in the ball rests on the first word until it is sung, instead
         // of vanishing until the first tap.
-        if !beatBall.isWaiting, let firstWord = words.first, now >= beatBall.segmentStart {
-            now = max(now, firstWord.start)
+        if !beatBall.isWaiting, let firstStart = words.firstStart, now >= beatBall.segmentStart {
+            now = max(now, firstStart)
         }
         guard let position = ballModel.position(at: now) else { return nil }
         let baseline = ballTopReserve - 2
@@ -5909,11 +5913,11 @@ private struct ChordProPreviewLineView: View {
         // The row's real extent is the earliest of its lyric start, its first chord and its strip
         // start, through to the later of the lyric end and the strip end.
         let starts = [
-            beatDots.segmentStart, rhythmicWords.first?.start, rowChordTimes.min(),
+            beatDots.segmentStart, rhythmicWords.firstStart, rowChordTimes.min(),
             lineDuration > 0 ? rowStartTime : nil,
         ].compactMap { $0 }
         let ends = [
-            beatDots.segmentEnd, rhythmicWords.last?.end, rowChordTimes.max(),
+            beatDots.segmentEnd, rhythmicWords.lastEnd, rowChordTimes.max(),
             lineDuration > 0 ? rowStartTime + lineDuration : nil,
         ].compactMap { $0 }
         guard let from = starts.min(), let to = ends.max(), to > from else { return [] }
@@ -6087,7 +6091,9 @@ private struct ChordProPreviewLineView: View {
         ).map { RhythmicWordSlot(x: $0.x, tracking: $0.tracking) }
     }
 
-    private var rhythmicWordAnchors: [CGFloat] { rhythmicWords.map { metricX(forTime: $0.start) } }
+    private var rhythmicWordAnchors: [CGFloat] {
+        rhythmicWords.displayAnchors(lineStart: rowStartTime).map { metricX(forTime: $0) }
+    }
     private var rhythmicWordLengths: [Int] { rhythmicWords.map(\.text.count) }
 
     /// This row's lyric text scale: 1, or smaller when a fixed-period row's words would otherwise
@@ -6168,7 +6174,9 @@ private struct ChordProPreviewLineView: View {
         guard words.count == xs.count, pixelsPerBeat > 0 else { return [] }
         return ChordProPreviewLineLayout.holdLineSpans(
             labelEnds: xs.indices.map { xs[$0] + rhythmicWordWidth(at: $0) },
-            wordEndXs: words.map { metricX(forTime: $0.end) },
+            wordEndXs: zip(words, words.displayAnchors(lineStart: rowStartTime)).map {
+                metricX(forTime: $0.end ?? $1)
+            },
             labelStarts: xs, frameEnd: fixedFramePx, gap: characterWidth / 2,
             minimumLength: pixelsPerBeat)
     }
@@ -6455,7 +6463,7 @@ private struct ChordProPreviewLineView: View {
         } else if !beatBall.words.isEmpty {
             // TAP THE WORDS (user-chosen model 2026-07-02): bounce bottoms land on word
             // ONSETS over the sung word; the beat grid is only the no-word-timing fallback.
-            var taps = beatBall.words.map(\.start)
+            var taps = beatBall.words.compactMap(\.start)
             var tapXs = taps.map { wordCenterX(at: $0, beatBall: beatBall) }
             taps.append(max(beatBall.segmentEnd, (taps.last ?? 0) + 0.3))
             tapXs.append(tapXs.last ?? 0)
@@ -6482,8 +6490,8 @@ private struct ChordProPreviewLineView: View {
         let characterCount = line.lyric.count
         if !beatBall.words.isEmpty {
             let active =
-                beatBall.words.last(where: { $0.start <= beatTime && beatTime < $0.end })
-                ?? beatBall.words.last(where: { $0.start <= beatTime })
+                beatBall.words.last(where: { $0.isSounding(at: beatTime) })
+                ?? beatBall.words.last(where: { $0.hasStarted(by: beatTime) })
                 ?? beatBall.words.first
             if let word = active {
                 let lower = min(max(word.characterRange.lowerBound, 0), characterCount)

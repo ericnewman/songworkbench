@@ -93,7 +93,7 @@ enum SongBeatsPerLine {
     /// A line's measured onset for period fitting: its first WORD when it has one (a real
     /// measurement), else the segment start (padding-derived).
     static func lineOnset(_ line: TimedLyricSegment) -> TimeInterval {
-        line.words.first?.start ?? line.start
+        line.words.firstStart ?? line.start
     }
 
     /// Measures every line against the phrase period.

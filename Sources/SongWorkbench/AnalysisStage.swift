@@ -697,12 +697,12 @@ struct TranscriptionStage: AnalysisStageRunning {
                 hasWords
                 ? try context.measureWordTimes(lyrics, audioURL, vocalOnsets)
                 : (lyrics: lyrics, outcome: MeasuredLyricTiming.Outcome())
-            // Counts only, never text. `ran=false` means every word below is still the ASR's guess.
+            // Counts only, never text. `unmeasured` words are stored with no time.
             AnalysisResourceLog.checkpoint(
                 stage: "word-timing",
                 event: "ran=\(measured.outcome.ran) measured=\(measured.outcome.measured)"
                     + " from-onsets=\(measured.outcome.filledFromOnsets)"
-                    + " kept-asr=\(measured.outcome.keptTranscriberTime)")
+                    + " unmeasured=\(measured.outcome.unmeasured)")
             // FINAL precision pass: snap each word's onset to the nearest vocal-stem energy onset
             // so words (and everything anchored to them — the ChordPro strip, the bouncing ball,
             // and chords placed over words) land on the actual vocal energy. No-op without a
@@ -1204,7 +1204,7 @@ struct HarmonyStage: AnalysisStageRunning {
             let barGrid = SongBarGridEstimator.estimate(
                 beatTimes: resolvedBeatTimes,
                 beatStrengths: drumStrengths,
-                lyricLineOnsets: context.document.lyrics.map { $0.words.first?.start ?? $0.start }
+                lyricLineOnsets: context.document.lyrics.map { $0.words.firstStart ?? $0.start }
             )
             // A phase the accents did not actually measure must not drive the decoder's metric
             // prior — anchoring to beat 0 is the right DISPLAY convention but it is not evidence

@@ -152,7 +152,7 @@ final class ForcedLyricAlignerEndToEndTests: XCTestCase {
         XCTAssertTrue(result.outcome.ran, "alignment did not run")
         print(
             "measured \(result.outcome.measured), from onsets \(result.outcome.filledFromOnsets), "
-                + "kept transcriber time \(result.outcome.keptTranscriberTime)")
+                + "unmeasured \(result.outcome.unmeasured)")
 
         let after = result.lyrics.flatMap(\.words)
         XCTAssertEqual(after.count, timed.count, "no word may be added or lost")

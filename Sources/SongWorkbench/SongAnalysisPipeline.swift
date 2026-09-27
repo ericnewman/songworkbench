@@ -437,7 +437,7 @@ enum AnalysisTimingPostPasses {
     }
 
     private static func lineOnsets(_ lines: [TimedLyricSegment]) -> [TimeInterval] {
-        lines.map { $0.words.first?.start ?? $0.start }
+        lines.map { $0.words.firstStart ?? $0.start }
     }
 }
 

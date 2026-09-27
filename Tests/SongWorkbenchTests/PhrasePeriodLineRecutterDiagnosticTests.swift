@@ -153,8 +153,10 @@ final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
             let period = Double(report.beatsPerLine) * report.beatLength
             func spans(_ set: [TimedLyricSegment]) -> [Double] {
                 set.compactMap { line in
-                    guard let a = line.words.first, let b = line.words.last else { return nil }
-                    return (b.end - a.start) / period
+                    guard let a = line.words.firstStart, let b = line.words.lastEnd else {
+                        return nil
+                    }
+                    return (b - a) / period
                 }.sorted(by: >)
             }
             func p90OverMedian(_ set: [TimedLyricSegment]) -> Double {

@@ -232,10 +232,10 @@ struct ChordProHighlightDeriver: Sendable {
         at currentTime: TimeInterval
     ) -> Range<Int>? {
         let active: TimedLyricWord?
-        if let containing = words.last(where: { $0.start <= currentTime && currentTime < $0.end }) {
+        if let containing = words.last(where: { $0.isSounding(at: currentTime) }) {
             active = containing
         } else {
-            active = words.last(where: { $0.start <= currentTime })
+            active = words.last(where: { $0.hasStarted(by: currentTime) })
         }
         guard let word = active else { return nil }
         let lower = min(max(word.characterRange.lowerBound, 0), textLength)

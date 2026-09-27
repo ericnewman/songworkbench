@@ -981,7 +981,9 @@ enum UntranscribedVocalRegionDetector {
     ) -> [ClosedRange<TimeInterval>] {
         regions(
             voicedIntervals: voicedIntervals,
-            wordSpans: lyrics.flatMap(\.words).map { $0.start...max($0.start, $0.end) },
+            wordSpans: lyrics.flatMap(\.words).compactMap { word in
+                word.start.map { $0...max($0, word.end ?? $0) }
+            },
             minimumDuration: minimumDuration,
             wordPadding: wordPadding)
     }
@@ -1073,8 +1075,10 @@ enum IntraLinePauseSplitter {
         // The widest qualifying pause wins (phrase boundaries are the biggest gaps).
         var best: (index: Int, gap: TimeInterval)?
         for index in (minimumWordsPerSide - 1)..<(words.count - minimumWordsPerSide) {
-            let gapStart = words[index].end
-            let gapEnd = words[index + 1].start
+            // Only a pause between two placed words is measured; an untimed word never splits.
+            guard let gapStart = words[index].end, let gapEnd = words[index + 1].start else {
+                continue
+            }
             let gap = gapEnd - gapStart
             guard gap >= minimumGap else { continue }
             let voiced = voicedCoverage(from: gapStart, to: gapEnd, in: voicedIntervals)
@@ -1099,14 +1103,16 @@ enum IntraLinePauseSplitter {
             shifted.characterRange = lower..<upper
             return shifted
         }
+        // Both sides hold a placed word (the split is between two), so both bounds are measured.
+        let leftStart = leftWords.firstStart ?? segment.start
         let left = TimedLyricSegment(
-            start: leftWords.first!.start,
-            end: max(leftWords.last!.end, leftWords.first!.start + 0.01),
+            start: leftStart,
+            end: max(leftWords.lastEnd ?? leftStart, leftStart + 0.01),
             text: leftText.trimmingCharacters(in: .whitespaces),
             words: leftWords)
         let right = TimedLyricSegment(
-            start: rightWords.first!.start,
-            end: max(segment.end, rightWords.last!.end),
+            start: rightWords.firstStart ?? segment.start,
+            end: max(segment.end, rightWords.lastEnd ?? segment.end),
             text: rightText.trimmingCharacters(in: .whitespaces),
             words: rightWords)
         return splitRecursively(
@@ -1158,8 +1164,8 @@ enum VocalWordSpanNormalizer {
             var words = result[index].words
             guard words.count >= 2 else { continue }
             for wordIndex in 0..<(words.count - 1) {
-                let gapStart = words[wordIndex].end
-                let gapEnd = words[wordIndex + 1].start
+                guard let gapStart = words[wordIndex].end, let gapEnd = words[wordIndex + 1].start
+                else { continue }
                 let gap = gapEnd - gapStart
                 guard gap >= minimumGap else { continue }
                 let voicedFraction =
@@ -1171,8 +1177,8 @@ enum VocalWordSpanNormalizer {
                 }
             }
             result[index].words = words
-            result[index].start = words.first!.start
-            result[index].end = max(result[index].end, words.last!.end)
+            result[index].start = words.firstStart ?? result[index].start
+            result[index].end = max(result[index].end, words.lastEnd ?? result[index].end)
         }
         return result
     }
@@ -1206,18 +1212,19 @@ enum LineTailSustainExtender {
         guard !sungIntervals.isEmpty else { return segments }
         var result = segments
         for index in result.indices {
-            guard let last = result[index].words.last,
+            // An untimed last word leaves the line's final note unknown: nothing to extend.
+            guard let lastEnd = result[index].words.last?.end,
                 // ponytail: linear scan per line; a song has tens of lines and intervals.
                 let held = sungIntervals.first(where: {
-                    $0.lowerBound <= last.end && $0.upperBound > last.end
+                    $0.lowerBound <= lastEnd && $0.upperBound > lastEnd
                 })
             else { continue }
-            var limit = min(held.upperBound, last.end + maximumExtension)
+            var limit = min(held.upperBound, lastEnd + maximumExtension)
             if index + 1 < result.count {
                 let next = result[index + 1]
-                limit = min(limit, (next.words.first?.start ?? next.start) - nextLineMargin)
+                limit = min(limit, (next.words.firstStart ?? next.start) - nextLineMargin)
             }
-            guard limit > last.end else { continue }
+            guard limit > lastEnd else { continue }
             result[index].words[result[index].words.count - 1].end = limit
             result[index].end = max(result[index].end, limit)
         }
@@ -1252,8 +1259,8 @@ enum VocalOnsetMatcher {
         guard !words.isEmpty, !onsets.isEmpty, tolerance >= 0 else {
             return [TimeInterval?](repeating: nil, count: words.count)
         }
-        let minimumWordStart = words.map(\.start).min() ?? 0
-        let maximumWordStart = words.map(\.start).max() ?? minimumWordStart
+        let minimumWordStart = words.compactMap(\.start).min() ?? 0
+        let maximumWordStart = words.compactMap(\.start).max() ?? minimumWordStart
         let relevantOnsets = Array(
             Set(
                 onsets.filter {
@@ -1296,14 +1303,20 @@ enum VocalOnsetMatcher {
                 }
 
                 let onset = relevantOnsets[onsetCount - 1]
+                // An untimed word has no start to search near: it is never matched.
+                guard let wordStart = word.start, let wordEnd = word.end else {
+                    scores[index] = best
+                    steps[index] = bestStep
+                    continue
+                }
                 let latestStart =
-                    word.end > word.start ? word.end - 0.01 : TimeInterval.infinity
-                if abs(onset - word.start) <= tolerance, onset <= latestStart,
+                    wordEnd > wordStart ? wordEnd - 0.01 : TimeInterval.infinity
+                if abs(onset - wordStart) <= tolerance, onset <= latestStart,
                     let preceding = scores[offset(wordCount - 1, onsetCount - 1)]
                 {
                     let matched = Score(
                         matches: preceding.matches + 1,
-                        error: preceding.error + abs(onset - word.start))
+                        error: preceding.error + abs(onset - wordStart))
                     if isBetter(matched, than: best) {
                         best = matched
                         bestStep = .match
@@ -1335,19 +1348,22 @@ enum VocalOnsetMatcher {
 
         // A matched onset can cross an unmatched neighbour's original ASR time. Reject only the
         // conflicting match; preserving an ASR onset is preferable to manufacturing a new one.
+        // Untimed words take no part: order is checked between consecutive placed words.
         var changed = true
         while changed {
             changed = false
-            let starts = words.indices.map { result[$0] ?? words[$0].start }
-            guard starts.count > 1 else { break }
-            for index in 1..<starts.count where starts[index] < starts[index - 1] {
-                if result[index] != nil {
-                    result[index] = nil
+            let placed = words.indices.compactMap { index in
+                (result[index] ?? words[index].start).map { (index: index, start: $0) }
+            }
+            for (previous, current) in zip(placed, placed.dropFirst())
+            where current.start < previous.start {
+                if result[current.index] != nil {
+                    result[current.index] = nil
                     changed = true
                     break
                 }
-                if result[index - 1] != nil {
-                    result[index - 1] = nil
+                if result[previous.index] != nil {
+                    result[previous.index] = nil
                     changed = true
                     break
                 }
@@ -1387,8 +1403,9 @@ enum VocalWordOnsetAligner {
                 }
             }
             result[segmentIndex].words = words
-            result[segmentIndex].start = words.map(\.start).min() ?? result[segmentIndex].start
-            let latestEnd = words.map(\.end).max() ?? result[segmentIndex].end
+            result[segmentIndex].start =
+                words.compactMap(\.start).min() ?? result[segmentIndex].start
+            let latestEnd = words.compactMap(\.end).max() ?? result[segmentIndex].end
             result[segmentIndex].end = max(latestEnd, result[segmentIndex].start + 0.01)
         }
         return result
@@ -1594,16 +1611,17 @@ enum StretchedWordRetimer {
         var findings: [WordTimingFinding] = []
         for segment in segments {
             for (previous, word) in zip(segment.words, segment.words.dropFirst()) {
+                guard let start = word.start, let end = word.end, let previousEnd = previous.end
+                else { continue }
                 let startRise =
-                    attacks.sharpestRise(
-                        from: word.start - startWindow, to: word.start + startWindow)?.rise ?? 0
-                guard abs(word.start - previous.end) <= glueTolerance,
-                    word.end - word.start >= minimumLength, startRise < minimumRise
+                    attacks.sharpestRise(from: start - startWindow, to: start + startWindow)?.rise
+                    ?? 0
+                guard abs(start - previousEnd) <= glueTolerance,
+                    end - start >= minimumLength, startRise < minimumRise
                 else { continue }
                 findings.append(
                     WordTimingFinding(
-                        kind: .suspect, text: word.text, start: word.start,
-                        transcribedStart: word.start))
+                        kind: .suspect, text: word.text, start: start, transcribedStart: start))
             }
         }
         return (segments, findings.sorted { $0.start < $1.start })
@@ -1931,8 +1949,9 @@ enum LyricLineOverlapClipper {
             let nextStart = result[index + 1].start
             guard result[index].end > nextStart else { continue }
             result[index].words = result[index].words.map { word in
+                guard let start = word.start, let end = word.end else { return word }
                 var clipped = word
-                clipped.end = max(word.start, min(word.end, nextStart))
+                clipped.end = max(start, min(end, nextStart))
                 return clipped
             }
             result[index].end = max(result[index].start, nextStart)
@@ -1975,7 +1994,7 @@ enum VocalHallucinationGate {
         }
         func lineStart(_ segment: TimedLyricSegment) -> TimeInterval {
             let words = segment.words.filter { $0.text.contains(where: { !$0.isWhitespace }) }
-            return words.map(\.start).min() ?? segment.start
+            return words.compactMap(\.start).min() ?? segment.start
         }
         func startsInInstrumentalTail(_ start: TimeInterval) -> Bool {
             if let cutoff = trailingCutoff, start >= cutoff - lineStartEpsilon { return true }
@@ -1986,8 +2005,9 @@ enum VocalHallucinationGate {
             let start = lineStart(segment)
             if startsInInstrumentalTail(start) { return false }
             let words = segment.words.filter { $0.text.contains(where: { !$0.isWhitespace }) }
-            if words.isEmpty { return overlapsVoiced(segment.start, segment.end) }
-            return words.contains { overlapsVoiced($0.start, $0.end) }
+            let placed = words.compactMap { word in word.start.map { ($0, word.end ?? $0) } }
+            if placed.isEmpty { return overlapsVoiced(segment.start, segment.end) }
+            return placed.contains { overlapsVoiced($0.0, $0.1) }
         }
     }
 }
@@ -2042,7 +2062,7 @@ enum TrailingLyricTailPruner {
 
     static func substantiveLineStart(_ segment: TimedLyricSegment) -> TimeInterval {
         let words = segment.words.filter { $0.text.contains(where: { !$0.isWhitespace }) }
-        return words.map(\.start).min() ?? segment.start
+        return words.compactMap(\.start).min() ?? segment.start
     }
 
     /// Geometry may TIGHTEN the VAD signal cutoff by at most this much. A lyric-body end far
@@ -2175,7 +2195,7 @@ enum TrailingDuplicateLineCollapser {
 
     private static func substantiveLineStart(_ segment: TimedLyricSegment) -> TimeInterval {
         let words = segment.words.filter { $0.text.contains(where: { !$0.isWhitespace }) }
-        return words.map(\.start).min() ?? segment.start
+        return words.compactMap(\.start).min() ?? segment.start
     }
 }
 
@@ -2275,7 +2295,7 @@ enum RepeatedPhraseCollapser {
         -> TimedLyricSegment
     {
         let kept = Array(segment.words.prefix(count))
-        guard let first = kept.first, let last = kept.last else { return segment }
+        guard !kept.isEmpty else { return segment }
         var text = ""
         var newWords: [TimedLyricWord] = []
         for (index, word) in kept.enumerated() {
@@ -2289,8 +2309,8 @@ enum RepeatedPhraseCollapser {
         var result = segment
         result.text = text
         result.words = newWords
-        result.start = first.start
-        result.end = last.end
+        result.start = kept.firstStart ?? segment.start
+        result.end = kept.lastEnd ?? segment.end
         return result
     }
 }

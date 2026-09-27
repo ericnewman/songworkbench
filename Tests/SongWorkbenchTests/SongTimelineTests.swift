@@ -87,7 +87,7 @@ final class SongTimelineTests: XCTestCase {
         XCTAssertNotEqual(first?.number, last?.number)
     }
 
-    func testLyricRowsCarryOrdinalsAndWindows() {
+    func testLyricRowsCarryOrdinalsAndWindows() throws {
         let result = ChordProDraftBuilder().buildResult(makeInput())
         let lyricRows = result.timeline.rows.filter(\.isLyric)
         XCTAssertFalse(lyricRows.isEmpty)
@@ -97,10 +97,12 @@ final class SongTimelineTests: XCTestCase {
         // The playhead on any word a row sings (pickups drawn in its gutter aside) resolves to
         // that row.
         for (row, line) in zip(lyricRows, result.chartLines) {
-            for word in line.segment.words where word.start >= row.start {
+            for word in line.segment.words {
+                let start = try XCTUnwrap(word.start)
+                guard start >= row.start else { continue }
                 XCTAssertEqual(
-                    result.timeline.row(at: word.start)?.number, row.number,
-                    "word \(word.text) at \(word.start) s must resolve to row \(row.number)")
+                    result.timeline.row(at: start)?.number, row.number,
+                    "word \(word.text) at \(start) s must resolve to row \(row.number)")
             }
         }
     }
