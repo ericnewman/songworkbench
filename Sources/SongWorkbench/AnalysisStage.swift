@@ -1346,6 +1346,7 @@ struct HarmonyStage: AnalysisStageRunning {
                 document.preReconciliationTiming = nil
                 document.timingPostPassTag = nil
                 document.estimatedKey = estimatedKey
+                document.chordInstrument = rawResult.chordInstrument.flatMap(StemKind.init)
                 // A3: identically-sung lines vote on one shared progression (label rewrite
                 // only), so repeated choruses can't decode to different chords. No-op when
                 // lyrics aren't available yet.

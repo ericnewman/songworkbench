@@ -14,17 +14,22 @@ struct SongAudioAnalysis: Codable, Equatable, Sendable {
     /// `nil` on analyses cached before this existed — consumers must treat that as "unavailable"
     /// and fall back, never as "no harmonic changes in this song".
     let harmonicChangePoints: [TimeInterval]?
+    /// The stem label (a `StemKind.rawValue`) whose chords these are — the one player chord
+    /// detection listened to. nil for a single-file analysis and for analyses cached before it.
+    var chordInstrument: String? = nil
 
     init(
         beat: BeatEstimate?,
         chords: [ChordObservation],
         estimatedKey: MusicalKey? = nil,
-        harmonicChangePoints: [TimeInterval]? = nil
+        harmonicChangePoints: [TimeInterval]? = nil,
+        chordInstrument: String? = nil
     ) {
         self.beat = beat
         self.chords = chords
         self.estimatedKey = estimatedKey
         self.harmonicChangePoints = harmonicChangePoints
+        self.chordInstrument = chordInstrument
     }
 }
 
@@ -53,21 +58,25 @@ actor AudioFileAnalysisService {
         )
     }
 
-    /// Chord/beat analysis over several isolated stems weighted together, so chord detection is
-    /// not restricted to whichever single stem happened to come first. Stems are mixed by
-    /// `HarmonyStemMix` (unit-RMS normalized, leakage-gated) and the result runs through the same
-    /// pipeline as a single file.
+    /// The chords ONE player plays (Eric, 2026-09-27: the chord line shows the guitarist's
+    /// chords): the highest-priority candidate in `weighted` whose stem holds a real part —
+    /// guitar, else the instrument that does play (`HarmonyStemMix.leadIndex`). Blending guitar
+    /// and piano produced chords neither of them played. The result names that player in
+    /// `chordInstrument`.
     ///
-    /// Falls back to analyzing the first URL alone when the mix comes back empty — every
-    /// contributor silent, or all but one gated out as leakage — so a degenerate mix can never
-    /// produce a worse result than the previous single-stem behaviour.
+    /// Falls back to the first URL when no candidate is audible, so a silent set can never
+    /// produce a worse result than the single-stem behaviour.
     func analyze(weighted: [(url: URL, weight: Float, label: String)]) throws
         -> SongAudioAnalysis
     {
         guard let primary = weighted.first else {
             throw HarmonyAudioSourceError.missingAccompanimentStem
         }
-        guard weighted.count > 1 else { return try analyze(url: primary.url) }
+        guard weighted.count > 1 else {
+            var analysis = try analyze(url: primary.url)
+            analysis.chordInstrument = primary.label
+            return analysis
+        }
 
         // Two passes so only ONE stem is ever resident alongside the accumulator, instead of
         // every stem at once. Separation already peaks in the gigabytes, so the harmony stage
@@ -93,42 +102,14 @@ actor AudioFileAnalysisService {
         }
         try Task.checkCancellation()
 
-        let kept = HarmonyStemMix.keptAfterLeakageGate(levels.map(\.rms))
-        var mixSamples: [Float] = []
-        var included: [String] = []
-        for (index, level) in levels.enumerated() where kept.contains(index) {
-            guard let (samples, _) = try? loadMonoSamples(url: level.entry.url), !samples.isEmpty
-            else { continue }
-            try Task.checkCancellation()
-            // Unit-RMS normalization, so `weight` expresses priority rather than mix level.
-            let scale = level.entry.weight / level.rms
-            if mixSamples.isEmpty {
-                mixSamples = samples.map { $0 * scale }
-            } else {
-                let length = min(mixSamples.count, samples.count)
-                mixSamples.removeLast(mixSamples.count - length)
-                for i in 0..<length { mixSamples[i] += samples[i] * scale }
-            }
-            included.append(level.entry.label)
+        guard let lead = HarmonyStemMix.leadIndex(levels.map(\.rms)) else {
+            var analysis = try analyze(url: primary.url)
+            analysis.chordInstrument = primary.label
+            return analysis
         }
-        let mix = HarmonyStemMix.normalizedToUnitPeak(mixSamples, included: included)
-        mixSamples = []
-        guard !mix.samples.isEmpty, sampleRate > 0 else { return try analyze(url: primary.url) }
-
-        let configuration = try AudioAnalysisConfiguration(
-            sampleRate: sampleRate,
-            frameLength: 8_192,
-            hopLength: 4_096
-        )
-        let frames = try ChordAnalysisPipeline(configuration: configuration).analyzeFrames(
-            samples: mix.samples)
-        let chords = frames.observations
-        return SongAudioAnalysis(
-            beat: BeatTracker().analyze(samples: mix.samples, sampleRate: sampleRate),
-            chords: chords,
-            estimatedKey: MusicalKeyEstimator().estimate(from: chords),
-            harmonicChangePoints: ChromaChangePointDetector.changePoints(frames: frames.chroma)
-        )
+        var analysis = try analyze(url: levels[lead].entry.url)
+        analysis.chordInstrument = levels[lead].entry.label
+        return analysis
     }
 
     /// Vocal-activity intervals (singing regions) for a vocals-stem file, used to evaluate and

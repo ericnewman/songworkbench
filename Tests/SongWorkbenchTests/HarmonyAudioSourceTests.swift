@@ -80,7 +80,7 @@ final class HarmonyAudioSourceTests: XCTestCase {
         // Guitar leads and stays the cache-identifying URL, but piano now rides along in the mix
         // rather than being ignored — see `HarmonyStemMix.defaultWeights`.
         XCTAssertEqual(source.url, guitar)
-        XCTAssertEqual(source.configurationIdentifier, "harmony-mix-guitar+piano")
+        XCTAssertEqual(source.configurationIdentifier, "harmony-lead-guitar+piano")
         XCTAssertEqual(source.weightedURLs.map(\.label), ["guitar", "piano"])
         XCTAssertEqual(source.weightedURLs.map(\.weight), [1.0, 0.6])
         XCTAssertFalse(
@@ -115,7 +115,7 @@ final class HarmonyAudioSourceTests: XCTestCase {
 
         // No guitar stem: piano leads the mix alone.
         XCTAssertEqual(source.url, piano)
-        XCTAssertEqual(source.configurationIdentifier, "harmony-mix-piano")
+        XCTAssertEqual(source.configurationIdentifier, "harmony-lead-piano")
         XCTAssertEqual(source.weightedURLs.map(\.label), ["piano"])
     }
 }

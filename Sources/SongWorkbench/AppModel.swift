@@ -289,6 +289,10 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published private(set) var isComputingInstrumentChords = false
+    /// The player the chord line's chords come from, mirrored from the document.
+    @Published private(set) var chordInstrument: StemKind? {
+        didSet { persistSelectedAnalysis() }
+    }
     /// Solo passages as guitar tab, mirrored from the document; same staleness rule as
     /// `bucketNotes` — Review checks `isSoloTimelineCurrent` before drawing.
     @Published private(set) var soloTranscriptions: SoloTranscriptionTimeline? {
@@ -2756,6 +2760,7 @@ final class AppModel: ObservableObject {
         vocalHarmonyNotes = []
         bucketNotes = nil
         instrumentChords = nil
+        chordInstrument = nil
         soloTranscriptions = nil
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
@@ -3394,6 +3399,7 @@ final class AppModel: ObservableObject {
         vocalHarmonyNotes = analysis.vocalHarmonyNotes
         bucketNotes = analysis.bucketNotes
         instrumentChords = analysis.instrumentChords
+        chordInstrument = analysis.chordInstrument
         soloTranscriptions = analysis.soloTranscriptions
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
@@ -3558,6 +3564,7 @@ final class AppModel: ObservableObject {
             wordTimingFindings: wordTimingFindings,
             wordTimingCheckTag: wordTimingCheckTag,
             instrumentChords: instrumentChords,
+            chordInstrument: chordInstrument,
             chartLayout: chartLayout
         )
         scheduleSave()

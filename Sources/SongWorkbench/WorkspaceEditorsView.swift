@@ -1338,21 +1338,37 @@ struct ChordProTabEditor: View {
         if hidden { stems.insert(stemID) } else { stems.remove(stemID) }
         hiddenBucketStemsStorage = stems.map(\.rawValue).sorted().joined(separator: ",")
     }
-    /// Per-instrument chord lines (`InstrumentChordPass`), under their bucket-note lines. Off by
-    /// default like the other optional rows; stems hidden from them as a comma-joined list.
-    @AppStorage("reviewShowInstrumentChords") private var showInstrumentChords = false
-    @AppStorage("reviewHiddenInstrumentChordStems") private var hiddenInstrumentChordStemsStorage =
+    /// Each OTHER instrument's own chord line (`InstrumentChordPass`), switched on one instrument
+    /// at a time and off by default (Eric, 2026-09-27: the chart shows the guitarist's chords; any
+    /// other instrument's chords are an option). Stored as a comma-joined stem list.
+    @AppStorage("reviewShownInstrumentChordStems") private var shownInstrumentChordStemsStorage =
         ""
-    private var hiddenInstrumentChordStems: Set<StemID> {
+    private var shownInstrumentChordStems: Set<StemID> {
         Set(
-            hiddenInstrumentChordStemsStorage.split(separator: ",").map {
+            shownInstrumentChordStemsStorage.split(separator: ",").map {
                 StemID(rawValue: String($0))
             })
     }
-    private func setInstrumentChordStemHidden(_ stemID: StemID, _ hidden: Bool) {
-        var stems = hiddenInstrumentChordStems
-        if hidden { stems.insert(stemID) } else { stems.remove(stemID) }
-        hiddenInstrumentChordStemsStorage = stems.map(\.rawValue).sorted().joined(separator: ",")
+    private func setInstrumentChordStemShown(_ stemID: StemID, _ shown: Bool) {
+        var stems = shownInstrumentChordStems
+        if shown { stems.insert(stemID) } else { stems.remove(stemID) }
+        shownInstrumentChordStemsStorage = stems.map(\.rawValue).sorted().joined(separator: ",")
+    }
+    /// Instrument chord tracks that can be switched on: every player except the one the chord
+    /// line already shows, whose own row would only repeat it.
+    private var optionalInstrumentChordTracks: [InstrumentChordTrack] {
+        (model.instrumentChords?.tracks ?? []).filter {
+            guard let lead = model.chordInstrument else { return true }
+            return !($0.stemID == StemID(lead) || $0.stemID.rawValue.hasPrefix(lead.rawValue + "."))
+        }
+    }
+    private var hiddenInstrumentChordStems: Set<StemID> {
+        Set((model.instrumentChords?.tracks ?? []).map(\.stemID))
+            .subtracting(optionalInstrumentChordTracks.map(\.stemID))
+            .union(
+                optionalInstrumentChordTracks.map(\.stemID).filter {
+                    !shownInstrumentChordStems.contains($0)
+                })
     }
     /// The stem's mixer name for the Bucket Stems submenu (the rows themselves use two-letter
     /// tags), falling back to the legacy kind name or the raw ID.
@@ -1544,14 +1560,16 @@ struct ChordProTabEditor: View {
                             bucketNotes: config.showsReviewAffordances && showBucketNotes
                                 && model.isBucketTimelineCurrent ? model.bucketNotes : nil,
                             hiddenBucketStems: hiddenBucketStems,
-                            // Always passed when current: the ONE chord line is colored by who
-                            // plays each chord. The "Instrument Chords" option only adds each
-                            // player's own chord row beside it, for comparing the two detectors.
+                            // The chord line is ONE player's chords, in that player's color; each
+                            // other instrument's own chord line is added only when switched on.
+                            chordLineInstrument: model.chordInstrument,
                             instrumentChords: config.showsReviewAffordances
                                 && model.isInstrumentChordTimelineCurrent
                                 ? model.instrumentChords : nil,
                             hiddenInstrumentChordStems: hiddenInstrumentChordStems,
-                            showsInstrumentChordRows: showInstrumentChords,
+                            showsInstrumentChordRows: optionalInstrumentChordTracks.contains {
+                                shownInstrumentChordStems.contains($0.stemID)
+                            },
                             soloTranscriptions: config.showsReviewAffordances && showSoloTab
                                 && model.isSoloTimelineCurrent ? model.soloTranscriptions : nil,
                             showChordTimeLabels: config.showsReviewAffordances
@@ -1777,22 +1795,12 @@ struct ChordProTabEditor: View {
                             model.computeBucketNotes()
                         }
                         .disabled(!model.canComputeBucketNotes)
-                        Toggle("Instrument Chords", isOn: $showInstrumentChords)
-                            .disabled(model.instrumentChords == nil)
-                        if let timeline = model.instrumentChords {
-                            Menu("Instrument Chord Stems") {
-                                ForEach(timeline.tracks, id: \.stemID) { track in
-                                    Toggle(
-                                        bucketStemMenuTitle(track.stemID),
-                                        isOn: Binding(
-                                            get: {
-                                                !hiddenInstrumentChordStems.contains(track.stemID)
-                                            },
-                                            set: { setInstrumentChordStemHidden(track.stemID, !$0) }
-                                        ))
-                                }
-                            }
-                            .disabled(!showInstrumentChords)
+                        ForEach(optionalInstrumentChordTracks, id: \.stemID) { track in
+                            Toggle(
+                                "\(bucketStemMenuTitle(track.stemID)) Chords",
+                                isOn: Binding(
+                                    get: { shownInstrumentChordStems.contains(track.stemID) },
+                                    set: { setInstrumentChordStemShown(track.stemID, $0) }))
                         }
                         Button(
                             model.isComputingInstrumentChords
@@ -2691,12 +2699,14 @@ struct ChordProAppPreview: View {
     /// nil = toggle off or the timeline is stale for the current grid.
     var bucketNotes: BucketNoteTimeline?
     var hiddenBucketStems: Set<StemID> = []
-    /// Each chordal instrument's own chords, when current. They always color the chart's chord
-    /// names by player; their own rows are drawn only with `showsInstrumentChordRows`.
+    /// The player the chord line's chords were detected on (`SongAnalysisDocument.chordInstrument`):
+    /// every chord name is drawn in its color.
+    var chordLineInstrument: StemKind?
+    /// Each chordal instrument's own chords, when current; a row per instrument not in
+    /// `hiddenInstrumentChordStems`, drawn only with `showsInstrumentChordRows`.
     var instrumentChords: InstrumentChordTimeline?
     var hiddenInstrumentChordStems: Set<StemID> = []
-    /// The "Instrument Chords" option. Off by default: with it on, a guitar's chords appear twice
-    /// — on the chart and on its "GtC" row — and read as doubled chords (Eric, 2026-09-20).
+    /// True when at least one other instrument's chord line is switched on (off by default).
     var showsInstrumentChordRows = false
     /// Solo passages as guitar tab under each line. nil = toggle off or stale timeline.
     var soloTranscriptions: SoloTranscriptionTimeline?
@@ -2836,12 +2846,6 @@ struct ChordProAppPreview: View {
                     transposedBy: transpose)
             } ?? []
         return InstrumentChordRowFormatter.interleaved(noteRows: noteRows, chordRows: chordRows)
-    }
-
-    /// The instrument chord tracks chord names are colored by. Every current track counts, shown
-    /// as a row or not: hiding a player's ROW must not strip that player's credit from the chart.
-    private var visibleInstrumentChordTracks: [InstrumentChordTrack] {
-        instrumentChords?.tracks ?? []
     }
 
     private func soloBlocks(
@@ -3326,7 +3330,7 @@ struct ChordProAppPreview: View {
             end: energyEnd)
         let rowWordStarts = Set(lineWords.compactMap(\.start))
         let rowWordFindings = wordTimingFindings.filter { rowWordStarts.contains($0.start) }
-        let rowInstrumentChordTracks = visibleInstrumentChordTracks
+        let rowChordLineInstrument = chordLineInstrument
         let rowPlayerRests = instrumentChords?.rests ?? []
         // Every argument below is pre-computed into its own `let`
         // (rather than inlined as an expression in the call) —
@@ -3395,7 +3399,7 @@ struct ChordProAppPreview: View {
             instrumentEnergySeconds: rowEnergy.seconds,
             instrumentEnergyOutlined: instrumentEnergyPerStem,
             wordTimingFindings: rowWordFindings,
-            instrumentChordTracks: rowInstrumentChordTracks,
+            chordLineInstrument: rowChordLineInstrument,
             playerRests: rowPlayerRests,
             lineNumber: item.displayLineNumber,
             trailingRestSeconds: itemTrailingRest,
@@ -4176,7 +4180,7 @@ private struct ChordProPreviewBlockView: View {
     /// This row's word timings retimed or flagged by the stretched-word check.
     var wordTimingFindings: [WordTimingFinding] = []
     /// The instrument chord tracks this row's chord names are colored by.
-    var instrumentChordTracks: [InstrumentChordTrack] = []
+    var chordLineInstrument: StemKind?
     /// Stretches where guitar and piano are not playing; a chord's hold line ends at one.
     var playerRests: [ClosedRange<TimeInterval>] = []
     /// 1-based number shown in a left gutter for lyric lines, so they can be referenced ("line 7").
@@ -4344,7 +4348,7 @@ private struct ChordProPreviewBlockView: View {
                         instrumentEnergySeconds: instrumentEnergySeconds,
                         instrumentEnergyOutlined: instrumentEnergyOutlined,
                         wordTimingFindings: wordTimingFindings,
-                        instrumentChordTracks: instrumentChordTracks,
+                        chordLineInstrument: chordLineInstrument,
                         playerRests: playerRests,
                         trailingRestSeconds: trailingRestSeconds,
                         rowChordTimes: rowChordTimes,
@@ -4723,7 +4727,7 @@ private struct ChordProPreviewLineView: View {
     /// This row's word timings retimed or flagged by the stretched-word check.
     var wordTimingFindings: [WordTimingFinding] = []
     /// The instrument chord tracks this row's chord names are colored by.
-    var instrumentChordTracks: [InstrumentChordTrack] = []
+    var chordLineInstrument: StemKind?
     /// Stretches where guitar and piano are not playing; a chord's hold line ends at one.
     var playerRests: [ClosedRange<TimeInterval>] = []
     /// Seconds of TRUE vocal silence after this line's last word (≥ 2 beats, < 4 bars) —
@@ -5033,11 +5037,8 @@ private struct ChordProPreviewLineView: View {
         soundingChordIndex == index
     }
 
-    /// Foreground for a chord label: amber while sounding. With instrument chords shown, the
-    /// color says who plays it — that instrument's lane color for one player, primary text when
-    /// guitar AND piano both play it, and a dim neutral when NO player's own track has it. The
-    /// accent tint is only the fallback when there are no instrument tracks to consult: it is the
-    /// bass lane's blue, and used for "nobody" it read as a bass chord.
+    /// Foreground for a chord label: amber while sounding, otherwise the color of the player the
+    /// chord line's chords were detected on (`chordLineInstrument`).
     private func chordLabelStyle(at index: Int) -> AnyShapeStyle {
         AnyShapeStyle(chordLabelColor(at: index))
     }
@@ -5048,25 +5049,14 @@ private struct ChordProPreviewLineView: View {
     /// RESTATING a chord that is still held — a continuation, drawn dim, not an arrival.
     private func chordLabelColor(at index: Int) -> Color {
         if isChordSounding(at: index) { return .swAmber }
-        if let color = instrumentChordColor(at: index) { return color }
-        guard rowChordEvents.indices.contains(index), rowChordTimes.indices.contains(index),
-            let event = rowChordEvents[index]
-        else { return Color.swTextSecondary.opacity(0.75) }
-        guard !instrumentChordTracks.isEmpty else { return .swTextPrimary }
-        let credited = InstrumentChordAgreement.agreeingStems(
-            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks,
-            within: beatLengthSeconds)
-        return credited.isEmpty ? Color.swTextSecondary.opacity(0.6) : .swTextPrimary
-    }
-
-    private func instrumentChordColor(at index: Int) -> Color? {
-        guard !instrumentChordTracks.isEmpty, rowChordEvents.indices.contains(index),
-            rowChordTimes.indices.contains(index), let event = rowChordEvents[index]
-        else { return nil }
-        return InstrumentChordAgreement.instrument(
-            forChord: event.chord, at: rowChordTimes[index], tracks: instrumentChordTracks,
-            within: beatLengthSeconds)?
-            .laneColor
+        // Every chord on the line is the one player's (guitar, or the instrument that does play):
+        // drawn in that player's color (Eric, 2026-09-27). Primary text before the harmony stage
+        // has recorded the player.
+        let color = chordLineInstrument?.laneColor ?? .swTextPrimary
+        guard rowChordEvents.indices.contains(index), rowChordEvents[index] != nil else {
+            return color.opacity(0.6)
+        }
+        return color
     }
 
     /// Scale for a chord label at the playhead: pops to 1.3× exactly AT the onset and settles

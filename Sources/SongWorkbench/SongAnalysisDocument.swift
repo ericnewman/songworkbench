@@ -659,6 +659,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// Each chordal instrument's own chords (`InstrumentChordPass`). `nil` until computed; may be
     /// stale — check `isCurrent(for:)` against the current grid key before showing it.
     var instrumentChords: InstrumentChordTimeline?
+    /// The instrument `chords` were detected on — guitar, or the instrument that does play when a
+    /// song has no guitar part. The chord line is drawn in its color. nil before the harmony
+    /// stage recorded it (and for a single-file, full-mix analysis).
+    var chordInstrument: StemKind?
     /// The generated chart's layout (`PersistedChartLayout`), written whenever the draft builder
     /// writes `chordProSource`. nil for imported charts and documents from before it existed.
     var chartLayout: PersistedChartLayout?
@@ -700,6 +704,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case wordTimingFindings
         case wordTimingCheckTag
         case instrumentChords
+        case chordInstrument
         case chartLayout
     }
 
@@ -740,6 +745,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         wordTimingFindings: [WordTimingFinding] = [],
         wordTimingCheckTag: String? = nil,
         instrumentChords: InstrumentChordTimeline? = nil,
+        chordInstrument: StemKind? = nil,
         chartLayout: PersistedChartLayout? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -778,6 +784,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.wordTimingFindings = wordTimingFindings
         self.wordTimingCheckTag = wordTimingCheckTag
         self.instrumentChords = instrumentChords
+        self.chordInstrument = chordInstrument
         self.chartLayout = chartLayout
     }
 
@@ -864,6 +871,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         wordTimingCheckTag = try container.decodeIfPresent(String.self, forKey: .wordTimingCheckTag)
         instrumentChords = try container.decodeIfPresent(
             InstrumentChordTimeline.self, forKey: .instrumentChords)
+        chordInstrument = try? container.decodeIfPresent(StemKind.self, forKey: .chordInstrument)
         chartLayout = try? container.decodeIfPresent(
             PersistedChartLayout.self, forKey: .chartLayout)
         if chartLayout?.version != PersistedChartLayout.currentVersion { chartLayout = nil }
