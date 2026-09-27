@@ -1789,7 +1789,6 @@ final class AppModel: ObservableObject {
                         playerRests: updated.instrumentChords?.rests ?? [],
                         estimatedKey: updated.estimatedKey,
                         barGrid: updated.barGrid,
-                        bassNotes: updated.bassNotes,
                         beatsPerRowOverride: chartBeatsPerRowOverride,
                         placementPicks: updated.chordPlacementPicks
                     ))
@@ -3605,7 +3604,6 @@ final class AppModel: ObservableObject {
             playerRests: instrumentChords?.rests ?? [],
             estimatedKey: estimatedKey,
             barGrid: barGrid,
-            bassNotes: bassNotes,
             beatsPerRowOverride: chartBeatsPerRowOverride,
             placementPicks: chordPlacementPicks
         )
@@ -3680,7 +3678,6 @@ final class AppModel: ObservableObject {
             playerRests: instrumentChords?.rests ?? [],
             estimatedKey: estimatedKey,
             barGrid: barGrid,
-            bassNotes: bassNotes,
             beatsPerRowOverride: chartBeatsPerRowOverride,
             placementPicks: chordPlacementPicks
         )
@@ -3743,7 +3740,6 @@ final class AppModel: ObservableObject {
                 playerRests: instrumentChords?.rests ?? [],
                 estimatedKey: estimatedKey,
                 barGrid: barGrid,
-                bassNotes: bassNotes,
                 beatsPerRowOverride: chartBeatsPerRowOverride,
                 placementPicks: chordPlacementPicks
             ))

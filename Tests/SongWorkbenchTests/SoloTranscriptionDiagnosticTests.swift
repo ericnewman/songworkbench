@@ -186,7 +186,7 @@ final class SoloTranscriptionDiagnosticTests: XCTestCase {
             title: title, tempo: bpm, lyrics: document.lyrics, chords: document.chords,
             beatTimes: document.beatTimes, sourceDuration: document.sourceDuration,
             untranscribedVocalRegions: document.untranscribedVocalRegions,
-            barGrid: document.barGrid, bassNotes: document.bassNotes)
+            barGrid: document.barGrid)
         return ChordProDraftBuilder().buildResult(input).timeline.rows
     }
 

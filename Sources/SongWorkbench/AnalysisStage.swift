@@ -1427,7 +1427,6 @@ struct ChordProStage: AnalysisStageRunning {
                     playerRests: document.instrumentChords?.rests ?? [],
                     estimatedKey: document.estimatedKey,
                     barGrid: document.barGrid,
-                    bassNotes: document.bassNotes,
                     placementPicks: document.chordPlacementPicks
                 ))
             let chordProSource = built.source

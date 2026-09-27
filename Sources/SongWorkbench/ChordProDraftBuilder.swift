@@ -25,11 +25,6 @@ struct ChordProDraftInput: Equatable, Sendable {
     /// supplies it; `nil` (tests, untimed drafts) falls back to `SongBarGridEstimator` with no
     /// accent evidence, i.e. beat-0 anchoring — never chord onsets.
     var barGrid: SongBarGrid? = nil
-    /// The detected bass line, used ONLY to annotate stepwise walks into a chord change as
-    /// slash chords in the rendered text (`C/B` into Am — see `BassRunDetector`). The editable
-    /// chord timeline is never modified. Empty (the default) renders no walk annotations —
-    /// the bass-note draft variant deliberately passes none.
-    var bassNotes: [BassNoteObservation] = []
     /// Beats per chart row chosen in the View menu; 0 (the default) derives it from the lyric
     /// phrasing (`SongBeatsPerLine.rowBeats`). Rounded up to whole bars either way.
     var beatsPerRowOverride: Int = 0
@@ -110,7 +105,9 @@ struct ChordProDraftBuilder: Sendable {
     /// (`ChartRowGrid`, tasks/spec-fixed-period-rows.md).
     /// 8 = lyric corrections render (`TimedLyricSegment.resolved`), lyric text is escaped
     /// (`ChordProText`), and `{time}` states the bar grid's meter instead of always 4/4.
-    static let algorithmVersion = 8
+    /// 9 = no bass-walk slash chords: the chord line shows the chords the players play, and bass
+    /// notes appear only in the Bass Notes row (Eric, 2026-09-27).
+    static let algorithmVersion = 9
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -245,7 +242,7 @@ struct ChordProDraftBuilder: Sendable {
             if $0.time == $1.time { return $0.label < $1.label }
             return $0.time < $1.time
         }
-        let chords = withBassWalkAnnotations(includedChords, input: input)
+        let chords = includedChords
 
         if lyrics.isEmpty, !chords.isEmpty {
             lines.append("{start_of_grid}")
@@ -1036,38 +1033,6 @@ struct ChordProDraftBuilder: Sendable {
     /// beats from `tempo` when no beat grid was detected, matching the
     /// `BouncingBall.beats(in:_:beatTimes:bpm:)` precedent elsewhere in this codebase. `nil` when
     /// neither beats nor a tempo are available (untimed songs keep the old proportional spacing).
-    /// Splices detected bass WALK steps into the renderable chord list as slash-chord
-    /// annotations — `G/A G/B` walking into C, `C/B` into Am — so the chart shows the runs a
-    /// player actually hears (the decoder's vocabulary cannot represent them; see
-    /// `BassRunDetector`). Text-level only: the editable chord timeline is never touched, and
-    /// each annotation carries the walk note's own confidence so the review shading is honest.
-    private func withBassWalkAnnotations(
-        _ chords: [RenderableChordEvent], input: ChordProDraftInput
-    ) -> [RenderableChordEvent] {
-        guard !input.bassNotes.isEmpty, chords.count > 1 else { return chords }
-        let runNotes = BassRunDetector.runNotes(
-            bassNotes: input.bassNotes,
-            chordOnsets: chords.map { ($0.time, ChordQualityAudit.parse($0.label)?.root.rawValue) },
-            beatTimes: input.beatTimes)
-        guard !runNotes.isEmpty else { return chords }
-        var merged = chords
-        for note in runNotes {
-            guard let sounding = chords.last(where: { $0.time <= note.time }),
-                !sounding.label.contains("/")
-            else { continue }
-            merged.append(
-                RenderableChordEvent(
-                    time: note.time,
-                    label: "\(sounding.label)/\(BassNoteNaming.name(forMidiNote: note.midiNote))",
-                    confidence: note.confidence
-                ))
-        }
-        return merged.sorted {
-            if $0.time == $1.time { return $0.label < $1.label }
-            return $0.time < $1.time
-        }
-    }
-
     private func measureGrid(
         for input: ChordProDraftInput, chords: [RenderableChordEvent], lyrics: [TimedLyricSegment]
     ) -> MeasureGrid? {
