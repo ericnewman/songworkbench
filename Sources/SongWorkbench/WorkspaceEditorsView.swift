@@ -1276,9 +1276,10 @@ struct ChordProTabEditor: View {
         case secondary
     }
 
+    // Not observing the playback services: their 30 Hz clock would re-evaluate this whole body
+    // (toolbar menus, timeline and layout lookups) on every tick. Only the chart's playhead
+    // fields follow the clock, through `PlaybackClockReader` below.
     @ObservedObject var model: AppModel
-    @ObservedObject private var playback: AudioPlaybackService
-    @ObservedObject private var stemPlayback: StemPlaybackService
     /// The white word-tracking ball: bounces along the lyric, landing on each word as it is sung.
     /// Switched off on 2026-08-20 and back on on 2026-08-21, so it is a stored preference now
     /// rather than a compile-time `let` — the machinery it gates never went anywhere.
@@ -1440,8 +1441,6 @@ struct ChordProTabEditor: View {
     init(model: AppModel, config: ChordProTabConfig) {
         self.model = model
         self.config = config
-        playback = model.playback
-        stemPlayback = model.stemPlayback
     }
 
     var body: some View {
@@ -1478,19 +1477,13 @@ struct ChordProTabEditor: View {
                             source: previewSource, transpose: model.chordProTranspose,
                             scale: chartScale)
                     case .preview:
-                        ChordProAppPreview(
+                        let chart = ChordProAppPreview(
                             barGrid: model.barGrid,
                             source: previewSource,
                             scale: chartScale,
                             transpose: config.supportsTranspose ? model.chordProTranspose : 0,
                             auditionedPlacement: model.auditionedPlacement,
                             placementPicks: model.chordPlacementPicks,
-                            highlightContext: config.showsReviewAffordances
-                                ? highlightContext(style: config.highlightStyle) : nil,
-                            isPlaying: model.isActivePlaybackPlaying,
-                            playheadTime: currentPlaybackTime,
-                            beatBall: config.showsPlaybackControls ? beatBallInput : nil,
-                            beatDots: config.showsReviewAffordances ? beatDotContext : nil,
                             ballVisibility: ballVisibility,
                             rhythmicSpacing: rhythmicSpacing,
                             lyricLineWords: sortedLyricLineWords,
@@ -1512,7 +1505,6 @@ struct ChordProTabEditor: View {
                             bassEnvelope: config.showsReviewAffordances
                                 ? model.stemWaveformEnvelope(for: .bass) : nil,
                             lyricLineWindows: sortedLyricLineWindows,
-                            songDuration: model.timelineDuration,
                             bpm: model.estimatedBPM,
                             beatsPerRowOverride: beatsPerRow,
                             beatTimes: model.beatTimes,
@@ -1584,6 +1576,21 @@ struct ChordProTabEditor: View {
                                 model.setChordHidden(id: id, hidden: hidden)
                             }
                         )
+                        PlaybackClockReader(
+                            playback: model.playback, stemPlayback: model.stemPlayback
+                        ) {
+                            var live = chart
+                            live.highlightContext =
+                                config.showsReviewAffordances
+                                ? highlightContext(style: config.highlightStyle) : nil
+                            live.isPlaying = model.isActivePlaybackPlaying
+                            live.playheadTime = currentPlaybackTime
+                            live.beatBall = config.showsPlaybackControls ? beatBallInput : nil
+                            // Both fall back to the playback duration when the song has none.
+                            live.songDuration = model.timelineDuration
+                            live.beatDots = config.showsReviewAffordances ? beatDotContext : nil
+                            return live
+                        }
                     }
                 }
             }
@@ -2159,8 +2166,8 @@ struct ChordProTabEditor: View {
     /// word being heard; paused, it reflects the exact playhead position.
     private var currentPlaybackTime: TimeInterval {
         // Single clock accessor (audit 3d): AppModel owns the active-source selection; this
-        // view no longer picks between services itself. (The @ObservedObject services are
-        // still observed so SwiftUI re-renders on every tick.)
+        // view no longer picks between services itself. Read inside `PlaybackClockReader`, which
+        // observes the services so the chart's playhead fields re-render on every tick.
         let base = model.activePlaybackTime
         let lead = model.isActivePlaybackPlaying ? base + Self.highlightLeadSeconds : base
         // Render-only: shift where the ball/highlight is drawn by the user's tuned
@@ -2466,6 +2473,16 @@ struct ChordProTabEditor: View {
             songDuration: model.timelineDuration
         )
     }
+}
+
+/// Re-evaluates only `content` on each playback tick, so the view that builds it does not have to
+/// observe the clock itself.
+private struct PlaybackClockReader<Content: View>: View {
+    @ObservedObject var playback: AudioPlaybackService
+    @ObservedObject var stemPlayback: StemPlaybackService
+    let content: () -> Content
+
+    var body: some View { content() }
 }
 
 /// The Review/Annotate tab (backlog #15): the SAME interactive App Preview/Edit editor that used
