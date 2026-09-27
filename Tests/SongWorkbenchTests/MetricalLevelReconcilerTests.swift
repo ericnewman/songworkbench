@@ -192,6 +192,37 @@ final class MetricalLevelReconcilerTests: XCTestCase {
         XCTAssertEqual(document.beatTimes.count, firstBeats.count)
     }
 
+    /// Reference lyrics carry the song's real line breaks: the passes neither regroup them by
+    /// pauses nor recut them to the phrase period (Doc Holiday, 2026-09-27: 41 reference lines
+    /// came back as 37).
+    func testPostPassesKeepReferenceLyricLineBreaks() {
+        let bpm = 96.0
+        var words: [TimedLyricWord] = []
+        var text = ""
+        for index in 0..<12 {
+            let start = Double(index) * 0.4 + (index >= 6 ? 4 : 0)  // a 4 s pause mid-line
+            if !text.isEmpty { text += " " }
+            let lower = text.count
+            text += "word"
+            words.append(
+                TimedLyricWord(
+                    text: "word", start: start, end: start + 0.3,
+                    characterRange: lower..<text.count))
+        }
+        var document = SongAnalysisDocument()
+        document.estimatedBPM = bpm
+        document.beatTimes = uniformBeats(bpm: bpm, duration: 60)
+        document.lyrics = [TimedLyricSegment(start: 0, end: 6.5, text: text, words: words)]
+
+        var transcribed = document
+        AnalysisTimingPostPasses.apply(to: &transcribed)
+        XCTAssertGreaterThan(transcribed.lyrics.count, 1, "the pause splits an ASR line")
+
+        document.referenceLyrics = text
+        AnalysisTimingPostPasses.apply(to: &document)
+        XCTAssertEqual(document.lyrics.map(\.text), [text])
+    }
+
     func testPostPassesLeaveACorrectTempoAloneAndStoreNoRaw() {
         let bpm = 96.0
         var document = SongAnalysisDocument()

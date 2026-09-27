@@ -358,7 +358,8 @@ enum AnalysisTimingPostPasses {
     // (`preRecutLineOnsets`, fix/raw-lyric-onsets).
     // timing-7: a function-word orphan that opens the next line no longer merges back across a
     // gap break, so `regroup` is idempotent (fix/idempotent-regroup).
-    static let versionTag = "timing-7"
+    // timing-8: reference lyrics keep their own line breaks — neither regrouped nor recut.
+    static let versionTag = "timing-8"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag
@@ -384,8 +385,14 @@ enum AnalysisTimingPostPasses {
         {
             rawLineStarts = Set(stored.raw)
         }
-        let regrouped = TimedLyricSegmentGrouper.regroup(
-            document.lyrics, lineStartOnsets: rawLineStarts)
+        // The user's reference lyrics carry the song's real line breaks (their newlines), so they
+        // are neither regrouped by pauses nor recut to the phrase period.
+        let keepsLines = !document.referenceLyrics
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let regrouped =
+            keepsLines
+            ? document.lyrics
+            : TimedLyricSegmentGrouper.regroup(document.lyrics, lineStartOnsets: rawLineStarts)
         let verdict = MetricalLevelReconciler.reconcile(
             bpm: document.estimatedBPM ?? 0,
             beatTimes: document.beatTimes,
@@ -412,8 +419,11 @@ enum AnalysisTimingPostPasses {
         }
         // Recut on the FINAL grid, then carry user annotations (overrideText/accepted) forward
         // from the stored lines — these passes rebuild plain segments straight from words.
-        let recut = PhrasePeriodLineRecutter.recut(
-            regrouped, beatTimes: document.beatTimes, tempo: document.estimatedBPM)
+        let recut =
+            keepsLines
+            ? regrouped
+            : PhrasePeriodLineRecutter.recut(
+                regrouped, beatTimes: document.beatTimes, tempo: document.estimatedBPM)
         document.lyrics = TimedLyricSegment.reconciled(
             newSegments: recut, against: document.lyrics)
         document.preRecutLineOnsets = PreRecutLineOnsets(
