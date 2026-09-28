@@ -1,3 +1,4 @@
+import CoreML
 import XCTest
 
 @testable import SongWorkbench
@@ -827,5 +828,172 @@ extension LyricBlendRowBuilderTests {
             rows.sort { $0.start < $1.start }
             assertNoOverlapsOrRepeats(LyricBlendRowBuilder.effectiveLyrics(from: rows))
         }
+    }
+}
+
+/// Choosing each stretch's words by how well they explain the vocal stem (`LyricStretchChooser`).
+final class LyricBlendAcousticChoiceTests: XCTestCase {
+    private static let frame = ForcedLyricAligner.outputFrameDuration
+
+    /// 30 frames of silence with S-AH-N ("sun") sung across frames 5-13.
+    private func sunSung() -> [[Float]] {
+        let low: Float = -6
+        let high: Float = -0.1
+        return (0..<30).map { frame in
+            var row = [Float](repeating: low, count: ArpabetVocabulary.classCount)
+            switch frame {
+            case 5..<8: row[28] = high  // S
+            case 8..<11: row[2] = high  // AH
+            case 11..<14: row[22] = high  // N
+            default: row[ArpabetVocabulary.blankIndex] = high
+            }
+            return row
+        }
+    }
+
+    private let phonemizer = LyricPhonemizer(pronunciations: [
+        "sun": [28, 2, 22], "moon": [21, 33, 22],
+    ])
+
+    private func line(_ text: String, _ start: TimeInterval) -> TimedLyricSegment {
+        TimedLyricSegment(
+            start: start, end: start + 0.3, text: text,
+            words: [
+                TimedLyricWord(
+                    text: text, start: start, end: start + 0.3, characterRange: 0..<text.count)
+            ])
+    }
+
+    func testTheWordsTheAudioHoldsWinOverThePreferredEngine() {
+        let chosen = LyricStretchChooser.chosen(
+            [.accuracy: [line("moon", 0.2)], .balancedDraft: [line("sun", 0.2)]],
+            logProbs: sunSung(), phonemizer: phonemizer)
+
+        XCTAssertEqual(chosen.choices.map(\.mode), [.balancedDraft])
+        XCTAssertEqual(chosen.lyrics.map(\.text), ["sun"])
+    }
+
+    func testThePreferredEngineKeepsAStretchItFits() {
+        let chosen = LyricStretchChooser.chosen(
+            [.accuracy: [line("sun", 0.2)], .balancedDraft: [line("moon", 0.2)]],
+            logProbs: sunSung(), phonemizer: phonemizer)
+
+        XCTAssertEqual(chosen.choices.map(\.mode), [.accuracy])
+    }
+
+    func testAnEngineThatHeardNothingWinsWhereNothingIsSung() {
+        // A hallucinated line over silence: the other engine heard nothing there.
+        let silent = [[Float]](
+            repeating: (0..<ArpabetVocabulary.classCount).map {
+                $0 == ArpabetVocabulary.blankIndex ? -0.1 : -6
+            }, count: 30)
+        let chosen = LyricStretchChooser.chosen(
+            [.accuracy: [line("moon", 0.2)], .balancedDraft: []],
+            logProbs: silent, phonemizer: phonemizer)
+
+        XCTAssertEqual(chosen.choices.map(\.mode), [.balancedDraft])
+        XCTAssertTrue(chosen.lyrics.isEmpty)
+    }
+
+    /// Real-song measurement against a reference lyric (numbers only, never text). Needs
+    /// SW_BLEND_DIAG_DIR (holding out1/out2/out3 CLI outputs for accuracy/fastDraft/balancedDraft
+    /// and stems/vocals.wav), SW_BLEND_REFERENCE (one sung line per line) and SW_ALIGNMENT_MODEL
+    /// (LyricsAlignmentMTL.mlpackage).
+    func testDiagnosticRealSongChoiceAgainstReference() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let directory = environment["SW_BLEND_DIAG_DIR"],
+            let referencePath = environment["SW_BLEND_REFERENCE"],
+            let modelPath = environment["SW_ALIGNMENT_MODEL"]
+        else { throw XCTSkip("set SW_BLEND_DIAG_DIR, SW_BLEND_REFERENCE, SW_ALIGNMENT_MODEL") }
+        let root = URL(fileURLWithPath: directory)
+        func lyrics(_ folder: String) throws -> [TimedLyricSegment] {
+            let folderURL = root.appendingPathComponent(folder)
+            let file = try XCTUnwrap(
+                FileManager.default.contentsOfDirectory(atPath: folderURL.path)
+                    .first { $0.hasSuffix(".analysis.json") })
+            return try JSONDecoder().decode(
+                SongAnalysisDocument.self,
+                from: Data(contentsOf: folderURL.appendingPathComponent(file))
+            ).lyrics
+        }
+        let rows = LyricBlendRowBuilder.buildRows(
+            fastDraft: try lyrics("out2"), balancedDraft: try lyrics("out3"),
+            accuracy: try lyrics("out1"))
+
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let phonemizer = LyricPhonemizer(
+            pronunciations: LyricPhonemizer.parse(
+                try String(
+                    contentsOf: repository.appendingPathComponent("Resources/cmudict-arpabet.txt"),
+                    encoding: .utf8)))
+        let compiled = try MLModel.compileModel(at: URL(fileURLWithPath: modelPath))
+        let model = CoreMLLyricsAcousticModel(model: try MLModel(contentsOf: compiled))
+        let samples = try MeasuredLyricTiming.monoSamples(
+            at: root.appendingPathComponent("stems/vocals.wav"))
+        let started = Date()
+        let logProbs = try ForcedLyricAligner.posteriorgram(
+            mel: LyricsAlignmentMel.spectrogram(samples: samples), model: model)
+        let posteriorSeconds = Date().timeIntervalSince(started)
+        func words(_ text: String) -> [String] {
+            text.lowercased().replacingOccurrences(
+                of: "[^a-z0-9' ]", with: " ", options: .regularExpression
+            ).split(separator: " ").map(String.init)
+        }
+        let reference = try String(contentsOfFile: referencePath, encoding: .utf8)
+            .split(separator: "\n").flatMap { words(String($0)) }
+        func lcs(_ a: [String], _ b: [String]) -> Int {
+            var previous = [Int](repeating: 0, count: b.count + 1)
+            for x in a {
+                var current = [0]
+                for (j, y) in b.enumerated() {
+                    current.append(x == y ? previous[j] + 1 : max(previous[j + 1], current[j]))
+                }
+                previous = current
+            }
+            return previous[b.count]
+        }
+        func report(_ label: String, _ lines: [TimedLyricSegment]) {
+            let hypothesis = lines.flatMap { words($0.text) }
+            let matched = Double(lcs(reference, hypothesis))
+            let texts = lines.map { words($0.text).joined(separator: " ") }
+            let duplicates = texts.indices.filter { index in
+                !texts[index].isEmpty && texts[..<index].contains(texts[index])
+            }.count
+            print(
+                String(
+                    format: "BLEND %@: lines %d words %d recall %.3f precision %.3f dup-lines %d",
+                    label, lines.count, hypothesis.count, matched / Double(reference.count),
+                    matched / Double(max(hypothesis.count, 1)), duplicates))
+        }
+        report("accuracy-only", try lyrics("out1"))
+        report("blend-default", LyricBlendRowBuilder.effectiveLyrics(from: rows))
+        let stretch = LyricStretchChooser.chosen(
+            [
+                .accuracy: try lyrics("out1"), .fastDraft: try lyrics("out2"),
+                .balancedDraft: try lyrics("out3"),
+            ],
+            logProbs: logProbs, phonemizer: phonemizer)
+        report("stretch-acoustic", stretch.lyrics)
+        if let sweep = environment["SW_BLEND_SWEEP"] {
+            let inputs: [TranscriptionMode: [TimedLyricSegment]] = [
+                .accuracy: try lyrics("out1"), .fastDraft: try lyrics("out2"),
+                .balancedDraft: try lyrics("out3"),
+            ]
+            for setting in sweep.split(separator: ";") {
+                let v = setting.split(separator: ",").compactMap { Double($0) }
+                let result = LyricStretchChooser.chosen(
+                    inputs, logProbs: logProbs, phonemizer: phonemizer,
+                    minimumGap: v[0], padding: v[1], minimumMargin: Float(v[2]))
+                report(
+                    "gap \(v[0]) pad \(v[1]) margin \(v[2]) n=\(result.choices.count)",
+                    result.lyrics)
+            }
+        }
+        let modes = Dictionary(grouping: stretch.choices, by: \.mode).mapValues(\.count)
+        print("BLEND stretches \(stretch.choices.count) by mode \(modes)")
+        print(
+            String(
+                format: "BLEND rows %d posteriorgram %.1fs", rows.count, posteriorSeconds))
     }
 }

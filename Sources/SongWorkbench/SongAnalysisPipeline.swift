@@ -242,7 +242,8 @@ struct SongAnalysisPipelineRequest: Sendable {
     let outputDirectory: URL
     let title: String
     let stages: Set<SongAnalysisStage>
-    let transcriptionMode: TranscriptionMode
+    /// `var` so the multi-engine transcription stage can re-run the stage in each other mode.
+    var transcriptionMode: TranscriptionMode
     let existingDocument: SongAnalysisDocument
     let chordProReplacementPolicy: ChordProReplacementPolicy
     /// Pitch-preserved decode speed for the transcription pass (Accuracy/Whisper only): < 1 slows
@@ -463,6 +464,10 @@ struct SongAnalysisPipeline: Sendable {
     /// stage; there is no fallback to the transcriber's times. Tests inject a stand-in because
     /// they have no app bundle and no decodable stems.
     var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
+    /// The alignment model's posteriorgram of the vocals stem, which the transcription stage
+    /// scores each engine's words against (`LyricStretchChooser`). A throw skips the other engines
+    /// and keeps the requested mode's lyrics; tests have no model, so they keep one engine.
+    var vocalPosteriorgram: VocalPosteriorgram = MeasuredLyricTiming.posteriorgramWithBundledModel
 
     init(
         stemEngine: (any StemSeparationEngine)?,
@@ -631,7 +636,7 @@ struct SongAnalysisPipeline: Sendable {
                     // immediately after stem separation.
                     transcription = await runStage(
                         .transcription,
-                        runner: TranscriptionStage(),
+                        runner: MultiEngineTranscriptionStage(),
                         context: transcriptionContext
                     )
                     harmony = await runStage(
@@ -642,7 +647,7 @@ struct SongAnalysisPipeline: Sendable {
                 case .concurrentIndependentStages:
                     async let transcriptionOutcome = runStage(
                         .transcription,
-                        runner: TranscriptionStage(),
+                        runner: MultiEngineTranscriptionStage(),
                         context: transcriptionContext
                     )
                     async let harmonyOutcome = runStage(
@@ -789,7 +794,7 @@ struct SongAnalysisPipeline: Sendable {
             case .separation:
                 runner = SeparationStage()
             case .transcription:
-                runner = TranscriptionStage()
+                runner = MultiEngineTranscriptionStage()
             case .harmony:
                 runner = HarmonyStage()
             case .chordPro:
@@ -944,7 +949,8 @@ struct SongAnalysisPipeline: Sendable {
             chordProBuilder: chordProBuilder,
             chordProReplacementPolicy: request.chordProReplacementPolicy,
             stageProgress: stageProgress,
-            measureWordTimes: measureWordTimes
+            measureWordTimes: measureWordTimes,
+            vocalPosteriorgram: vocalPosteriorgram
         )
     }
 

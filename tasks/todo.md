@@ -4632,3 +4632,58 @@ Review (2026-09-27): `swift test` 1214 tests, 0 failures, 34 skipped; lint clean
 file. New `UnmeasuredLyricWordTests` cover the line join, the uncorrected-word nil time, draw
 anchors, and decoding. Existing tests that asserted interpolated or kept-ASR times now assert nil
 (reference aligner, corrected-line resolution). Not yet verified on a real song in the app.
+
+## 2026-09-27 — Whisper repetition loops: pick each line's words by acoustic evidence
+
+Eric: reference-quality lyrics by default, without pasting reference lyrics. Measured on Doc Holiday
+against the Moises reference (41 lines, 275 words; optimal-LCS word recall / precision; numbers
+only, scripts in the session scratchpad):
+
+| option | recall | precision | loops |
+|---|---|---|---|
+| Whisper (accuracy), today's default | 0.647 | 0.605 | one 9-word line x7 (142-227 s), from the decoder |
+| Whisper at decode rate 0.85 | 0.618 | 0.637 | a different line x6 |
+| Parakeet balanced | 0.622 | 0.681 | none |
+| Parakeet fast | 0.625 | 0.642 | none |
+| best engine per reference line (oracle) | 0.775 | — | — |
+
+The engines fail in different places (Whisper: lines 22-24, 31-33, 36-37; Parakeet: 13, 39), so
+choosing per line beats choosing an engine. Nothing today does that: `primaryTranscriptionMode` always
+takes Whisper, `DecodeLoopGuard` passes singable repeats, and Lyric Blend keeps accuracy unless onset
+TIMING disagrees — it never asks whether a line's WORDS are what the audio holds.
+
+Plan: score each engine's words with the forced-alignment model (how well their phonemes explain
+the vocal-stem audio) and keep the best-scoring engine per stretch by default; a line one engine
+repeats that another hears differently is the case this must win.
+
+Done (2026-09-28):
+- Row-by-row choice was tried first and measured poorly (0.655 / 0.662): engines break lines in
+  different places, so a row compares one engine's line with another's two. Choosing per STRETCH
+  (bounded by a pause where no engine has a word) fixed that: `LyricStretchChooser`.
+- `CTCForcedAlignment.pathScore` (Viterbi score, shares the lattice/forward pass with `align`).
+- `MultiEngineTranscriptionStage` runs the requested mode, then every other installed engine, and
+  keeps the chosen words; skipped with reference lyrics, without stems, or without the model.
+  Also stores the per-engine lines as Lyric Blend rows. The app's separate background blend pass
+  (`runLyricBlendPasses`) is deleted: it re-ran the engines and overwrote the choice row by row.
+- Margin sweep on Doc Holiday: flat 0.735-0.749 recall for 0.075-0.15; default 0.1.
+
+Acceptance criteria:
+- [x] Doc Holiday without reference lyrics: recall >= 0.72 and no line repeated more than the
+      reference repeats it (measured with the scratchpad LCS script).
+- [~] No regression on songs that transcribe well today (pick 3; compare per-line choices before/after,
+      report counts of rows whose choice changed).
+- [x] Runs by default in a single-song analysis and Re-analyze All; the extra cost is reported.
+- [x] `swift test` and `swift format lint --strict` pass.
+
+Review (2026-09-28):
+- Doc Holiday end to end (new Release build, CLI, no reference lyrics): 0.738 recall / 0.746
+  precision, 4 duplicate lines (the reference repeats 3), 0 untimed words; Whisper alone 0.647 /
+  0.605 with 8. Stretches: 11 Whisper, 5 balanced, 5 fast.
+- Three songs without a reference (Whisper-only build vs new, transcription stage, cached Whisper):
+  Glorify Thy Name 95% of Whisper's words kept, 1 of 4 stretches switched, duplicates 2 -> 2;
+  One night on Broadway 84% kept, 4 of 15 switched, duplicates 14 -> 6; High In Low Places 72%
+  kept, 2 of 8 switched, 276 -> 232 words, duplicates 3 -> 3. The last one is UNJUDGED: without a
+  reference it may be a fix or a regression. Needs Eric's ear or a reference.
+- Extra cost per song, Whisper cached, Parakeet uncached: +2.4 s to +22 s (two Parakeet passes and
+  four 0.6 s posteriorgrams). Against a fresh Whisper decode (~150 s) that is roughly +10-15 %.
+- `swift test`: 1214 tests, 0 failures, 35 skipped.

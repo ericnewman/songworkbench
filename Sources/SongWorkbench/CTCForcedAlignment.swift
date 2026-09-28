@@ -45,65 +45,12 @@ enum CTCForcedAlignment {
         blank: Int
     ) throws -> [TokenSpan] {
         let frameCount = logProbs.count
-        guard frameCount > 0, !tokens.isEmpty else { throw Failure.emptyInput }
-
-        // A repeat needs a blank wedged between the two, so it costs an extra frame.
-        let repeats = zip(tokens, tokens.dropFirst()).reduce(0) { $0 + ($1.0 == $1.1 ? 1 : 0) }
-        let minimumFrames = tokens.count + repeats
-        guard frameCount >= minimumFrames else {
-            throw Failure.audioTooShort(frames: frameCount, minimumRequired: minimumFrames)
-        }
-
-        // Blank-expanded state sequence.
-        var extended: [Int] = [blank]
-        extended.reserveCapacity(2 * tokens.count + 1)
-        for token in tokens {
-            extended.append(token)
-            extended.append(blank)
-        }
+        let extended = try lattice(frames: frameCount, tokens: tokens, blank: blank)
         let stateCount = extended.count
-
-        let negativeInfinity = -Float.greatestFiniteMagnitude
-        var previous = [Float](repeating: negativeInfinity, count: stateCount)
-        var current = [Float](repeating: negativeInfinity, count: stateCount)
         // Backpointers: which state we came from, one byte of choice per state per frame.
         var backpointers = [Int32](repeating: -1, count: frameCount * stateCount)
-
-        // A path may open on the leading blank or on the first token.
-        previous[0] = logProbs[0][blank]
-        if stateCount > 1 { previous[1] = logProbs[0][extended[1]] }
-
-        for frame in 1..<frameCount {
-            let row = logProbs[frame]
-            let base = frame * stateCount
-            for state in 0..<stateCount {
-                // Staying in `state` is always available.
-                var best = previous[state]
-                var from = state
-
-                if state >= 1, previous[state - 1] > best {
-                    best = previous[state - 1]
-                    from = state - 1
-                }
-                // The skip is only legal into a real token that differs from the one two back;
-                // without that guard "hello" would lose one of its l's.
-                if state >= 2, extended[state] != blank, extended[state] != extended[state - 2],
-                    previous[state - 2] > best
-                {
-                    best = previous[state - 2]
-                    from = state - 2
-                }
-
-                if best == negativeInfinity {
-                    current[state] = negativeInfinity
-                    backpointers[base + state] = -1
-                } else {
-                    current[state] = best + row[extended[state]]
-                    backpointers[base + state] = Int32(from)
-                }
-            }
-            swap(&previous, &current)
-        }
+        let previous = forward(
+            logProbs[...], extended: extended, blank: blank, backpointers: &backpointers)
 
         // The path ends on the final blank or the final token.
         var state = stateCount - 1
@@ -139,5 +86,87 @@ enum CTCForcedAlignment {
                 endFrame: lastFrame[index]
             )
         }
+    }
+
+    /// Log-likelihood of the best path that sings `tokens` across ALL of `logProbs` — how well
+    /// the words explain the audio. Comparable between token sequences only over the same frames.
+    /// An empty `tokens` scores the all-blank path: the audio as nothing sung.
+    static func pathScore(logProbs: ArraySlice<[Float]>, tokens: [Int], blank: Int) throws
+        -> Float
+    {
+        guard !logProbs.isEmpty else { throw Failure.emptyInput }
+        guard !tokens.isEmpty else { return logProbs.reduce(0) { $0 + $1[blank] } }
+        let extended = try lattice(frames: logProbs.count, tokens: tokens, blank: blank)
+        var none: [Int32] = []
+        let final = forward(logProbs, extended: extended, blank: blank, backpointers: &none)
+        return final.count >= 2 ? max(final[final.count - 1], final[final.count - 2]) : final[0]
+    }
+
+    /// The blank-expanded state sequence, after checking the frames can hold the tokens.
+    private static func lattice(frames: Int, tokens: [Int], blank: Int) throws -> [Int] {
+        guard frames > 0, !tokens.isEmpty else { throw Failure.emptyInput }
+        // A repeat needs a blank wedged between the two, so it costs an extra frame.
+        let repeats = zip(tokens, tokens.dropFirst()).reduce(0) { $0 + ($1.0 == $1.1 ? 1 : 0) }
+        let minimumFrames = tokens.count + repeats
+        guard frames >= minimumFrames else {
+            throw Failure.audioTooShort(frames: frames, minimumRequired: minimumFrames)
+        }
+        var extended: [Int] = [blank]
+        extended.reserveCapacity(2 * tokens.count + 1)
+        for token in tokens {
+            extended.append(token)
+            extended.append(blank)
+        }
+        return extended
+    }
+
+    /// Viterbi over the lattice: the best score of every state at the last frame. Records the
+    /// choice per state per frame into `backpointers` when it is sized for that (empty skips it).
+    private static func forward(
+        _ logProbs: ArraySlice<[Float]>, extended: [Int], blank: Int,
+        backpointers: inout [Int32]
+    ) -> [Float] {
+        let stateCount = extended.count
+        let records = backpointers.count == logProbs.count * stateCount
+        let negativeInfinity = -Float.greatestFiniteMagnitude
+        var previous = [Float](repeating: negativeInfinity, count: stateCount)
+        var current = [Float](repeating: negativeInfinity, count: stateCount)
+
+        // A path may open on the leading blank or on the first token.
+        let first = logProbs[logProbs.startIndex]
+        previous[0] = first[blank]
+        if stateCount > 1 { previous[1] = first[extended[1]] }
+
+        for (offset, row) in logProbs.dropFirst().enumerated() {
+            let base = (offset + 1) * stateCount
+            for state in 0..<stateCount {
+                // Staying in `state` is always available.
+                var best = previous[state]
+                var from = state
+
+                if state >= 1, previous[state - 1] > best {
+                    best = previous[state - 1]
+                    from = state - 1
+                }
+                // The skip is only legal into a real token that differs from the one two back;
+                // without that guard "hello" would lose one of its l's.
+                if state >= 2, extended[state] != blank, extended[state] != extended[state - 2],
+                    previous[state - 2] > best
+                {
+                    best = previous[state - 2]
+                    from = state - 2
+                }
+
+                if best == negativeInfinity {
+                    current[state] = negativeInfinity
+                    if records { backpointers[base + state] = -1 }
+                } else {
+                    current[state] = best + row[extended[state]]
+                    if records { backpointers[base + state] = Int32(from) }
+                }
+            }
+            swap(&previous, &current)
+        }
+        return previous
     }
 }

@@ -44,6 +44,8 @@ struct AnalysisStageContext: Sendable {
     let stageProgress: @Sendable (Double, String) -> Void
     /// See `SongAnalysisPipeline.measureWordTimes`.
     var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
+    /// See `SongAnalysisPipeline.vocalPosteriorgram`.
+    var vocalPosteriorgram: VocalPosteriorgram = MeasuredLyricTiming.posteriorgramWithBundledModel
     /// When true, a live separation run executes the BASE engine only and the pipeline runs the
     /// refiners itself, concurrently with transcription and harmony. Cache checks still use the
     /// full base+refiners recipe, so a previously completed refined document is still a hit.
@@ -269,6 +271,97 @@ extension AnalysisStageContext {
 }
 
 // MARK: - Transcription
+
+/// Transcribes with EVERY installed engine and keeps, stretch by stretch, the words the vocal stem
+/// best supports (`LyricStretchChooser`; Eric, 2026-09-28: reference-quality lyrics by default).
+///
+/// The requested mode runs first and exactly as before; its stage record, regions and the rest of
+/// its document changes stand. Each other installed engine then runs the same stage for its words
+/// alone. Skipped — the requested mode's lyrics kept — with reference lyrics (the user's words are
+/// the words), without a vocals stem, when the requested mode did not succeed, or when the vocal
+/// posteriorgram cannot be computed.
+///
+/// Measured on Doc Holiday against a reference lyric (2026-09-28, word recall / precision):
+/// Whisper alone 0.647 / 0.605 with one line looped 7 times; stretch choice across Whisper and
+/// both Parakeet profiles 0.738 / 0.746 with the reference's own three repeats.
+struct MultiEngineTranscriptionStage: AnalysisStageRunning {
+    let stage: SongAnalysisStage = .transcription
+
+    func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
+        let primary = await TranscriptionStage().run(context)
+        let requested = context.request.transcriptionMode
+        guard !primary.wasCancelled,
+            context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty,
+            let vocalsURL = context.document.stems?.resolved().vocals
+        else { return primary }
+        var primaryDocument = context.document
+        primary.apply(&primaryDocument)
+        guard primaryDocument.stageRecords[.transcription]?.state == .succeeded,
+            !primaryDocument.lyrics.isEmpty
+        else { return primary }
+        let others = LyricBlendRowBuilder.modeOrder.filter {
+            $0 != requested && context.transcriptionEngineFactory.engine(for: $0) != nil
+        }
+        guard !others.isEmpty,
+            let logProbs = try? await Task.detached(
+                priority: .userInitiated,
+                operation: {
+                    try context.vocalPosteriorgram(vocalsURL)
+                }
+            ).value
+        else { return primary }
+        // One engine resident at a time: the requested mode's model is done.
+        await context.transcriptionEngineFactory.engine(for: requested)?.releaseResources()
+
+        var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
+            requested: primaryDocument.lyrics
+        ]
+        for mode in others {
+            guard !Task.isCancelled else { return primary }
+            var request = context.request
+            request.transcriptionMode = mode
+            let modeContext = AnalysisStageContext(
+                request: request, document: context.document, sourceDigest: context.sourceDigest,
+                digest: context.digest, cache: context.cache, stemEngine: context.stemEngine,
+                stemRefiners: context.stemRefiners,
+                transcriptionEngineFactory: context.transcriptionEngineFactory,
+                harmonyEngine: context.harmonyEngine, chordProBuilder: context.chordProBuilder,
+                chordProReplacementPolicy: context.chordProReplacementPolicy,
+                stageProgress: context.stageProgress,
+                measureWordTimes: context.measureWordTimes,
+                vocalPosteriorgram: context.vocalPosteriorgram)
+            let outcome = await TranscriptionStage().run(modeContext)
+            await context.transcriptionEngineFactory.engine(for: mode)?.releaseResources()
+            guard !outcome.wasCancelled else { return primary }
+            var modeDocument = context.document
+            outcome.apply(&modeDocument)
+            if modeDocument.stageRecords[.transcription]?.state == .succeeded {
+                lyricsByMode[mode] = modeDocument.lyrics
+            }
+        }
+        guard lyricsByMode.count > 1 else { return primary }
+
+        let choice = LyricStretchChooser.chosen(
+            lyricsByMode, logProbs: logProbs,
+            preference: [requested] + others)
+        let counts = Dictionary(grouping: choice.choices, by: \.mode).mapValues(\.count)
+        AnalysisResourceLog.checkpoint(
+            stage: "lyric-choice",
+            event: "stretches=\(choice.choices.count) "
+                + LyricBlendRowBuilder.modeOrder.map { "\($0.rawValue)=\(counts[$0] ?? 0)" }
+                .joined(separator: " "))
+        let rows = LyricBlendRowBuilder.buildRows(
+            fastDraft: lyricsByMode[.fastDraft] ?? [],
+            balancedDraft: lyricsByMode[.balancedDraft] ?? [],
+            accuracy: lyricsByMode[.accuracy] ?? [])
+        return AnalysisStageOutcome { document in
+            primary.apply(&document)
+            document.lyrics = choice.lyrics
+            document.lyricBlendRows = rows
+        }
+    }
+}
 
 struct TranscriptionStage: AnalysisStageRunning {
     let stage: SongAnalysisStage = .transcription

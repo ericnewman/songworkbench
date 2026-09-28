@@ -652,3 +652,128 @@ enum LyricBlendRowBuilder {
         return closest
     }
 }
+
+/// Chooses the lyrics STRETCH by stretch from several transcriptions by acoustic evidence
+/// (Eric, 2026-09-28: reference-quality lyrics by default).
+///
+/// Engines break lines in different places, so comparing them line by line compares one engine's
+/// line with another's two. A stretch is instead bounded by a pause in which NO engine has a word;
+/// inside it each engine's candidate is simply its words there, whatever its line breaks. Every
+/// candidate is forced through the alignment model's posteriorgram over the same frames and the
+/// highest path score wins — an engine that heard nothing scores the stretch as silence. This is
+/// what catches a decoder loop: Whisper repeating a line where another engine heard the words
+/// actually sung (Doc Holiday, 2026-09-27).
+///
+/// Word times are the chosen engine's own, already MEASURED by forced alignment in its
+/// transcription pass; nothing here computes a time.
+enum LyricStretchChooser {
+    struct Choice: Equatable, Sendable {
+        let start: TimeInterval
+        let end: TimeInterval
+        let mode: TranscriptionMode
+    }
+
+    /// - Parameters:
+    ///   - lyricsByMode: each engine's lines, words measured on the vocal stem.
+    ///   - preference: the engine that keeps a stretch unless another beats it by
+    ///     `minimumMargin` per frame (two near-identical transcriptions keep it). On Doc Holiday
+    ///     (2026-09-28) recall was flat at 0.735-0.749 for margins 0.075-0.15 and fell either side
+    ///     (0.644 at 0, 0.691 at 0.3); 0.1 sits mid-plateau. Gap and padding barely mattered.
+    ///   - logProbs: `ForcedLyricAligner.posteriorgram` of the whole vocal stem.
+    static func chosen(
+        _ lyricsByMode: [TranscriptionMode: [TimedLyricSegment]],
+        logProbs: [[Float]], phonemizer: LyricPhonemizer = .shared,
+        preference: [TranscriptionMode] = LyricBlendRowBuilder.modeOrder,
+        minimumGap: TimeInterval = 0.6, padding: TimeInterval = 0.3,
+        minimumMargin: Float = 0.1
+    ) -> (lyrics: [TimedLyricSegment], choices: [Choice]) {
+        let modes = preference.filter { lyricsByMode[$0] != nil }
+        guard let fallback = modes.first else { return ([], []) }
+        let spans = stretches(lyricsByMode.values.flatMap { $0 }, minimumGap: minimumGap)
+        let frameDuration = ForcedLyricAligner.outputFrameDuration
+        var lyrics: [TimedLyricSegment] = []
+        var choices: [Choice] = []
+        for span in spans {
+            let lower = max(0, Int(((span.lowerBound - padding) / frameDuration).rounded(.down)))
+            let upper = min(
+                logProbs.count, Int(((span.upperBound + padding) / frameDuration).rounded(.up)))
+            var best = (mode: fallback, score: -Float.infinity)
+            var preferredScore = -Float.infinity
+            if upper > lower {
+                let window = logProbs[lower..<upper]
+                for mode in modes {
+                    let words = (lyricsByMode[mode] ?? []).flatMap(\.words)
+                        .filter { $0.start.map(span.contains) ?? false }.map(\.text)
+                    let tokens = LyricPhonemizer.tokenSequence(for: phonemizer.words(for: words))
+                        .tokens
+                    // A candidate too long to be sung in the stretch cannot be what was sung.
+                    guard
+                        let score = try? CTCForcedAlignment.pathScore(
+                            logProbs: window, tokens: tokens, blank: ArpabetVocabulary.blankIndex)
+                    else { continue }
+                    if mode == fallback { preferredScore = score }
+                    if score > best.score { best = (mode, score) }
+                }
+                if best.mode != fallback,
+                    best.score - preferredScore < minimumMargin * Float(window.count)
+                {
+                    best.mode = fallback
+                }
+            }
+            choices.append(Choice(start: span.lowerBound, end: span.upperBound, mode: best.mode))
+            lyrics += (lyricsByMode[best.mode] ?? []).compactMap { line in
+                restricted(line, to: span)
+            }
+        }
+        return (lyrics, choices)
+    }
+
+    /// Spans of singing: every placed word's `[start, end]`, merged across all engines, split
+    /// where the gap between them is at least `minimumGap`.
+    static func stretches(_ lines: [TimedLyricSegment], minimumGap: TimeInterval)
+        -> [ClosedRange<TimeInterval>]
+    {
+        let spans = lines.flatMap(\.words).compactMap { word in
+            word.start.map { $0...max($0, word.end ?? $0) }
+        }.sorted { $0.lowerBound < $1.lowerBound }
+        var merged: [ClosedRange<TimeInterval>] = []
+        for span in spans {
+            if let last = merged.last, span.lowerBound - last.upperBound < minimumGap {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, span.upperBound)
+            } else {
+                merged.append(span)
+            }
+        }
+        return merged
+    }
+
+    /// `line` holding only its words that start inside `span`, text and ranges rebuilt; nil when
+    /// none does. A word with no time belongs to the stretch of the word before it.
+    private static func restricted(_ line: TimedLyricSegment, to span: ClosedRange<TimeInterval>)
+        -> TimedLyricSegment?
+    {
+        var inside = false
+        let kept = line.words.filter { word in
+            if let start = word.start { inside = span.contains(start) }
+            return inside
+        }
+        guard let start = kept.firstStart else { return nil }
+        var text = ""
+        let words = kept.map { word -> TimedLyricWord in
+            if !text.isEmpty { text += " " }
+            let lower = text.count
+            text += word.text
+            var copy = word
+            copy.characterRange = lower..<text.count
+            return copy
+        }
+        var result = line
+        result.id = UUID()
+        result.text = text
+        result.words = words
+        result.start = start
+        result.end = max(kept.lastEnd ?? start, start)
+        result.overrideText = nil
+        return result
+    }
+}

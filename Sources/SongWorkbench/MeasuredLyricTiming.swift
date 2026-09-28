@@ -22,7 +22,22 @@ typealias WordTimeMeasurer =
     @Sendable (_ lyrics: [TimedLyricSegment], _ vocalsURL: URL, _ onsets: [TimeInterval]) throws
     -> (lyrics: [TimedLyricSegment], outcome: MeasuredLyricTiming.Outcome)
 
+/// The alignment model's posteriorgram of the vocals stem at a URL.
+typealias VocalPosteriorgram = @Sendable (_ vocalsURL: URL) throws -> [[Float]]
+
 enum MeasuredLyricTiming {
+    /// `ForcedLyricAligner.posteriorgram` of the vocals stem, with the bundled model.
+    @Sendable
+    static func posteriorgramWithBundledModel(_ vocalsURL: URL) throws -> [[Float]] {
+        guard let model = CoreMLLyricsAcousticModel.load() else {
+            throw SongAnalysisPipelineError.missingBundledModel("LyricsAlignmentMTL")
+        }
+        let samples = try monoSamples(at: vocalsURL)
+        guard !samples.isEmpty else { throw Failure.emptyVocalsStem }
+        return try ForcedLyricAligner.posteriorgram(
+            mel: LyricsAlignmentMel.spectrogram(samples: samples), model: model)
+    }
+
     enum Failure: Error, Equatable {
         case emptyVocalsStem
         /// Alignment ran but placed no word at all: nothing anchors any line.
