@@ -680,12 +680,18 @@ enum LyricStretchChooser {
     ///     (2026-09-28) recall was flat at 0.735-0.749 for margins 0.075-0.15 and fell either side
     ///     (0.644 at 0, 0.691 at 0.3); 0.1 sits mid-plateau. Gap and padding barely mattered.
     ///   - logProbs: `ForcedLyricAligner.posteriorgram` of the whole vocal stem.
+    ///   - voiced: where the vocal stem is singing (`VocalActivityEnvelope`). Another engine may
+    ///     replace the preferred one only if its words cover as much of the stretch's singing,
+    ///     within `coverageTolerance` (Eric, 2026-09-30: sound on the vocal stem is where words
+    ///     land). Without this, a stretch went to an engine that heard fewer words: a held vowel
+    ///     scores cheaply as "nothing sung" (High In Low Places lost 45 sung words, 2026-09-30).
     static func chosen(
         _ lyricsByMode: [TranscriptionMode: [TimedLyricSegment]],
-        logProbs: [[Float]], phonemizer: LyricPhonemizer = .shared,
+        logProbs: [[Float]], voiced: [ClosedRange<TimeInterval>] = [],
+        phonemizer: LyricPhonemizer = .shared,
         preference: [TranscriptionMode] = LyricBlendRowBuilder.modeOrder,
         minimumGap: TimeInterval = 0.6, padding: TimeInterval = 0.3,
-        minimumMargin: Float = 0.1
+        minimumMargin: Float = 0.1, coverageTolerance: Double = 0.05
     ) -> (lyrics: [TimedLyricSegment], choices: [Choice]) {
         let modes = preference.filter { lyricsByMode[$0] != nil }
         guard let fallback = modes.first else { return ([], []) }
@@ -699,9 +705,18 @@ enum LyricStretchChooser {
                 logProbs.count, Int(((span.upperBound + padding) / frameDuration).rounded(.up)))
             var best = (mode: fallback, score: -Float.infinity)
             var preferredScore = -Float.infinity
+            let coverage = modes.reduce(into: [TranscriptionMode: Double]()) {
+                $0[$1] = voicedCoverage(of: lyricsByMode[$1] ?? [], in: span, voiced: voiced)
+            }
             if upper > lower {
                 let window = logProbs[lower..<upper]
                 for mode in modes {
+                    if mode != fallback, let own = coverage[mode],
+                        let preferred = coverage[fallback],
+                        own < preferred - coverageTolerance
+                    {
+                        continue
+                    }
                     let words = (lyricsByMode[mode] ?? []).flatMap(\.words)
                         .filter { $0.start.map(span.contains) ?? false }.map(\.text)
                     let tokens = LyricPhonemizer.tokenSequence(for: phonemizer.words(for: words))
@@ -726,6 +741,32 @@ enum LyricStretchChooser {
             }
         }
         return (lyrics, choices)
+    }
+
+    /// The share of `span`'s singing (`voiced`) within `reach` of one of `lines`' words; nil when
+    /// the stretch holds no singing.
+    static func voicedCoverage(
+        of lines: [TimedLyricSegment], in span: ClosedRange<TimeInterval>,
+        voiced: [ClosedRange<TimeInterval>], reach: TimeInterval = 0.25
+    ) -> Double? {
+        func overlap(_ a: ClosedRange<TimeInterval>, _ b: ClosedRange<TimeInterval>)
+            -> TimeInterval
+        { max(0, min(a.upperBound, b.upperBound) - max(a.lowerBound, b.lowerBound)) }
+        let sung = voiced.compactMap { interval -> ClosedRange<TimeInterval>? in
+            let lower = max(interval.lowerBound, span.lowerBound)
+            let upper = min(interval.upperBound, span.upperBound)
+            return upper > lower ? lower...upper : nil
+        }
+        let sungSeconds = sung.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+        guard sungSeconds > 0 else { return nil }
+        // Merged before padding so neighbouring words never count the same second twice.
+        let reached = stretches(lines, minimumGap: 2 * reach).map {
+            ($0.lowerBound - reach)...($0.upperBound + reach)
+        }
+        let covered = sung.reduce(0.0) { total, interval in
+            total + reached.reduce(0) { $0 + overlap($1, interval) }
+        }
+        return min(covered / sungSeconds, 1)
     }
 
     /// Spans of singing: every placed word's `[start, end]`, merged across all engines, split

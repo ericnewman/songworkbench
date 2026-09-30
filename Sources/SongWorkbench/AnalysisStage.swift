@@ -342,8 +342,10 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
         }
         guard lyricsByMode.count > 1 else { return primary }
 
+        let voiced =
+            (try? await AudioFileAnalysisService().vocalActivityIntervals(url: vocalsURL)) ?? []
         let choice = LyricStretchChooser.chosen(
-            lyricsByMode, logProbs: logProbs,
+            lyricsByMode, logProbs: logProbs, voiced: voiced,
             preference: [requested] + others)
         let counts = Dictionary(grouping: choice.choices, by: \.mode).mapValues(\.count)
         AnalysisResourceLog.checkpoint(
