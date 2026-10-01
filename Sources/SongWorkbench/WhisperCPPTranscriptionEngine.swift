@@ -77,7 +77,9 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 name: "MIT",
                 url: URL(string: "https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE")
             ),
-            engineVersion: "8"
+            // 9: whisper.cpp v1.9.4 (release asset tagged b5130, identical source), whose decoder
+            // seed reset makes a temperature-fallback decode repeatable (whisper.cpp PR #4025).
+            engineVersion: "9"
         )
         self.runtime = runtime ?? WhisperCPPRuntime(modelURL: modelURL, useGPU: useGPU)
     }
