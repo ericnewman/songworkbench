@@ -4709,3 +4709,38 @@ CLI end-to-end run verified. Not verified: the app's onboarding download of the 
 package was installed for testing by copying the already-downloaded files and writing the same
 manifest the installer writes); High In Low Places and other songs with Qwen; memory with Qwen
 resident next to separation (peak 2.8 GB footprint during Qwen in the CLI run).
+
+## 2026-10-01 — Boot-disk space: unused stems, movable storage, 16-bit stems
+
+Eric: "Do all 3" (boot disk 97% full; the app held 41 GB in Application Support, 35 GB of it stems).
+
+- [x] Unused stems: 19 folders no song references (9 from before songs were imported into `Sources`,
+      10 abandoned separation staging folders) moved to `/Volumes/SSD/SongWorkbench-unused-stems-2026-10-01`
+      (5.7 GB). Deleting them was blocked by the agent's safety check; Eric can delete the folder.
+- [x] Movable storage: `BulkStorageLocation` (root for `Models` and `Analysis/Stems`, kept as an
+      app-scoped bookmark); Analysis > Move Models and Stems… copies, switches, deletes the originals
+      and quits. Stored stem paths under an earlier root resolve under the current one
+      (`StoredAudioReference.resolvedURL`), so the library is never rewritten. Test:
+      `testStemPathsFromEarlierStorageRootsResolveUnderTheCurrentOne`.
+- [x] 16-bit stems: `StemWAVCompaction` rewrites a finished stem as 16-bit PCM unless it peaks
+      above full scale (52 of 287 library stems do, up to 1.28, mostly drums). Test:
+      `testStemsWithinFullScaleAreStoredAs16BitAndLouderOnesStayFloat`.
+- [x] Before/after on Doc Holiday (same stems, float vs 16-bit, vocals forced to 16-bit), scored
+      with an exact LCS against the reference (difflib's SequenceMatcher under-counts on repeated
+      choruses: it reported 0.35 for a 0.815 result). Qwen mode: float 0.815 / 0.845, 16-bit
+      0.818 / 0.849; raw Qwen identical (0.855 / 0.855). Chords 128/128 matched (+1 extra in
+      16-bit; two float runs differ by the same 1), bass 251/251, key, tempo, beats identical.
+      Accuracy mode moved (0.749 -> 0.702) only because Whisper looped on the 16-bit vocal (357
+      words); Whisper loops on tiny input changes either way.
+- [x] Convert the existing library's stems: Eric ran `scripts/compact_existing_stems.py` (the
+      agent's safety check blocks in-place rewrites). First run stopped after 63 files on an
+      afconvert write failure into the container; second run converted 228 more, 78 stay float
+      (peak > 1): stems 27.9 GB -> 18.1 GB.
+- [x] Eric ran the move from the app to `/Volumes/SSD/Models & Stems`: Models 5.3 GB (7 packages)
+      and Stems 17 GB (41 songs) copied, originals removed (Application Support now 367 MB),
+      `bulkStoragePath` and previous root saved. Boot disk 13 GB -> 53 GB free. A CLI run then
+      loaded Whisper and Qwen from the SSD folder through the bookmark and read the song's stems
+      there: Doc Holiday 0.815 / 0.845, 0 untimed words (same as before the move).
+
+Review: `swift test` 1220 tests, 0 failures, 36 skipped; lint clean on changed files; Release
+build 17:43. Not checked: playback and a full in-app Analyze after the move (Eric's next open).

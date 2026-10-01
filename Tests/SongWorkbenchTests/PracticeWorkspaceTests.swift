@@ -8,6 +8,25 @@ final class PracticeWorkspaceTests: XCTestCase {
         XCTAssertEqual(ProjectLibraryDocument.currentVersion, 3)
     }
 
+    func testStemPathsFromEarlierStorageRootsResolveUnderTheCurrentOne() {
+        let stem = "/Analysis/Stems/0811cda2/Refined/abc/vocals.wav"
+        let previous = ["/Users/x/Library/Application Support/SongWorkbench", "/Volumes/A/SW"]
+
+        XCTAssertEqual(
+            BulkStorageLocation.relocated(previous[0] + stem, from: previous, to: "/Volumes/B/SW"),
+            "/Volumes/B/SW" + stem)
+        XCTAssertEqual(
+            BulkStorageLocation.relocated(previous[1] + stem, from: previous, to: "/Volumes/B/SW"),
+            "/Volumes/B/SW" + stem)
+        // Anything else keeps its stored path: imported sources, test roots, CLI stem folders.
+        XCTAssertNil(
+            BulkStorageLocation.relocated(
+                previous[0] + "/Sources/0811cda2/song.m4a", from: previous, to: "/Volumes/B/SW"))
+        XCTAssertNil(
+            BulkStorageLocation.relocated(
+                "/tmp/Support" + stem, from: previous, to: "/Volumes/B/SW"))
+    }
+
     func testLoopRegionClampsAndRejectsTinyRanges() {
         XCTAssertEqual(
             LoopRegion(start: -2, end: 20).clamped(to: 10),

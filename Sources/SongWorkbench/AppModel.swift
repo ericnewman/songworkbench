@@ -328,10 +328,42 @@ final class AppModel: ObservableObject {
     /// Live import/localization progress ("Importing 2 of 5: …"); nil when idle. Feeds the
     /// always-visible background-status line.
     @Published private(set) var importStatus: String?
+    /// Progress of Analysis > Move Models and Stems; nil when no move is running.
+    @Published private(set) var storageMoveStatus: String?
+
+    var canMoveBulkStorage: Bool {
+        storageMoveStatus == nil && !isSongAnalysisRunning && modelInstallProgress.isEmpty
+    }
+
+    /// Moves models and stems to `destination` (see `BulkStorageLocation.move`), then quits: the
+    /// app opens them from the new folder on its next launch. Analysis can't start meanwhile.
+    func moveBulkStorage(to destination: URL) {
+        guard canMoveBulkStorage else { return }
+        stopPlaybackForAnalysis()
+        storageMoveStatus = "Moving models and stems…"
+        Task.detached { [weak self] in
+            do {
+                try BulkStorageLocation.move(to: destination) { status in
+                    Task { @MainActor in self?.storageMoveStatus = status }
+                }
+                await MainActor.run {
+                    self?.flushPendingSave()
+                    PlatformLifecycle.terminate()
+                }
+            } catch {
+                await MainActor.run {
+                    self?.storageMoveStatus = nil
+                    self?.projectErrorMessage =
+                        "Models and stems weren't moved: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
 
     /// One-line description of whatever the app is doing in the background right now, for
     /// the persistent status row across the top of the main window. `nil` = idle ("Ready").
     var backgroundActivityStatus: String? {
+        if let storageMoveStatus { return storageMoveStatus }
         if let importStatus { return importStatus }
         // ONE analysis branch, not two. `reanalyzeAllStatus` used to be checked ahead of
         // `isSongAnalysisRunning` and returned early, so it SHADOWED the stage/percent line —
@@ -848,6 +880,8 @@ final class AppModel: ObservableObject {
     private let sourceRecoveryDirectories: [URL]?
     /// `Application Support/SongWorkbench`, or `<storageRoot>/Support` when one was injected.
     private let supportDirectory: URL
+    /// Models and stems: `BulkStorageLocation.root`, or `supportDirectory` under test.
+    private let bulkDirectory: URL
 
     init(
         store: any ProjectStore = SplitProjectStore.standard,
@@ -869,7 +903,9 @@ final class AppModel: ObservableObject {
             ).first!
             .appendingPathComponent("SongWorkbench", isDirectory: true)
         self.supportDirectory = supportDirectory
-        let modelDirectory = supportDirectory.appendingPathComponent("Models", isDirectory: true)
+        let bulkDirectory = storageRoot == nil ? BulkStorageLocation.root : supportDirectory
+        self.bulkDirectory = bulkDirectory
+        let modelDirectory = bulkDirectory.appendingPathComponent("Models", isDirectory: true)
         modelPackageManager = ModelPackageManager(
             directoryURL: modelDirectory,
             downloader: URLSessionModelArtifactDownloader()
@@ -1542,6 +1578,11 @@ final class AppModel: ObservableObject {
         runLyricBlend: Bool = false,
         completion: ((_ cancelled: Bool) -> Void)? = nil
     ) {
+        // Stems written now would land in the folder being moved away.
+        guard storageMoveStatus == nil else {
+            completion?(true)
+            return
+        }
         let songID = song.id
         let existingDocument = analysisBySongID[songID] ?? SongAnalysisDocument()
         isSongAnalysisRunning = true
@@ -3596,7 +3637,7 @@ final class AppModel: ObservableObject {
             .map { String(format: "%02x", $0) }
             .joined()
         return
-            supportDirectory
+            bulkDirectory
             .appendingPathComponent("Analysis", isDirectory: true)
             .appendingPathComponent("Stems", isDirectory: true)
             .appendingPathComponent(identifier, isDirectory: true)

@@ -989,11 +989,142 @@ struct StoredAudioReference: Codable, Equatable, Sendable {
     /// `followingBookmark: false` returns the stored path without resolving the bookmark, which
     /// costs about half a millisecond: enough to matter in a check run on every playback tick.
     func resolvedURL(followingBookmark: Bool = true) -> URL {
+        if let moved = BulkStorageLocation.relocated(path) { return URL(fileURLWithPath: moved) }
         guard followingBookmark, let bookmarkData else { return URL(fileURLWithPath: path) }
         var stale = false
         return
             (try? URL(resolvingAppScopedBookmark: bookmarkData, bookmarkDataIsStale: &stale))
             ?? URL(fileURLWithPath: path)
+    }
+}
+
+/// Where the large, re-creatable files live: model packages (`Models`) and separated stems
+/// (`Analysis/Stems`). They default to the app's Application Support folder; Analysis > Move
+/// Models and Stems puts them in any folder, such as one on an external drive (Eric, 2026-10-01:
+/// they were 40 GB of a full boot disk). The library itself (`songs`, `library.json` and the
+/// imported `Sources`) stays in Application Support.
+enum BulkStorageLocation {
+    static let movedFolders = ["Models", "Analysis/Stems"]
+    private static let bookmarkKey = "bulkStorageBookmark"
+    private static let pathKey = "bulkStoragePath"
+    private static let previousPathsKey = "bulkStoragePreviousPaths"
+
+    static let defaultRoot = FileManager.default.urls(
+        for: .applicationSupportDirectory, in: .userDomainMask
+    ).first!.appendingPathComponent("SongWorkbench", isDirectory: true)
+
+    /// Resolved once per launch, so a move takes effect when the app next opens; the folder's
+    /// security scope stays open for the app's lifetime. A chosen folder that can't be reached
+    /// (its drive is unplugged) still answers its path, so the app reports missing models and
+    /// stems instead of quietly downloading 5 GB of models back onto the boot disk.
+    static let root: URL = {
+        let defaults = UserDefaults.standard
+        guard let path = defaults.string(forKey: pathKey) else { return defaultRoot }
+        var stale = false
+        if let data = defaults.data(forKey: bookmarkKey),
+            let url = try? URL(resolvingAppScopedBookmark: data, bookmarkDataIsStale: &stale),
+            url.startAccessingSecurityScopedResource()
+        {
+            if stale, let fresh = try? url.appScopedBookmarkData() {
+                defaults.set(fresh, forKey: bookmarkKey)
+            }
+            return url
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }()
+
+    /// Roots stems were stored under before a move. Song records keep the stem paths they were
+    /// written with, and `relocated` maps those to `root`, so a move never rewrites the library.
+    private static let previousRoots: [String] =
+        ((UserDefaults.standard.stringArray(forKey: previousPathsKey) ?? []) + [defaultRoot.path])
+        .filter { $0 != root.path }
+
+    /// `path` under `root` when it names a stem stored under an earlier root; nil otherwise.
+    static func relocated(_ path: String) -> String? {
+        relocated(path, from: previousRoots, to: root.path)
+    }
+
+    static func relocated(_ path: String, from previousRoots: [String], to root: String) -> String?
+    {
+        for previous in previousRoots {
+            let prefix = previous + "/Analysis/Stems/"
+            if path.hasPrefix(prefix) {
+                return root + "/Analysis/Stems/" + path.dropFirst(prefix.count)
+            }
+        }
+        return nil
+    }
+
+    /// Bytes `move(to:progress:)` would move.
+    static func movableSize() -> Int64 {
+        var total: Int64 = 0
+        for folder in movedFolders {
+            let enumerator = FileManager.default.enumerator(
+                at: root.appendingPathComponent(folder), includingPropertiesForKeys: [.fileSizeKey])
+            while let url = enumerator?.nextObject() as? URL {
+                total += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            }
+        }
+        return total
+    }
+
+    enum MoveError: LocalizedError {
+        case insideCurrentLocation
+        case destinationNotEmpty(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .insideCurrentLocation:
+                "Choose a folder outside the current models and stems folder."
+            case .destinationNotEmpty(let path):
+                "\(path) already exists and isn't empty."
+            }
+        }
+    }
+
+    /// Copies `Models` and `Analysis/Stems` into `destination`, makes it the root from the next
+    /// launch, then deletes the originals. Copying first means a failure part-way leaves every
+    /// original in place and in use; the partial copy is removed.
+    static func move(to destination: URL, progress: (String) -> Void) throws {
+        let manager = FileManager.default
+        let destination = destination.standardizedFileURL
+        guard !(destination.path + "/").hasPrefix(root.standardizedFileURL.path + "/") else {
+            throw MoveError.insideCurrentLocation
+        }
+        var copied: [URL] = []
+        do {
+            for folder in movedFolders {
+                let source = root.appendingPathComponent(folder, isDirectory: true)
+                let target = destination.appendingPathComponent(folder, isDirectory: true)
+                if let existing = try? manager.contentsOfDirectory(atPath: target.path),
+                    !existing.isEmpty
+                {
+                    throw MoveError.destinationNotEmpty(target.path)
+                }
+                try manager.createDirectory(at: target, withIntermediateDirectories: true)
+                copied.append(target)
+                let items = (try? manager.contentsOfDirectory(atPath: source.path)) ?? []
+                for (index, item) in items.enumerated() {
+                    progress("Moving \(folder.lowercased()): \(index + 1) of \(items.count)")
+                    try manager.copyItem(
+                        at: source.appendingPathComponent(item),
+                        to: target.appendingPathComponent(item))
+                }
+            }
+        } catch {
+            for target in copied { try? manager.removeItem(at: target) }
+            throw error
+        }
+        let defaults = UserDefaults.standard
+        defaults.set(try destination.appScopedBookmarkData(), forKey: bookmarkKey)
+        defaults.set(destination.path, forKey: pathKey)
+        defaults.set(
+            Array(Set((defaults.stringArray(forKey: previousPathsKey) ?? []) + [root.path])),
+            forKey: previousPathsKey)
+        progress("Removing the old copies")
+        for folder in movedFolders {
+            try? manager.removeItem(at: root.appendingPathComponent(folder, isDirectory: true))
+        }
     }
 }
 
