@@ -4687,3 +4687,25 @@ Review (2026-09-28):
 - Extra cost per song, Whisper cached, Parakeet uncached: +2.4 s to +22 s (two Parakeet passes and
   four 0.6 s posteriorgrams). Against a fresh Whisper decode (~150 s) that is roughly +10-15 %.
 - `swift test`: 1214 tests, 0 failures, 35 skipped.
+
+## 2026-10-01 — whisper.cpp v1.9.4 and Qwen3-ASR
+
+Eric: "upgrade whisper.cpp, then add Qwen3-ASR" (after the model survey,
+docs/research/asr-models-2026-09.md). Role and size defaulted to the recommendation when the question
+went unanswered: Qwen3-ASR-1.7B 8-bit preferred, Whisper and Parakeet as stretch-chooser alternates.
+
+- [x] whisper.cpp v1.9.4 (b5130 asset, identical source): Doc Holiday 0.647 / 0.603, unchanged; the
+      hook loop remains, as expected (110eeaa).
+- [x] Qwen3-ASR measured before integrating (Python mlx-audio): 1.7B 0.851 / 0.833, 0.6B 0.785 / 0.828.
+- [x] Integrated via a trimmed copy of mlx-audio-swift (upstream fails under Swift 6.4), model package
+      with pinned SHA-256s, `TranscriptionMode.qwen` first in mode order (970334e).
+- [x] In-app Qwen matches the reference implementation: 0.829 / 0.851 after two fixes the first run
+      exposed (left-channel-only audio loader: 0.738; pre-#247 mel frontend: 0.764).
+- [x] App result on Doc Holiday, Qwen preferred: 0.815 / 0.845; 0 untimed words; the 8 repeated line
+      texts are all chorus lines in the reference.
+
+Review: `swift test` 1218 tests, 0 failures, 36 skipped; Release app builds with MLX (3 min cold);
+CLI end-to-end run verified. Not verified: the app's onboarding download of the 2.46 GB package (the
+package was installed for testing by copying the already-downloaded files and writing the same
+manifest the installer writes); High In Low Places and other songs with Qwen; memory with Qwen
+resident next to separation (peak 2.8 GB footprint during Qwen in the CLI run).
