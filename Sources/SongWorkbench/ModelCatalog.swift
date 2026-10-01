@@ -138,7 +138,68 @@ enum ModelCatalog {
         entryPointRelativePath: "UVR_MDXNET_KARA_2.onnx"
     )
 
-    static let all = [htdemucs, parakeetFastDraft, whisperAccuracy, drumsep, karaokeVocals]
+    /// The Hugging Face revision every Qwen3-ASR file below is pinned to.
+    static let qwen3ASRRevision = "a8379a2e2f9e313c9292cdf1af4055ab56d50d55"
+
+    /// Qwen3-ASR 1.7B, 8-bit MLX conversion: the preferred lyric engine
+    /// (`Qwen3ASRTranscriptionEngine`). The package folder is the model directory MLX loads; it
+    /// writes a generated `tokenizer.json` beside these files on first load.
+    static let qwen3ASR = ModelPackageDescriptor(
+        id: "qwen3-asr-1.7b-8bit-mlx",
+        displayName: "Qwen3-ASR 1.7B (MLX, 8-bit)",
+        purpose: "Lyric transcription",
+        version: "1",
+        minimumOSVersion: "14.0",
+        license: ModelArtifactLicense(
+            name: "Apache-2.0",
+            attribution:
+                "Qwen3-ASR by the Qwen team, Alibaba Cloud; MLX conversion by mlx-community"
+        ),
+        source: .files([
+            qwen3(
+                "chat_template.json", 1_161,
+                "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff"),
+            qwen3(
+                "config.json", 7_188,
+                "1b76b3b6c655fc54595da025f7a96474ad9fa86363303fbdd61a7d8483ccfaf7"),
+            qwen3(
+                "generation_config.json", 142,
+                "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c"),
+            qwen3(
+                "merges.txt", 1_671_853,
+                "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"),
+            qwen3(
+                "preprocessor_config.json", 330,
+                "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d"),
+            qwen3(
+                "tokenizer_config.json", 12_487,
+                "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"),
+            qwen3(
+                "vocab.json", 2_776_833,
+                "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"),
+            qwen3(
+                "model.safetensors", 2_463_307_541,
+                "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c"),
+        ]),
+        entryPointRelativePath: "Qwen3-ASR-1.7B-8bit"
+    )
+
+    private static func qwen3(_ file: String, _ size: Int64, _ sha256: String)
+        -> ModelPackageComponent
+    {
+        ModelPackageComponent(
+            relativePath: "Qwen3-ASR-1.7B-8bit/\(file)",
+            downloadURL: URL(
+                string:
+                    "https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit/resolve/\(qwen3ASRRevision)/\(file)"
+            )!,
+            expectedSizeBytes: size,
+            sha256: sha256)
+    }
+
+    static let all = [
+        htdemucs, parakeetFastDraft, whisperAccuracy, qwen3ASR, drumsep, karaokeVocals,
+    ]
 
     /// Packages that refine existing stems rather than power base analysis.
     static let optionalRefinementIDs: Set<String> = [drumsep.id, karaokeVocals.id]

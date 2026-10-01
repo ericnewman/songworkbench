@@ -356,7 +356,7 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
         let rows = LyricBlendRowBuilder.buildRows(
             fastDraft: lyricsByMode[.fastDraft] ?? [],
             balancedDraft: lyricsByMode[.balancedDraft] ?? [],
-            accuracy: lyricsByMode[.accuracy] ?? [])
+            accuracy: lyricsByMode[.accuracy] ?? [], qwen: lyricsByMode[.qwen] ?? [])
         return AnalysisStageOutcome { document in
             primary.apply(&document)
             document.lyrics = choice.lyrics

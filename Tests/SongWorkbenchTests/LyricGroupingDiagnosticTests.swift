@@ -86,14 +86,15 @@ final class LyricGroupingDiagnosticTests: XCTestCase {
             onsets.contains { abs($0 - 30.0) < 0.01 },
             "precondition: the engine reported a segment onset at 30.000 ('Whiskey')")
 
-        let texts = lines(docHoliday).map(\.text)
+        // Lowercased: whisper.cpp v1.9.4's decode capitalises this line differently from v1.9.1's.
+        let texts = lines(docHoliday).map { $0.text.lowercased() }
         XCTAssertFalse(
-            texts.contains { $0.hasPrefix("He walks in Whiskey") },
+            texts.contains { $0.hasPrefix("he walks in whiskey") },
             "the overlapping segment boundary was merged away: "
                 + texts.prefix(6).joined(separator: " | "))
-        XCTAssertTrue(texts.contains("He walks in"), texts.prefix(6).joined(separator: " | "))
+        XCTAssertTrue(texts.contains("he walks in"), texts.prefix(6).joined(separator: " | "))
         XCTAssertTrue(
-            texts.contains { $0.hasPrefix("Whiskey in trouble") },
+            texts.contains { $0.hasPrefix("whiskey in trouble") },
             texts.prefix(6).joined(separator: " | "))
     }
 

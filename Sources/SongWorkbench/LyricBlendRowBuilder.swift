@@ -13,7 +13,8 @@ enum LyricBlendRowBuilder {
     /// Modes are stacked in this fixed order within a row's `candidates`, so the blend UI's
     /// column order (and any "prefer accuracy" fallback) is stable regardless of which modes
     /// happened to produce a candidate for a given row.
-    static let modeOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+    /// Qwen3-ASR first: the preferred engine when installed (Eric, 2026-10-01).
+    static let modeOrder: [TranscriptionMode] = [.qwen, .accuracy, .balancedDraft, .fastDraft]
 
     /// - Parameters:
     ///   - fastDraft/balancedDraft/accuracy: each mode's OWN already-grouped lines (post
@@ -29,12 +30,14 @@ enum LyricBlendRowBuilder {
         fastDraft: [TimedLyricSegment],
         balancedDraft: [TimedLyricSegment],
         accuracy: [TimedLyricSegment],
+        qwen: [TimedLyricSegment] = [],
         clusterWindow: TimeInterval = 1.5
     ) -> [LyricBlendRow] {
         let tagged =
             fastDraft.map { Tagged(mode: .fastDraft, segment: $0) }
             + balancedDraft.map { Tagged(mode: .balancedDraft, segment: $0) }
             + accuracy.map { Tagged(mode: .accuracy, segment: $0) }
+            + qwen.map { Tagged(mode: .qwen, segment: $0) }
         guard !tagged.isEmpty else { return [] }
         let sorted = tagged.sorted { $0.segment.start < $1.segment.start }
 

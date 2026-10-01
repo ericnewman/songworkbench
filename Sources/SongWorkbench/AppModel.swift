@@ -1230,6 +1230,9 @@ final class AppModel: ObservableObject {
         if case .installed = modelPackageStatuses[ModelCatalog.whisperAccuracy.id] {
             modes.insert(.accuracy)
         }
+        if case .installed = modelPackageStatuses[ModelCatalog.qwen3ASR.id] {
+            modes.insert(.qwen)
+        }
         return modes.intersection(analysisCapabilityProfile.transcriptionModes)
     }
 

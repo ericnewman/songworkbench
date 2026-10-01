@@ -107,7 +107,7 @@ struct LyricBlendRow: Identifiable, Codable, Equatable, Sendable {
     /// Does NOT consider `overrideText` — see `effectiveText` for the text actually used for
     /// playback/export, which checks the override first.
     func effectiveCandidate(
-        preferenceOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+        preferenceOrder: [TranscriptionMode] = LyricBlendRowBuilder.modeOrder
     ) -> LyricBlendCandidate? {
         if let selectedMode, let match = candidates.first(where: { $0.mode == selectedMode }) {
             return match
@@ -122,7 +122,7 @@ struct LyricBlendRow: Identifiable, Codable, Equatable, Sendable {
     /// non-empty), else `effectiveCandidate()`'s text. `nil` only when there's no override and no
     /// candidate at all.
     func effectiveText(
-        preferenceOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+        preferenceOrder: [TranscriptionMode] = LyricBlendRowBuilder.modeOrder
     ) -> String? {
         if let overrideText {
             let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)

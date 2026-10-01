@@ -12,6 +12,7 @@ final class ModelPackageManagerTests: XCTestCase {
                 "htdemucs-6s-onnx",
                 "parakeet-tdt-0.6b-v3-coreml-int8",
                 "whisper-large-v3-turbo-q5-0",
+                "qwen3-asr-1.7b-8bit-mlx",
                 "drumsep-onnx",
                 "karaoke-bsroformer-onnx",
             ])

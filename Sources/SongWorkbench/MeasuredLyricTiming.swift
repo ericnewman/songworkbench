@@ -178,7 +178,10 @@ enum MeasuredLyricTiming {
     /// letting a converter do both at once produced a measurably different signal and moved a
     /// minority of word onsets. Rate conversion reuses `BasicPitchNoteTranscriber.resampled`,
     /// which drains the converter properly — a single pull can silently truncate.
-    static func monoSamples(at url: URL) throws -> [Float] {
+    /// - Parameter sampleRate: the rate to return; the alignment model's by default.
+    static func monoSamples(
+        at url: URL, sampleRate targetRate: Double = LyricsAlignmentMel.sampleRate
+    ) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
         guard
@@ -197,7 +200,8 @@ enum MeasuredLyricTiming {
             mono[frame] = sum / Float(channelCount)
         }
 
-        guard format.sampleRate != LyricsAlignmentMel.sampleRate else { return mono }
-        return try BasicPitchNoteTranscriber.resampled(mono, from: format.sampleRate)
+        guard format.sampleRate != targetRate else { return mono }
+        return try BasicPitchNoteTranscriber.resampled(
+            mono, from: format.sampleRate, to: targetRate)
     }
 }

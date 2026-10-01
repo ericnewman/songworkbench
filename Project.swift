@@ -13,6 +13,8 @@ let project = Project(
             requirement: .exact("1.24.2")
         ),
         .local(path: "Dependencies/WhisperFramework"),
+        // Qwen3-ASR on MLX: a trimmed local copy of mlx-audio-swift (see its Package.swift).
+        .local(path: "Dependencies/MLXAudioQwen3"),
     ],
     targets: [
         .target(
@@ -62,6 +64,7 @@ let project = Project(
                 .package(product: "FluidAudio"),
                 .package(product: "onnxruntime"),
                 .package(product: "WhisperFramework"),
+                .package(product: "MLXAudioQwen3"),
                 .sdk(name: "AppIntents", type: .framework, status: .optional),
             ],
             settings: .settings(base: [

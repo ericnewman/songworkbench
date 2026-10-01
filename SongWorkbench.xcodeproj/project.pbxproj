@@ -24,6 +24,7 @@
 		0E49147BCEF2AA11928F00D1 /* StemMixerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DE9E8BB9729552CE71AA98E /* StemMixerTests.swift */; };
 		101281091946DD1DE32E5556 /* SoloTranscriptionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDF75F0CDD1EFD702BBAB10 /* SoloTranscriptionTests.swift */; };
 		10F1669BEF1293B8BD519BD0 /* FluidAudioTranscriptionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC8FA281501B6E8EC642BF0D /* FluidAudioTranscriptionEngine.swift */; };
+		3824BA1FD7B846AAADEBD133 /* Qwen3ASRTranscriptionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B17A5113E1A14CF9A95C8DFE /* Qwen3ASRTranscriptionEngine.swift */; };
 		1272D05926CB98569AB96CA4 /* KeyAwareChordFiltering.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CA5CB47E8A9B6021E645661 /* KeyAwareChordFiltering.swift */; };
 		14EECB8E3B2C3218BE133717 /* ONNXSixStemSeparationEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E268C68EB02D1681E4A25AF /* ONNXSixStemSeparationEngineTests.swift */; };
 		0A7C5E1D0000000000000A03 /* ORTShortLivedThreadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7C5E1D0000000000000A04 /* ORTShortLivedThreadTests.swift */; };
@@ -125,6 +126,7 @@
 		8794D231A914E2B3D71AC323 /* MetronomeGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2873CDC6A49605D3B5C68501 /* MetronomeGrid.swift */; };
 		87E3B6EB6119FC946E6AF32A /* PitchShiftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F75074DAB6C18528264BE0FC /* PitchShiftTests.swift */; };
 		87F3B71DB1CA675E16F336A8 /* WhisperFramework in Frameworks */ = {isa = PBXBuildFile; productRef = A5F0ABE9453A746C369A6802 /* WhisperFramework */; };
+		6A63D187BF0644A8B0551350 /* MLXAudioQwen3 in Frameworks */ = {isa = PBXBuildFile; productRef = 62F29C6FB67B4DE895922A0E /* MLXAudioQwen3 */; };
 		8805B5581250B024CEEFB0FE /* SongBarGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFCB8DB21E1FE15EC10E2F3E /* SongBarGrid.swift */; };
 		8A21E06B72C2A43EAB6E21BB /* ChordProDraftBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3DD52461ED15BBBA66D4B26 /* ChordProDraftBuilderTests.swift */; };
 		8B1854786BDF597CEF9AEE2F /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B76AE1A46D01C87F9FDBBFE1 /* AppModelTests.swift */; };
@@ -333,6 +335,7 @@
 		4464B36DCE51BBFDF3B4A313 /* SongTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongTimelineTests.swift; sourceTree = "<group>"; };
 		456D32DB3E7F5B0D7B6B72C7 /* BassLineAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BassLineAnalysis.swift; sourceTree = "<group>"; };
 		47ABEB97E666EF44EF47BFCF /* WhisperFramework */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WhisperFramework; path = Dependencies/WhisperFramework; sourceTree = "<group>"; };
+		4CC44EF41605472784EC4665 /* MLXAudioQwen3 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MLXAudioQwen3; path = Dependencies/MLXAudioQwen3; sourceTree = "<group>"; };
 		49C72557949867ABB059D603 /* StemPlaybackService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemPlaybackService.swift; sourceTree = "<group>"; };
 		4A0D13DB20D2C9D500EB12FE /* ChordProDraftBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProDraftBuilder.swift; sourceTree = "<group>"; };
 		4B6ADE21C818B89D4676756F /* ChromaChangePointDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromaChangePointDetectorTests.swift; sourceTree = "<group>"; };
@@ -437,6 +440,7 @@
 		B76AE1A46D01C87F9FDBBFE1 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 		B77ED7E028E7F155069A62D5 /* ChordTimelineDecoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordTimelineDecoderTests.swift; sourceTree = "<group>"; };
 		BC8FA281501B6E8EC642BF0D /* FluidAudioTranscriptionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FluidAudioTranscriptionEngine.swift; sourceTree = "<group>"; };
+		B17A5113E1A14CF9A95C8DFE /* Qwen3ASRTranscriptionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3ASRTranscriptionEngine.swift; sourceTree = "<group>"; };
 		C082A12162764E0F8E08B106 /* CoreMLNativeSixStemEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLNativeSixStemEngine.swift; sourceTree = "<group>"; };
 		C14A801FE16F612929E7CA59 /* CoreMLStemSeparationEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreMLStemSeparationEngineTests.swift; sourceTree = "<group>"; };
 		C17BEAFFD79310A70EE044CF /* MusicalKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicalKey.swift; sourceTree = "<group>"; };
@@ -515,6 +519,7 @@
 				0A9BC81CF2FD86533D735382 /* AppIntents.framework in Frameworks */,
 				CA90521C68FF5B6ADF5497B9 /* FluidAudio in Frameworks */,
 				87F3B71DB1CA675E16F336A8 /* WhisperFramework in Frameworks */,
+				6A63D187BF0644A8B0551350 /* MLXAudioQwen3 in Frameworks */,
 				796B5DD669A24FC2D58F70B6 /* onnxruntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -556,6 +561,7 @@
 			isa = PBXGroup;
 			children = (
 				47ABEB97E666EF44EF47BFCF /* WhisperFramework */,
+				4CC44EF41605472784EC4665 /* MLXAudioQwen3 */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -603,6 +609,7 @@
 				C082A12162764E0F8E08B106 /* CoreMLNativeSixStemEngine.swift */,
 				840EC782D1F91B658C1815E9 /* CoreMLStemSeparationEngine.swift */,
 				BC8FA281501B6E8EC642BF0D /* FluidAudioTranscriptionEngine.swift */,
+				B17A5113E1A14CF9A95C8DFE /* Qwen3ASRTranscriptionEngine.swift */,
 				D1CA2253ED1AC608A441CE51 /* HarmonyAudioSource.swift */,
 				2653620A93E272391EF04950 /* HarmonyDecodeResolution.swift */,
 				C8D4D4D6D788625005E40A73 /* HarmonyStemMix.swift */,
@@ -873,6 +880,7 @@
 			packageProductDependencies = (
 				DAF92A78E69FA88F882E4DAD /* FluidAudio */,
 				A5F0ABE9453A746C369A6802 /* WhisperFramework */,
+				62F29C6FB67B4DE895922A0E /* MLXAudioQwen3 */,
 				BA21C344B410EC720D725278 /* onnxruntime */,
 			);
 			productName = SongWorkbench;
@@ -928,6 +936,7 @@
 				9514D1DBA853A86DBC51D8CD /* XCRemoteSwiftPackageReference "FluidAudio" */,
 				4C8E16B294486D99AA1EB23E /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
 				BC8500A232E6B33C3411BBF1 /* XCLocalSwiftPackageReference "Dependencies/WhisperFramework" */,
+				972AD160AAD14C64A655F462 /* XCLocalSwiftPackageReference "Dependencies/MLXAudioQwen3" */,
 			);
 			productRefGroup = A61920E846C8A98F41DFF903 /* Products */;
 			projectDirPath = "";
@@ -1028,6 +1037,7 @@
 				7796FDE339DF9115BA71BA33 /* CoreMLNativeSixStemEngine.swift in Sources */,
 				1E1FF69CB8739C9A69A0B0CA /* CoreMLStemSeparationEngine.swift in Sources */,
 				10F1669BEF1293B8BD519BD0 /* FluidAudioTranscriptionEngine.swift in Sources */,
+				3824BA1FD7B846AAADEBD133 /* Qwen3ASRTranscriptionEngine.swift in Sources */,
 				DCD567036B10FB2B1855D3E2 /* HarmonyAudioSource.swift in Sources */,
 				27310D5B85B433C9542A0875 /* HarmonyDecodeResolution.swift in Sources */,
 				7E7C90A2A1D8453EC967CD84 /* HarmonyStemMix.swift in Sources */,
@@ -1523,6 +1533,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/WhisperFramework;
 		};
+		972AD160AAD14C64A655F462 /* XCLocalSwiftPackageReference "Dependencies/MLXAudioQwen3" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Dependencies/MLXAudioQwen3;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1548,6 +1562,10 @@
 		A5F0ABE9453A746C369A6802 /* WhisperFramework */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WhisperFramework;
+		};
+		62F29C6FB67B4DE895922A0E /* MLXAudioQwen3 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MLXAudioQwen3;
 		};
 		BA21C344B410EC720D725278 /* onnxruntime */ = {
 			isa = XCSwiftPackageProductDependency;

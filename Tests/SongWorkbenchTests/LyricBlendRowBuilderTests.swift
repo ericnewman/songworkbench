@@ -1026,6 +1026,47 @@ final class LyricBlendAcousticChoiceTests: XCTestCase {
                     result.lyrics)
             }
         }
+        // SW_QWEN_TEXT: a Qwen3-ASR transcript of the same stem, timed here by forced alignment and
+        // put through the chooser in each engine's slot (labels are slots, not engines).
+        if let qwenPath = environment["SW_QWEN_TEXT"] {
+            let qwenWords = try String(contentsOfFile: qwenPath, encoding: .utf8)
+                .split(whereSeparator: \.isWhitespace).map(String.init)
+            var text = ""
+            let untimed = qwenWords.map { word -> TimedLyricWord in
+                if !text.isEmpty { text += " " }
+                let lower = text.count
+                text += word
+                return TimedLyricWord(
+                    text: word, start: nil, end: nil, characterRange: lower..<text.count)
+            }
+            let measured = try MeasuredLyricTiming.applied(
+                to: [TimedLyricSegment(start: 0, end: 1, text: text, words: untimed)],
+                stemURL: root.appendingPathComponent("stems/vocals.wav"), onsets: [],
+                model: model, phonemizer: phonemizer)
+            let qwen = measured.lyrics
+            print(
+                "BLEND qwen timed: measured \(measured.outcome.measured) unmeasured "
+                    + "\(measured.outcome.unmeasured)")
+            report("qwen-only", qwen)
+            let whisper = try lyrics("out1")
+            let fast = try lyrics("out2")
+            let balanced = try lyrics("out3")
+            for (label, inputs) in [
+                (
+                    "qwen>balanced>fast",
+                    [.accuracy: qwen, .balancedDraft: balanced, .fastDraft: fast]
+                ),
+                ("qwen>whisper", [.accuracy: qwen, .balancedDraft: whisper]),
+                (
+                    "qwen>whisper>balanced",
+                    [.accuracy: qwen, .balancedDraft: whisper, .fastDraft: balanced]
+                ),
+            ] as [(String, [TranscriptionMode: [TimedLyricSegment]])] {
+                let result = LyricStretchChooser.chosen(
+                    inputs, logProbs: logProbs, voiced: voiced, phonemizer: phonemizer)
+                report("chooser \(label)", result.lyrics)
+            }
+        }
         let modes = Dictionary(grouping: stretch.choices, by: \.mode).mapValues(\.count)
         print("BLEND stretches \(stretch.choices.count) by mode \(modes)")
         print(

@@ -207,6 +207,16 @@ struct SongAnalysisPipelineFactory: Sendable {
         } else {
             accuracyEngine = nil
         }
+        let qwenEngine: (any TranscriptionEngine)?
+        if capabilityProfile.allowsTranscriptionMode(.qwen) {
+            qwenEngine = await installedPackage(ModelCatalog.qwen3ASR).map {
+                Qwen3ASRTranscriptionEngine(
+                    modelDirectory: $0.entryPointURL,
+                    modelSizeBytes: UInt64(max($0.sizeBytes, 0)))
+            }
+        } else {
+            qwenEngine = nil
+        }
 
         let pipeline = SongAnalysisPipeline(
             stemEngine: stemEngine,
@@ -214,7 +224,8 @@ struct SongAnalysisPipelineFactory: Sendable {
             transcriptionEngineFactory: TranscriptionEngineFactory(
                 fast: fastEngine,
                 balanced: balancedEngine,
-                accuracy: accuracyEngine
+                accuracy: accuracyEngine,
+                qwen: qwenEngine
             ).filtered(to: capabilityProfile),
             harmonyEngine: harmonyEngine,
             cache: cache,

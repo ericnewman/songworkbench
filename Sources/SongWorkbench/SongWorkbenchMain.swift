@@ -43,7 +43,7 @@ enum SongWorkbenchMain {
             options:
               --stages s1,s2   comma list of: separation,transcription,harmony,chordPro
                                (default: all four)
-              --mode m         transcription mode: fastDraft | balancedDraft | accuracy
+              --mode m         transcription mode: fastDraft | balancedDraft | accuracy | qwen
                                (default: accuracy)
               --out DIR        output directory (default: the audio file's directory)
               --print-chart    also print the generated ChordPro chart to stdout
@@ -91,7 +91,7 @@ enum SongWorkbenchMain {
                     index += 1
                     guard index < arguments.count,
                         let mode = TranscriptionMode(rawValue: arguments[index])
-                    else { return fail("--mode needs fastDraft|balancedDraft|accuracy") }
+                    else { return fail("--mode needs fastDraft|balancedDraft|accuracy|qwen") }
                     command.mode = mode
                 case "--out":
                     index += 1

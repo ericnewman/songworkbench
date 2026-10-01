@@ -5,6 +5,8 @@ enum TranscriptionMode: String, Codable, Equatable, Sendable {
     case fastDraft
     case balancedDraft
     case accuracy
+    /// Qwen3-ASR on MLX: the preferred lyric engine when installed (Eric, 2026-10-01).
+    case qwen
 }
 
 enum AnalysisRuntimePlatform: String, Codable, Equatable, Sendable {
@@ -135,7 +137,7 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
             platform: .desktop,
             displayName: "Desktop Advanced",
             stemSeparationTier: .advancedDesktop,
-            transcriptionModes: [.fastDraft, .balancedDraft, .accuracy],
+            transcriptionModes: [.fastDraft, .balancedDraft, .accuracy, .qwen],
             executionPolicy: .concurrentIndependentStages,
             performanceTracks: Set(PerformanceTrackCapability.allCases)
         )
@@ -148,7 +150,7 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
                 platform: .desktop,
                 displayName: "Desktop Full",
                 stemSeparationTier: .fullSixStem,
-                transcriptionModes: [.fastDraft, .balancedDraft, .accuracy],
+                transcriptionModes: [.fastDraft, .balancedDraft, .accuracy, .qwen],
                 executionPolicy: .concurrentIndependentStages,
                 performanceTracks: Set(PerformanceTrackCapability.allCases)
             )
@@ -186,6 +188,8 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
                 || transcriptionModes.contains(.balancedDraft)
         case ModelCatalog.whisperAccuracy.id:
             return transcriptionModes.contains(.accuracy)
+        case ModelCatalog.qwen3ASR.id:
+            return transcriptionModes.contains(.qwen)
         default:
             return true
         }
@@ -305,6 +309,7 @@ struct TranscriptionEngineFactory: Sendable {
     var fast: (any TranscriptionEngine)?
     var balanced: (any TranscriptionEngine)?
     var accuracy: (any TranscriptionEngine)?
+    var qwen: (any TranscriptionEngine)? = nil
 
     func engine(for mode: TranscriptionMode) -> (any TranscriptionEngine)? {
         switch mode {
@@ -314,6 +319,8 @@ struct TranscriptionEngineFactory: Sendable {
             balanced
         case .accuracy:
             accuracy
+        case .qwen:
+            qwen
         }
     }
 
@@ -322,6 +329,7 @@ struct TranscriptionEngineFactory: Sendable {
         if fast != nil { modes.insert(.fastDraft) }
         if balanced != nil { modes.insert(.balancedDraft) }
         if accuracy != nil { modes.insert(.accuracy) }
+        if qwen != nil { modes.insert(.qwen) }
         return modes
     }
 
@@ -329,7 +337,8 @@ struct TranscriptionEngineFactory: Sendable {
         TranscriptionEngineFactory(
             fast: profile.allowsTranscriptionMode(.fastDraft) ? fast : nil,
             balanced: profile.allowsTranscriptionMode(.balancedDraft) ? balanced : nil,
-            accuracy: profile.allowsTranscriptionMode(.accuracy) ? accuracy : nil
+            accuracy: profile.allowsTranscriptionMode(.accuracy) ? accuracy : nil,
+            qwen: profile.allowsTranscriptionMode(.qwen) ? qwen : nil
         )
     }
 }

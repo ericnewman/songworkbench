@@ -16,7 +16,9 @@ let package = Package(
         .package(
             url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git",
             exact: "1.24.2"
-        )
+        ),
+        // Qwen3-ASR on MLX: a trimmed local copy of mlx-audio-swift (see its Package.swift).
+        .package(path: "Dependencies/MLXAudioQwen3"),
     ],
     targets: [
         .executableTarget(
@@ -28,6 +30,7 @@ let package = Package(
                     package: "onnxruntime-swift-package-manager"
                 ),
                 "WhisperFramework",
+                .product(name: "MLXAudioQwen3", package: "MLXAudioQwen3"),
             ]
         ),
         .testTarget(
