@@ -210,14 +210,17 @@ enum KaraokeBackingResidual {
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 44_100, channels: 2, interleaved: false)!
         let frames = AVAudioFrameCount(channels[0].count)
-        let file = try AVAudioFile(
-            forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32,
-            interleaved: false)
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
-        buffer.frameLength = frames
-        buffer.floatChannelData![0].update(from: channels[0], count: Int(frames))
-        buffer.floatChannelData![1].update(from: channels[1], count: Int(frames))
-        try file.write(from: buffer)
+        do {  // the file closes at the end of this scope, before compaction reads it
+            let file = try AVAudioFile(
+                forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32,
+                interleaved: false)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+            buffer.frameLength = frames
+            buffer.floatChannelData![0].update(from: channels[0], count: Int(frames))
+            buffer.floatChannelData![1].update(from: channels[1], count: Int(frames))
+            try file.write(from: buffer)
+        }
+        try StemWAVCompaction.compactIfWithinFullScale(url)
     }
 }
 

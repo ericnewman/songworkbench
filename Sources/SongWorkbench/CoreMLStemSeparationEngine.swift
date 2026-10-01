@@ -704,6 +704,10 @@ private final class StreamingStemWriter {
         // Close every file (AVAudioFile flushes/closes on deinit) before moving the directory.
         files.removeAll()
         accompanimentFile = nil
+        for name in stems.map(\.rawValue) + (includeAccompaniment ? ["accompaniment"] : []) {
+            try StemWAVCompaction.compactIfWithinFullScale(
+                staging.appendingPathComponent("\(name).wav"))
+        }
         if fileManager.fileExists(atPath: outputDirectory.path) {
             _ = try fileManager.replaceItemAt(
                 outputDirectory, withItemAt: staging, backupItemName: nil, options: [])
@@ -730,5 +734,46 @@ private final class StreamingStemWriter {
         files.removeAll()
         accompanimentFile = nil
         try? fileManager.removeItem(at: staging)
+    }
+}
+
+/// Stems are stored as 16-bit PCM, half the size of 32-bit float (Eric, 2026-10-01: the boot disk
+/// was full and stems were 35 GB of it). A stem that peaks above full scale stays float, because
+/// 16-bit would clip it: on 2026-10-01, 52 of the library's 287 stems did (drums most often, up to
+/// 1.28).
+enum StemWAVCompaction {
+    /// Rewrites a 32-bit float WAV as 16-bit PCM when no sample exceeds full scale. Leaves any
+    /// other file untouched, so running it twice is harmless.
+    static func compactIfWithinFullScale(_ url: URL) throws {
+        let input = try AVAudioFile(forReading: url)
+        guard input.fileFormat.commonFormat == .pcmFormatFloat32 else { return }
+        let format = input.processingFormat
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        var output: AVAudioFile? = try AVAudioFile(
+            forWriting: temporary,
+            settings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: format.sampleRate,
+                AVNumberOfChannelsKey: format.channelCount,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+            ],
+            commonFormat: .pcmFormatFloat32, interleaved: false)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1 << 16)!
+        while input.framePosition < input.length {
+            try input.read(into: buffer)
+            for channel in 0..<Int(format.channelCount) {
+                var peak: Float = 0
+                vDSP_maxmgv(
+                    buffer.floatChannelData![channel], 1, &peak, vDSP_Length(buffer.frameLength))
+                if peak > 1 { return }
+            }
+            try output?.write(from: buffer)
+        }
+        output = nil  // closes the file
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
     }
 }
