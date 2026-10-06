@@ -15,6 +15,10 @@ struct ChartRowGrid: Equatable, Sendable {
         let index: Int
         let start: TimeInterval
         let end: TimeInterval
+        /// The beat index the row starts on, and its length in beats: `periodBeats`, except the
+        /// last row before a section start, which ends where the section's first bar begins.
+        let startBeat: Int
+        let beats: Int
     }
 
     /// Beats per row: the phrase length rounded UP to whole bars.
@@ -35,12 +39,20 @@ struct ChartRowGrid: Equatable, Sendable {
 
     /// The grid for a timed song, or nil when there is nothing to cut on (no detected beats, no
     /// tempo, no duration) — such songs keep the variable-length rows.
+    ///
+    /// `sectionStarts` are the first-word times of the song's sections. Each section starts a
+    /// fresh row on the downbeat of the bar holding its first word, and the bars before it stay
+    /// with the previous section as a shorter row (Eric, 2026-10-06: "start verses and choruses
+    /// on the measure that has the first word, and leave any empty measure as part of the
+    /// previous section"). On one song-wide grid, 20 of 91 sections on his album opened with
+    /// empty bars.
     static func make(
         beatTimes: [TimeInterval],
         bpm: Double?,
         barGrid: SongBarGrid?,
         phraseBeats: Int,
-        duration: TimeInterval
+        duration: TimeInterval,
+        sectionStarts: [TimeInterval] = []
     ) -> ChartRowGrid? {
         guard let bpm, bpm.isFinite, bpm > 0, duration > 0 else { return nil }
         let bars = barGrid ?? .unknown
@@ -49,33 +61,64 @@ struct ChartRowGrid: Equatable, Sendable {
         guard measure.isUsable else { return nil }
         let period = periodBeats(phraseBeats: phraseBeats, beatsPerBar: measure.beatsPerBar)
         let anchor = measure.barPhase
+        let bar = max(measure.beatsPerBar, 1)
 
-        func rowIndex(atBeatIndex beatIndex: Double) -> Int {
-            Int(((beatIndex - Double(anchor)) / Double(period)).rounded(.down))
+        func floored(_ beatIndex: Double, to length: Int) -> Int {
+            Int(((beatIndex - Double(anchor)) / Double(length)).rounded(.down))
         }
-        func boundary(_ row: Int) -> TimeInterval {
-            measure.time(atBeatIndex: Double(anchor + row * period))
-        }
+        let restarts = Set(
+            sectionStarts.map { anchor + floored(measure.beatIndex(atTime: $0), to: bar) * bar }
+        ).sorted()
 
-        let first = rowIndex(atBeatIndex: measure.beatIndex(atTime: 0))
-        let last = rowIndex(atBeatIndex: measure.beatIndex(atTime: duration))
-        let windows: [Window] = (first...last).compactMap { row in
-            let start = max(boundary(row), 0)
-            let end = min(boundary(row + 1), duration)
-            return end > start ? Window(index: row, start: start, end: end) : nil
+        var index = floored(measure.beatIndex(atTime: 0), to: period)
+        var cursor = anchor + index * period
+        let finalBeat = measure.beatIndex(atTime: duration)
+        var restart = restarts.startIndex
+        var windows: [Window] = []
+        while Double(cursor) < finalBeat {
+            while restart < restarts.endIndex, restarts[restart] <= cursor { restart += 1 }
+            var next = cursor + period
+            if restart < restarts.endIndex, restarts[restart] < next { next = restarts[restart] }
+            let start = max(measure.time(atBeatIndex: Double(cursor)), 0)
+            let end = min(measure.time(atBeatIndex: Double(next)), duration)
+            if end > start {
+                windows.append(
+                    Window(
+                        index: index, start: start, end: end, startBeat: cursor,
+                        beats: next - cursor))
+            }
+            index += 1
+            cursor = next
         }
         return ChartRowGrid(
             periodBeats: period, anchorBeatIndex: anchor, measure: measure, windows: windows)
     }
 
     /// The row index a song time falls in. A time exactly on a boundary belongs to the later row,
-    /// matching the half-open windows.
+    /// matching the half-open windows. Times outside the song continue the period either side.
     func windowIndex(forTime time: TimeInterval) -> Int {
-        let beats = measure.beatIndex(atTime: time) - Double(anchorBeatIndex)
         // Snap float noise at an exact boundary (a word onset stamped on the downbeat) forward.
-        let rows = beats / Double(periodBeats)
-        let nearest = rows.rounded()
-        return abs(rows - nearest) < 1e-9 ? Int(nearest) : Int(rows.rounded(.down))
+        let beat = measure.beatIndex(atTime: time) + 1e-9
+        guard let first = windows.first, let last = windows.last else { return 0 }
+        if beat < Double(first.startBeat) {
+            let before = (Double(first.startBeat) - beat) / Double(periodBeats)
+            return first.index - Int(before.rounded(.up))
+        }
+        let lastEnd = Double(last.startBeat + last.beats)
+        if beat >= lastEnd {
+            return last.index + 1 + Int(((beat - lastEnd) / Double(periodBeats)).rounded(.down))
+        }
+        var low = 0
+        var high = windows.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if Double(windows[middle].startBeat) <= beat { low = middle } else { high = middle - 1 }
+        }
+        return windows[low].index
+    }
+
+    func window(index: Int) -> Window? {
+        windows.first { $0.index == index }
     }
 }
 

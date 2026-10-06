@@ -4744,3 +4744,31 @@ Eric: "Do all 3" (boot disk 97% full; the app held 41 GB in Application Support,
 
 Review: `swift test` 1220 tests, 0 failures, 36 skipped; lint clean on changed files; Release
 build 17:43. Not checked: playback and a full in-app Analyze after the move (Eric's next open).
+
+## 2026-10-06 — Beat model (beat_this) and sections start on their first word's bar
+
+Eric: lyrics looked "crammed into the last beat of a measure"; "start verses and choruses on the
+measure that has the first word, and leave any empty measure as part of the previous section";
+build beat tracking into the app, Swift-native, no Python dependency.
+
+- [x] Diagnosis: the autocorrelation `BeatTracker` (on the lead stem since b288e96) picked 4/3 the
+      real tempo on 7 of 14 album tracks and 2x on one; Doc Holiday 103.4 vs the 77 Eric counts.
+      Chord changes landed on beat at chance (30 %) on every song.
+- [x] beat_this (CPJKU, MIT) matched Eric's counts once decoded at one tempo level: Doc Holiday
+      77.0, Key West Bar 93.6. Its own peak picking switched levels mid-song.
+- [x] Core ML conversion `tools/beat_this_export/export_coreml.py` -> `BundledModels/BeatThis.mlpackage`
+      (39 MB, fp16); vs PyTorch: max |diff| 0.005, all 39 reference beat peaks kept.
+- [x] Swift: `BeatThisMel` (matches beat_this's LogMelSpect within 0.002), chunked inference
+      (`split_piece` starts exactly), `BeatThisDecoder` (one tempo + Ellis DP + downbeat phase).
+      Harmony stage uses it on the recording; bar grid source `.beatModel`; the lyric-line
+      reconciler never retunes it. Missing model fails the build and the pipeline.
+- [x] Swift beats vs Python prototype: 100 % within 25 ms on Doc Holiday and Key West Bar.
+- [x] Library run (44 songs, CLI harmony+chordPro): all succeeded; 19 tempos unchanged, 17 at 3/4
+      of the old, 3 at 1/2, 5 other changes (listed in the report to Eric).
+- [x] `ChartRowGrid` restarts rows on each section's first-word bar; the bars before end the
+      previous section as a shorter row (`rowBeats`, chart algorithm 10, layout version 2).
+
+Review: `swift test` 1225 tests, 0 failures, 36 skipped; lint clean on Sources/Tests. Not verified:
+the in-app chart with the new rows (needs a re-analysis in the app); tempos Eric has not counted
+(Sevens and Elevens 97.5 -> 145.9, Eight Miles High 112.3 -> 129.7, All I got is Time 124 -> 76.5,
+One night on Broadway 109.6 -> 79.6).

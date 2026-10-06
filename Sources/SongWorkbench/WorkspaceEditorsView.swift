@@ -1546,6 +1546,7 @@ struct ChordProTabEditor: View {
                                     }),
                             fixedPeriodBeats: model.chartLayoutForPreview()?.periodBeats,
                             rowOriginsByLine: model.chartLayoutForPreview()?.rowOrigins ?? [:],
+                            rowBeatsByLine: model.chartLayoutForPreview()?.rowBeats ?? [:],
                             continuingLyricOrdinals: continuingLyricOrdinals,
                             lyricRowSourceIDs: lyricRowSourceIDs,
                             lyricRowEditable: lyricRowEditable,
@@ -2681,6 +2682,9 @@ struct ChordProAppPreview: View {
     var fixedPeriodBeats: Int?
     /// Fixed-period rows: each row's origin (its grid window's downbeat) by display line number.
     var rowOriginsByLine: [Int: TimeInterval] = [:]
+    /// Fixed-period rows a section start cut short: their beats, by display line number. Every
+    /// other row spans `fixedPeriodBeats`.
+    var rowBeatsByLine: [Int: Int] = [:]
     /// Fixed-period rows: lyric ordinals whose line continues on the next row.
     var continuingLyricOrdinals: Set<Int> = []
     /// Fixed-period rows: each sung row's stored source lines, by lyric ordinal.
@@ -3320,7 +3324,9 @@ struct ChordProAppPreview: View {
         let tailEnd: TimeInterval? = (lineWords.lastEnd ?? stripEnd).map {
             $0 + melodyTailSeconds
         }
-        let frameEnd: TimeInterval? = fixedPeriodBeats.flatMap { period in
+        // A row a section start cut short frames only its own bars, at the song's scale.
+        let rowBeats = item.displayLineNumber.flatMap { rowBeatsByLine[$0] }
+        let frameEnd: TimeInterval? = (rowBeats ?? fixedPeriodBeats).flatMap { period in
             guard let rowDownbeat, let grid = measureGrid else { return nil }
             return grid.time(atBeatIndex: grid.beatIndex(atTime: rowDownbeat) + Double(period))
         }
@@ -3388,7 +3394,7 @@ struct ChordProAppPreview: View {
             gutterSeconds: rowGutterSeconds,
             beatLengthSeconds: beatLengthSeconds,
             beatsPerBar: beatsPerBar,
-            beatsPerLine: phraseBeats ?? 0,
+            beatsPerLine: rowBeats ?? phraseBeats ?? 0,
             usesFixedPeriodRows: fixedPeriodBeats != nil,
             continuesOnNextRow: itemContinues,
             gridBeatTimes: beatTimes,

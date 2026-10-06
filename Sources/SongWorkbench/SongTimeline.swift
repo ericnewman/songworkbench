@@ -91,13 +91,15 @@ struct SongTimeline: Equatable, Codable, Sendable {
 /// the lyrics they were cut from change underneath a kept chart.
 struct PersistedChartLayout: Equatable, Codable, Sendable {
     /// Bump when the persisted shape or its meaning changes; other versions are ignored.
-    static let currentVersion = 1
+    /// 2: `rowBeats`, rows a section start cut short.
+    static let currentVersion = 2
 
     var version = currentVersion
     var timeline: SongTimeline
     var chartLines: [ChartLyricLine] = []
     var periodBeats: Int? = nil
     var rowOrigins: [Int: TimeInterval] = [:]
+    var rowBeats: [Int: Int] = [:]
     /// `LyricStructureDigest` of the lyrics the chart was built from.
     var lyricStructureDigest: String
 
@@ -106,13 +108,14 @@ struct PersistedChartLayout: Equatable, Codable, Sendable {
         chartLines = result.chartLines
         periodBeats = result.periodBeats
         rowOrigins = result.rowOrigins
+        rowBeats = result.rowBeats
         lyricStructureDigest = LyricStructureDigest.of(lyrics)
     }
 
     func result(source: String) -> ChordProDraftResult {
         ChordProDraftResult(
             source: source, timeline: timeline, chartLines: chartLines, periodBeats: periodBeats,
-            rowOrigins: rowOrigins)
+            rowOrigins: rowOrigins, rowBeats: rowBeats)
     }
 }
 

@@ -54,6 +54,34 @@ final class ChartRowGridTests: XCTestCase {
         }
     }
 
+    /// Eric, 2026-10-06: a section starts on the bar holding its first word, and the empty bar
+    /// before it stays with the previous section.
+    func testASectionStartsARowOnTheBarOfItsFirstWord() throws {
+        // 120 bpm, 4/4 from beat 0: bars every 2 s, two-bar rows every 4 s.
+        let beats = (0..<48).map { Double($0) * 0.5 }
+        // The section's first word is in bar 2 of the second row (6.3 s, bar starting at 6 s).
+        let grid = try XCTUnwrap(
+            ChartRowGrid.make(
+                beatTimes: beats, bpm: 120, barGrid: nil, phraseBeats: 8, duration: 24,
+                sectionStarts: [6.3]))
+
+        XCTAssertEqual(grid.windows.map(\.start), [0, 4, 6, 10, 14, 18, 22])
+        // The bar before the section ends the previous section as a one-bar row.
+        XCTAssertEqual(grid.windows.map(\.beats), [8, 4, 8, 8, 8, 8, 8])
+        XCTAssertEqual(grid.windowIndex(forTime: 5.9), grid.windows[1].index)
+        XCTAssertEqual(grid.windowIndex(forTime: 6.3), grid.windows[2].index)
+        XCTAssertEqual(grid.windowIndex(forTime: 6.0), grid.windows[2].index)
+        for (earlier, later) in zip(grid.windows, grid.windows.dropFirst()) {
+            XCTAssertEqual(earlier.end, later.start, accuracy: 1e-12, "rows must tile")
+        }
+        // A section that already starts a row changes nothing.
+        let aligned = try XCTUnwrap(
+            ChartRowGrid.make(
+                beatTimes: beats, bpm: 120, barGrid: nil, phraseBeats: 8, duration: 24,
+                sectionStarts: [8.4]))
+        XCTAssertEqual(aligned.windows.map(\.beats), [8, 8, 8, 8, 8, 8])
+    }
+
     func testTimesMapToTheirRowWithBoundariesBelongingToTheLaterRow() throws {
         let beats = (0..<32).map { Double($0) * 0.5 }
         let grid = try XCTUnwrap(

@@ -1068,3 +1068,13 @@ starts running.
 (`ProjectLibraryDocument(songs:)` + `restoreProjects()`), which starts no analysis, not from
 `importSongs`. When a timing test flakes, log the state transitions with a 2 ms poll before
 choosing what to wait for.
+
+## 2026-10-06 — A beat grid can be wrong by a ratio, and every timing check then reads as noise
+
+Doc Holiday's grid ran at 4/3 of the band's tempo (103.4 vs 77); 8 of 14 album tracks were at 4/3
+or 2x. Words, chords and attacks all landed at chance positions in the measure, which looked like
+"timing skew" and sent the investigation through stem offsets and word-time latency first.
+
+**Rule:** when lyrics or chords look misplaced in the bar, first ask Eric for a counted tempo on
+one or two songs and compare it with `estimatedBPM`; a ratio (4/3, 2, 3/2) means the beat tracker
+picked the wrong level. Python proxies disagreed with each other here; the human count decided it.
