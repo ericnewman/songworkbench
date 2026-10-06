@@ -255,11 +255,19 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
+        // A restored library, not an import: importing queues the new songs for analysis, which
+        // drains in about 5 ms here, and re-analyzing while that drain was on its second song
+        // read "2 of 2", not "1 of 2" (about one CI run in ten). Restoring starts nothing.
         let model = AppModel(
-            store: DelayedProjectStore(document: ProjectLibraryDocument()),
+            store: DelayedProjectStore(
+                document: ProjectLibraryDocument(songs: [
+                    StoredSongProject(url: firstURL, settings: PracticeSettings()),
+                    StoredSongProject(url: secondURL, settings: PracticeSettings()),
+                ])),
             storageRoot: makeTestStorageRoot())
-        model.importSongs(from: [firstURL, secondURL])
-        try await waitUntil { model.songs.count >= 2 }
+        await model.restoreProjects()
+        XCTAssertEqual(model.songs.count, 2)
+        XCTAssertFalse(model.isSongAnalysisRunning, "restoring must not start analysis")
 
         model.reanalyzeAllSongs()
 

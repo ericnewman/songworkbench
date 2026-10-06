@@ -1055,3 +1055,16 @@ apart from 0.00 over the instrumental intro, and the result was saved over the s
 worktree, copy `BundledModels/` and `Derived/` from the main checkout before building. When lyric
 rows start at 0.00 with evenly spaced words, check the transcription stage's `completedAt` and the
 bundle that ran it before suspecting the view.
+
+## 2026-10-06 — A queue test raced the import's own auto-analysis
+
+`testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart` failed about one CI run in
+ten ("2 of 2" instead of "1 of 2"). `importSongs` queues the new songs for analysis, and in tests
+that queue drains in about 5 ms; a 10 ms `waitUntil` poll sometimes resumed mid-drain. Waiting for
+"idle" after an import is not safe either: the import summary appears about 2.5 ms before the queue
+starts running.
+
+**Rule:** a test that drives the analysis queue starts from a restored library
+(`ProjectLibraryDocument(songs:)` + `restoreProjects()`), which starts no analysis, not from
+`importSongs`. When a timing test flakes, log the state transitions with a 2 ms poll before
+choosing what to wait for.
