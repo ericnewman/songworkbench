@@ -46,6 +46,8 @@ struct AnalysisStageContext: Sendable {
     var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
     /// See `SongAnalysisPipeline.vocalPosteriorgram`.
     var vocalPosteriorgram: VocalPosteriorgram = MeasuredLyricTiming.posteriorgramWithBundledModel
+    /// See `SongAnalysisPipeline.measureBeatGrid`.
+    var measureBeatGrid: BeatGridMeasurer? = nil
     /// When true, a live separation run executes the BASE engine only and the pipeline runs the
     /// refiners itself, concurrently with transcription and harmony. Cache checks still use the
     /// full base+refiners recipe, so a previously completed refined document is still a hit.
@@ -1174,6 +1176,10 @@ struct HarmonyStage: AnalysisStageRunning {
                         // reduce-36: a drummer no rigid tempo fits is followed, when the followed
                         // grid proves itself on held-out onsets (`DrumBeatGrid.followedBeatTimes`).
                         + "|reduce-36-follow-a-drifting-drummer"
+                        // reduce-37: beats, tempo and downbeats come from the bundled beat model
+                        // on the whole recording (`BeatThisTracker`); the autocorrelation tracker
+                        // picked 4/3 or 2x the real tempo on 8 of 14 album tracks.
+                        + "|reduce-37-beat-model"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1184,9 +1190,13 @@ struct HarmonyStage: AnalysisStageRunning {
                     result.chords.map(\.confidence)),
                 loadedFromCache: loadedFromCache
             )
-            let trackedBPM: Double? = result.beat?.bpm
+            // The bundled beat model on the whole recording, when the pipeline has it (the app
+            // always does; tests have no bundle and keep the autocorrelation tracker below).
+            stageProgress(0.80, "tracking beats")
+            let modelGrid = try context.measureBeatGrid.map { try $0(context.request.sourceURL) }
+            let trackedBPM: Double? = modelGrid?.bpm ?? result.beat?.bpm
             var refinedBPM = trackedBPM
-            let beatTimes = result.beat?.beatTimes ?? []
+            let beatTimes = modelGrid?.beatTimes ?? result.beat?.beatTimes ?? []
             // Phase-lock the steady practice grid to the refined kick when available. A kick may
             // mark every second or fourth beat, so the analysis BPM remains the tempo authority;
             // the kick only chooses phase. The mixed-drums fallback retains compatibility for
@@ -1195,7 +1205,7 @@ struct HarmonyStage: AnalysisStageRunning {
             let timingStemURL =
                 context.document.stemSet?.resolved().assetsByID[.drumKick]?.audioURL
                 ?? context.document.stems?.resolved().drums
-            if let timingStemURL,
+            if modelGrid == nil, let timingStemURL,
                 let trackedBPM, trackedBPM > 0,
                 let onsets = try? InstrumentOnsetDetector.onsets(url: timingStemURL),
                 !onsets.isEmpty
@@ -1289,23 +1299,27 @@ struct HarmonyStage: AnalysisStageRunning {
             // `beatsPerBar: 4`, so a non-4/4 song decoded on a different meter than it rendered
             // on.
             let drumStrengths: [Double] = {
-                guard let drumsURL = context.document.stems?.resolved().drums,
+                guard modelGrid == nil, let drumsURL = context.document.stems?.resolved().drums,
                     let bpm = estimatedBPM, bpm > 0
                 else { return [] }
                 return
                     (try? DrumAccentProfile.beatStrengths(
                         url: drumsURL, beatTimes: resolvedBeatTimes, bpm: bpm)) ?? []
             }()
-            let barGrid = SongBarGridEstimator.estimate(
-                beatTimes: resolvedBeatTimes,
-                beatStrengths: drumStrengths,
-                lyricLineOnsets: context.document.lyrics.map { $0.words.firstStart ?? $0.start }
-            )
-            // A phase the accents did not actually measure must not drive the decoder's metric
-            // prior — anchoring to beat 0 is the right DISPLAY convention but it is not evidence
-            // about where the downbeats are.
+            let barGrid =
+                modelGrid?.barGrid
+                ?? SongBarGridEstimator.estimate(
+                    beatTimes: resolvedBeatTimes,
+                    beatStrengths: drumStrengths,
+                    lyricLineOnsets: context.document.lyrics.map {
+                        $0.words.firstStart ?? $0.start
+                    }
+                )
+            // A phase nothing measured must not drive the decoder's metric prior — anchoring to
+            // beat 0 is the right DISPLAY convention but it is not evidence about where the
+            // downbeats are.
             let meter: ChordTimelineDecoder.BarMeter? =
-                barGrid.phaseSource == .drumAccents
+                barGrid.isMeasured
                 ? ChordTimelineDecoder.BarMeter(
                     beatsPerBar: barGrid.beatsPerBar, barPhase: barGrid.barPhase)
                 : nil

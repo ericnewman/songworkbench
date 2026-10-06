@@ -369,7 +369,8 @@ enum AnalysisTimingPostPasses {
     // timing-7: a function-word orphan that opens the next line no longer merges back across a
     // gap break, so `regroup` is idempotent (fix/idempotent-regroup).
     // timing-8: reference lyrics keep their own line breaks — neither regrouped nor recut.
-    static let versionTag = "timing-8"
+    // timing-9: a beat-model grid is never retuned by the lyric lines.
+    static let versionTag = "timing-9"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag
@@ -403,10 +404,15 @@ enum AnalysisTimingPostPasses {
             keepsLines
             ? document.lyrics
             : TimedLyricSegmentGrouper.regroup(document.lyrics, lineStartOnsets: rawLineStarts)
-        let verdict = MetricalLevelReconciler.reconcile(
-            bpm: document.estimatedBPM ?? 0,
-            beatTimes: document.beatTimes,
-            lineOnsets: regrouped.map(\.start))
+        // The beat model measured its tempo on the recording; lyric line onsets must not retune
+        // it.
+        let verdict =
+            document.barGrid?.phaseSource == .beatModel
+            ? nil
+            : MetricalLevelReconciler.reconcile(
+                bpm: document.estimatedBPM ?? 0,
+                beatTimes: document.beatTimes,
+                lineOnsets: regrouped.map(\.start))
         var rescaledMeasuredGrid: SongBarGrid?
         if let verdict, verdict.isRetune {
             document.preReconciliationTiming = PreReconciliationTiming(
@@ -477,6 +483,10 @@ struct SongAnalysisPipeline: Sendable {
     /// scores each engine's words against (`LyricStretchChooser`). A throw skips the other engines
     /// and keeps the requested mode's lyrics; tests have no model, so they keep one engine.
     var vocalPosteriorgram: VocalPosteriorgram = MeasuredLyricTiming.posteriorgramWithBundledModel
+    /// The harmony stage's beat grid. The factory sets the bundled beat model
+    /// (`BeatThisTracker.measuredWithBundledModel`); nil keeps the autocorrelation tracker, which
+    /// only tests use (they have no app bundle).
+    var measureBeatGrid: BeatGridMeasurer? = nil
 
     init(
         stemEngine: (any StemSeparationEngine)?,
@@ -959,7 +969,8 @@ struct SongAnalysisPipeline: Sendable {
             chordProReplacementPolicy: request.chordProReplacementPolicy,
             stageProgress: stageProgress,
             measureWordTimes: measureWordTimes,
-            vocalPosteriorgram: vocalPosteriorgram
+            vocalPosteriorgram: vocalPosteriorgram,
+            measureBeatGrid: measureBeatGrid
         )
     }
 

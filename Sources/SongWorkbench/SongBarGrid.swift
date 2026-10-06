@@ -28,6 +28,9 @@ struct SongBarGrid: Codable, Equatable, Sendable {
         /// beat. Not a guess dressed as a measurement — the convention, and on this library the
         /// first chord lands within a fifth of a beat of beat 0 on four songs of five.
         case anchoredToFirstBeat
+        /// The bundled beat model's downbeat output (`BeatThisDecoder`), on the grid it tracked
+        /// itself. Its tempo is measured, so `MetricalLevelReconciler` must not retune it.
+        case beatModel
     }
 
     var beatsPerBar: Int
@@ -41,6 +44,9 @@ struct SongBarGrid: Codable, Equatable, Sendable {
     /// Confidence the accent signal must reach before it overrides the anchor. Matches the gate
     /// the decoder and the view already used independently.
     static let minimumPhaseConfidence = 0.08
+
+    /// True when the phase was measured (drum accents or the beat model) rather than anchored.
+    var isMeasured: Bool { phaseSource != .anchoredToFirstBeat }
 
     /// The grid to use when nothing has been estimated yet.
     static let unknown = SongBarGrid(

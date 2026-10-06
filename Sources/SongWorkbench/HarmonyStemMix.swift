@@ -181,7 +181,7 @@ enum InstrumentChordPass {
                 beats, toCover: frames.observations.first?.timestamp ?? 0),
             by: subdivision)
         let meter: ChordTimelineDecoder.BarMeter? = document.barGrid.flatMap { grid in
-            grid.phaseSource == .drumAccents
+            grid.isMeasured
                 ? ChordTimelineDecoder.BarMeter(
                     beatsPerBar: grid.beatsPerBar * subdivision,
                     barPhase: grid.barPhase * subdivision)

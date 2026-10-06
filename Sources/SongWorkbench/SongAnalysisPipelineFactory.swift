@@ -68,6 +68,9 @@ struct SongAnalysisPipelineFactory: Sendable {
                 guard CoreMLLyricsAcousticModel.bundledURL != nil else {
                     throw SongAnalysisPipelineError.missingBundledModel("LyricsAlignmentMTL")
                 }
+                guard BeatThisTracker.bundledURL != nil else {
+                    throw SongAnalysisPipelineError.missingBundledModel("BeatThis")
+                }
             }
         #endif
         var statuses: [String: ModelPackageStatus] = [:]
@@ -218,7 +221,7 @@ struct SongAnalysisPipelineFactory: Sendable {
             qwenEngine = nil
         }
 
-        let pipeline = SongAnalysisPipeline(
+        var pipeline = SongAnalysisPipeline(
             stemEngine: stemEngine,
             stemRefiners: stemRefiners,
             transcriptionEngineFactory: TranscriptionEngineFactory(
@@ -231,6 +234,11 @@ struct SongAnalysisPipelineFactory: Sendable {
             cache: cache,
             executionPolicy: capabilityProfile.executionPolicy
         )
+        #if os(macOS)
+            if requiresBundledModels {
+                pipeline.measureBeatGrid = BeatThisTracker.measuredWithBundledModel
+            }
+        #endif
         return Assembly(
             pipeline: pipeline,
             statuses: statuses,

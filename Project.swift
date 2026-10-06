@@ -43,7 +43,7 @@ let project = Project(
                 // here so `tuist generate` preserves it.
                 .post(
                     script: """
-                        for m in HTDemucs6S_FP16 LyricsAlignmentMTL; do
+                        for m in HTDemucs6S_FP16 LyricsAlignmentMTL BeatThis; do
                           if [ -d "$SRCROOT/BundledModels/$m.mlpackage" ]; then
                             rsync -a --delete "$SRCROOT/BundledModels/$m.mlpackage" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/"
                           else
@@ -56,6 +56,7 @@ let project = Project(
                     outputPaths: [
                         "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/HTDemucs6S_FP16.mlpackage",
                         "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/LyricsAlignmentMTL.mlpackage",
+                        "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BeatThis.mlpackage",
                     ],
                     basedOnDependencyAnalysis: false
                 )
