@@ -414,27 +414,37 @@ final class ChartGeometryInvariantTests: XCTestCase {
                 "rows \(earlier.number) and \(later.number) must tile with no gap or overlap")
         }
         let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120, beatsPerBar: 4, barPhase: 0)
-        let interior = Array(rows.dropFirst().dropLast())
-        let spans = interior.map {
-            grid.beatIndex(atTime: $0.end) - grid.beatIndex(atTime: $0.start)
+        // Measured downbeat to downbeat: a row whose line opens on a pickup starts at that word,
+        // up to the pickup gutter before its downbeat (Eric, 2026-10-07).
+        let origins = ChordProDraftBuilder().buildResult(input).rowOrigins
+        let downbeats = rows.map { grid.beatIndex(atTime: origins[$0.number] ?? $0.start) }
+        for (row, downbeat) in zip(rows, downbeats).dropFirst() {
+            let lead = downbeat - grid.beatIndex(atTime: row.start)
+            XCTAssertTrue(
+                (-0.01...Double(ChartPickupGutter.maximumBeats) + 0.01).contains(lead),
+                "row \(row.number) starts \(lead) beats before its downbeat")
         }
+        let interior = Array(rows.indices.dropFirst().dropLast())
+        let spans = interior.map { downbeats[$0 + 1] - downbeats[$0] }
         let period = try XCTUnwrap(spans.first)
         XCTAssertGreaterThan(period, 0)
         XCTAssertEqual(
             period.truncatingRemainder(dividingBy: 4), 0, accuracy: 0.01,
             "the row period (\(period) beats) must be whole bars")
-        for (row, span) in zip(interior, spans) {
+        for (index, span) in zip(interior, spans) {
             XCTAssertEqual(
                 span, period, accuracy: 0.01,
-                "row \(row.number) spans \(span) beats; every interior row must span \(period)")
+                "row \(rows[index].number) spans \(span) beats; "
+                    + "every interior row must span \(period)")
         }
     }
 
     func testInteriorFixedPeriodRowsStartOnDownbeats() {
         let input = makeFixedPeriodInput()
         let grid = MeasureGrid(beatTimes: input.beatTimes, bpm: 120, beatsPerBar: 4, barPhase: 0)
+        let origins = ChordProDraftBuilder().buildResult(input).rowOrigins
         for row in fixedPeriodRows(input).dropFirst().dropLast() {
-            let index = grid.beatIndex(atTime: row.start)
+            let index = grid.beatIndex(atTime: origins[row.number] ?? row.start)
             XCTAssertEqual(
                 index, index.rounded(), accuracy: 0.01,
                 "row \(row.number) starts \(index) beats in, between beats")
