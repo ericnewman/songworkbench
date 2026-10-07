@@ -69,11 +69,19 @@ final class LyricRetimingDiagnosticTests: XCTestCase {
                 print("\n[\(index)] \(lyrics[index].text)")
                 for (position, word) in lyrics[index].words.enumerated() {
                     let after = repaired[index].words[position]
-                    let moved = abs(after.start - word.start) > 0.001 ? "   <-- MOVED" : ""
+                    let changed =
+                        word.start.flatMap { before in
+                            after.start.map { abs($0 - before) > 0.001 }
+                        } ?? (word.start != after.start)
+                    let moved = changed ? "   <-- MOVED" : ""
+                    // An unmeasured word has no time; print a dash for it.
+                    func time(_ value: TimeInterval?) -> NSString {
+                        (value.map { String(format: "%.3f", $0) } ?? "  -  ") as NSString
+                    }
                     print(
                         String(
-                            format: "   %-12@ %.3f -> %.3f%@", word.text as NSString, word.start,
-                            after.start, moved as NSString))
+                            format: "   %-12@ %@ -> %@%@", word.text as NSString, time(word.start),
+                            time(after.start), moved as NSString))
                 }
             }
         }

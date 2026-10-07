@@ -13,6 +13,9 @@ struct ChordProDraftInput: Equatable, Sendable {
     /// Sung-but-untranscribed spans (audit RC-4); rows overlapping these are flagged on the
     /// timeline so consumers don't present them as purely instrumental.
     var untranscribedVocalRegions: [ClosedRange<TimeInterval>] = []
+    /// Stretches where guitar and piano are not playing (`InstrumentChordTimeline.rests`). A held
+    /// chord is never restated inside one, or after one has cut it off.
+    var playerRests: [ClosedRange<TimeInterval>] = []
     /// Detected key, emitted as a `{key: …}` directive (reconstruction plan B1).
     var estimatedKey: MusicalKey? = nil
     /// The song's ONE bar grid. Supplied rather than re-derived: this builder used to estimate
@@ -22,11 +25,6 @@ struct ChordProDraftInput: Equatable, Sendable {
     /// supplies it; `nil` (tests, untimed drafts) falls back to `SongBarGridEstimator` with no
     /// accent evidence, i.e. beat-0 anchoring — never chord onsets.
     var barGrid: SongBarGrid? = nil
-    /// The detected bass line, used ONLY to annotate stepwise walks into a chord change as
-    /// slash chords in the rendered text (`C/B` into Am — see `BassRunDetector`). The editable
-    /// chord timeline is never modified. Empty (the default) renders no walk annotations —
-    /// the bass-note draft variant deliberately passes none.
-    var bassNotes: [BassNoteObservation] = []
     /// Beats per chart row chosen in the View menu; 0 (the default) derives it from the lyric
     /// phrasing (`SongBeatsPerLine.rowBeats`). Rounded up to whole bars either way.
     var beatsPerRowOverride: Int = 0
@@ -82,6 +80,9 @@ struct ChordProDraftResult: Equatable, Sendable {
     /// downbeat its grid window starts on — keyed by row number. nil/empty for untimed songs.
     var periodBeats: Int? = nil
     var rowOrigins: [Int: TimeInterval] = [:]
+    /// Beats in each row a section start cut short, keyed by row number; any other row spans
+    /// `periodBeats`.
+    var rowBeats: [Int: Int] = [:]
 }
 
 struct ChordProDraftBuilder: Sendable {
@@ -107,7 +108,11 @@ struct ChordProDraftBuilder: Sendable {
     /// (`ChartRowGrid`, tasks/spec-fixed-period-rows.md).
     /// 8 = lyric corrections render (`TimedLyricSegment.resolved`), lyric text is escaped
     /// (`ChordProText`), and `{time}` states the bar grid's meter instead of always 4/4.
-    static let algorithmVersion = 8
+    /// 9 = no bass-walk slash chords: the chord line shows the chords the players play, and bass
+    /// notes appear only in the Bass Notes row (Eric, 2026-09-27).
+    /// 10 = each section starts a row on the bar holding its first word; the bars before it end
+    /// the previous section as a shorter row (Eric, 2026-10-06).
+    static let algorithmVersion = 10
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -242,7 +247,7 @@ struct ChordProDraftBuilder: Sendable {
             if $0.time == $1.time { return $0.label < $1.label }
             return $0.time < $1.time
         }
-        let chords = withBassWalkAnnotations(includedChords, input: input)
+        let chords = includedChords
 
         if lyrics.isEmpty, !chords.isEmpty {
             lines.append("{start_of_grid}")
@@ -259,7 +264,11 @@ struct ChordProDraftBuilder: Sendable {
         // song is cut into rows of exactly one phrase period, so every row renders the same width
         // on shared beat and bar columns. Untimed songs keep the line-by-line layout below.
         if !lyrics.isEmpty,
-            let rowGrid = fixedPeriodGrid(input: input, lyrics: lyrics, chords: chords)
+            let rowGrid = fixedPeriodGrid(
+                input: input, lyrics: lyrics, chords: chords,
+                sectionStarts: lyrics.filter { sectionByStart[$0.start] != nil }.map {
+                    $0.words.firstStart ?? $0.start
+                })
         {
             let body = fixedPeriodBody(
                 input: input, lyrics: lyrics, chords: chords, grid: rowGrid,
@@ -269,7 +278,8 @@ struct ChordProDraftBuilder: Sendable {
                 timeline: SongTimeline(rows: body.rows),
                 chartLines: body.chartLines,
                 periodBeats: rowGrid.periodBeats,
-                rowOrigins: body.origins)
+                rowOrigins: body.origins,
+                rowBeats: body.rowBeats)
         }
 
         // Typical bars per sung line — used to break a long instrumental section into rows of a
@@ -449,7 +459,8 @@ struct ChordProDraftBuilder: Sendable {
     /// The row grid for a timed song: detected beats, a tempo, the shared bar grid, and a phrase
     /// period from the View-menu override or the lyric phrasing (two bars when neither says).
     private func fixedPeriodGrid(
-        input: ChordProDraftInput, lyrics: [TimedLyricSegment], chords: [RenderableChordEvent]
+        input: ChordProDraftInput, lyrics: [TimedLyricSegment], chords: [RenderableChordEvent],
+        sectionStarts: [TimeInterval]
     ) -> ChartRowGrid? {
         guard let bpm = input.tempo, bpm > 0, !input.beatTimes.isEmpty else { return nil }
         let onsets = lyrics.map(SongBeatsPerLine.lineOnset)
@@ -465,7 +476,8 @@ struct ChordProDraftBuilder: Sendable {
         let lastSound = max(chords.map(\.time).max() ?? 0, lyrics.map(\.end).max() ?? 0)
         return ChartRowGrid.make(
             beatTimes: input.beatTimes, bpm: bpm, barGrid: bars, phraseBeats: phraseBeats,
-            duration: resolvedSongDuration(input: input, fallback: lastSound + 1))
+            duration: resolvedSongDuration(input: input, fallback: lastSound + 1),
+            sectionStarts: sectionStarts)
     }
 
     /// The chart body on fixed-period rows: one row per window holding sound. A window with a
@@ -483,13 +495,13 @@ struct ChordProDraftBuilder: Sendable {
         tailCutoff: TimeInterval?
     ) -> (
         lines: [String], rows: [SongTimeline.Row], chartLines: [ChartLyricLine],
-        origins: [Int: TimeInterval]
+        origins: [Int: TimeInterval], rowBeats: [Int: Int]
     ) {
         let measure = rowGrid.measure
         let windows = rowGrid.windows
         let chartLines = ChartLyricLineCutter.lines(from: lyrics, grid: rowGrid)
         guard let firstWindow = windows.first?.index, let lastWindow = windows.last?.index else {
-            return ([], [], chartLines, [:])
+            return ([], [], chartLines, [:], [:])
         }
         func clamped(_ window: Int) -> Int { min(max(window, firstWindow), lastWindow) }
         let lineByWindow = Dictionary(
@@ -502,7 +514,7 @@ struct ChordProDraftBuilder: Sendable {
         }
         let contentWindows = Set(lineByWindow.keys).union(chordsByWindow.keys)
         guard let firstContent = contentWindows.min(), let lastContent = contentWindows.max() else {
-            return ([], [], chartLines, [:])
+            return ([], [], chartLines, [:], [:])
         }
 
         struct Span {
@@ -545,12 +557,17 @@ struct ChordProDraftBuilder: Sendable {
         var lines: [String] = []
         var rows: [SongTimeline.Row] = []
         var origins: [Int: TimeInterval] = [:]
+        var rowBeats: [Int: Int] = [:]
         func appendRow(
             kind: SongTimeline.Row.Kind, window: Int, start: TimeInterval, end: TimeInterval,
             chordTimes: [TimeInterval]
         ) {
+            let cut = rowGrid.window(index: window)
             origins[rows.count + 1] = measure.time(
-                atBeatIndex: Double(rowGrid.anchorBeatIndex + window * rowGrid.periodBeats))
+                atBeatIndex: Double(
+                    cut?.startBeat ?? rowGrid.anchorBeatIndex + window * rowGrid.periodBeats))
+            // Only the rows a section start cut short; every other row spans the period.
+            if let cut, cut.beats != rowGrid.periodBeats { rowBeats[rows.count + 1] = cut.beats }
             let sung = UntranscribedVocalRegionResolver.overlaps(
                 input.untranscribedVocalRegions, start: start, end: max(end, start))
             rows.append(
@@ -572,10 +589,14 @@ struct ChordProDraftBuilder: Sendable {
             if !lines.isEmpty { lines.append("") }
             lines.append("{comment: \(directiveValue("\(label) · \(barCount(bars)) bars"))}")
         }
+        // The chord the player is STILL holding at `time`. A rest ends the hold: restating "Am"
+        // on a row inside an a cappella passage tells the guitarist to play what nobody plays.
         func held(at time: TimeInterval) -> RenderableChordEvent? {
-            chords.last { $0.time < time }.map {
-                RenderableChordEvent(time: time, label: $0.label, confidence: $0.confidence)
-            }
+            guard let chord = chords.last(where: { $0.time < time }),
+                !PlayerRests.interrupts(input.playerRests, chordTime: chord.time, at: time)
+            else { return nil }
+            return RenderableChordEvent(
+                time: time, label: chord.label, confidence: chord.confidence)
         }
 
         let firstLyricSpan = spans.firstIndex { $0.line != nil }
@@ -591,7 +612,7 @@ struct ChordProDraftBuilder: Sendable {
             if let line = spans[index].line {
                 let span = spans[index]
                 if index == 0,
-                    let firstSound = line.segment.words.first?.start
+                    let firstSound = line.segment.words.firstStart
                         ?? Optional(line.segment.start),
                     firstSound > span.start
                 {
@@ -697,7 +718,7 @@ struct ChordProDraftBuilder: Sendable {
         }
         if let openSection { lines.append(sectionDirective(closing: openSection)) }
         // Rows as emitted, so lyric ordinal N is always `rowLines[N]`.
-        return (lines, rows, rowLines, origins)
+        return (lines, rows, rowLines, origins, rowBeats)
     }
 
     /// The full song duration for timeline bounds: prefer the transcribed audio length, else beats,
@@ -724,7 +745,7 @@ struct ChordProDraftBuilder: Sendable {
         // A chord that sounds AFTER the last sung word (a trailing chord folded into this
         // line's tail) belongs past the end of the text, not stacked over the final word —
         // in the audio it lands a beat or two to the right of the word.
-        let lastWordEnd = segment.words.last?.end
+        let lastWordEnd = segment.words.lastEnd
         for event in chords {
             let offset: Int
             if let lastWordEnd, event.time >= lastWordEnd - 0.02 {
@@ -765,8 +786,8 @@ struct ChordProDraftBuilder: Sendable {
         -> TimedLyricWord?
     {
         guard !segment.words.isEmpty else { return nil }
-        return segment.words.last(where: { $0.start <= time && time < $0.end })
-            ?? segment.words.last(where: { $0.start <= time })
+        return segment.words.last(where: { $0.isSounding(at: time) })
+            ?? segment.words.last(where: { $0.hasStarted(by: time) })
             ?? segment.words.first
     }
 
@@ -1029,38 +1050,6 @@ struct ChordProDraftBuilder: Sendable {
     /// beats from `tempo` when no beat grid was detected, matching the
     /// `BouncingBall.beats(in:_:beatTimes:bpm:)` precedent elsewhere in this codebase. `nil` when
     /// neither beats nor a tempo are available (untimed songs keep the old proportional spacing).
-    /// Splices detected bass WALK steps into the renderable chord list as slash-chord
-    /// annotations — `G/A G/B` walking into C, `C/B` into Am — so the chart shows the runs a
-    /// player actually hears (the decoder's vocabulary cannot represent them; see
-    /// `BassRunDetector`). Text-level only: the editable chord timeline is never touched, and
-    /// each annotation carries the walk note's own confidence so the review shading is honest.
-    private func withBassWalkAnnotations(
-        _ chords: [RenderableChordEvent], input: ChordProDraftInput
-    ) -> [RenderableChordEvent] {
-        guard !input.bassNotes.isEmpty, chords.count > 1 else { return chords }
-        let runNotes = BassRunDetector.runNotes(
-            bassNotes: input.bassNotes,
-            chordOnsets: chords.map { ($0.time, ChordQualityAudit.parse($0.label)?.root.rawValue) },
-            beatTimes: input.beatTimes)
-        guard !runNotes.isEmpty else { return chords }
-        var merged = chords
-        for note in runNotes {
-            guard let sounding = chords.last(where: { $0.time <= note.time }),
-                !sounding.label.contains("/")
-            else { continue }
-            merged.append(
-                RenderableChordEvent(
-                    time: note.time,
-                    label: "\(sounding.label)/\(BassNoteNaming.name(forMidiNote: note.midiNote))",
-                    confidence: note.confidence
-                ))
-        }
-        return merged.sorted {
-            if $0.time == $1.time { return $0.label < $1.label }
-            return $0.time < $1.time
-        }
-    }
-
     private func measureGrid(
         for input: ChordProDraftInput, chords: [RenderableChordEvent], lyrics: [TimedLyricSegment]
     ) -> MeasureGrid? {
@@ -1087,7 +1076,7 @@ struct ChordProDraftBuilder: Sendable {
             ?? SongBarGridEstimator.estimate(
                 beatTimes: beatTimes,
                 beatStrengths: [],
-                lyricLineOnsets: lyrics.map { $0.words.first?.start ?? $0.start })
+                lyricLineOnsets: lyrics.map { $0.words.firstStart ?? $0.start })
         let grid = MeasureGrid(
             beatTimes: beatTimes, bpm: bpm, beatsPerBar: shared.beatsPerBar,
             barPhase: shared.barPhase)

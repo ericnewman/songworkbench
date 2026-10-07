@@ -43,11 +43,11 @@ enum SongWorkbenchMain {
             options:
               --stages s1,s2   comma list of: separation,transcription,harmony,chordPro
                                (default: all four)
-              --mode m         transcription mode: fastDraft | balancedDraft | accuracy
+              --mode m         transcription mode: fastDraft | balancedDraft | accuracy | qwen
                                (default: accuracy)
               --out DIR        output directory (default: the audio file's directory)
               --print-chart    also print the generated ChordPro chart to stdout
-              --models DIR     installed model store (default: Application Support/SongWorkbench/Models)
+              --models DIR     installed model store (default: the app's Models folder)
               --decode-rate R  Accuracy decode speed, 0.75-1.0, as the app's slider (default: 1.0)
               --language CODE  transcription language, e.g. en (default: detected)
               --reuse-stems D  use vocals/drums/bass/guitar/piano/other/accompaniment.wav from D
@@ -91,7 +91,7 @@ enum SongWorkbenchMain {
                     index += 1
                     guard index < arguments.count,
                         let mode = TranscriptionMode(rawValue: arguments[index])
-                    else { return fail("--mode needs fastDraft|balancedDraft|accuracy") }
+                    else { return fail("--mode needs fastDraft|balancedDraft|accuracy|qwen") }
                     command.mode = mode
                 case "--out":
                     index += 1
@@ -150,16 +150,12 @@ enum SongWorkbenchMain {
 
             // Same model store and analysis cache the app uses (read/create only — the cache is
             // content-addressed, so sharing it means a CLI run reuses the app's separations).
-            let applicationSupport = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first!
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
                 .first!
             var factory = SongAnalysisPipelineFactory(
                 modelPackageManager: ModelPackageManager(
                     directoryURL: command.modelsDirectory
-                        ?? applicationSupport
-                        .appendingPathComponent("SongWorkbench", isDirectory: true)
+                        ?? BulkStorageLocation.root
                         .appendingPathComponent("Models", isDirectory: true),
                     downloader: URLSessionModelArtifactDownloader()
                 ),

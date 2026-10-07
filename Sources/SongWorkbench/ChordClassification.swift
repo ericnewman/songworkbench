@@ -142,7 +142,12 @@ struct ChordAnalysisPipeline: Sendable {
         try analyzeFrames(samples: samples).observations
     }
 
-    func analyzeFrames(samples: [Float]) throws -> FrameAnalysis {
+    /// - Parameter gatesRestingFrames: strip chord evidence from frames where THESE samples are
+    ///   not sounding (`SoundingFrameGate`). Right when the samples are one instrument's stem —
+    ///   its chord track must be empty where it rests. Wrong for the song's main chord line,
+    ///   whose source mix can rest while another chordal stem carries the harmony; that line is
+    ///   gated on all chordal stems together by `ChordalRestGate`.
+    func analyzeFrames(samples: [Float], gatesRestingFrames: Bool = false) throws -> FrameAnalysis {
         let framer = MonoSampleFramer(configuration: configuration)
         let startIndices = framer.frameStartIndices(forSampleCount: samples.count)
         let frameCount = startIndices.count
@@ -214,11 +219,72 @@ struct ChordAnalysisPipeline: Sendable {
         }
 
         let finished = results.finished()
+        let observations = PedalAwareChordRelabeler.observations(
+            from: finished.chroma, classifier: classifier)
+        guard gatesRestingFrames else {
+            return FrameAnalysis(observations: observations, chroma: finished.chroma)
+        }
+        let sounding = SoundingFrameGate.sounding(
+            frameLevels: startIndices.map { start in
+                SoundingFrameGate.level(
+                    of: samples, from: start, count: configuration.frameLength)
+            })
         return FrameAnalysis(
-            observations: PedalAwareChordRelabeler.observations(
-                from: finished.chroma, classifier: classifier),
+            // A gated frame keeps its slot (the arrays stay parallel) at confidence 0, below
+            // every consumer's `minimumConfidence`, so it is evidence for nothing.
+            observations: observations.indices.map { index in
+                sounding[index]
+                    ? observations[index]
+                    : ChordObservation(
+                        timestamp: observations[index].timestamp,
+                        chord: observations[index].chord, confidence: 0)
+            },
             chroma: finished.chroma
         )
+    }
+}
+
+/// Decides whether the analysed source is actually SOUNDING in a frame.
+///
+/// Chord scoring is cosine similarity between a chroma vector and a template, which is blind to
+/// level: a frame at -88 dB scores exactly like one at -25 dB. A separated instrument stem is
+/// never truly empty where the instrument rests — it holds a faint residue of whatever else is
+/// playing — so every silent stretch yielded confident chords. On Seven Bridges Road (Live),
+/// 2026-09-20, the guitar and piano stems sat at -88 dB through the a cappella stretches and the
+/// residue was the five-part vocal harmony: 26 of the song's 132 chords were placed there.
+///
+/// The existing `HarmonyStemMix.leakageFloorDecibels` gate compares WHOLE-SONG levels, so a stem
+/// that really plays for half the song passes it and was then trusted in the half where it rests.
+/// This gate is per frame, relative to the source's own loud level. On that song the split is
+/// bimodal — 101 chords within 10 dB of the loud level, 26 more than 40 dB below it, 5 between —
+/// so the floor sits in a wide empty band rather than on a judgement call.
+///
+/// A part nobody played is worse than a missing one: a musician would learn it.
+enum SoundingFrameGate {
+    /// A frame this far below the source's loud level is residue, not playing.
+    static let floorDecibels: Float = -40
+
+    /// RMS of `count` samples from `start`, clipped to the buffer.
+    static func level(of samples: [Float], from start: Int, count: Int) -> Float {
+        let end = min(start + count, samples.count)
+        guard start >= 0, end > start else { return 0 }
+        var rms: Float = 0
+        samples.withUnsafeBufferPointer { buffer in
+            vDSP_rmsqv(buffer.baseAddress! + start, 1, &rms, vDSP_Length(end - start))
+        }
+        return rms
+    }
+
+    /// One flag per frame. The loud level is the 99th-percentile frame, not the peak (one click
+    /// must not set it) and not a lower percentile (an instrument that plays a tenth of the song
+    /// must still be measured against its own playing, not against its rests).
+    static func sounding(frameLevels: [Float]) -> [Bool] {
+        guard !frameLevels.isEmpty else { return [] }
+        let sorted = frameLevels.sorted()
+        let loud = sorted[min(sorted.count - 1, Int(Float(sorted.count) * 0.99))]
+        guard loud > 0 else { return frameLevels.map { _ in false } }
+        let floor = loud * pow(10, floorDecibels / 20)
+        return frameLevels.map { $0 >= floor }
     }
 }
 
@@ -529,5 +595,173 @@ private final class ErrorBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if storedError == nil { storedError = error }
+    }
+}
+
+/// Strips chord evidence from the song's main chord line wherever neither GUITAR nor PIANO is
+/// sounding.
+///
+/// The app exists to tell the guitarist, the bassist and the pianist what to play. A chord that
+/// cannot be attributed to one of them is omitted (Eric, 2026-09-20) — so a frame counts only when
+/// the guitar + piano sum is within `SoundingFrameGate.floorDecibels` of its loud level. The
+/// separator's `other` stem takes no part: it is nobody's chair, and what it holds under a cappella
+/// singing is vocal bleed that no level or envelope test could tell from a played keyboard.
+///
+/// History, so it is not rebuilt: gating on guitar + piano was the first version and was REJECTED
+/// because on 7 of 35 songs those stems rest for 18-43 % of the song while `other` carries the
+/// harmony, and the gate left those stretches chordless. `other` was then added to the rest test
+/// (9cb410d) and made a per-song chord source (c77d6b0: bass-root match 47 % -> 61 % in those
+/// stretches). Both were answers to "what is the harmony?", which is not the question. Chordless
+/// where no guitarist or pianist is playing is the intended result.
+enum ChordalRestGate {
+    /// - Parameters:
+    ///   - stemURLs: the guitar and piano stems that exist. Summed one at a time, so peak memory
+    ///     is one stem plus the sum.
+    ///   - frameLength: samples per chroma frame, at the stems' sample rate.
+    static func applied(
+        to observations: [ChordObservation], stemURLs: [URL], frameLength: Int = 8_192
+    ) -> [ChordObservation] {
+        var sum: [Float] = []
+        var sampleRate = 0.0
+        for url in stemURLs {
+            guard let audio = try? MonoAudioFile.samples(url: url), !audio.samples.isEmpty else {
+                continue
+            }
+            if sum.isEmpty {
+                sum = audio.samples
+                sampleRate = audio.sampleRate
+            } else {
+                let length = min(sum.count, audio.samples.count)
+                vDSP_vadd(sum, 1, audio.samples, 1, &sum, 1, vDSP_Length(length))
+            }
+        }
+        // No readable stem is not evidence of a rest.
+        guard !sum.isEmpty, sampleRate > 0 else { return observations }
+        return applied(
+            to: observations,
+            frameLevels: observations.map {
+                SoundingFrameGate.level(
+                    of: sum, from: Int(($0.timestamp * sampleRate).rounded()), count: frameLength)
+            })
+    }
+
+    /// The `times` at which the summed stems are sounding (a short window centred on each), by the
+    /// same floor. With no readable stem nothing is known, and every time is kept.
+    static func sounding(_ times: [TimeInterval], stemURLs: [URL], windowSeconds: Double = 0.1)
+        -> [TimeInterval]
+    {
+        var sum: [Float] = []
+        var sampleRate = 0.0
+        for url in stemURLs {
+            guard let audio = try? MonoAudioFile.samples(url: url), !audio.samples.isEmpty else {
+                continue
+            }
+            if sum.isEmpty {
+                sum = audio.samples
+                sampleRate = audio.sampleRate
+            } else {
+                let length = min(sum.count, audio.samples.count)
+                vDSP_vadd(sum, 1, audio.samples, 1, &sum, 1, vDSP_Length(length))
+            }
+        }
+        guard !sum.isEmpty, sampleRate > 0 else { return times }
+        let window = max(1, Int(windowSeconds * sampleRate))
+        // The loud level comes from the whole stem, not from the attack moments alone.
+        let reference = stride(from: 0, to: sum.count, by: window).map {
+            SoundingFrameGate.level(of: sum, from: $0, count: window)
+        }
+        let levels = times.map {
+            SoundingFrameGate.level(
+                of: sum, from: max(0, Int($0 * sampleRate)), count: window)
+        }
+        return sounding(times, levels: levels, referenceLevels: reference)
+    }
+
+    static func sounding(_ times: [TimeInterval], levels: [Float], referenceLevels: [Float])
+        -> [TimeInterval]
+    {
+        let sorted = referenceLevels.sorted()
+        guard let last = sorted.last, last > 0, times.count == levels.count else { return times }
+        let loud = sorted[min(sorted.count - 1, Int(Float(sorted.count) * 0.99))]
+        let floor = loud * pow(10, SoundingFrameGate.floorDecibels / 20)
+        return times.indices.filter { levels[$0] >= floor }.map { times[$0] }
+    }
+
+    static func applied(to observations: [ChordObservation], frameLevels: [Float])
+        -> [ChordObservation]
+    {
+        let sounding = SoundingFrameGate.sounding(frameLevels: frameLevels)
+        return observations.indices.map { index in
+            sounding[index]
+                ? observations[index]
+                : ChordObservation(
+                    timestamp: observations[index].timestamp,
+                    chord: observations[index].chord, confidence: 0)
+        }
+    }
+}
+
+/// Decides whether a separated instrument stem is only a SHADOW of the singing.
+///
+/// A separator splits a low voice: the fundamentals land in the `bass` stem and the rest stays in
+/// `vocals`. The pitch tracker then reports confident bass notes for a song that has no bass
+/// instrument — 56 of them on Seven Bridges Road (Live), which is five voices and one guitar.
+///
+/// A level floor cannot tell the two apart (-35 dB is an ordinary quiet bass guitar). What can:
+/// a real bass keeps playing when the singer stops — through intros, turnarounds, the gaps between
+/// lines — and a shadow cannot, because it IS the singer. Measured across the 35-song library on
+/// 2026-09-20, the stem's level while the vocals rest, relative to its own loud level:
+///
+///     every song with a bass instrument    -0.5 ... -6.5 dB
+///     It Is Well With My Soul (quartet)    -22 dB      a cappella
+///     Seven Bridges Road (Live)            -57 dB      a cappella + guitar
+///
+/// The floor sits in the 15 dB of empty space between them. With too little vocal rest to judge
+/// (under 10 s) there is no verdict and the stem is trusted as before.
+enum VocalShadowGate {
+    static let windowSeconds = 0.5
+    static let hopSeconds = 0.1
+    /// Vocals this far below their loud level are resting.
+    static let vocalRestDecibels: Float = -40
+    /// Rest needed before a verdict (in hops: 10 s).
+    static let minimumRestHops = 100
+    /// A stem that falls this far below its own loud level whenever the vocals rest is a shadow.
+    static let shadowDecibels: Float = -15
+
+    /// - Parameters: per-hop RMS of the stem and of the vocals, on the same clock.
+    static func isShadow(stemLevels: [Float], vocalLevels: [Float]) -> Bool {
+        let count = min(stemLevels.count, vocalLevels.count)
+        guard count > 0 else { return false }
+        let stemLoud = percentile(Array(stemLevels.prefix(count)), 0.99)
+        let vocalLoud = percentile(Array(vocalLevels.prefix(count)), 0.99)
+        guard stemLoud > 0, vocalLoud > 0 else { return false }
+        let restCeiling = vocalLoud * pow(10, vocalRestDecibels / 20)
+        let duringRest = (0..<count).filter { vocalLevels[$0] < restCeiling }.map {
+            stemLevels[$0]
+        }
+        guard duringRest.count >= minimumRestHops else { return false }
+        // The 90th percentile, not the mean: a bass that plays through even a tenth of the rests
+        // is an instrument.
+        return percentile(duringRest, 0.9) < stemLoud * pow(10, shadowDecibels / 20)
+    }
+
+    /// Best-effort: an unreadable file is not evidence of anything, so the stem stays trusted.
+    static func isShadow(stemURL: URL, vocalsURL: URL) -> Bool {
+        guard let stem = try? MonoAudioFile.samples(url: stemURL),
+            let vocals = try? MonoAudioFile.samples(url: vocalsURL)
+        else { return false }
+        return isShadow(
+            stemLevels: VocalRMSEnvelope.compute(
+                samples: stem.samples, sampleRate: stem.sampleRate,
+                windowSeconds: windowSeconds, hopSeconds: hopSeconds),
+            vocalLevels: VocalRMSEnvelope.compute(
+                samples: vocals.samples, sampleRate: vocals.sampleRate,
+                windowSeconds: windowSeconds, hopSeconds: hopSeconds))
+    }
+
+    private static func percentile(_ values: [Float], _ fraction: Float) -> Float {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        return sorted[min(sorted.count - 1, Int(Float(sorted.count) * fraction))]
     }
 }

@@ -270,13 +270,16 @@ enum ChordGridRowBuilder {
         in segment: TimedLyricSegment,
         at time: TimeInterval
     ) -> Range<Int>? {
-        let words = segment.words.sorted { $0.start < $1.start }
+        // Only words alignment placed can be "being sung"; an untimed word is never emphasised.
+        let words = segment.words.compactMap { word in
+            word.start.map { (start: $0, end: word.end ?? $0, range: word.characterRange) }
+        }
         guard !words.isEmpty else { return nil }
         if let current = words.last(where: { time >= $0.start && time < $0.end }) {
-            return current.characterRange
+            return current.range
         }
         guard let started = words.last(where: { time >= $0.start }) else { return nil }
-        return started.characterRange
+        return started.range
     }
 }
 

@@ -838,4 +838,32 @@ private final class ProgressRecorder: @unchecked Sendable {
     func append(_ value: Double) {
         lock.withLock { storage.append(value) }
     }
+
+    func testAStemTheAnalysisRefusedAsAPartIsNotDrawnAsInstrumentEnergy() {
+        // Seven Bridges Road: the bass stem is the low voice, so it has no note row; drawn as
+        // instrument energy under an a cappella line it said a bass was playing.
+        func lane(_ kind: StemKind) -> StemWaveformLaneModel {
+            StemWaveformLaneModel(
+                id: kind.id, displayName: kind.rawValue,
+                envelope: WaveformEnvelope(peaks: [0.3, 0.3], duration: 2))
+        }
+        let stems = [lane(.vocals), lane(.guitar), lane(.bass), lane(.drums), lane(.piano)]
+        let timeline = BucketNoteTimeline(
+            gridKey: BucketGridKey(bpm: 120, anchor: 0, duration: 2), clickTimes: [0, 1, 2],
+            stems: [
+                StemBucketNotes(stemID: StemID(.vocals), notes: []),
+                StemBucketNotes(stemID: StemID(.guitar), notes: []),
+            ])
+
+        let without = InstrumentEnergyLanes.stemsWithoutAPart(stems, timeline: timeline)
+
+        // Bass and piano were refused. Drums never have a note row; the voice is not an instrument.
+        XCTAssertEqual(without, [StemKind.bass.id, StemKind.piano.id])
+        XCTAssertEqual(
+            InstrumentEnergyLanes.lanes(
+                from: stems, perStem: true, hidden: [], withoutAPart: without
+            ).map(\.id), [StemKind.guitar.id, StemKind.drums.id])
+        // No timeline to judge by: nothing is hidden.
+        XCTAssertTrue(InstrumentEnergyLanes.stemsWithoutAPart(stems, timeline: nil).isEmpty)
+    }
 }

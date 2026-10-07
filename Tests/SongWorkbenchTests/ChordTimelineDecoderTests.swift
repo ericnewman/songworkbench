@@ -538,4 +538,56 @@ final class ChordTimelineDecoderTests: XCTestCase {
         let step = extended[1] - extended[0]
         XCTAssertEqual(step, 0.5, accuracy: 1e-9)
     }
+
+    // MARK: - Events arrive with their evidence
+
+    private func window(_ start: TimeInterval, _ evidence: [String: Float] = [:])
+        -> ChordTimelineDecoder.WindowEvidence
+    {
+        ChordTimelineDecoder.WindowEvidence(
+            start: start, scores: evidence, meanRawConfidence: evidence,
+            frameCount: evidence.isEmpty ? 0 : 3)
+    }
+
+    func testAChordIsNotBackfilledIntoTheSilenceBeforeItIsPlayed() {
+        // Seven Bridges Road: the path sat on D from the first window of a silent intro, and the
+        // event took that window — 0.11 s — though the guitar struck the chord at 2.0 s.
+        let windows = [
+            window(0.0), window(0.5), window(1.0), window(1.5),
+            window(2.0, ["D": 0.8]), window(2.5, ["D": 0.8]), window(3.0, ["G": 0.7]),
+        ]
+        let path: [String?] = ["D", "D", "D", "D", "D", "D", "G"]
+
+        let events = ChordTimelineDecoder.events(path: path, windows: windows)
+
+        XCTAssertEqual(events.map(\.chord), ["D", "G"])
+        XCTAssertEqual(events.map(\.time), [2.0, 3.0])
+        XCTAssertEqual(events[0].confidence, 0.8, "a measured confidence, not the old 0.6 default")
+    }
+
+    func testAChordWithNoEvidenceAnywhereIsNotReported() {
+        let windows = [window(0.0), window(0.5), window(1.0, ["G": 0.7])]
+        let events = ChordTimelineDecoder.events(path: ["D", "D", "G"], windows: windows)
+        XCTAssertEqual(events.map(\.chord), ["G"])
+        XCTAssertEqual(events.map(\.time), [1.0])
+    }
+
+    func testTheSameChordComingBackAfterARestIsANewArrival() {
+        // The guitarist stops (the path settles on no-chord) and comes back in on the same D.
+        let windows = [
+            window(0.0, ["D": 0.8]), window(0.5), window(1.0), window(1.5),
+            window(2.0, ["D": 0.8]),
+        ]
+        let events = ChordTimelineDecoder.events(
+            path: ["D", nil, nil, nil, "D"], windows: windows)
+        XCTAssertEqual(events.map(\.time), [0.0, 2.0])
+        XCTAssertEqual(events.map(\.chord), ["D", "D"])
+    }
+
+    func testAChordSustainedThroughAGapIsStillOneEvent() {
+        // An evidence-free window INSIDE a run is a sustain, not a second arrival.
+        let windows = [window(0.0, ["C": 0.8]), window(0.5), window(1.0, ["C": 0.8])]
+        let events = ChordTimelineDecoder.events(path: ["C", "C", "C"], windows: windows)
+        XCTAssertEqual(events.map(\.time), [0.0])
+    }
 }

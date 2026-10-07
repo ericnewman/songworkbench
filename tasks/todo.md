@@ -4013,3 +4013,811 @@ and measure before/after on a real corpus with the shipped models.
 - [ ] Forced-alignment stage (monotonic audio-text alignment with confidence and raw fallback).
 - [ ] Word-first Lyric Blend (align candidates by word before building rows).
 - [ ] Recognition configuration experiments (language, vocabulary hints, alternate models, chunking).
+
+## 2026-09-19 — Slow analysis; chords and lyrics against the drawn audio (measured)
+
+Brief (Eric): analysis is very slow, and chords/lyrics do not convincingly sit where the audio
+visualization says they should. Measured on the live re-analysis of 2026-09-19 (17:21–18:13, the
+Sep 18 10:56 Debug build) before changing anything. Scratch scripts, not committed: `placement.py`,
+`placement3.py`, `drift.py`, `refine2.py` (timings only, no lyric text).
+
+### Findings — speed
+
+- [x] Per song with cached stems: transcription 45–67 s ‖ harmony 32–50 s, then **57–94 s that no
+      `analysis-performance` line accounted for** (one song 305 s) before `chordPro` (0.01 s). The
+      gap is `AnalysisTimingPostPasses` + `BucketNotePass` + `SoloTranscriptionPass` +
+      `InstrumentChordPass`, run serially on the pipeline task. They re-read the same stems
+      several times (`stemAudio` per pass, plus the solo pass's vocal reference).
+- [x] The app that runs library re-analyses is a **Debug (`-Onone`) build** — `rerun-app` builds
+      `-configuration Debug`. `sample` inside the gap: hottest frames are unspecialized-generic
+      runtime (`Collection.formIndex(after:)`, `IndexingIterator.next`, metadata lookups), and
+      `MonoAudioFile.samples` — a per-sample `append` loop that only DECODES a stem — held 3.8 s
+      of a 6.1 s sample. ML inference (Core ML Demucs, whisper.cpp) is precompiled and unaffected;
+      every hand-written DSP pass is.
+- [x] Full separation: 163 s base + 147 s deferred refiners. During the deferred pass the process
+      footprint climbed **1.7 GB → 19.8 GB on a 24 GB Mac** (swap 9.5 of 10 GB used, load 20).
+      It fell to 15.4 GB when transcription finished and to 1.5 GB only when HARMONY finished, so
+      ~14 GB belongs to the harmony stage, not the refiner. Harmony took 187 s on that song against
+      32–50 s on cached-stem songs. Not yet localized (footprint is only logged at checkpoints).
+
+### Findings — placement
+
+- [x] No constant offset: word − vocal energy rise median +3 ms (n = 1,436), chord − instrument
+      rise median −5 ms (n = 903), `chordProTimingOffsetMS` = 0 on every song.
+- [x] **The stored beat grid does not stay on the drums on any song (0 of 16).** Every grid is
+      perfectly rigid (interval sd 0.0 ms) at a tempo quantized to `5168 / integer`
+      (`BeatTracker`: `60 * envelopeRate / lag`, hop 512 @ 44.1 kHz — 87.59 ×3, 112.35 ×2…). One
+      lag step is ~2 % at 112 BPM; a rigid grid needs ~0.02 % to hold for 4 minutes. Drums-vs-grid
+      shift by eighth of the song ramps and wraps (e.g. +23 +58 +198 +278 −227 −112 −7 +68 ms);
+      spread 101–244 ms. Chord phase within the beat is FLAT across 8 bins (14/12/12/12/13/14/11/12 %)
+      where music peaks on the beat and half-beat. Beat dots, bar lines, fixed-period row windows
+      and the chord decode grid all inherit this.
+- [x] **Line-opening words are one-sidedly late.** Against an unambiguous vocal entry (≥ 0.5 s
+      after the previous word; breath-proof detector): 108 of 209 within ±50 ms, 93 later than
+      +50 ms (60 later than +150 ms), 8 early. Cause NOT established — `MeasuredLyricTiming`'s
+      outcome was discarded, so there was no record of which words were measured, onset-filled,
+      or still the ASR's guess. Hypotheses: CTC emits a token's first frame after its acoustic
+      onset; the ±0.15 s nearest-onset snap then picks a later flicker.
+- [x] Chart strip: both slicers floored the row window to bucket indices and the bars were drawn
+      across the exact window, so the drawn audio sat 0–1 bucket LATE per row (≤ 60 ms at 4,000
+      buckets / 4 min; ≤ 200 ms on the 1,200-bucket mix fallback) against unquantized words and
+      chords.
+- [ ] Not verified by me (code survey only): main `WaveformView` strokes bucket i centred on its
+      LEFT edge (half a bucket early vs the chart strip); the white word ball rides the squeezed/
+      nudged label axis while the amber chord ball rides the ruler; no output-latency compensation.
+
+### Done
+
+- [x] `DrumBeatGrid.refinedBPM`: resolves the tempo on the drum onsets (mean resultant length over
+      beat/eighth/sixteenth grids, ±2 lag steps, same metrical level, grid stays rigid); returns
+      the tracked tempo when no rigid tempo fits (coherence < max(0.08, 3/√N)). Simulated on the
+      16 songs with the shipped recipe first: locked (< 40 ms spread over the whole song) 0 → 7;
+      lockable songs scored ≥ 0.094, drifting ones ≤ 0.068, the stored tempo ≤ 0.034 everywhere.
+      Harmony `reduce-31-refined-tempo`. 4 new tests + 4 existing `DrumBeatGrid` tests pass.
+- [x] Derived passes are timed individually (`timing-post-passes`, `bucket-notes`,
+      `solo-transcription`, `instrument-chords`); word timing logs
+      `ran/measured/from-onsets/kept-asr` counts (never text).
+- [x] Strip slicer cuts at the nearest bucket edge (zero-mean, ≤ half a bucket); the duplicate
+      vocal slicer now calls the shared one.
+
+### Open — needs Eric
+
+- [ ] 9 of 16 songs fit NO rigid tempo (live drummer). A grid that follows them means re-fitting
+      period + phase per section, which revises the 2026-09-08 "tempo stays rigid" decision.
+- [ ] Run library re-analyses on a Release build (see Review for the measured difference).
+- [ ] The songs re-analysed today carry quantized-tempo grids; they need harmony re-run on a build
+      with `reduce-31`.
+
+### Review (2026-09-19)
+
+Benchmark — one 219 s song, stems reused, Whisper and chroma caches warm for both, quiet machine
+(load 4), headless `analyze --stages transcription,harmony,chordPro`:
+
+| | Debug (`-Onone`, Sep 18 bundle) | Release (`-O`, this change) |
+|---|---|---|
+| harmony | 31.7 s | 0.5 s |
+| transcription (cached ASR + post-ASR passes + forced alignment) | 53.6 s | 1.4 s |
+| derived passes | 64 s | 1.0 s (0.07 + 0.39 + 0.43 + 0.13) |
+| wall | **120 s** | **6 s** |
+
+The Debug run reproduced the live re-analysis numbers for the same song (31.4 / 53.4 / 94 s under
+load), so load was not the cause. Same work, checked: word starts identical 341/341, harmony notes
+719 = 719, bass 216 = 216; the only differences are the intended ones (BPM 99.384 -> 99.004,
+chords 130 -> 133, bucket notes 1,473 -> 1,467). Separation (Core ML) is precompiled and was not
+measured here; expect it unchanged at ~160 s + refiners.
+
+Beat grid, same song, shipped Swift path end to end: drums-vs-grid by eighth of the song
++23 +58 +198 +278 -227 -112 -7 +68 ms -> -8 -8 -8 -8 -8 -13 -13 -13 ms. Chord phase within the
+beat (8 bins) 20 19 9 12 22 16 16 16 -> 46 6 13 5 33 9 15 6. `word-timing ran=true measured=341
+from-onsets=0 kept-asr=0`, so on this song every word is aligner-measured and the late line
+openers are NOT leftover ASR guesses.
+
+Not verified: the three render changes (strip slicing, two waveform bar positions) compile in
+Release but were not looked at in the running app. The 14 GB harmony-stage footprint did not
+reproduce with reused stems (peak RSS 485 MB), so it belongs to the path that waits on the deferred
+refiners; not localized.
+
+### Library re-analysis on the Release build (2026-09-19, 19:01 onward)
+
+Started with `Analysis > Re-analyze All Songs` (AppleScript; the computer-use permission check
+failed although Accessibility was granted). 39 songs.
+
+- [x] Cached-stem songs: ~2 s each (harmony 0.4–0.5 s, transcription 1.0 s, derived passes < 1 s).
+      17 songs in the first minute. Every song logged `word-timing ran=true ... kept-asr=0`.
+- [x] Fresh-separation songs get slower as the run goes on: refiner pace 1.7 s/chunk -> 13 s/chunk,
+      base separation 30 s -> 178 s, transcription 46 s -> 538 s -> 1,099 s, harmony (which waits
+      on the refiners) 43 s -> 597 s. No thermal warning recorded. Swap pinned at 9–10 of ~10 GB.
+- [x] Cause of the memory, corrected from the entry above: it is NOT the harmony stage. Growth is
+      inside the karaoke refiner's `ORTSession.run` (`ArmKleidiAI::MlasConv`), ~330 MB per chunk,
+      to 24.2 GB on a 24 GB Mac. `heap`: C `malloc` blocks at exact tensor sizes (227 x 36 MB,
+      231 x 9 MB, 44 x 48 MB). It outlives `session = nil` by minutes (13 GB four minutes later,
+      while Whisper decoded inside it) and drains slowly.
+- [x] Reproduced OUTSIDE the app: Python `onnxruntime==1.24.2`, same `UVR_MDXNET_KARA_2.onnx`,
+      random input, ~315 MB per run (3.4 -> 6.5 GB over 9 runs, then sagging). Intermittent: two
+      earlier runs of the same script held flat at ~3.2 GB.
+- [x] Tried and rejected: run option `memory.enable_memory_arena_shrinkage = cpu:0` — identical
+      trace with and without it. Reverted; not committed.
+- [x] Root cause (malloc stack logging on the Python reproduction, idle machine): ONNX Runtime
+      1.24.x `ArmKleidiAI::MlasConv` calls `operator new` directly and never frees — 167 live
+      allocations, 1.79 GB after 6 runs. Outside the BFC arena, so disabling the arena, the memory
+      pattern, graph optimization, and arena shrinkage all left the ~300 MB/run growth unchanged;
+      1.24.2 has no runtime switch for KleidiAI. 1.24.4 still leaks; 1.30.0 is flat at 1.67 GB and
+      twice as fast, but onnxruntime-swift-package-manager publishes only 1.20.0 / 1.24.1 / 1.24.2.
+- [x] Fix: the karaoke predictor appends the Core ML execution provider (`ModelFormat: MLProgram`,
+      `MLComputeUnits: CPUAndGPU`, macOS only), so its convolutions never reach the leaking kernel.
+      Measured on the model: max error 3.4e-5 (-108 dB) against the CPU path, flat ~2 GB over 14
+      runs, 0.12 s/run against 0.88 s. NOT used: the default NeuralNetwork format (half precision
+      off-CPU, -44 dB). DrumSep does not leak on CPU (6.3–7.9 GB, no trend) and crashes under the
+      Core ML provider, so it is unchanged.
+- [x] End to end, headless `analyze --stages separation`, 159 s song: refiner pass 28 chunks in
+      6.1 s with the footprint flat at 2.0 GB; whole separation 32 s, peak footprint 2.6 GB (was
+      12–24 GB). Karaoke model outputs against the ones the leaking build wrote at 19:58: max
+      |diff| 4.0e-6, signal-to-difference 117 dB (vocals) / 107 dB (other). 1,189 tests, 0 failures.
+- [ ] When the Swift package publishes ONNX Runtime >= 1.30, re-test the CPU path and DrumSep.
+
+**Correction to commit 692a725 (2026-09-19, 21:50).** Its message describes only the Core ML
+provider change, but it also contains a second, independent fix written by the parallel session
+"Fix ONNX refiner memory growth" whose uncommitted edits were in this checkout and were swept in by
+`git add -A Sources`: `ORTShortLivedThread` and its use around `session.run` in the karaoke, drum
+and six-stem engines. That session's diagnosis is the sharper one — KleidiAI keeps a `thread_local`
+map of input indirection tables on the CALLING thread, keyed on a hash of the input, freed only
+when the thread exits — and it agrees with the evidence above (a Python variant calling `run` from
+a fresh thread each time stayed flat). The end-to-end numbers above were measured with BOTH changes
+in the binary; neither was measured alone in the app. Its test file and Xcode project registration
+were left for that session to commit. **Rule:** stage by explicit path, never `git add -A <dir>`,
+and check `git worktree list` and `git status` for foreign changes before committing.
+
+### Refiner memory growth — trigger, thread fix measured alone (2026-09-19, 21:25–21:55)
+
+Session "Fix ONNX refiner memory growth". Machine: the library run was at song 33 of 39 when this
+started; the app quit itself at 21:26:19 (SIGTERM from its own pid — a normal quit, not a crash or
+jetsam) mid-refiner on song 34, so **6 songs were not re-analysed**. Measurements below ran after
+that, load 2.5–10 (Backblaze), no app instance running.
+
+- [x] Trigger, read from the 1.24.2 source (`onnxruntime/core/mlas/lib/kleidiai/
+      convolve_kleidiai.cpp`, `LhsPackImageDataSme`): a `thread_local
+      std::unordered_map<LhsCacheKey, shared_ptr<const void*[]>> lhs_ptrs_cache` on the thread that
+      calls `Run`, whose key includes `HashWeights(in)` — a hash of the first 16 floats of the
+      convolution's INPUT. New audio = new key = one more indirection table per 3x3-or-larger
+      convolution, never evicted. Table size is 8 bytes x output positions x kernel taps:
+      2048 x 256 x 9 x 8 = 36,864 KB and 1024 x 128 x 9 x 8 = 9,216 KB — exactly the `heap` block
+      sizes. `thread_local` is why it outlives `session = nil` (it dies with the Swift cooperative
+      thread, minutes later). Upstream `main` dropped `data_hash` from the key.
+- [x] This explains "intermittent": the SAME input twice hits the cache. Python, 8 runs, footprint
+      via `proc_pid_rusage`: same input 4,511 MB flat; new random input each run 4,597 -> 6,575 MB
+      (+330/run); new input, each `run` on a fresh `threading.Thread` 4,286 -> 4,294 MB flat. Same
+      time (7.0 s vs 6.9 s) and identical output checksum.
+- [x] Other models, same probe: `drumsep.onnx` DOES grow, +107 MB/run (11,340 -> 12,265 MB over
+      10 runs; fresh thread flat at 11,652 MB) — the "no trend" reading above most likely reused
+      one input. `demucsv4.onnx` +16 MB/run. `nmp.onnx` (Basic Pitch) flat at 43 MB over 300
+      windows, so it is not wrapped.
+- [x] Fix: `ORTShortLivedThread.run` — each `ORTSession.run` executes on a `Thread` that exits when
+      the call returns, which is the only thing that frees the cache. Wraps the karaoke, drum and
+      six-stem predictors. It is the only fix on iPad (the Core ML provider lines are macOS-only)
+      and for DrumSep (crashes under the Core ML provider).
+- [x] Measured ALONE in the app (worktree build with the Core ML provider lines disabled, not
+      committed), headless `analyze --stages separation`, 177 s song, 31 refiner chunks:
+
+      | | unfixed (bf08941) | thread fix only | thread fix + Core ML provider (HEAD) |
+      |---|---|---|---|
+      | refiner footprint, chunk 1 -> 31 | 4,185 -> 13,108 MB | 4,109 -> 4,766 MB (flat from chunk 8) | 2,002 -> 2,002 MB |
+      | peak footprint | 13,197 / 13,706 MB (2 runs) | 4,766 MB | 2,643 MB |
+      | refiner pass | 55.5 s | 24.8 s | 5.8 s |
+      | wall | 87 s / 56 s | 53 s | 37 s / 33 s |
+      | refined lead vocal vs unfixed | — (2 unfixed runs: identical) | max diff 0, bit-identical | max diff 3.4e-6, 116.5 dB |
+
+- [x] Stems unchanged: the six base stems differ between ANY two runs by 46–56 dB
+      signal-to-difference (two runs of the unfixed bundle: 46.5–56.3 dB; unfixed vs fixed:
+      45.4–55.1 dB) — Core ML Demucs is not bit-deterministic, and this change does not touch it.
+      The refined `other` is `vocals - lead`, so it inherits exactly that base-vocal difference.
+- [x] A first version used `withoutActuallyEscaping` and trapped in Release ("non-escaping closure
+      has escaped": the `Thread` still owns its block when the scope ends). The closure is
+      `@escaping` now. 2 tests (`ORTShortLivedThreadTests`).
+- [x] `tuist generate` was NOT usable to register the new files: it rewrites the hand-maintained
+      `Copy Bundled CoreML Model` phase (drops `LyricsAlignmentMTL`), the signing settings and
+      `objectVersion`. The 8 pbxproj lines were added by hand (commit 100291d).
+- [ ] NOT verified in the app: the drum refiner (`SongWorkbench.drumPieceSeparation` is off in
+      Eric's preferences; not flipped for a test) and the six-stem ONNX engine (the Core ML engine
+      is the production path). Both verified only with the Python probe above.
+- [ ] Not done: gating the refiner against Whisper when memory is tight. With the refiner flat at
+      2.0 GB (4.8 GB on the CPU path) the overlap no longer swaps on this machine, and serialising
+      it would give back the 330 s -> 230 s the overlap bought. Revisit if DrumSep is enabled: its
+      arena alone is ~11.6 GB for a 40 s segment, leak or no leak.
+- [x] Re-ran `Analysis > Re-analyze All Songs` on 2026-09-20, 17:44–17:57, Release build of
+      3120ae7, machine heavily loaded by unrelated builds. 5 of the 6 missed songs rewritten, 4 with
+      fresh separation + refiner. Peak footprint over the whole run 3,324 MB (the same run's
+      predecessor reached 24.2 GB); slowest transcription 260 s, separation 28–49 s.
+- [ ] `The Chain 9_10_19` was NOT re-analysed and has no chords or lyrics: its song document has
+      no `bookmarkData`, and its source is on Google Drive (`~/My Drive/...`), which the sandboxed
+      app cannot read without a security-scoped bookmark. Needs Eric to add the file again.
+
+## 2026-09-20 — Parts from their own stem only: phantom chords and bass notes
+
+Brief (Eric): Seven Bridges Road (Live) is mostly a cappella, yet it showed chord changes and bass
+notes that are not in the audio. "We can't afford to synthetically introduce notes on other
+instruments" — chord and note extraction reads the separated stems ONLY, and each player must get
+the exact part heard in the recording.
+
+### Findings
+
+- [x] In the a cappella stretches guitar and piano sit at -88 dB (digital silence), yet 27 of the
+      song's 133 chords were placed there and 56 bass notes (confidence 0.7-0.9) on a song with no
+      bass instrument.
+- [x] Chords: scoring is cosine similarity between chroma and template, which is blind to level,
+      and the residue in a resting stem is the vocal harmony. The only leakage gate
+      (`HarmonyStemMix.leakageFloorDecibels`) compares WHOLE-SONG levels, so a stem that plays for
+      half the song is trusted in the half where it rests.
+- [x] Bass: the separator puts a low voice's fundamentals in the `bass` stem. The stem's envelope
+      follows the vocal (r = 0.45; guitar -0.13) and it drops to -92 dB whenever the singing stops.
+- [x] First attempt REJECTED by the corpus run: gating on the chord source (guitar + piano) alone
+      removed 273 chords at rests but also stripped real sections — on 7 of 35 songs guitar + piano
+      rest for 18-43 % of the song while `other` carries the harmony at -5...-8 dB of its loud level.
+- [x] Tried and failed for telling vocal bleed in `other` from an instrument: the rest-shadow test
+      (Seven Bridges' `other` also holds crowd and guitar bleed, so it does not vanish with the
+      voice) and envelope correlation with the vocal (NEGATIVE, -0.2...-0.56, for bleed and
+      instrument alike).
+
+### Done
+
+- [x] `ChordalRestGate` (harmony stage, on the cached raw frames — no re-chroma): a frame is a
+      rest only when guitar + piano + other TOGETHER are > 40 dB below the song's loud level; its
+      chord evidence drops to confidence 0. Library-wide 68 of 5,993 chords sat below that floor and
+      the band around it is nearly empty (76 chords between -50 and -30 dB).
+- [x] `SoundingFrameGate` inside `analyzeFrames`, opt-in, used by `InstrumentChordPass`: one
+      instrument's chord track is empty where THAT instrument rests.
+- [x] `VocalShadowGate`: a bass stem whose level falls > 15 dB below its own loud level whenever
+      the vocals rest (>= 10 s of rest needed for a verdict) yields no bass notes, no bucket-note
+      row, and nothing for the chord decoder's switch cues or bass-informed re-rooting. Library:
+      every song with a bass instrument -0.5...-6.5 dB; the quartet -22 dB; Seven Bridges -57 dB.
+- [x] Harmony `reduce-32-rests-and-vocal-shadow`, `buckets-3`, `instrument-chords-2`.
+
+### Review
+
+Corpus: all 35 library songs with stems, headless `analyze --stages harmony --reuse-stems`, HEAD
+build against this change (separate BUILD_DIR; no separation ran during it).
+
+- Chords 5,993 -> 5,944. Removed at true rests 102; removed elsewhere 40 and added 93, which is
+  mostly one chord moving > 0.2 s near a rest boundary and being counted on both sides; 23 relabeled.
+- The seven "harmony in `other`" songs are untouched: A thousand little ways 278 -> 277, Moving on
+  271 -> 268, Beach Weather 84 -> 84, Theres a place 148 -> 147, One night on Broadway 207 -> 208.
+- Bass notes changed on exactly two songs: Seven Bridges 56 -> 0, the quartet 3 -> 0. The other 33
+  are identical.
+- Seven Bridges Road: chords where guitar + piano are silent 27 -> 4 (at 25.9, 26.9, 27.3 and
+  44.0 s — the known limit: `other` holds vocal bleed at a level a quiet keyboard could have).
+- 1,198 tests, 0 failures (9 new).
+
+### Open
+
+- [x] Per-stem bucket notes reported parts on stems that are not playing. Cause: the analyzer
+      peak-normalises each stem to ITSELF before its silence threshold, so pure residue is
+      amplified to full scale — the pairing `HarmonyStemMix` warns about, without its leakage gate.
+      `BucketNotePass.withoutPhantomInstruments` applies `keptAfterLeakageGate` (-25 dB, the
+      existing constant) among guitar / piano / other; the summed accompaniment is left out of
+      the comparison. Library: drops 14 stems on 13 songs, 12 of them a "piano" 34-57 dB down —
+      108 notes on The Winery Dogs (a trio with no keys), 40 on Seven Bridges, 47 on Salt in our
+      hair. Verified end to end on four songs; real rows unchanged.
+- [ ] Two drops sit at the floor and want ears, not a threshold: Just get up and dance `piano`
+      (-28.4 dB, 30 notes) and Eight Miles High `other` (-25.4 dB, 117 notes). The stems near the
+      floor are continuous (19 kept between -25 and -15 dB, 3 dropped between -35 and -25), so
+      unlike the chord and bass gates this one does not sit in an empty band.
+- [ ] Still reported: Seven Bridges `other`, 62 notes, some of them vocal bleed (-15 dB whole-song,
+      so it passes the leakage gate).
+- [x] `other` in the chord source — done per song, see the next section.
+
+## 2026-09-20 — `other` in the chord source: per song, only where it drives
+
+Brief (Eric): "add `other` to the chord source and test it", then, on the results: "if Other is
+not a significant driver of content we should just exclude it completely."
+
+### Measured
+
+- [x] ALWAYS-ON is worse. Ground-truth charts (the harness's two arms fed rendered mixes: today's
+      guitar 1.0 + piano 0.6 against the same plus `other`), root F1:
+
+      | chart | today | other 0.6 | other 0.3 |
+      | --- | ---: | ---: | ---: |
+      | Summertime's here with you (reviewed) | 43.9 | 39.3 | 43.7 |
+      | Key West Bar (transcribed) | 65.3 | 63.5 | 65.0 |
+      | Flip Flops and Barbeque (automated) | 44.0 | 42.0 | 42.2 |
+      | mean | 51.1 | 48.3 | 50.3 |
+
+      More over-segmentation, lower precision. All three are guitar-led songs, so this says
+      `other` hurts where the guitar already carries the harmony; it cannot score the songs where
+      `other` carries it.
+- [x] ALWAYS-FALLBACK (read `other` in any frame where guitar + piano rest and `other` sounds):
+      guitar-led regions 6,043 -> 6,080 chords; across 686 s of `other`-led music, chord roots
+      matching the bass note being played 47.4 % -> 62.5 %, chords inside the song's own guitar-led
+      vocabulary 84.1 % -> 90.6 %; the two readings name the same chord only 14-45 % of the time.
+      But Seven Bridges Road went 4 -> 7 chords under a cappella singing, read from vocal bleed,
+      and `other`'s level there (-11 dB of its loud level) is inside the range of a genuinely
+      played `other` (-5...-13) — a third test that level cannot separate them.
+- [x] Significance across the library — share of the song where guitar + piano rest and `other`
+      is within 20 dB of its loud level: nine songs 10.4-35.4 %; then 8.2, 7.9 (Seven Bridges),
+      5.5, 5.2 ... 0. Not an empty band at the boundary.
+
+### Done
+
+- [x] `ChordSourceFallback`: `other` is significant when it carries the music alone for >= 10 % of
+      the song and the song's bass stem is not a vocal shadow. Significant: frames with guitar +
+      piano resting take their chord evidence from `other`, and `other` counts in
+      `ChordalRestGate`. Not significant: `other` is out of both. Harmony `reduce-33`.
+
+### Review
+
+38 library songs, HEAD against this change: guitar-led 6,043 -> 6,062 chords (+0.3 %);
+`other`-led bass-root match 47.4 % -> 61.0 %, own-vocabulary 84.1 % -> 89.4 %. Seven Bridges Road:
+chords under silent guitar 4 -> 1 (27 before today), bass notes 0. Songs where `other` is not
+significant lose the few residue-read chords they had in `other`-only stretches (The Winery Dogs
+13 -> 2, Summer on the lake 10 -> 4), which is what excluding it means. 1,202 tests, 0 failures.
+
+Not verified against truth: no chart covers an `other`-led song. The bass-root and vocabulary
+checks are independent of both readings but are proxies.
+
+## 2026-09-20 (evening) — The design objective, and what it undid
+
+**"What did the Guitarist, Bassist, and Pianist play on this song?"** Other musicians and sounds
+are omitted by design (Eric). Recorded in CONTEXT.md (Design objective) and REQUIREMENTS.md
+(CHORD-007, CHORD-008; CHORD-002 revised).
+
+Eric, on the bass rows in the preview: "it's showing bass CHORDS when I'm pretty sure it's a single
+note", and "significant waveform activity on the bass tracks when only vocal is present". Then the
+objective: "if we cannot identify which of these three instruments is responsible, we can omit the
+detected chord."
+
+### Done
+
+- [x] The preview's beat chord sat on the lowest row sounding — the bass — so one bass note read
+      "A (Am)". It now has a row of its own ("Ch"); the bass row shows the note it plays. This was
+      deliberate and test-pinned behaviour (2026-09-14), changed on purpose.
+- [x] That beat chord pooled EVERY stem, vocals included. It now pools guitar, piano and bass (and
+      their refined children) only.
+- [x] The preview drew instrument energy for every non-vocal stem. A pitched stem the analysis
+      refused as a part (no row in the note timeline: a bass stem that is the low voice, or a
+      residue-only piano) is no longer drawn as instrument energy. Its audio stays in the mixer.
+- [x] `ChordalRestGate` gates the main chord line on guitar + piano ONLY. `other` is out of the
+      chord source and the rest test on every song. `ChordSourceFallback` (c77d6b0, committed the
+      same afternoon) is REMOVED: it answered "what is the harmony?" — bass-root agreement
+      47 -> 61 % in `other`-led stretches — which is not the question. Harmony `reduce-34`.
+
+### Consequence to expect
+
+On the songs where guitar and piano rest while `other` carries the music (9 songs, 10-35 % of the
+song) those stretches now show NO chords. That is the intended result, not a regression: nobody
+among the three players is playing there.
+
+### Review
+
+1,200 tests, 0 failures. End to end, headless `analyze --stages harmony --reuse-stems`, this change
+against the library documents written an hour earlier by `reduce-33`:
+
+| song | chords | chords where guitar + piano rest |
+| --- | ---: | ---: |
+| Beach Weather (`other`-led 35 %) | 116 -> 64 | 49 -> 3 |
+| Moving on (`other`-led 27 %) | 287 -> 205 | 71 -> 3 |
+| Key West Bar (guitar-led) | 156 -> 155 | 0 -> 0 |
+| Seven Bridges Road | 106 -> 106 | 1 -> 1 |
+
+The leftovers sit on rest boundaries. Not verified in the running app: the "Ch" row, the bass row
+without its chord suffix, and the instrument-energy lanes — they compile and their formatter and
+lane logic are unit-tested, but nobody has looked at them on screen.
+
+### 2026-09-20 (later) — `other` out of the note timeline
+
+Eric: "remove the `other` rows from the note timeline too."
+
+- [x] `BucketNotePass.withoutOtherMusicians`: no note row for the separator's `other` stem (or a
+      refined child) when the song has a guitar or piano stem. A legacy four-stem set keeps it —
+      there `other` is the only instrument stem. `buckets-4`.
+- [x] Follows from it, by design: the solo pass reads the same stem list, so `other` gets no solo
+      tab; and the preview hides instrument energy for a pitched stem without a note row
+      (`InstrumentEnergyLanes.stemsWithoutAPart`), so `other` leaves the energy strip too.
+- [x] 1,201 tests, 0 failures.
+
+## 2026-09-20 (night) — Two sets of chords, the blue Am, and the late line-openers
+
+Eric, with a screenshot of a Chorus row: "why two sets of chords, and where is the blue Am coming
+from, as there is no bass being played here", and "look into why opening words land late".
+
+### What the row shows
+
+- The large chords are the song's MAIN chord line (decoded from the guitar + piano mix, then
+  bass-informed re-rooting, chorus consensus, audits). The small chords on the row labelled "GtC"
+  are the GUITAR'S OWN chord track (`InstrumentChordPass`, that stem alone). Two detectors.
+- A main-line chord is colored by the one instrument whose own track has it sounding at that
+  moment. With no such instrument the label fell back to the accent tint — `swAccent`, which is
+  ALSO the bass lane color. The blue Am is not a bass chord: it is a chord nobody is credited with.
+- The "D" printed over "GtC": the row label is drawn at x = 0 and so is any cell at the row's
+  first instant, including every chord row's dimmed carried-over cell.
+
+### Measured (39 songs, 6,364 main-line chords)
+
+| | chords | share |
+| --- | ---: | ---: |
+| same chord sounding on an instrument's own track at that moment | 4,699 | 73.8 % |
+| same chord on a track, starting within 2 beats (the two detectors disagree on WHEN) | 482 | 7.6 % |
+| same root within 2 beats, different quality (Am vs A) | 143 | 2.2 % |
+| a chord no instrument track plays anywhere in the song | 87 | 1.4 % |
+| a chord the tracks do play, but nowhere near this moment | 953 | 15.0 % |
+
+So ~16 % of main-line chords (1,040) have no support from any player's own track even with a
+2-beat tolerance. Guitar-only songs are the worst (34 % unconfirmed strictly) although both
+detectors listen to the same stem there, so the difference is in the main line's later passes.
+
+### Done
+
+- [x] An uncredited chord is drawn dim neutral, a chord guitar AND piano both play in primary
+      text, one player's chord in that lane's color. The accent tint remains only when a song has
+      no instrument tracks to consult.
+- [x] A cell that would print over its row label clears it.
+
+### Open — Eric's call
+
+- [ ] CHORD-007 says an unattributable chord is omitted. Applying it to the main line means
+      dropping ~16 % of chords (or re-deriving the main line as the union of the players' own
+      tracks, which is the cleaner end state and a larger change). Not done: the instrument tracks
+      are themselves detectors, and a main-line chord they miss is not proven wrong.
+
+### Late line-openers — the earlier claim does not hold up
+
+Yesterday's "93 of 209 line openers land > 50 ms late, 8 early" measured each word against the
+sharpest energy rise within 0.4 s. Re-examined on Beach Weather with the alignment model itself
+(PyTorch reference, saved raw aligner output, the vocal stem):
+
+- [x] On all 38 line openers the aligner puts the word on the FIRST frame where the model hears any
+      phoneme. No opener had >= 70 ms of phoneme activity before its aligned start. The Viterbi
+      search adds no delay.
+- [x] Measured against the vocal level instead, most openers "saturated": the stem is never quiet
+      in the 0.6 s before the line (backing vocals, ad-libs, reverb). The rise yesterday's metric
+      latched onto was usually NOT the transcribed word's. That metric over-reports lateness on any
+      stem with continuous vocal activity, which is most of them.
+- [x] On the 8-10 openers with real silence beforehand: raw aligner about +40 ms (one 34.8 ms model
+      frame — CTC models spike inside a phoneme, not at its acoustic start), final app time about
+      +25 ms after the onset snap.
+- [ ] So the defensible statement is: line openers are about one model frame late, not 150 ms.
+      Anything stronger needs tap-annotated ground truth, which still does not exist.
+
+### 2026-09-20 (21:10) — "Still getting double chords"
+
+- [x] The per-player chord rows ("GtC"/"PnC") and the player COLORS on the chart's chord names were
+      one switch ("Instrument Chords", `reviewShowInstrumentChords`). Off gave one chord line but
+      every name in accent blue — the bass lane's color; on gave the colors plus a second copy of
+      the guitar's chords. They are now separate: the chart's ONE chord line is always colored by
+      who plays each chord; the option only adds the per-player rows, for comparing detectors.
+      Hiding a player's row no longer strips that player's credit from the chart either.
+- [x] Eric's stored option was ON; switched off in the app's preferences at relaunch.
+- [ ] Still true underneath: the chart line and a player's own track are two detectors and can
+      place the same chord up to two beats apart (7.6 % of chords). One chord line built from the
+      players' tracks would end that; see the open item above.
+
+## 2026-09-20 (21:30) — Chords arrive with the strum; rests; hold lines
+
+Eric, on Seven Bridges Road's opening: "why is the chord not arriving at the time of the visual
+audio onset"; "fix the blue D restated on row 2"; "if bass notes are turned off from the view menu,
+then I wouldn't expect to be seeing any blue notes"; "don't restate a chord while the player is
+resting — similar to the vocal continuation lines ... can we try similar lines for held chords".
+
+### Findings
+
+- The guitar sits at -59...-73 dB until 2.00 s, then -14 and -5 dB: the strum is at ~2.0 s. The
+  opening D was stored at 0.11 s with confidence exactly 0.6 — the decoder's default for a window
+  with NO evidence. The grid is extended back to the song start, `ChordalRestGate` blanks those
+  windows, and the Viterbi finds it cheaper to be on D from the first window than to pay a switch
+  penalty when D arrives. The event then took the run's first window.
+- `InstrumentOnsetDetector` thresholds against LOCAL level, so it fires on noise in near-silence:
+  "attacks" at 0.55, 1.02, 1.33, 1.64 s under a -60 dB guitar. Attacks came from guitar, piano AND
+  `other`, and chords are snapped to them: the re-entry chord sat on a noise attack at 45.61 s.
+- The blue D on row 2 was the chart builder restating the held chord "so no row is blank". No
+  event stands behind a restatement, so the label fell through to the accent tint (= bass blue).
+- The chord timeline stores CHANGES only. Nothing said "the player stopped", so a held chord was
+  restated across an a cappella passage, and a hold line would have had nowhere to end.
+
+### Done
+
+- [x] `ChordTimelineDecoder.events(path:windows:)`: an event sits on the first window of its run
+      that has evidence for it; a run with none yields no event; no-chord ends the run, so the
+      same chord coming back after a rest is a new arrival.
+- [x] Attacks for the main chord line come from guitar + piano only, and only where those stems
+      are sounding (`ChordalRestGate.sounding`). Harmony `reduce-35`.
+- [x] `InstrumentChordTimeline.rests` (`PlayerRests`): stretches >= 1 s where guitar + piano are
+      not sounding. `instrument-chords-3`. Threaded to every `ChordProDraftInput` (the stage and
+      six sites in AppModel) as `playerRests`.
+- [x] `ChordProDraftBuilder.held(at:)` returns nothing inside a rest or after one has cut the
+      chord off.
+- [x] Preview: chord hold lines (to the next chord or the next rest, clipped like word hold
+      lines, in the chord's own color); a chord name is never the accent tint — a restatement is
+      dim, an uncredited chord dimmer, a chord both players have is primary text.
+
+### Review
+
+39 songs, the library's `reduce-34` documents against this change:
+
+| | before | after |
+| --- | ---: | ---: |
+| chords | 6,364 | 5,695 |
+| chords placed where guitar + piano rest | 84 | 24 |
+| chord vs nearest strike, IQR | -83...+131 ms | -16...+85 ms |
+| more than 100 ms from a strike | 50.3 % | 40.8 % |
+
+Seven Bridges: opening D 0.11 -> 1.95 s (strum ~2.0); re-entry 45.61 -> 45.97 s (the guitar's own
+track: 45.98); rests 0-2.0, 7.8-44.5, 44.6-45.7, 133.6-184.9 s; the a cappella verse rows carry no
+chords and nothing is restated there.
+
+The 10.5 % fewer chords is NOT spread evenly: -16...-25 % on the songs where `other` plays (One
+night on Broadway, Moving on, You and me in paradise, Settle Down), whose `other` attacks — 29 % of
+all attacks library-wide — had been licensing chord changes; about 0 % elsewhere. Chords per bar
+there fall ~1.6 -> ~1.25. Consistent with the objective and with the measured 2x over-segmentation,
+but not checked against a chart for those songs. 1,208 tests, 0 failures.
+
+Not seen on screen: hold lines, dim restatements, the no-blue rule.
+
+## 2026-09-21 — The open items from 2026-09-20: nobody's chords, the drifting drummer, "crashing"
+
+Brief (Eric): "Fix these remaining issues", then "The app is also crashing a lot".
+
+### Crashes — nothing found on this Mac
+
+- [x] `~/Library/Logs/DiagnosticReports`: the only two SongWorkbench crash reports are 2026-09-19
+      21:40/21:41, both the headless CLI, both "non-escaping closure has escaped" in
+      `ONNXKaraokeChunkPredictor.predictRetainingOnlySwiftOutput` — fixed the same evening
+      (`ORTShortLivedThread.run` takes `@escaping`).
+- [x] Every GUI exit in 40 h of `runningboardd` log is `(0,0,0)` (menu Quit, before a rebuild) or
+      SIGTERM from a session; the `.diag` files are disk-write / CPU resource notices from
+      re-analysis runs ("Action taken: none"), not hangs. The app launched 2026-09-20 21:33 was
+      still up 10 h later.
+- [ ] So "crashing" is unexplained: needs what Eric was doing when it happened, or an `.ips`.
+
+### CHORD-007 enforced: a chord nobody's track has is omitted
+
+- [x] Measured on the library (5,752 chords): 79 % have the same chord sounding in a player's own
+      track at that instant, 86 % within a beat (the two decodes place one change up to a beat
+      apart), 14.6 % name a root NEITHER track has. On the three charted songs the unsupported
+      chords' roots are in the chart less often (68–86 %) than the supported ones' (87–93 %).
+- [x] `InstrumentChordPass.playedChords`: keeps a chord when a player's track has it within one
+      beat; never drops an accepted, moved or hidden chord; drops the second A of A-B-A once B is
+      gone, unless a rest lies between. `instrument-chords-4`. The Review colors credit with the
+      same one-beat tolerance, so a kept chord never reads as "nobody's".
+- [x] Corpus: 5,752 -> 4,311 chords (-25 %), 0 unsupported left. Against the charts' chord-change
+      counts: 1.29x -> 0.86x (reviewed), 1.73x -> 1.45x, 2.76x -> 2.38x.
+
+### A grid that follows the drummer — only where it proves itself
+
+- [x] Prototype history (scratchpad `sectioned.py`, `heldout.py`, `follow2.py`): a free tracker
+      chases noise on most songs (tempo wandering 10–20 BPM); a timid one helps nothing and broke
+      three locked songs. What separates real drift from chased noise is held-out onsets: fit on
+      every other onset, score on the rest.
+- [x] First Swift port picked DIFFERENT songs than the Python: the stage times the grid on the KICK
+      stem with the app's detector (264–909 onsets a song), not the full drum stem. Re-measured on
+      the app's own onsets (gated `GridOnsetDumpTests`). Lesson: validate on the detector's real
+      input.
+- [x] `DrumBeatGrid.followedBeatTimes`: 16-beat fits every 4 beats (period ±2 %, phase ± an
+      eighth), then the drift is Hann-smoothed over ±8 beats; adopted only when on-grid share
+      gains >= 25 points on all onsets AND on the held-out half. `reduce-36`.
+      Adopted on 4 of 39: Back To You (90–97 BPM), There's a place in my heart (75–77), The Winery
+      Dogs (111–127), Summer on the lake (82–87); gains +29…+43; largest change between
+      neighbouring beats 2–4 ms (41–94 ms unsmoothed). Next-best song: +18.
+- [x] `MetronomeGrid.clickTimes` returns a smoothly drifting grid as-is (click, note buckets and
+      solo buckets all cut there); a tracker's jittery beats still get the rigid click.
+- [ ] Chord-vs-strike placement on those four is unchanged (one better, three level): chords are
+      placed on strums, so the grid's effect is the click, barlines and buckets. Not heard or seen.
+- [ ] The songs that drift but fail the test (5 had gains of 13–21) stay on a rigid grid.
+
+### Left for ears
+
+- [ ] Just get up and dance `piano`: -52 dB over the song, audible only 3:26–3:31 where the guitar
+      has stopped. Solo it there: a piano ending, or the guitar's last ring.
+
+1,213 tests, 0 failures. Not rebuilt into `build/Release`, not re-analysed, not committed.
+
+## 2026-09-27 — A word alignment cannot place has no time
+
+Eric: "store no time" (lyric starts come from onsets measured in the audio ONLY). Until now a
+word that forced alignment could not measure, and no onset filled, kept the ASR's time — including
+reference-lyrics words spread evenly by `ReferenceLyricAligner`.
+
+Acceptance criteria:
+
+- [x] `TimedLyricWord.start`/`end` are optional; nil means "not measured". Older documents decode
+      unchanged (every stored word has a number).
+- [x] `MeasuredLyricTiming` writes nil for an unmeasured word instead of keeping the ASR time.
+- [x] A line's start/end come from its first/last TIMED word only. A line with no timed word keeps
+      its words but gives them to the neighbouring line (previous; the next when it is first),
+      because a line needs a start and none was measured.
+- [x] Every consumer skips untimed words for anything time-based (highlight, balls, recut, blend,
+      onset snapping, normalisers, audits) and still shows their text. No consumer computes a
+      time for an untimed word.
+- [x] Tests: unmeasured word → nil, line bounds from timed words, all-untimed line merged, old
+      document decodes. `swift test` and `swift format lint --strict` pass.
+
+Review (2026-09-27): `swift test` 1214 tests, 0 failures, 34 skipped; lint clean on every changed
+file. New `UnmeasuredLyricWordTests` cover the line join, the uncorrected-word nil time, draw
+anchors, and decoding. Existing tests that asserted interpolated or kept-ASR times now assert nil
+(reference aligner, corrected-line resolution). Not yet verified on a real song in the app.
+
+## 2026-09-27 — Whisper repetition loops: pick each line's words by acoustic evidence
+
+Eric: reference-quality lyrics by default, without pasting reference lyrics. Measured on Doc Holiday
+against the Moises reference (41 lines, 275 words; optimal-LCS word recall / precision; numbers
+only, scripts in the session scratchpad):
+
+| option | recall | precision | loops |
+|---|---|---|---|
+| Whisper (accuracy), today's default | 0.647 | 0.605 | one 9-word line x7 (142-227 s), from the decoder |
+| Whisper at decode rate 0.85 | 0.618 | 0.637 | a different line x6 |
+| Parakeet balanced | 0.622 | 0.681 | none |
+| Parakeet fast | 0.625 | 0.642 | none |
+| best engine per reference line (oracle) | 0.775 | — | — |
+
+The engines fail in different places (Whisper: lines 22-24, 31-33, 36-37; Parakeet: 13, 39), so
+choosing per line beats choosing an engine. Nothing today does that: `primaryTranscriptionMode` always
+takes Whisper, `DecodeLoopGuard` passes singable repeats, and Lyric Blend keeps accuracy unless onset
+TIMING disagrees — it never asks whether a line's WORDS are what the audio holds.
+
+Plan: score each engine's words with the forced-alignment model (how well their phonemes explain
+the vocal-stem audio) and keep the best-scoring engine per stretch by default; a line one engine
+repeats that another hears differently is the case this must win.
+
+Done (2026-09-28):
+- Row-by-row choice was tried first and measured poorly (0.655 / 0.662): engines break lines in
+  different places, so a row compares one engine's line with another's two. Choosing per STRETCH
+  (bounded by a pause where no engine has a word) fixed that: `LyricStretchChooser`.
+- `CTCForcedAlignment.pathScore` (Viterbi score, shares the lattice/forward pass with `align`).
+- `MultiEngineTranscriptionStage` runs the requested mode, then every other installed engine, and
+  keeps the chosen words; skipped with reference lyrics, without stems, or without the model.
+  Also stores the per-engine lines as Lyric Blend rows. The app's separate background blend pass
+  (`runLyricBlendPasses`) is deleted: it re-ran the engines and overwrote the choice row by row.
+- Margin sweep on Doc Holiday: flat 0.735-0.749 recall for 0.075-0.15; default 0.1.
+
+Acceptance criteria:
+- [x] Doc Holiday without reference lyrics: recall >= 0.72 and no line repeated more than the
+      reference repeats it (measured with the scratchpad LCS script).
+- [~] No regression on songs that transcribe well today (pick 3; compare per-line choices before/after,
+      report counts of rows whose choice changed).
+- [x] Runs by default in a single-song analysis and Re-analyze All; the extra cost is reported.
+- [x] `swift test` and `swift format lint --strict` pass.
+
+Review (2026-09-28):
+- Doc Holiday end to end (new Release build, CLI, no reference lyrics): 0.738 recall / 0.746
+  precision, 4 duplicate lines (the reference repeats 3), 0 untimed words; Whisper alone 0.647 /
+  0.605 with 8. Stretches: 11 Whisper, 5 balanced, 5 fast.
+- Three songs without a reference (Whisper-only build vs new, transcription stage, cached Whisper):
+  Glorify Thy Name 95% of Whisper's words kept, 1 of 4 stretches switched, duplicates 2 -> 2;
+  One night on Broadway 84% kept, 4 of 15 switched, duplicates 14 -> 6; High In Low Places 72%
+  kept, 2 of 8 switched, 276 -> 232 words, duplicates 3 -> 3. The last one is UNJUDGED: without a
+  reference it may be a fix or a regression. Needs Eric's ear or a reference.
+- Extra cost per song, Whisper cached, Parakeet uncached: +2.4 s to +22 s (two Parakeet passes and
+  four 0.6 s posteriorgrams). Against a fresh Whisper decode (~150 s) that is roughly +10-15 %.
+- `swift test`: 1214 tests, 0 failures, 35 skipped.
+
+## 2026-10-01 — whisper.cpp v1.9.4 and Qwen3-ASR
+
+Eric: "upgrade whisper.cpp, then add Qwen3-ASR" (after the model survey,
+docs/research/asr-models-2026-09.md). Role and size defaulted to the recommendation when the question
+went unanswered: Qwen3-ASR-1.7B 8-bit preferred, Whisper and Parakeet as stretch-chooser alternates.
+
+- [x] whisper.cpp v1.9.4 (b5130 asset, identical source): Doc Holiday 0.647 / 0.603, unchanged; the
+      hook loop remains, as expected (110eeaa).
+- [x] Qwen3-ASR measured before integrating (Python mlx-audio): 1.7B 0.851 / 0.833, 0.6B 0.785 / 0.828.
+- [x] Integrated via a trimmed copy of mlx-audio-swift (upstream fails under Swift 6.4), model package
+      with pinned SHA-256s, `TranscriptionMode.qwen` first in mode order (970334e).
+- [x] In-app Qwen matches the reference implementation: 0.829 / 0.851 after two fixes the first run
+      exposed (left-channel-only audio loader: 0.738; pre-#247 mel frontend: 0.764).
+- [x] App result on Doc Holiday, Qwen preferred: 0.815 / 0.845; 0 untimed words; the 8 repeated line
+      texts are all chorus lines in the reference.
+
+Review: `swift test` 1218 tests, 0 failures, 36 skipped; Release app builds with MLX (3 min cold);
+CLI end-to-end run verified. Not verified: the app's onboarding download of the 2.46 GB package (the
+package was installed for testing by copying the already-downloaded files and writing the same
+manifest the installer writes); High In Low Places and other songs with Qwen; memory with Qwen
+resident next to separation (peak 2.8 GB footprint during Qwen in the CLI run).
+
+## 2026-10-01 — Boot-disk space: unused stems, movable storage, 16-bit stems
+
+Eric: "Do all 3" (boot disk 97% full; the app held 41 GB in Application Support, 35 GB of it stems).
+
+- [x] Unused stems: 19 folders no song references (9 from before songs were imported into `Sources`,
+      10 abandoned separation staging folders) moved to `/Volumes/SSD/SongWorkbench-unused-stems-2026-10-01`
+      (5.7 GB). Deleting them was blocked by the agent's safety check; Eric can delete the folder.
+- [x] Movable storage: `BulkStorageLocation` (root for `Models` and `Analysis/Stems`, kept as an
+      app-scoped bookmark); Analysis > Move Models and Stems… copies, switches, deletes the originals
+      and quits. Stored stem paths under an earlier root resolve under the current one
+      (`StoredAudioReference.resolvedURL`), so the library is never rewritten. Test:
+      `testStemPathsFromEarlierStorageRootsResolveUnderTheCurrentOne`.
+- [x] 16-bit stems: `StemWAVCompaction` rewrites a finished stem as 16-bit PCM unless it peaks
+      above full scale (52 of 287 library stems do, up to 1.28, mostly drums). Test:
+      `testStemsWithinFullScaleAreStoredAs16BitAndLouderOnesStayFloat`.
+- [x] Before/after on Doc Holiday (same stems, float vs 16-bit, vocals forced to 16-bit), scored
+      with an exact LCS against the reference (difflib's SequenceMatcher under-counts on repeated
+      choruses: it reported 0.35 for a 0.815 result). Qwen mode: float 0.815 / 0.845, 16-bit
+      0.818 / 0.849; raw Qwen identical (0.855 / 0.855). Chords 128/128 matched (+1 extra in
+      16-bit; two float runs differ by the same 1), bass 251/251, key, tempo, beats identical.
+      Accuracy mode moved (0.749 -> 0.702) only because Whisper looped on the 16-bit vocal (357
+      words); Whisper loops on tiny input changes either way.
+- [x] Convert the existing library's stems: Eric ran `scripts/compact_existing_stems.py` (the
+      agent's safety check blocks in-place rewrites). First run stopped after 63 files on an
+      afconvert write failure into the container; second run converted 228 more, 78 stay float
+      (peak > 1): stems 27.9 GB -> 18.1 GB.
+- [x] Eric ran the move from the app to `/Volumes/SSD/Models & Stems`: Models 5.3 GB (7 packages)
+      and Stems 17 GB (41 songs) copied, originals removed (Application Support now 367 MB),
+      `bulkStoragePath` and previous root saved. Boot disk 13 GB -> 53 GB free. A CLI run then
+      loaded Whisper and Qwen from the SSD folder through the bookmark and read the song's stems
+      there: Doc Holiday 0.815 / 0.845, 0 untimed words (same as before the move).
+
+Review: `swift test` 1220 tests, 0 failures, 36 skipped; lint clean on changed files; Release
+build 17:43. Not checked: playback and a full in-app Analyze after the move (Eric's next open).
+
+## 2026-10-06 — Beat model (beat_this) and sections start on their first word's bar
+
+Eric: lyrics looked "crammed into the last beat of a measure"; "start verses and choruses on the
+measure that has the first word, and leave any empty measure as part of the previous section";
+build beat tracking into the app, Swift-native, no Python dependency.
+
+- [x] Diagnosis: the autocorrelation `BeatTracker` (on the lead stem since b288e96) picked 4/3 the
+      real tempo on 7 of 14 album tracks and 2x on one; Doc Holiday 103.4 vs the 77 Eric counts.
+      Chord changes landed on beat at chance (30 %) on every song.
+- [x] beat_this (CPJKU, MIT) matched Eric's counts once decoded at one tempo level: Doc Holiday
+      77.0, Key West Bar 93.6. Its own peak picking switched levels mid-song.
+- [x] Core ML conversion `tools/beat_this_export/export_coreml.py` -> `BundledModels/BeatThis.mlpackage`
+      (39 MB, fp16); vs PyTorch: max |diff| 0.005, all 39 reference beat peaks kept.
+- [x] Swift: `BeatThisMel` (matches beat_this's LogMelSpect within 0.002), chunked inference
+      (`split_piece` starts exactly), `BeatThisDecoder` (one tempo + Ellis DP + downbeat phase).
+      Harmony stage uses it on the recording; bar grid source `.beatModel`; the lyric-line
+      reconciler never retunes it. Missing model fails the build and the pipeline.
+- [x] Swift beats vs Python prototype: 100 % within 25 ms on Doc Holiday and Key West Bar.
+- [x] Library run (44 songs, CLI harmony+chordPro): all succeeded; 19 tempos unchanged, 17 at 3/4
+      of the old, 3 at 1/2, 5 other changes (listed in the report to Eric).
+- [x] `ChartRowGrid` restarts rows on each section's first-word bar; the bars before end the
+      previous section as a shorter row (`rowBeats`, chart algorithm 10, layout version 2).
+
+Review: `swift test` 1225 tests, 0 failures, 36 skipped; lint clean on Sources/Tests. Not verified:
+the in-app chart with the new rows (needs a re-analysis in the app); tempos Eric has not counted
+(Sevens and Elevens 97.5 -> 145.9, Eight Miles High 112.3 -> 129.7, All I got is Time 124 -> 76.5,
+One night on Broadway 109.6 -> 79.6).
+
+## 2026-10-07 — Every instrument a separate source
+
+Eric: "rely on each instrument's own stem to identify its chord or note changes. These should not
+be interdependent at all and should work as if each were a separate source." Rows per instrument
+in its own colour, chosen in the preview pane; changes timed by each stem's own onsets, snapped to
+the nearest half-beat.
+
+Reference: Eric's chart of Flip Flops And Barbeque (E major; the recording sounds a half step
+down). Guitar line before this work: 128 chords, 77 % chart chords, 46 changes < 2 beats apart.
+
+- [x] Guitar chord line uses the guitar stem alone (17e165a).
+- [x] No cross-instrument links: bass notes not rounded to guitar chords (`BassChordReconciler`),
+      no vocal filter on bass/note rows (`VocalShadowGate`), no chord vote across sung lines
+      (`ChorusChordConsensus`), each instrument's own key prior, no combined-chord note row.
+- [x] One chord pipeline for every instrument (`InstrumentChordPass.chordLine`).
+- [x] Chord and note changes at their stem's onsets, snapped to the nearest half-beat
+      (`HalfBeatGrid`; note rows on half-beat buckets, a cell only where the note changes).
+- [x] Review pane: a Display panel of checkboxes (Eric: a dialog, not a dropdown) — per
+      instrument Chords and Notes, bass line, harmonies, solo tab, grid, waveform, bouncing balls.
+      Not yet seen in the running app.
+- [x] Re-measure Flip Flops: 124 chords, 77 % chart chords, 47 changes < 2 beats — unchanged;
+      the extras come from decoding the guitar stem itself.
+- [ ] Match Eric's chart's level of detail on the guitar line (his chart is the target).
+- [ ] Player rests per instrument (`PlayerRests.intervals` still pools guitar and piano).
+
+## 2026-10-07 — Chord network in the app
+
+Eric approved converting the Jiang et al. 2019 chord network (music-x-lab, MIT) to Swift + Core ML,
+no Python at runtime.
+
+- [x] `ChordNet.mlpackage` (1.8 MB, s0 of the 5-model ensemble) by
+      `tools/chord_model_export/export_coreml.py`; argmax parity with PyTorch 99.94-100 %.
+- [x] Decoder (`ChordNetDecoder`): the XHMM Viterbi, 301-chord vocabulary, change penalty 30.
+- [x] Features (`ChordNetFeatures`): librosa's recursive CQT at tuning 0, basis exported by
+      `generate_cqt_basis.py`. Against `librosa.cqt` on Flip Flops: median per-frame error 0.01 %.
+- [x] Chord line from the network for the guitar line and every instrument row; changes on the
+      stem's attacks, then the nearest half-beat. Template chain kept only for tests (no bundle).
+- [x] Build fails without `BundledModels/ChordNet.mlpackage`; MIT notices in `Resources/`.
+
+Review: chart probe, 23 songs, guitar stems (`ChartMatchProbeTests`, `SW_CHORDNET_MODEL`):
+
+| Chain | Chords | Recall | In chart | F1 | Flip Flops F1 |
+|---|---:|---:|---:|---:|---:|
+| Template (before) | 91 | 0.73 | 77 % | 0.47 | 0.58 |
+| Chord network | 83 | 0.79 | 90 % | 0.53 | 0.86 |
+
+In-chart share rose on all 23 songs; F1 fell on 7 (by 0.02-0.12; each has more chords than before, against a coarse
+catalog chart). Swift-only chain on Flip Flops: 0.86, as in Python.

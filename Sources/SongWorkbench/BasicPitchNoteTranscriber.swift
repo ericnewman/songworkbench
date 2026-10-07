@@ -231,15 +231,18 @@ final class BasicPitchNoteTranscriber: @unchecked Sendable {
 
     /// `samples` at 22 050 Hz mono. Drains the converter until `.endOfStream`, since one pull is
     /// not guaranteed to flush a rate conversion (see `CoreMLStemSeparationEngine`).
-    static func resampled(_ samples: [Float], from sampleRate: Double) throws -> [Float] {
-        guard sampleRate > 0, !samples.isEmpty else { throw Error.unsupportedAudio }
-        if sampleRate == Self.sampleRate { return samples }
+    static func resampled(
+        _ samples: [Float], from sampleRate: Double,
+        to targetRate: Double = BasicPitchNoteTranscriber.sampleRate
+    ) throws -> [Float] {
+        guard sampleRate > 0, targetRate > 0, !samples.isEmpty else { throw Error.unsupportedAudio }
+        if sampleRate == targetRate { return samples }
         guard
             let inputFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1,
                 interleaved: false),
             let outputFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32, sampleRate: Self.sampleRate, channels: 1,
+                commonFormat: .pcmFormatFloat32, sampleRate: targetRate, channels: 1,
                 interleaved: false),
             let input = AVAudioPCMBuffer(
                 pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(samples.count)),
@@ -248,7 +251,7 @@ final class BasicPitchNoteTranscriber: @unchecked Sendable {
         input.frameLength = AVAudioFrameCount(samples.count)
         input.floatChannelData![0].update(from: samples, count: samples.count)
 
-        let ratio = Self.sampleRate / sampleRate
+        let ratio = targetRate / sampleRate
         let capacity = AVAudioFrameCount(ceil(Double(samples.count) * ratio)) + 1
         let provider = SingleBufferInputProvider(buffer: input)
         var output: [Float] = []

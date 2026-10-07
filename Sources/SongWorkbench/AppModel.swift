@@ -35,8 +35,12 @@ enum LyricLineEdit {
         guard words.count >= 2 else { return nil }
         var splitAt = 1
         var widestGap = -TimeInterval.infinity
-        for k in 1..<words.count where words[k].start - words[k - 1].end > widestGap {
-            widestGap = words[k].start - words[k - 1].end
+        // The widest measured pause; a pair with an untimed word has no measured gap.
+        for k in 1..<words.count {
+            guard let start = words[k].start, let previousEnd = words[k - 1].end,
+                start - previousEnd > widestGap
+            else { continue }
+            widestGap = start - previousEnd
             splitAt = k
         }
         let chars = Array(segment.text)
@@ -50,10 +54,10 @@ enum LyricLineEdit {
                     .upperBound - cut))
         }
         let first = TimedLyricSegment(
-            start: segment.start, end: firstWords.last?.end ?? segment.start,
+            start: segment.start, end: firstWords.lastEnd ?? segment.start,
             text: String(chars[0..<cut]).trimmingCharacters(in: .whitespaces), words: firstWords)
         let second = TimedLyricSegment(
-            start: secondWords.first?.start ?? segment.end, end: segment.end,
+            start: secondWords.firstStart ?? segment.end, end: segment.end,
             text: String(chars[cut...]), words: secondWords)
         return (first, second)
     }
@@ -175,18 +179,6 @@ final class AppModel: ObservableObject {
     /// complete, open a new Lyric Blend window"). Consumers should reset it to `nil` after
     /// opening the window so re-selecting the song later doesn't re-trigger it.
     @Published var lyricBlendReadySongID: Song.ID?
-    /// True while the two non-primary transcription modes are running in the background after a
-    /// full analysis, to populate Lyric Blend candidates. The primary analysis has ALREADY
-    /// finished and `document.lyrics`/ChordPro are fully usable during this window — this flag is
-    /// purely informational (e.g. a small "Preparing lyric blend…" indicator), never a gate on
-    /// other UI.
-    @Published private(set) var isComputingLyricBlend = false
-    /// Live description of the post-analysis background phase (per-mode blend transcription,
-    /// stem-onset matching, chart rebuild), for the bottom status bar — the 30–60s window
-    /// after an analysis completes previously showed NOTHING while the app quietly re-ran
-    /// the other transcription modes and then refreshed lyrics/chart (Eric: "we need some
-    /// indication of the background activity … that precedes the refresh").
-    @Published private(set) var lyricBlendStatus: String?
     /// User-provided reference lyrics. Persisted; the next analysis aligns these exact words/lines
     /// to the ASR timings. Call `applyReferenceLyrics()` to re-run alignment from the cached audio.
     @Published var referenceLyrics = "" {
@@ -285,6 +277,10 @@ final class AppModel: ObservableObject {
         didSet { persistSelectedAnalysis() }
     }
     @Published private(set) var isComputingInstrumentChords = false
+    /// The player the chord line's chords come from, mirrored from the document.
+    @Published private(set) var chordInstrument: StemKind? {
+        didSet { persistSelectedAnalysis() }
+    }
     /// Solo passages as guitar tab, mirrored from the document; same staleness rule as
     /// `bucketNotes` — Review checks `isSoloTimelineCurrent` before drawing.
     @Published private(set) var soloTranscriptions: SoloTranscriptionTimeline? {
@@ -332,10 +328,42 @@ final class AppModel: ObservableObject {
     /// Live import/localization progress ("Importing 2 of 5: …"); nil when idle. Feeds the
     /// always-visible background-status line.
     @Published private(set) var importStatus: String?
+    /// Progress of Analysis > Move Models and Stems; nil when no move is running.
+    @Published private(set) var storageMoveStatus: String?
+
+    var canMoveBulkStorage: Bool {
+        storageMoveStatus == nil && !isSongAnalysisRunning && modelInstallProgress.isEmpty
+    }
+
+    /// Moves models and stems to `destination` (see `BulkStorageLocation.move`), then quits: the
+    /// app opens them from the new folder on its next launch. Analysis can't start meanwhile.
+    func moveBulkStorage(to destination: URL) {
+        guard canMoveBulkStorage else { return }
+        stopPlaybackForAnalysis()
+        storageMoveStatus = "Moving models and stems…"
+        Task.detached { [weak self] in
+            do {
+                try BulkStorageLocation.move(to: destination) { status in
+                    Task { @MainActor in self?.storageMoveStatus = status }
+                }
+                await MainActor.run {
+                    self?.flushPendingSave()
+                    PlatformLifecycle.terminate()
+                }
+            } catch {
+                await MainActor.run {
+                    self?.storageMoveStatus = nil
+                    self?.projectErrorMessage =
+                        "Models and stems weren't moved: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
 
     /// One-line description of whatever the app is doing in the background right now, for
     /// the persistent status row across the top of the main window. `nil` = idle ("Ready").
     var backgroundActivityStatus: String? {
+        if let storageMoveStatus { return storageMoveStatus }
         if let importStatus { return importStatus }
         // ONE analysis branch, not two. `reanalyzeAllStatus` used to be checked ahead of
         // `isSongAnalysisRunning` and returned early, so it SHADOWED the stage/percent line —
@@ -351,7 +379,6 @@ final class AppModel: ObservableObject {
                 progress: isSongAnalysisRunning ? songAnalysisProgress : nil
             )
         }
-        if let lyricBlendStatus { return lyricBlendStatus }
         if isExporting {
             return "Exporting mix… \(Int((exportProgress * 100).rounded()))%"
         }
@@ -841,8 +868,6 @@ final class AppModel: ObservableObject {
     private var analysisMonitorTask: Task<Void, Never>?
     private var analysisPreflightTask: Task<Void, Never>?
     private var analysisPreflightGeneration: UUID?
-    private var lyricBlendTask: Task<Void, Never>?
-    private var lyricBlendGeneration: UUID?
     private let analysisCoordinator: SongAnalysisCoordinator
     private var activeAnalysisRunID: UUID?
     private var modelInstallTasks: [String: Task<Void, Never>] = [:]
@@ -855,6 +880,8 @@ final class AppModel: ObservableObject {
     private let sourceRecoveryDirectories: [URL]?
     /// `Application Support/SongWorkbench`, or `<storageRoot>/Support` when one was injected.
     private let supportDirectory: URL
+    /// Models and stems: `BulkStorageLocation.root`, or `supportDirectory` under test.
+    private let bulkDirectory: URL
 
     init(
         store: any ProjectStore = SplitProjectStore.standard,
@@ -876,7 +903,9 @@ final class AppModel: ObservableObject {
             ).first!
             .appendingPathComponent("SongWorkbench", isDirectory: true)
         self.supportDirectory = supportDirectory
-        let modelDirectory = supportDirectory.appendingPathComponent("Models", isDirectory: true)
+        let bulkDirectory = storageRoot == nil ? BulkStorageLocation.root : supportDirectory
+        self.bulkDirectory = bulkDirectory
+        let modelDirectory = bulkDirectory.appendingPathComponent("Models", isDirectory: true)
         modelPackageManager = ModelPackageManager(
             directoryURL: modelDirectory,
             downloader: URLSessionModelArtifactDownloader()
@@ -910,7 +939,10 @@ final class AppModel: ObservableObject {
                 )
                 factory.capabilityProfile = AnalysisCapabilityProfile.current
                 factory.stemRefinementEngineFactory = .production
-                if !usesBundledModel { factory.nativeModelURL = nil }
+                if !usesBundledModel {
+                    factory.nativeModelURL = nil
+                    factory.requiresBundledModels = false
+                }
                 return try await factory.makePipeline()
             }
         )
@@ -941,7 +973,6 @@ final class AppModel: ObservableObject {
         analysisControlTask?.cancel()
         analysisMonitorTask?.cancel()
         analysisPreflightTask?.cancel()
-        lyricBlendTask?.cancel()
         analysisCoordinator.cancel()
         for task in modelInstallTasks.values { task.cancel() }
     }
@@ -1038,6 +1069,7 @@ final class AppModel: ObservableObject {
                     beatTimes: beatTimes,
                     sourceDuration: sourceDuration,
                     untranscribedVocalRegions: untranscribedVocalRegions,
+                    playerRests: instrumentChords?.rests ?? [],
                     barGrid: barGrid,
                     beatsPerRowOverride: chartBeatsPerRowOverride
                 ),
@@ -1055,6 +1087,7 @@ final class AppModel: ObservableObject {
                 beatTimes: beatTimes,
                 sourceDuration: sourceDuration,
                 untranscribedVocalRegions: untranscribedVocalRegions,
+                playerRests: instrumentChords?.rests ?? [],
                 barGrid: barGrid,
                 beatsPerRowOverride: chartBeatsPerRowOverride
             ),
@@ -1233,6 +1266,9 @@ final class AppModel: ObservableObject {
         if case .installed = modelPackageStatuses[ModelCatalog.whisperAccuracy.id] {
             modes.insert(.accuracy)
         }
+        if case .installed = modelPackageStatuses[ModelCatalog.qwen3ASR.id] {
+            modes.insert(.qwen)
+        }
         return modes.intersection(analysisCapabilityProfile.transcriptionModes)
     }
 
@@ -1351,10 +1387,31 @@ final class AppModel: ObservableObject {
     private func enqueueForAnalysis(_ newSongs: [Song]) {
         let queuedIDs = Set(analysisQueue.map(\.id))
         let additions = newSongs.filter { !queuedIDs.contains($0.id) }
-        guard !additions.isEmpty else { return }
+        guard !additions.isEmpty else {
+            // Everything asked for is already queued — but the QUEUE may be stalled, holding
+            // songs with nothing draining them. Returning here leaves it stalled forever: the
+            // user clicks "Re-analyze All" and nothing happens at all, not even an error, which
+            // is indistinguishable from the app ignoring them. Always give the drain a nudge.
+            startNextQueuedAnalysisIfIdle()
+            return
+        }
         if analysisQueue.isEmpty { analysisQueueCompletedCount = 0 }
         analysisQueue.append(contentsOf: additions)
         startNextQueuedAnalysisIfIdle()
+    }
+
+    /// Drops the "an analysis is running" state, but ONLY when nothing actually is.
+    ///
+    /// `isSongAnalysisRunning` gates the Analysis menu, so a path that returns early while it is
+    /// still set leaves the app unable to start any analysis at all — and it fails silently, which
+    /// is what makes it expensive: there is no error to read and no way back except relaunching.
+    /// Every early exit from an analysis run calls this rather than clearing the flag directly,
+    /// so the "is anything still running?" test lives in one place.
+    private func clearAnalysisStateIfNothingRunning() {
+        guard activeAnalysisRunID == nil else { return }
+        isSongAnalysisRunning = false
+        currentAnalyzedSongID = nil
+        songAnalysisProgress = nil
     }
 
     /// Starts the next queued song's analysis, but only if nothing is already running — safe to
@@ -1400,11 +1457,6 @@ final class AppModel: ObservableObject {
             completion?(false)
             return
         }
-        lyricBlendTask?.cancel()
-        lyricBlendTask = nil
-        lyricBlendGeneration = nil
-        lyricBlendStatus = nil
-        isComputingLyricBlend = false
         analysisPreflightTask?.cancel()
         analysisCoordinator.cancel()
         let preflightGeneration = UUID()
@@ -1433,9 +1485,19 @@ final class AppModel: ObservableObject {
                     ) ?? sourceURL
                 return (url: recovered, availability: AppModel.sourceAvailability(of: recovered))
             }.value
-            guard let self, !Task.isCancelled,
-                analysisPreflightGeneration == preflightGeneration
-            else { return }
+            guard let self else { return }
+            guard !Task.isCancelled, analysisPreflightGeneration == preflightGeneration else {
+                // Only the preflight that still owns the generation may clear up after itself;
+                // a newer one has taken over otherwise and owns the flag now. Without this the
+                // flag set just above survives a cancellation that has no replacement.
+                if analysisPreflightGeneration == preflightGeneration {
+                    analysisPreflightTask = nil
+                    analysisPreflightGeneration = nil
+                    clearAnalysisStateIfNothingRunning()
+                    completion?(true)
+                }
+                return
+            }
             analysisPreflightTask = nil
             analysisPreflightGeneration = nil
             switch preflight.availability {
@@ -1450,6 +1512,12 @@ final class AppModel: ObservableObject {
                 self.currentAnalyzedSongID = nil
                 self.projectErrorMessage = message
                 completion?(false)
+                // `beginAnalysis` never ran, so its `onFinish` — the one place that normally
+                // starts the next queued song — will never fire for this song. Without this the
+                // queue stops dead on the FIRST song whose source cannot be read, silently
+                // abandoning every song behind it: a 39-song re-analysis ended at 16, and then
+                // at 11, because a handful of sources had moved (2026-09-18/19).
+                self.startNextQueuedAnalysisIfIdle()
             }
         }
     }
@@ -1510,6 +1578,11 @@ final class AppModel: ObservableObject {
         runLyricBlend: Bool = false,
         completion: ((_ cancelled: Bool) -> Void)? = nil
     ) {
+        // Stems written now would land in the folder being moved away.
+        guard storageMoveStatus == nil else {
+            completion?(true)
+            return
+        }
         let songID = song.id
         let existingDocument = analysisBySongID[songID] ?? SongAnalysisDocument()
         isSongAnalysisRunning = true
@@ -1546,6 +1619,15 @@ final class AppModel: ObservableObject {
             onFinish: { [weak self] runID, outcome in
                 guard let self else { return }
                 guard activeAnalysisRunID == runID else {
+                    // A run that is no longer the active one just finished. If a NEWER run is
+                    // active it owns the flag and must not be disturbed — but if nothing is
+                    // active, leaving the flag set disables every future analysis silently: no
+                    // error, no message, just a permanently greyed-out "Re-analyze All", with
+                    // relaunching the app the only way back. That is what stranded a 39-song
+                    // re-analysis at 16 on 2026-09-18.
+                    if activeAnalysisRunID == nil {
+                        clearAnalysisStateIfNothingRunning()
+                    }
                     completion?(true)
                     return
                 }
@@ -1594,8 +1676,13 @@ final class AppModel: ObservableObject {
                         // inspect. Report what actually broke instead.
                         projectErrorMessage = Self.failedStageMessage(in: result.document)
                     }
-                    if runLyricBlend, !result.wasCancelled, stages.contains(.transcription) {
-                        runLyricBlendPasses(for: song, primaryDocument: result.document)
+                    // The transcription stage itself ran every engine and chose between them
+                    // (`MultiEngineTranscriptionStage`); light the Lyric Blend icon when there
+                    // are candidates to compare.
+                    if runLyricBlend, !result.wasCancelled,
+                        result.document.lyricBlendRows.contains(where: { $0.candidates.count > 1 })
+                    {
+                        lyricBlendReadySongID = song.id
                     }
                 case .failure(let error):
                     isSongAnalysisRunning = false
@@ -1615,188 +1702,6 @@ final class AppModel: ObservableObject {
                 startNextQueuedAnalysisIfIdle()
             }
         )
-    }
-
-    /// After a full analysis completes, independently re-runs transcription in the OTHER
-    /// installed modes (whichever of Fast/Balanced/Accuracy weren't the primary mode) so the
-    /// "Lyric Blend" window has real candidates from every available mode (backlog #11). Runs
-    /// sequentially, not concurrently: `SongAnalysisCoordinator` cancels any in-flight run when
-    /// `.run` is called again, so a second overlapping call here would cancel the first. Each
-    /// pass only requests `.transcription`, so harmony/chords/stems already in `primaryDocument`
-    /// are carried through untouched, and each pass's own per-mode cache key (`AnalysisStage`)
-    /// makes an unchanged-audio re-blend cheap on a later analysis. A mode whose model isn't
-    /// installed, or a pass that fails for any reason, is skipped — Lyric Blending degrades to
-    /// fewer candidates rather than disturbing the analysis that already succeeded.
-    private func runLyricBlendPasses(for song: Song, primaryDocument: SongAnalysisDocument) {
-        let songID = song.id
-        let available = availableTranscriptionModes
-        let primaryMode = primaryTranscriptionMode
-        let otherModes = LyricBlendRowBuilder.modeOrder.filter {
-            $0 != primaryMode && available.contains($0)
-        }
-        guard !otherModes.isEmpty else { return }
-
-        lyricBlendTask?.cancel()
-        let generation = UUID()
-        lyricBlendGeneration = generation
-        isComputingLyricBlend = true
-        lyricBlendTask = Task { [weak self] in
-            guard let self else { return }
-            // Whatever path exits this task, the status line must clear — a stuck
-            // "Preparing…" is worse than none.
-            defer {
-                if self.lyricBlendGeneration == generation {
-                    self.lyricBlendTask = nil
-                    self.lyricBlendGeneration = nil
-                    self.lyricBlendStatus = nil
-                    self.isComputingLyricBlend = false
-                }
-            }
-            var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
-                primaryMode: primaryDocument.lyrics
-            ]
-            for (index, mode) in otherModes.enumerated() {
-                guard !Task.isCancelled, self.lyricBlendGeneration == generation else {
-                    return
-                }
-                self.lyricBlendStatus =
-                    "Preparing Lyric Blend — \(Self.blendModeLabel(mode)) pass "
-                    + "(\(index + 1) of \(otherModes.count))…"
-                if let segments = await self.runSingleTranscriptionPass(
-                    for: song, mode: mode, existingDocument: primaryDocument)
-                {
-                    lyricsByMode[mode] = segments
-                }
-            }
-            guard !Task.isCancelled, self.lyricBlendGeneration == generation else {
-                return
-            }
-            self.lyricBlendStatus = "Preparing Lyric Blend — matching lines to the vocal stem…"
-            // The song may have been removed from the library while these passes ran.
-            guard self.analysisBySongID[songID] != nil else { return }
-
-            let freshRows = LyricBlendRowBuilder.buildRows(
-                fastDraft: lyricsByMode[.fastDraft] ?? [],
-                balancedDraft: lyricsByMode[.balancedDraft] ?? [],
-                accuracy: lyricsByMode[.accuracy] ?? [])
-            // Nothing to blend (e.g. every other mode's pass failed) — don't open a blend window
-            // with only one column and nothing to pick between.
-            guard freshRows.contains(where: { $0.candidates.count > 1 }) else { return }
-
-            var updated = self.analysisBySongID[songID] ?? primaryDocument
-            // Carry forward any manual override/mode pick from the PREVIOUS blend rows onto
-            // whichever freshly-built row now occupies the same time window — otherwise a
-            // re-analysis silently discards a user's correction, which is exactly what a
-            // consistently-misheard-lyric override exists to survive.
-            let reconciledRows = LyricBlendRowBuilder.reconciled(
-                newRows: freshRows, against: updated.lyricBlendRows)
-            // The vocal stem is ground truth for word placement (every sung burst ↔ a word):
-            // where the stem's energy onsets clearly corroborate a non-default candidate's
-            // timing, prefer it for rows the user hasn't picked — engine timing disagreements
-            // (the duplicated-line class of bugs) then resolve toward the audio itself.
-            // Detection runs off the main actor; a missing stem degrades to no change.
-            let vocalsURL = updated.stems?.resolved().vocals
-            let vocalOnsets: [TimeInterval] = await Task.detached(priority: .utility) {
-                guard let vocalsURL else { return [] }
-                return (try? InstrumentOnsetDetector.onsets(url: vocalsURL)) ?? []
-            }.value
-            // A candidate that runs a neighbour's line together with this row's line is a
-            // timing artifact, not a longer line — prefer the split candidate (field case:
-            // "line 9 is actually 2 lines").
-            let rows = LyricBlendRowBuilder.runOnDuplicatesDemoted(
-                LyricBlendRowBuilder.onsetCorroborated(
-                    reconciledRows, vocalOnsets: vocalOnsets))
-            updated.lyricBlendRows = rows
-            let oldLyrics = updated.lyrics
-            updated.lyrics = TimedLyricSegment.reconciled(
-                newSegments: LyricBlendRowBuilder.effectiveLyrics(from: rows), against: oldLyrics)
-            // Blend rewrote the lyrics outside the pipeline; re-derive the displayed timing
-            // (regroup/reconcile/recut, from the raw beats it restores itself) before the chart
-            // is rebuilt from these values.
-            AnalysisTimingPostPasses.apply(to: &updated)
-            // The chart must follow the lyrics: this overwrite previously left the GENERATED
-            // ChordPro draft stale, so the chart kept showing pre-blend run-on lines after
-            // the lyric list was already fixed (field case: chart line 12 "settle down,
-            // trading my rowdy friends…"). Same guards as `rebuildGeneratedChordProDraft`:
-            // only an unreviewed, generator-produced draft is rebuilt.
-            if updated.stageRecords[.chordPro]?.state == .succeeded,
-                updated.stageRecords[.chordPro]?.provenance?.engineIdentifier
-                    == "chordpro-draft-builder",
-                updated.chordProReviewState != .reviewed
-            {
-                self.lyricBlendStatus = "Preparing Lyric Blend — rebuilding chart…"
-                let built = self.chordProBuilder.buildResult(
-                    ChordProDraftInput(
-                        title: song.title,
-                        tempo: updated.estimatedBPM,
-                        lyrics: updated.lyrics,
-                        chords: updated.chords,
-                        confidenceThreshold: updated.chordConfidenceThreshold,
-                        beatTimes: updated.beatTimes,
-                        sourceDuration: updated.sourceDuration,
-                        untranscribedVocalRegions: updated.untranscribedVocalRegions,
-                        estimatedKey: updated.estimatedKey,
-                        barGrid: updated.barGrid,
-                        bassNotes: updated.bassNotes,
-                        beatsPerRowOverride: chartBeatsPerRowOverride,
-                        placementPicks: updated.chordPlacementPicks
-                    ))
-                updated.chordProSource = built.source
-                updated.chartLayout = PersistedChartLayout(result: built, lyrics: updated.lyrics)
-            }
-            self.analysisBySongID[songID] = updated
-            if self.selectedSongID == songID {
-                self.applyAnalysis(updated)
-            }
-            self.scheduleSave()
-            self.lyricBlendReadySongID = songID
-        }
-    }
-
-    /// Short human label for a transcription mode in the background status line.
-    private static func blendModeLabel(_ mode: TranscriptionMode) -> String {
-        switch mode {
-        case .fastDraft: "Fast"
-        case .balancedDraft: "Balanced"
-        case .accuracy: "Accuracy"
-        }
-    }
-
-    /// Runs ONE transcription-only pass in `mode` via the coordinator, returning its resulting
-    /// lyric lines (or `nil` on failure/cancellation) without touching any other published
-    /// analysis state — the caller decides what to do with the result. Used by
-    /// `runLyricBlendPasses` to gather each non-primary mode's candidate.
-    private func runSingleTranscriptionPass(
-        for song: Song, mode: TranscriptionMode, existingDocument: SongAnalysisDocument
-    ) async -> [TimedLyricSegment]? {
-        await withCheckedContinuation { continuation in
-            let request = SongAnalysisPipelineRequest(
-                sourceURL: song.url,
-                outputDirectory: analysisOutputDirectory(for: song.id),
-                title: song.title,
-                stages: [.transcription],
-                transcriptionMode: mode,
-                existingDocument: existingDocument,
-                chordProReplacementPolicy: .preserveExisting,
-                transcriptionDecodeRate: min(max(accuracyDecodeSpeed, 0.75), 1.0)
-            )
-            analysisCoordinator.run(
-                request: request,
-                onStatuses: { [weak self] _, statuses in
-                    self?.noteModelStatuses(statuses)
-                },
-                onProgress: { _, _ in },
-                onFinish: { _, outcome in
-                    switch outcome {
-                    case .success(let result):
-                        continuation.resume(
-                            returning: result.wasCancelled ? nil : result.document.lyrics)
-                    case .failure:
-                        continuation.resume(returning: nil)
-                    }
-                }
-            )
-        }
     }
 
     /// Records the user's pick for one Lyric Blend row (backlog #11) and rebuilds the effective
@@ -1886,7 +1791,7 @@ final class AppModel: ObservableObject {
             let document = analysisBySongID[selectedSongID]
         else { return false }
         return BucketNotePass.gridKey(for: document) != nil
-            && !BucketNotePass.stemAudio(for: document).isEmpty
+            && !BucketNotePass.stemAudio(for: document, gated: false).isEmpty
     }
 
     /// Recuts the bucket-note timeline from the stems on disk, on the current grid — the same
@@ -1926,7 +1831,7 @@ final class AppModel: ObservableObject {
             let document = analysisBySongID[selectedSongID]
         else { return false }
         return SoloTranscriptionPass.gridKey(for: document) != nil
-            && !SoloTranscriptionPass.stemAudio(for: document).isEmpty
+            && !SoloTranscriptionPass.stemAudio(for: document, gated: false).isEmpty
     }
 
     /// Same shape as `computeBucketNotes`: the pipeline's pass, run detached, stored on the song
@@ -1964,7 +1869,7 @@ final class AppModel: ObservableObject {
             let document = analysisBySongID[selectedSongID]
         else { return false }
         return BucketNotePass.gridKey(for: document) != nil
-            && !InstrumentChordPass.stemAudio(for: document).isEmpty
+            && !InstrumentChordPass.stemAudio(for: document, gated: false).isEmpty
     }
 
     /// Same shape as `computeBucketNotes`: the pipeline's pass, run detached, stored on the song
@@ -2051,11 +1956,6 @@ final class AppModel: ObservableObject {
         analysisPreflightTask?.cancel()
         analysisPreflightTask = nil
         analysisPreflightGeneration = nil
-        lyricBlendTask?.cancel()
-        lyricBlendTask = nil
-        lyricBlendGeneration = nil
-        lyricBlendStatus = nil
-        isComputingLyricBlend = false
         analysisCoordinator.cancel()
         if activeAnalysisRunID == nil {
             isSongAnalysisRunning = false
@@ -2640,11 +2540,6 @@ final class AppModel: ObservableObject {
         analysisPreflightTask?.cancel()
         analysisPreflightTask = nil
         analysisPreflightGeneration = nil
-        lyricBlendTask?.cancel()
-        lyricBlendTask = nil
-        lyricBlendGeneration = nil
-        lyricBlendStatus = nil
-        isComputingLyricBlend = false
         analysisCoordinator.cancel()
         activeAnalysisRunID = nil
         isSongAnalysisRunning = false
@@ -2701,6 +2596,7 @@ final class AppModel: ObservableObject {
         vocalHarmonyNotes = []
         bucketNotes = nil
         instrumentChords = nil
+        chordInstrument = nil
         soloTranscriptions = nil
         estimatedKey = nil
         chordConfidenceThreshold = 0.5
@@ -3339,6 +3235,7 @@ final class AppModel: ObservableObject {
         vocalHarmonyNotes = analysis.vocalHarmonyNotes
         bucketNotes = analysis.bucketNotes
         instrumentChords = analysis.instrumentChords
+        chordInstrument = analysis.chordInstrument
         soloTranscriptions = analysis.soloTranscriptions
         estimatedKey = analysis.estimatedKey
         chordConfidenceThreshold = analysis.chordConfidenceThreshold
@@ -3503,6 +3400,7 @@ final class AppModel: ObservableObject {
             wordTimingFindings: wordTimingFindings,
             wordTimingCheckTag: wordTimingCheckTag,
             instrumentChords: instrumentChords,
+            chordInstrument: chordInstrument,
             chartLayout: chartLayout
         )
         scheduleSave()
@@ -3550,9 +3448,9 @@ final class AppModel: ObservableObject {
             beatTimes: beatTimes,
             sourceDuration: sourceDuration,
             untranscribedVocalRegions: untranscribedVocalRegions,
+            playerRests: instrumentChords?.rests ?? [],
             estimatedKey: estimatedKey,
             barGrid: barGrid,
-            bassNotes: bassNotes,
             beatsPerRowOverride: chartBeatsPerRowOverride,
             placementPicks: chordPlacementPicks
         )
@@ -3624,9 +3522,9 @@ final class AppModel: ObservableObject {
             beatTimes: beatTimes,
             sourceDuration: sourceDuration,
             untranscribedVocalRegions: untranscribedVocalRegions,
+            playerRests: instrumentChords?.rests ?? [],
             estimatedKey: estimatedKey,
             barGrid: barGrid,
-            bassNotes: bassNotes,
             beatsPerRowOverride: chartBeatsPerRowOverride,
             placementPicks: chordPlacementPicks
         )
@@ -3686,9 +3584,9 @@ final class AppModel: ObservableObject {
                 beatTimes: beatTimes,
                 sourceDuration: sourceDuration,
                 untranscribedVocalRegions: untranscribedVocalRegions,
+                playerRests: instrumentChords?.rests ?? [],
                 estimatedKey: estimatedKey,
                 barGrid: barGrid,
-                bassNotes: bassNotes,
                 beatsPerRowOverride: chartBeatsPerRowOverride,
                 placementPicks: chordPlacementPicks
             ))
@@ -3739,7 +3637,7 @@ final class AppModel: ObservableObject {
             .map { String(format: "%02x", $0) }
             .joined()
         return
-            supportDirectory
+            bulkDirectory
             .appendingPathComponent("Analysis", isDirectory: true)
             .appendingPathComponent("Stems", isDirectory: true)
             .appendingPathComponent(identifier, isDirectory: true)

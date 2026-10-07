@@ -171,6 +171,18 @@ final class StemPlaybackServiceTests: XCTestCase {
         XCTAssertEqual(grid.count, 13)
     }
 
+    func testTheClickFollowsAGridThatFollowsTheDrummer() {
+        // A drummer easing off: each beat 4 ms longer than the last.
+        let beats: [TimeInterval] = [1.0, 1.5, 2.004, 2.512, 3.024, 3.54, 4.06]
+        let clicks = MetronomeGrid.clickTimes(beatTimes: beats, bpm: 120, barGrid: nil, duration: 5)
+        XCTAssertEqual(clicks.count, 10)
+        for (click, beat) in zip(clicks.dropFirst(2), beats) {
+            XCTAssertEqual(click, beat, accuracy: 1e-9)
+        }
+        XCTAssertEqual(clicks.first ?? -1, 0, accuracy: 1e-9)
+        XCTAssertEqual(clicks.last ?? -1, 4.58, accuracy: 1e-9)
+    }
+
     func testMetronomeGridFallsBackToMedianIntervalWithoutBPM() throws {
         let grid = MetronomeGrid.clickTimes(
             beatTimes: jitteredBeats, bpm: nil, barGrid: downbeatAtIndexOne, duration: 4)

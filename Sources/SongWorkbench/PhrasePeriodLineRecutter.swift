@@ -244,10 +244,10 @@ enum PhrasePeriodLineRecutter {
         configuration: Configuration, tally: inout SplitTally,
         rhymeTargets: [String] = [], detector: RhymeDetector = .shared, depth: Int = 0
     ) -> [TimedLyricSegment] {
-        let words = line.words.sorted { $0.start < $1.start }
-        guard depth < configuration.maximumSplitDepth, words.count >= 2 else { return [line] }
-        let origin = words[0].start
-        let ownEnd = words[words.count - 1].end
+        let words = inTimeOrder(line.words)
+        guard depth < configuration.maximumSplitDepth, words.count >= 2,
+            let origin = words.firstStart, let ownEnd = words.lastEnd
+        else { return [line] }
         // A line whose successor is a whole section away is measured by its OWN word span: that
         // interval is dominated by silence, and the row's width is what a cut can actually change.
         let gridding = SongBeatsPerLine.Configuration()
@@ -276,8 +276,7 @@ enum PhrasePeriodLineRecutter {
                 period: period, rhymeTargets: targets, detector: detector)
             sawBoundary = sawBoundary || probe.hadBoundaryInWindow
             sawGap = sawGap || probe.index != nil
-            guard let cut = probe.index else { continue }
-            let cutTime = words[cut + 1].start
+            guard let cut = probe.index, let cutTime = words[cut + 1].start else { continue }
             let head = (cutTime - origin) / period
             let tail = (extentEnd - cutTime) / period
             // The head must land ON a whole multiple — that is the entire point of the cut — and
@@ -330,7 +329,11 @@ enum PhrasePeriodLineRecutter {
         in words: [TimedLyricWord], target: TimeInterval, configuration: Configuration,
         period: Double, rhymeTargets: [String], detector: RhymeDetector
     ) -> (index: Int?, hadBoundaryInWindow: Bool, licensedByRhyme: Bool) {
-        let gaps = (0..<(words.count - 1)).map { words[$0 + 1].start - words[$0].end }
+        // A pause is measured only between two placed words; one with an untimed word is no gap.
+        let gaps: [Double?] = (0..<(words.count - 1)).map { index in
+            guard let next = words[index + 1].start, let end = words[index].end else { return nil }
+            return next - end
+        }
         // Measured across the five live songs (2026-08-07, 1223 inter-word gaps): the MEDIAN gap
         // inside a line is 0.000 s and the upper quartile ≈0.05 s — words inside a sung phrase are
         // reported back to back — while p90 ≈ 0.12 s and the tail runs to 1.5 s. So on ordinary
@@ -339,21 +342,24 @@ enum PhrasePeriodLineRecutter {
         // would no longer mean anything. Making the relative term p75-based instead was tried and
         // measured WORSE (splits 7 -> 5 across the corpus, Doc Holiday's span ratio 2.32 -> 2.49):
         // it penalises exactly the slow lines that do have real gaps to cut at.
-        guard let typical = median(gaps.filter { $0 >= 0 }) else { return (nil, false, false) }
+        guard let typical = median(gaps.compactMap { $0 }.filter { $0 >= 0 }) else {
+            return (nil, false, false)
+        }
         let floorGap = max(configuration.minimumGapSeconds, configuration.gapProminence * typical)
         let window = configuration.searchWindowInPeriods * period
         var best: (index: Int, gap: Double, distance: Double)?
         var hadBoundary = false
         for index in gaps.indices {
-            let midpoint = (words[index].end + words[index + 1].start) / 2
+            guard let gap = gaps[index], let end = words[index].end,
+                let next = words[index + 1].start
+            else { continue }
+            let midpoint = (end + next) / 2
             let distance = abs(midpoint - target)
             guard distance <= window else { continue }
             hadBoundary = true
-            guard gaps[index] >= floorGap else { continue }
-            if best == nil || gaps[index] > best!.gap
-                || (gaps[index] == best!.gap && distance < best!.distance)
-            {
-                best = (index, gaps[index], distance)
+            guard gap >= floorGap else { continue }
+            if best == nil || gap > best!.gap || (gap == best!.gap && distance < best!.distance) {
+                best = (index, gap, distance)
             }
         }
         if let best { return (best.index, hadBoundary, false) }
@@ -368,7 +374,10 @@ enum PhrasePeriodLineRecutter {
         guard !rhymeTargets.isEmpty else { return (nil, hadBoundary, false) }
         var rhymed: (index: Int, distance: Double)?
         for index in gaps.indices {
-            let midpoint = (words[index].end + words[index + 1].start) / 2
+            guard gaps[index] != nil, let end = words[index].end,
+                let next = words[index + 1].start
+            else { continue }
+            let midpoint = (end + next) / 2
             let distance = abs(midpoint - target)
             guard distance <= window else { continue }
             guard
@@ -471,8 +480,8 @@ enum PhrasePeriodLineRecutter {
     // MARK: - Helpers
 
     private static func fitsCaps(_ words: [TimedLyricWord], configuration: Configuration) -> Bool {
-        guard let first = words.first, let last = words.last else { return false }
-        return last.end - first.start <= configuration.maximumLineDuration
+        guard let start = words.firstStart, let end = words.lastEnd else { return false }
+        return end - start <= configuration.maximumLineDuration
             && words.count <= configuration.maximumLineTokens
     }
 
@@ -481,8 +490,10 @@ enum PhrasePeriodLineRecutter {
     /// long trailing silence is not counted as a wide row.
     static func spanRatio(_ lines: [TimedLyricSegment]) -> Double {
         let spans = lines.compactMap { line -> Double? in
-            guard let first = line.words.first, let last = line.words.last else { return nil }
-            let span = last.end - first.start
+            guard let start = line.words.firstStart, let end = line.words.lastEnd else {
+                return nil
+            }
+            let span = end - start
             return span > 0 ? span : nil
         }
         guard spans.count >= 2, let middle = median(spans), middle > 0,
@@ -499,7 +510,7 @@ enum PhrasePeriodLineRecutter {
         // Sorted defensively: a merge concatenates two lines' word lists, and cached documents do
         // contain OVERLAPPING segments (the 2026-07-31 Doc Holiday defect), so concatenation alone
         // could otherwise emit a line whose words run backwards.
-        for word in words.sorted(by: { $0.start < $1.start }) {
+        for word in inTimeOrder(words) {
             if !text.isEmpty { text += " " }
             let lower = text.count
             text += word.text
@@ -509,8 +520,15 @@ enum PhrasePeriodLineRecutter {
                     characterRange: lower..<text.count, confidence: word.confidence))
         }
         return TimedLyricSegment(
-            start: rebuilt.first?.start ?? 0, end: rebuilt.map(\.end).max() ?? 0, text: text,
+            start: rebuilt.firstStart ?? 0, end: rebuilt.compactMap(\.end).max() ?? 0, text: text,
             words: rebuilt)
+    }
+
+    /// `words` sorted by start when every one was placed. With an untimed word they keep their
+    /// given (sung) order: it has no time to sort by and must stay beside its neighbours.
+    private static func inTimeOrder(_ words: [TimedLyricWord]) -> [TimedLyricWord] {
+        guard words.allSatisfy({ $0.start != nil }) else { return words }
+        return words.sorted { ($0.start ?? 0) < ($1.start ?? 0) }
     }
 
     private static func median(_ values: [Double]) -> Double? {

@@ -35,12 +35,14 @@ struct CoreMLLyricsAcousticModel: LyricsAcousticModel, @unchecked Sendable {
         outputName = description.outputDescriptionsByName.keys.first ?? "logprobs"
     }
 
+    /// The package copied into the app bundle, or nil when the bundle lacks it.
+    static var bundledURL: URL? {
+        Bundle.main.url(forResource: resourceName, withExtension: "mlpackage")
+    }
+
     /// Loads the bundled package, or nil when it is not present or cannot be compiled.
     static func load(configuration: MLModelConfiguration = MLModelConfiguration()) -> Self? {
-        guard
-            let url = Bundle.main.url(
-                forResource: resourceName, withExtension: "mlpackage")
-        else { return nil }
+        guard let url = bundledURL else { return nil }
         // A .mlpackage has to be compiled before it can be loaded; Core ML caches the result.
         guard let compiled = try? MLModel.compileModel(at: url),
             let model = try? MLModel(contentsOf: compiled, configuration: configuration)

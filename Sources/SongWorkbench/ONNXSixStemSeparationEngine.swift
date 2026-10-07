@@ -201,11 +201,13 @@ actor ONNXSixStemChunkPredictor: StemChunkPredicting {
         guard let session else {
             throw CoreMLStemSeparationError.invalidPrediction
         }
-        let outputs = try session.run(
-            withInputs: ["input": input],
-            outputNames: ["output"],
-            runOptions: nil
-        )
+        let outputs = try ORTShortLivedThread.run {
+            try session.run(
+                withInputs: ["input": input],
+                outputNames: ["output"],
+                runOptions: nil
+            )
+        }
         guard let output = outputs["output"] else {
             throw CoreMLStemSeparationError.invalidPrediction
         }

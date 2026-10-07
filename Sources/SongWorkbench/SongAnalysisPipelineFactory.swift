@@ -47,6 +47,11 @@ struct SongAnalysisPipelineFactory: Sendable {
     /// env override or the app-bundled copy, and an isolated `AppModel` (tests) clears it so the
     /// bundled model cannot bypass its storage root.
     var nativeModelURL: URL? = Self.nativeSixStemModelURL
+    /// macOS: refuse to assemble a pipeline unless both bundled models are present, rather than
+    /// separating on ONNX and keeping the transcriber's word times (Eric, 2026-09-26: the app does
+    /// not work without its models). Only tests and an isolated `AppModel`, which deliberately run
+    /// the ONNX path with no app bundle, turn this off.
+    var requiresBundledModels = true
 
     struct Assembly: Sendable {
         let pipeline: SongAnalysisPipeline
@@ -55,6 +60,19 @@ struct SongAnalysisPipelineFactory: Sendable {
     }
 
     func makePipeline() async throws -> Assembly {
+        #if os(macOS)
+            if requiresBundledModels {
+                guard nativeModelURL != nil else {
+                    throw SongAnalysisPipelineError.missingBundledModel("HTDemucs6S_FP16")
+                }
+                guard CoreMLLyricsAcousticModel.bundledURL != nil else {
+                    throw SongAnalysisPipelineError.missingBundledModel("LyricsAlignmentMTL")
+                }
+                guard BeatThisTracker.bundledURL != nil else {
+                    throw SongAnalysisPipelineError.missingBundledModel("BeatThis")
+                }
+            }
+        #endif
         var statuses: [String: ModelPackageStatus] = [:]
         func installedPackage(
             _ descriptor: ModelPackageDescriptor
@@ -107,8 +125,8 @@ struct SongAnalysisPipelineFactory: Sendable {
             // Native Core ML six-stem engine: same model as the ONNX path, on the GPU — 37s vs
             // 49s for a full song with 54+ dB stem parity (Benchmarks/STEM_SEPARATION.md,
             // 2026-08-26). Bundled into the macOS app; the env var serves the headless CLI
-            // (which has no app bundle) and export testing. ONNX below remains the fallback
-            // whenever the bundled model is absent.
+            // (which has no app bundle) and export testing. ONNX below runs only where
+            // `requiresBundledModels` is off (tests, isolated app models).
             stemEngine = DeferredStemSeparationEngine(
                 metadata: CoreMLNativeSixStemSeparationEngine.metadata
             ) {
@@ -192,19 +210,36 @@ struct SongAnalysisPipelineFactory: Sendable {
         } else {
             accuracyEngine = nil
         }
+        let qwenEngine: (any TranscriptionEngine)?
+        if capabilityProfile.allowsTranscriptionMode(.qwen) {
+            qwenEngine = await installedPackage(ModelCatalog.qwen3ASR).map {
+                Qwen3ASRTranscriptionEngine(
+                    modelDirectory: $0.entryPointURL,
+                    modelSizeBytes: UInt64(max($0.sizeBytes, 0)))
+            }
+        } else {
+            qwenEngine = nil
+        }
 
-        let pipeline = SongAnalysisPipeline(
+        var pipeline = SongAnalysisPipeline(
             stemEngine: stemEngine,
             stemRefiners: stemRefiners,
             transcriptionEngineFactory: TranscriptionEngineFactory(
                 fast: fastEngine,
                 balanced: balancedEngine,
-                accuracy: accuracyEngine
+                accuracy: accuracyEngine,
+                qwen: qwenEngine
             ).filtered(to: capabilityProfile),
             harmonyEngine: harmonyEngine,
             cache: cache,
             executionPolicy: capabilityProfile.executionPolicy
         )
+        #if os(macOS)
+            if requiresBundledModels {
+                pipeline.measureBeatGrid = BeatThisTracker.measuredWithBundledModel
+                pipeline.recognizeChords = ChordNetRecognizer.segmentsWithBundledModel
+            }
+        #endif
         return Assembly(
             pipeline: pipeline,
             statuses: statuses,

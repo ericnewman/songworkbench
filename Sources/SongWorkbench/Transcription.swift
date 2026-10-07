@@ -520,13 +520,18 @@ enum TimedLyricSegmentGrouper {
         // Re-grouping re-splits lines from per-word timings. Without word-level data on
         // every segment we can't find sub-line boundaries, and collapsing each line to a
         // single atomic token would merge or mangle lines — so leave the lyrics untouched.
-        guard !segments.isEmpty, segments.allSatisfy({ !$0.words.isEmpty }) else {
+        // Likewise with a word alignment could not place: it has no time to regroup by.
+        guard !segments.isEmpty,
+            segments.allSatisfy({ !$0.words.isEmpty && $0.words.allSatisfy { $0.start != nil } })
+        else {
             return segments
         }
         let tokens = segments.flatMap { segment in
-            segment.words.map {
-                TimedTranscriptionToken(
-                    text: $0.text, startTime: $0.start, endTime: $0.end, confidence: nil)
+            segment.words.compactMap { word in
+                word.start.map {
+                    TimedTranscriptionToken(
+                        text: word.text, startTime: $0, endTime: word.end ?? $0, confidence: nil)
+                }
             }
         }
         // Preserve the existing line boundaries: each stored line's first-word onset is a
@@ -535,15 +540,21 @@ enum TimedLyricSegmentGrouper {
         // run-on lines. The within-line gap/capitalization rules still apply on top, so old
         // over-merged lyrics are still re-split.
         let lineStartOnsets =
-            lineStartOnsets ?? Set(segments.compactMap { $0.words.first?.start })
+            lineStartOnsets ?? Set(segments.compactMap { $0.words.firstStart })
+        // Stored words already carry their final times (measured by forced alignment), so
+        // re-grouping only re-splits lines: it must never re-time a word.
         return group(
-            tokens: tokens, configuration: configuration, lineStartOnsets: lineStartOnsets)
+            tokens: tokens, configuration: configuration, lineStartOnsets: lineStartOnsets,
+            depadsLongTokens: false)
     }
 
+    /// - Parameter depadsLongTokens: re-time an implausibly long FRESH transcriber token (see
+    ///   `maximumWordDuration`). Off when regrouping stored words, whose starts are measured.
     static func group(
         tokens: [TimedTranscriptionToken],
         configuration: TimedLyricGroupingConfiguration = .init(),
-        lineStartOnsets: Set<TimeInterval> = []
+        lineStartOnsets: Set<TimeInterval> = [],
+        depadsLongTokens: Bool = true
     ) -> [TimedLyricSegment] {
         let orderedTokens = tokens.enumerated()
             .compactMap { index, token -> (Int, TimedTranscriptionToken)? in
@@ -553,7 +564,8 @@ enum TimedLyricSegmentGrouper {
                 // De-pad an implausibly long token (see `maximumWordDuration`): re-time it to a
                 // normal word length anchored at its end so its true onset is restored.
                 let start =
-                    end - token.startTime > configuration.maximumWordDuration
+                    depadsLongTokens
+                        && end - token.startTime > configuration.maximumWordDuration
                     ? max(end - configuration.depaddedWordDuration, 0)
                     : token.startTime
                 return (
@@ -1024,10 +1036,10 @@ enum TimedLyricSegmentGrouper {
 }
 
 /// Aligns user-provided reference lyrics to the ASR word timings. The reference supplies the
-/// exact words and the line breaks (from its newlines); the ASR supplies only the timing. Each
-/// reference word borrows the onset/offset of the ASR word it aligns to (Needleman–Wunsch over
-/// normalized text); reference words the ASR missed are interpolated between their timed
-/// neighbours. This sidesteps every ASR transcription error and grouping heuristic when the real
+/// exact words and the line breaks (from its newlines); the ASR supplies only a starting timing,
+/// which forced alignment then replaces with a measured one. Each reference word borrows the
+/// onset/offset of the ASR word it aligns to (Needleman–Wunsch over normalized text); a reference
+/// word the ASR missed has NO time — it is never spread between its neighbours (Eric, 2026-09-27). This sidesteps every ASR transcription error and grouping heuristic when the real
 /// lyrics are known — by far the most accurate path for a song the user can supply lyrics for.
 enum ReferenceLyricAligner {
     /// Returns aligned lyric lines, or the ASR segments unchanged when alignment isn't possible
@@ -1037,8 +1049,8 @@ enum ReferenceLyricAligner {
         asrSegments: [TimedLyricSegment]
     ) -> [TimedLyricSegment] {
         let asrWords = asrSegments.flatMap(\.words)
-            .filter { !core($0.text).isEmpty }
-            .sorted { $0.start != $1.start ? $0.start < $1.start : $0.end < $1.end }
+            .filter { !core($0.text).isEmpty && $0.start != nil }
+            .sorted { ($0.start ?? 0, $0.end ?? 0) < ($1.start ?? 0, $1.end ?? 0) }
         let asrCores = asrWords.map { core($0.text) }
 
         // Parse the reference into lines (its newlines are the line breaks) and per-line words,
@@ -1066,7 +1078,7 @@ enum ReferenceLyricAligner {
         guard !refWords.isEmpty, !asrWords.isEmpty else { return asrSegments }
 
         // Align reference → ASR. alignedASRIndex[k] is the ASR word index anchoring reference word
-        // k, or nil if the reference word has no ASR counterpart (interpolated below).
+        // k, or nil if the reference word has no ASR counterpart (it then has no time).
         let alignedASRIndex = alignReferenceToASR(reference: refWords.map(\.core), other: asrCores)
         var starts = [TimeInterval?](repeating: nil, count: refWords.count)
         var ends = [TimeInterval?](repeating: nil, count: refWords.count)
@@ -1076,23 +1088,24 @@ enum ReferenceLyricAligner {
                 ends[k] = asrWords[idx].end
             }
         }
-        let timings = interpolatedTimings(
-            starts: starts, ends: ends,
-            songStart: asrWords.first!.start, songEnd: asrWords.last!.end)
-
-        // Group the timed reference words back into their lines.
+        // Group the reference words back into their lines.
         var lineWords: [[TimedLyricWord]] = Array(repeating: [], count: lineTexts.count)
         for (k, word) in refWords.enumerated() {
             lineWords[word.line].append(
                 TimedLyricWord(
-                    text: word.text, start: timings[k].start, end: timings[k].end,
-                    characterRange: word.range))
+                    text: word.text, start: starts[k], end: ends[k], characterRange: word.range))
         }
+        // A line with no anchored word takes the previous line's end PROVISIONALLY: forced
+        // alignment, which always follows, re-derives every line's bounds from the words it
+        // measures, and a line it cannot place at all joins its neighbour.
+        var previousEnd = asrWords.firstStart ?? 0
         return lineTexts.enumerated().compactMap { lineIndex, text in
             let words = lineWords[lineIndex]
-            guard let first = words.first, let last = words.last else { return nil }
-            return TimedLyricSegment(
-                start: first.start, end: max(last.end, first.start), text: text, words: words)
+            guard !words.isEmpty else { return nil }
+            let start = words.firstStart ?? previousEnd
+            let end = max(words.lastEnd ?? start, start)
+            previousEnd = end
+            return TimedLyricSegment(start: start, end: end, text: text, words: words)
         }
     }
 
@@ -1114,43 +1127,6 @@ enum ReferenceLyricAligner {
             let start = index
             while index < characters.count, !characters[index].isWhitespace { index += 1 }
             result.append((String(characters[start..<index]), start..<index))
-        }
-        return result
-    }
-
-    /// Fills nil timings by linear interpolation: runs of un-anchored words between two anchors
-    /// share that span evenly; leading/trailing runs extrapolate to the song bounds. The result is
-    /// monotonic non-decreasing.
-    private static func interpolatedTimings(
-        starts: [TimeInterval?],
-        ends: [TimeInterval?],
-        songStart: TimeInterval,
-        songEnd: TimeInterval
-    ) -> [(start: TimeInterval, end: TimeInterval)] {
-        let count = starts.count
-        var result = [(start: TimeInterval, end: TimeInterval)](
-            repeating: (songStart, songStart), count: count)
-        var index = 0
-        while index < count {
-            if let s = starts[index], let e = ends[index] {
-                result[index] = (s, max(e, s))
-                index += 1
-                continue
-            }
-            // A run [index, runEnd) of un-anchored words. Bound it by the previous anchor's end and
-            // the next anchor's start.
-            var runEnd = index
-            while runEnd < count, starts[runEnd] == nil { runEnd += 1 }
-            let lower = index > 0 ? result[index - 1].end : songStart
-            let upper = runEnd < count ? (starts[runEnd] ?? songEnd) : songEnd
-            let span = max(upper - lower, 0)
-            let step = span / Double(runEnd - index + 1)
-            for offset in 0..<(runEnd - index) {
-                let wordStart = lower + step * Double(offset)
-                let wordEnd = lower + step * Double(offset + 1)
-                result[index + offset] = (wordStart, wordEnd)
-            }
-            index = runEnd
         }
         return result
     }
@@ -1184,7 +1160,7 @@ enum ReferenceLyricAligner {
                 let cost = reference[i - 1] == other[j - 1] ? match : mismatch
                 if scores[i][j] == scores[i - 1][j - 1] + cost {
                     // Anchor only on an exact match; a diagonal mismatch is a substitution with no
-                    // trustworthy timing, so leave it nil to interpolate.
+                    // trustworthy timing, so it is left without one.
                     if reference[i - 1] == other[j - 1] { anchors[i - 1] = j - 1 }
                     i -= 1
                     j -= 1

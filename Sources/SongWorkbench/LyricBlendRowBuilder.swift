@@ -13,7 +13,8 @@ enum LyricBlendRowBuilder {
     /// Modes are stacked in this fixed order within a row's `candidates`, so the blend UI's
     /// column order (and any "prefer accuracy" fallback) is stable regardless of which modes
     /// happened to produce a candidate for a given row.
-    static let modeOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+    /// Qwen3-ASR first: the preferred engine when installed (Eric, 2026-10-01).
+    static let modeOrder: [TranscriptionMode] = [.qwen, .accuracy, .balancedDraft, .fastDraft]
 
     /// - Parameters:
     ///   - fastDraft/balancedDraft/accuracy: each mode's OWN already-grouped lines (post
@@ -29,12 +30,14 @@ enum LyricBlendRowBuilder {
         fastDraft: [TimedLyricSegment],
         balancedDraft: [TimedLyricSegment],
         accuracy: [TimedLyricSegment],
+        qwen: [TimedLyricSegment] = [],
         clusterWindow: TimeInterval = 1.5
     ) -> [LyricBlendRow] {
         let tagged =
             fastDraft.map { Tagged(mode: .fastDraft, segment: $0) }
             + balancedDraft.map { Tagged(mode: .balancedDraft, segment: $0) }
             + accuracy.map { Tagged(mode: .accuracy, segment: $0) }
+            + qwen.map { Tagged(mode: .qwen, segment: $0) }
         guard !tagged.isEmpty else { return [] }
         let sorted = tagged.sorted { $0.segment.start < $1.segment.start }
 
@@ -234,8 +237,8 @@ enum LyricBlendRowBuilder {
             }
             guard let picked = row.effectiveCandidate() else { return nil }
             let candidate = withBoundaryWordRestored(picked, rows: rows, index: index)
-            let candidateStart = candidate.words.map(\.start).min() ?? row.start
-            let candidateEnd = candidate.words.map(\.end).max() ?? row.end
+            let candidateStart = candidate.words.compactMap(\.start).min() ?? row.start
+            let candidateEnd = candidate.words.compactMap(\.end).max() ?? row.end
             return TimedLyricSegment(
                 start: candidateStart, end: max(candidateEnd, candidateStart),
                 text: candidate.text, words: candidate.words)
@@ -277,8 +280,8 @@ enum LyricBlendRowBuilder {
             var result = line
             result.text = text
             result.words = rebased
-            result.start = rebased.first?.start ?? line.start
-            result.end = max(rebased.map(\.end).max() ?? line.end, result.start)
+            result.start = rebased.firstStart ?? line.start
+            result.end = max(rebased.compactMap(\.end).max() ?? line.end, result.start)
             return result
         }
 
@@ -313,14 +316,17 @@ enum LyricBlendRowBuilder {
             let plain = cluster.filter { !isCorrected($0) }
             for line in plain {
                 let tail = accepted.indices.filter {
-                    accepted[$0].end > line.start - repeatTolerance
+                    (accepted[$0].end ?? -.infinity) > line.start - repeatTolerance
                 }
                 let repeats = LyricWordRanges.matches(tail.count, line.words.count) { i, j in
                     let earlier = accepted[tail[i]]
                     let later = line.words[j]
                     let key = LyricWordRanges.key(later.text)
+                    guard let earlierStart = earlier.start, let laterStart = later.start else {
+                        return false
+                    }
                     return !key.isEmpty && key == LyricWordRanges.key(earlier.text)
-                        && abs(earlier.start - later.start) <= repeatTolerance
+                        && abs(earlierStart - laterStart) <= repeatTolerance
                 }
                 let dropped = Set(repeats.map(\.1))
                 let placed = accepted
@@ -338,27 +344,37 @@ enum LyricBlendRowBuilder {
                     // would drop genuine words. A word starting beyond every transcribed span is
                     // new singing and is kept, which is how a long segment and the shorter lines
                     // after it still combine.
-                    !transcribedSpans.contains { $0.contains(word.start) }
+                    // An untimed word has no start to compare: it is never a second opinion.
+                    guard let start = word.start, let end = word.end else { return true }
+                    return !transcribedSpans.contains { $0.contains(start) }
                         && !placed.contains { earlier in
-                            earlier.start < word.end && word.start < earlier.end
+                            guard let earlierStart = earlier.start, let earlierEnd = earlier.end
+                            else { return false }
+                            return earlierStart < end && start < earlierEnd
                                 && LyricWordRanges.key(earlier.text)
                                     == LyricWordRanges.key(word.text)
                         }
                 }
-                if let first = accepted.count > placedCount ? accepted[placedCount].start : nil,
-                    let last = accepted.last?.start, first <= last
-                {
+                let newStarts = accepted[placedCount...].compactMap(\.start)
+                if let first = newStarts.first, let last = newStarts.last, first <= last {
                     transcribedSpans.append(first...last)
                 }
             }
-            accepted = accepted.filter { word in
-                !blocks.contains { $0.start <= word.start && word.start < $0.end }
-            }.sorted { $0.start < $1.start }
+            accepted = inSungOrder(
+                accepted.filter { word in
+                    guard let start = word.start else { return true }
+                    return !blocks.contains { $0.start <= start && start < $0.end }
+                })
 
             var groups: [[TimedLyricWord]] = []
             for word in accepted {
                 if let last = groups.last?.last,
-                    !blocks.contains(where: { last.start < $0.start && $0.start <= word.start })
+                    !blocks.contains(where: { block in
+                        guard let lastStart = last.start, let start = word.start else {
+                            return false
+                        }
+                        return lastStart < block.start && block.start <= start
+                    })
                 {
                     groups[groups.count - 1].append(word)
                 } else {
@@ -369,14 +385,15 @@ enum LyricBlendRowBuilder {
             for (offset, group) in groups.enumerated() {
                 guard var template = plain.first else { break }
                 if offset > 0 { template.id = UUID() }
-                let limit =
-                    blocks.map(\.start).filter { $0 > group[0].start }.min() ?? .infinity
+                let groupStart = group.firstStart ?? -.infinity
+                let limit = blocks.map(\.start).filter { $0 > groupStart }.min() ?? .infinity
                 pieces.append(
                     rebuilt(
                         template,
                         words: group.map { word in
+                            guard let start = word.start, let end = word.end else { return word }
                             var clipped = word
-                            clipped.end = max(word.start, min(word.end, limit))
+                            clipped.end = max(start, min(end, limit))
                             return clipped
                         }))
             }
@@ -388,6 +405,18 @@ enum LyricBlendRowBuilder {
             result += pieces
         }
         return result
+    }
+
+    /// `words` sorted by start, an untimed word sorting with the placed word before it so it stays
+    /// beside its neighbours. The key orders only; no time is given to the untimed word.
+    private static func inSungOrder(_ words: [TimedLyricWord]) -> [TimedLyricWord] {
+        var carried = -TimeInterval.infinity
+        let keys = words.map { word -> TimeInterval in
+            if let start = word.start { carried = start }
+            return carried
+        }
+        return words.indices.sorted { keys[$0] != keys[$1] ? keys[$0] < keys[$1] : $0 < $1 }
+            .map { words[$0] }
     }
 
     /// Restores a line-final word that two adjacent picks drop between them (Back to New Orleans
@@ -416,7 +445,8 @@ enum LyricBlendRowBuilder {
             tokens(candidate.text).last != boundary,
             tokens(thisModeThere.text).first == boundary,
             tokens(next.text).first != boundary,
-            word.start >= lastKept.start
+            let wordStart = word.start, let lastKeptStart = lastKept.start,
+            wordStart >= lastKeptStart
         else { return candidate }
         var restored = candidate
         let offset = candidate.text.count + 1
@@ -623,5 +653,171 @@ enum LyricBlendRowBuilder {
             abs(closest.start - newRow.start) <= 0.75
         else { return nil }
         return closest
+    }
+}
+
+/// Chooses the lyrics STRETCH by stretch from several transcriptions by acoustic evidence
+/// (Eric, 2026-09-28: reference-quality lyrics by default).
+///
+/// Engines break lines in different places, so comparing them line by line compares one engine's
+/// line with another's two. A stretch is instead bounded by a pause in which NO engine has a word;
+/// inside it each engine's candidate is simply its words there, whatever its line breaks. Every
+/// candidate is forced through the alignment model's posteriorgram over the same frames and the
+/// highest path score wins — an engine that heard nothing scores the stretch as silence. This is
+/// what catches a decoder loop: Whisper repeating a line where another engine heard the words
+/// actually sung (Doc Holiday, 2026-09-27).
+///
+/// Word times are the chosen engine's own, already MEASURED by forced alignment in its
+/// transcription pass; nothing here computes a time.
+enum LyricStretchChooser {
+    struct Choice: Equatable, Sendable {
+        let start: TimeInterval
+        let end: TimeInterval
+        let mode: TranscriptionMode
+    }
+
+    /// - Parameters:
+    ///   - lyricsByMode: each engine's lines, words measured on the vocal stem.
+    ///   - preference: the engine that keeps a stretch unless another beats it by
+    ///     `minimumMargin` per frame (two near-identical transcriptions keep it). On Doc Holiday
+    ///     (2026-09-28) recall was flat at 0.735-0.749 for margins 0.075-0.15 and fell either side
+    ///     (0.644 at 0, 0.691 at 0.3); 0.1 sits mid-plateau. Gap and padding barely mattered.
+    ///   - logProbs: `ForcedLyricAligner.posteriorgram` of the whole vocal stem.
+    ///   - voiced: where the vocal stem is singing (`VocalActivityEnvelope`). Another engine may
+    ///     replace the preferred one only if its words cover as much of the stretch's singing,
+    ///     within `coverageTolerance` (Eric, 2026-09-30: sound on the vocal stem is where words
+    ///     land). Without this, a stretch went to an engine that heard fewer words: a held vowel
+    ///     scores cheaply as "nothing sung" (High In Low Places lost 45 sung words, 2026-09-30).
+    static func chosen(
+        _ lyricsByMode: [TranscriptionMode: [TimedLyricSegment]],
+        logProbs: [[Float]], voiced: [ClosedRange<TimeInterval>] = [],
+        phonemizer: LyricPhonemizer = .shared,
+        preference: [TranscriptionMode] = LyricBlendRowBuilder.modeOrder,
+        minimumGap: TimeInterval = 0.6, padding: TimeInterval = 0.3,
+        minimumMargin: Float = 0.1, coverageTolerance: Double = 0.05
+    ) -> (lyrics: [TimedLyricSegment], choices: [Choice]) {
+        let modes = preference.filter { lyricsByMode[$0] != nil }
+        guard let fallback = modes.first else { return ([], []) }
+        let spans = stretches(lyricsByMode.values.flatMap { $0 }, minimumGap: minimumGap)
+        let frameDuration = ForcedLyricAligner.outputFrameDuration
+        var lyrics: [TimedLyricSegment] = []
+        var choices: [Choice] = []
+        for span in spans {
+            let lower = max(0, Int(((span.lowerBound - padding) / frameDuration).rounded(.down)))
+            let upper = min(
+                logProbs.count, Int(((span.upperBound + padding) / frameDuration).rounded(.up)))
+            var best = (mode: fallback, score: -Float.infinity)
+            var preferredScore = -Float.infinity
+            let coverage = modes.reduce(into: [TranscriptionMode: Double]()) {
+                $0[$1] = voicedCoverage(of: lyricsByMode[$1] ?? [], in: span, voiced: voiced)
+            }
+            if upper > lower {
+                let window = logProbs[lower..<upper]
+                for mode in modes {
+                    if mode != fallback, let own = coverage[mode],
+                        let preferred = coverage[fallback],
+                        own < preferred - coverageTolerance
+                    {
+                        continue
+                    }
+                    let words = (lyricsByMode[mode] ?? []).flatMap(\.words)
+                        .filter { $0.start.map(span.contains) ?? false }.map(\.text)
+                    let tokens = LyricPhonemizer.tokenSequence(for: phonemizer.words(for: words))
+                        .tokens
+                    // A candidate too long to be sung in the stretch cannot be what was sung.
+                    guard
+                        let score = try? CTCForcedAlignment.pathScore(
+                            logProbs: window, tokens: tokens, blank: ArpabetVocabulary.blankIndex)
+                    else { continue }
+                    if mode == fallback { preferredScore = score }
+                    if score > best.score { best = (mode, score) }
+                }
+                if best.mode != fallback,
+                    best.score - preferredScore < minimumMargin * Float(window.count)
+                {
+                    best.mode = fallback
+                }
+            }
+            choices.append(Choice(start: span.lowerBound, end: span.upperBound, mode: best.mode))
+            lyrics += (lyricsByMode[best.mode] ?? []).compactMap { line in
+                restricted(line, to: span)
+            }
+        }
+        return (lyrics, choices)
+    }
+
+    /// The share of `span`'s singing (`voiced`) within `reach` of one of `lines`' words; nil when
+    /// the stretch holds no singing.
+    static func voicedCoverage(
+        of lines: [TimedLyricSegment], in span: ClosedRange<TimeInterval>,
+        voiced: [ClosedRange<TimeInterval>], reach: TimeInterval = 0.25
+    ) -> Double? {
+        func overlap(_ a: ClosedRange<TimeInterval>, _ b: ClosedRange<TimeInterval>)
+            -> TimeInterval
+        { max(0, min(a.upperBound, b.upperBound) - max(a.lowerBound, b.lowerBound)) }
+        let sung = voiced.compactMap { interval -> ClosedRange<TimeInterval>? in
+            let lower = max(interval.lowerBound, span.lowerBound)
+            let upper = min(interval.upperBound, span.upperBound)
+            return upper > lower ? lower...upper : nil
+        }
+        let sungSeconds = sung.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+        guard sungSeconds > 0 else { return nil }
+        // Merged before padding so neighbouring words never count the same second twice.
+        let reached = stretches(lines, minimumGap: 2 * reach).map {
+            ($0.lowerBound - reach)...($0.upperBound + reach)
+        }
+        let covered = sung.reduce(0.0) { total, interval in
+            total + reached.reduce(0) { $0 + overlap($1, interval) }
+        }
+        return min(covered / sungSeconds, 1)
+    }
+
+    /// Spans of singing: every placed word's `[start, end]`, merged across all engines, split
+    /// where the gap between them is at least `minimumGap`.
+    static func stretches(_ lines: [TimedLyricSegment], minimumGap: TimeInterval)
+        -> [ClosedRange<TimeInterval>]
+    {
+        let spans = lines.flatMap(\.words).compactMap { word in
+            word.start.map { $0...max($0, word.end ?? $0) }
+        }.sorted { $0.lowerBound < $1.lowerBound }
+        var merged: [ClosedRange<TimeInterval>] = []
+        for span in spans {
+            if let last = merged.last, span.lowerBound - last.upperBound < minimumGap {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, span.upperBound)
+            } else {
+                merged.append(span)
+            }
+        }
+        return merged
+    }
+
+    /// `line` holding only its words that start inside `span`, text and ranges rebuilt; nil when
+    /// none does. A word with no time belongs to the stretch of the word before it.
+    private static func restricted(_ line: TimedLyricSegment, to span: ClosedRange<TimeInterval>)
+        -> TimedLyricSegment?
+    {
+        var inside = false
+        let kept = line.words.filter { word in
+            if let start = word.start { inside = span.contains(start) }
+            return inside
+        }
+        guard let start = kept.firstStart else { return nil }
+        var text = ""
+        let words = kept.map { word -> TimedLyricWord in
+            if !text.isEmpty { text += " " }
+            let lower = text.count
+            text += word.text
+            var copy = word
+            copy.characterRange = lower..<text.count
+            return copy
+        }
+        var result = line
+        result.id = UUID()
+        result.text = text
+        result.words = words
+        result.start = start
+        result.end = max(kept.lastEnd ?? start, start)
+        result.overrideText = nil
+        return result
     }
 }

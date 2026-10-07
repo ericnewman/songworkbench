@@ -169,14 +169,16 @@ actor ONNXDrumPieceChunkPredictor: StemChunkPredicting {
             ]
         )
 
-        let outputs = try session.run(
-            withInputs: [
-                "mix": mix,
-                "mag": mag,
-            ],
-            outputNames: ["time_out"],
-            runOptions: nil
-        )
+        let outputs = try ORTShortLivedThread.run {
+            try session.run(
+                withInputs: [
+                    "mix": mix,
+                    "mag": mag,
+                ],
+                outputNames: ["time_out"],
+                runOptions: nil
+            )
+        }
         guard let output = outputs["time_out"] else {
             throw CoreMLStemSeparationError.invalidPrediction
         }

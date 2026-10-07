@@ -1,34 +1,27 @@
+import Accelerate
 import Foundation
 
-/// Builds the single mono signal that chord detection listens to, by weighting several isolated
-/// stems together instead of picking one.
+/// Chooses the ONE player chord detection listens to, and the leakage gate that decides whether a
+/// stem holds a part at all.
 ///
-/// Before this existed, `HarmonyAudioSourceSelector` returned the FIRST available stem — with a
-/// six-stem separation that is always `guitar`, so the piano stem was never consulted at all. On a
-/// piano-led song the chroma came from a nearly-empty guitar stem.
-///
-/// Two rules make the weighting mean what it says:
-///
-/// **Normalize, then weight.** Each stem is scaled to unit RMS before its weight is applied, so a
-/// weight is a statement about *priority*, not about how loud that instrument happened to be
-/// mixed. Weighting raw stems would make a quiet-but-real piano part negligible no matter what
-/// weight it was given.
+/// The chord line is the guitarist's chords (Eric, 2026-09-27), in guitar's color; a song with no
+/// guitar part falls back to the instrument that does play, in that instrument's color. This used
+/// to blend guitar and piano into one signal, which produced chords neither player played.
 ///
 /// **Gate leakage first.** Separation models routinely bleed a few dB of guitar into `piano` on
-/// tracks with no piano at all. Normalizing such a stem would amplify pure bleed to full level and
-/// double-count the guitar — so any stem more than `leakageFloorDecibels` below the loudest
-/// contributor is dropped before normalization. The gate and the normalization only make sense
-/// together; neither is safe alone.
+/// tracks with no piano at all (and the reverse). A stem more than `leakageFloorDecibels` below the
+/// loudest candidate is bleed, not a part, so it can never be chosen as the player.
 enum HarmonyStemMix {
-    /// Priority order for chord detection. Guitar leads, piano supports.
+    /// Priority order for chord detection: guitar first, then piano. Only the order and `weight > 0`
+    /// matter now — chords come from one player, not a weighted blend.
     ///
     /// **Bass defaults to 0 deliberately.** Bass tells you the root the *band* is on, which is
     /// frequently not what the guitarist is fretting — inversions, pedal points, and walking lines
     /// under a held chord all move the bass without any chord change. Folding it into the chroma
     /// manufactures those as root changes, and `ChordClassifier.rootWeight` (1.6) already biases
-    /// classification toward root energy, so bass evidence would be counted twice. The bass stem
-    /// is already used where it belongs: `BassInformedChordRefiner` and `BassChordReconciler`
-    /// arbitrate the root AFTER a triad has been chosen, which is the sound way to use it.
+    /// classification toward root energy, so bass evidence would be counted twice. Nor does the
+    /// bass arbitrate the chord line afterwards (Eric, 2026-10-07: only the guitar stem): it has
+    /// its own Bass Notes row, and `BassChordReconciler` only rounds bass notes to the chords.
     ///
     /// ponytail: this is one constant, not a setting. Raise `bass` above 0 to include it and
     /// measure the result against the ground-truth corpus before keeping the change.
@@ -43,97 +36,10 @@ enum HarmonyStemMix {
     /// its content is a subset of it.
     static let leakageFloorDecibels: Float = -25
 
-    struct Contributor: Equatable, Sendable {
-        /// Stable name for this contributor — a `StemKind.rawValue` in the pipeline. A plain
-        /// label rather than a `StemKind` so the mixer stays usable for anything that can produce
-        /// mono samples, and so the fallback source (which is not a stem at all) needs no
-        /// optional case.
-        let label: String
-        let weight: Float
-        let samples: [Float]
-    }
-
-    struct Mix: Equatable, Sendable {
-        let samples: [Float]
-        /// Stems that actually reached the mix, in weight order. Never empty when `samples` is
-        /// non-empty.
-        let included: [String]
-        /// Stems dropped as leakage (below the floor relative to the loudest contributor).
-        let excludedAsLeakage: [String]
-
-        /// Stable description of what this mix contains, for the harmony cache key. Two runs that
-        /// mix the same stems at the same weights must produce the same string; changing the
-        /// weights must change it, so the cached chord analysis is not reused across a
-        /// weighting change.
-        var configurationIdentifier: String {
-            guard !included.isEmpty else { return "harmony-empty-mix" }
-            let parts = included.joined(separator: "+")
-            return "harmony-mix-\(parts)"
-        }
-    }
-
-    /// Weighted mono mix of `contributors`. Pure, deterministic, no I/O.
-    ///
-    /// Zero-weight, empty, and silent contributors are ignored. Output length is the shortest
-    /// included contributor's (stems from one separation are the same length; truncating is only a
-    /// defensive measure). Returns an empty mix when nothing survives.
-    static func mixed(_ contributors: [Contributor]) -> Mix {
-        let usable = contributors.filter { $0.weight > 0 && !$0.samples.isEmpty }
-        guard !usable.isEmpty else {
-            return Mix(samples: [], included: [], excludedAsLeakage: [])
-        }
-
-        let levels = usable.map { (contributor: $0, rms: rootMeanSquare($0.samples)) }
-        guard let loudest = levels.map(\.rms).max(), loudest > 0 else {
-            return Mix(samples: [], included: [], excludedAsLeakage: [])
-        }
-        let floor = loudest * pow(10, leakageFloorDecibels / 20)
-
-        var kept: [(contributor: Contributor, rms: Float)] = []
-        var leaked: [String] = []
-        for level in levels {
-            if level.rms >= floor, level.rms > 0 {
-                kept.append(level)
-            } else {
-                leaked.append(level.contributor.label)
-            }
-        }
-        guard !kept.isEmpty else {
-            return Mix(samples: [], included: [], excludedAsLeakage: leaked)
-        }
-
-        let length = kept.map(\.contributor.samples.count).min() ?? 0
-        guard length > 0 else {
-            return Mix(samples: [], included: [], excludedAsLeakage: leaked)
-        }
-
-        var mix = [Float](repeating: 0, count: length)
-        for entry in kept {
-            // Unit-RMS normalization, so `weight` expresses priority rather than mix level.
-            let scale = entry.contributor.weight / entry.rms
-            let samples = entry.contributor.samples
-            for i in 0..<length {
-                mix[i] += samples[i] * scale
-            }
-        }
-
-        // Absolute level is irrelevant to chroma (per-frame vectors are normalized), but keep the
-        // signal inside [-1, 1] so anything else reading these samples sees an ordinary waveform.
-        //
-        // Scanned in place: `mix.map(abs).max()` allocated a SECOND full-length Float array just
-        // to find one number — ~60 MB on a six-minute stem, at the point where the loaded stems
-        // are still resident and memory is already at its peak.
-        var peak: Float = 0
-        for sample in mix { peak = max(peak, abs(sample)) }
-        if peak > 1 {
-            for i in mix.indices { mix[i] /= peak }
-        }
-
-        return Mix(
-            samples: mix,
-            included: kept.map(\.contributor.label),
-            excludedAsLeakage: leaked
-        )
+    /// The one player chord detection listens to: the highest-priority contributor (levels are in
+    /// priority order) that survives the leakage gate. nil when none is audible.
+    static func leadIndex(_ levels: [Float]) -> Int? {
+        keptAfterLeakageGate(levels).min()
     }
 
     /// Indices of the contributors that survive the leakage gate, given each one's RMS in the
@@ -143,21 +49,6 @@ enum HarmonyStemMix {
         guard let loudest = levels.max(), loudest > 0 else { return [] }
         let floor = loudest * pow(10, leakageFloorDecibels / 20)
         return Set(levels.indices.filter { levels[$0] >= floor && levels[$0] > 0 })
-    }
-
-    /// Wraps an already-accumulated mix, scaling it into [-1, 1]. The streaming counterpart to
-    /// the tail of `mixed`.
-    static func normalizedToUnitPeak(_ samples: [Float], included: [String]) -> Mix {
-        guard !samples.isEmpty else {
-            return Mix(samples: [], included: [], excludedAsLeakage: [])
-        }
-        var scaled = samples
-        var peak: Float = 0
-        for sample in scaled { peak = max(peak, abs(sample)) }
-        if peak > 1 {
-            for i in scaled.indices { scaled[i] /= peak }
-        }
-        return Mix(samples: scaled, included: included, excludedAsLeakage: [])
     }
 
     static func rootMeanSquare(_ samples: [Float]) -> Float {
@@ -181,16 +72,28 @@ struct InstrumentChordTrack: Codable, Equatable, Sendable {
 /// `BucketNoteTimeline`: check `isCurrent(for:)` against the current grid key before showing it.
 struct InstrumentChordTimeline: Codable, Equatable, Sendable {
     /// Bump when detection changes so stored timelines recompute.
-    static let currentVersionTag = "instrument-chords-1"
+    // instrument-chords-2: a stem's resting frames carry no chord evidence (`SoundingFrameGate`).
+    // instrument-chords-3: records `rests`, the stretches where guitar and piano are not playing.
+    // instrument-chords-4: drops chart chords no player's track has (CHORD-007).
+    static let currentVersionTag = "instrument-chords-5"
 
     var versionTag: String
     var gridKey: BucketGridKey
     var tracks: [InstrumentChordTrack]
+    /// Stretches of at least `PlayerRests.minimumSeconds` where guitar + piano together are not
+    /// sounding. The chord timeline stores CHANGES only, so without these nothing says "stop":
+    /// the chart restated a held chord across an a cappella passage and could not end a chord's
+    /// hold line. Optional so timelines stored before it still decode.
+    var rests: [ClosedRange<TimeInterval>]?
 
-    init(gridKey: BucketGridKey, tracks: [InstrumentChordTrack]) {
+    init(
+        gridKey: BucketGridKey, tracks: [InstrumentChordTrack],
+        rests: [ClosedRange<TimeInterval>] = []
+    ) {
         self.versionTag = Self.currentVersionTag
         self.gridKey = gridKey
         self.tracks = tracks
+        self.rests = rests
     }
 
     /// True when this timeline was detected on `key` by the current detector.
@@ -211,8 +114,10 @@ enum InstrumentChordPass {
     static let instruments: [StemKind] = [.guitar, .piano]
 
     /// The guitar and piano stems (a refined child stands in for its parent).
-    static func stemAudio(for document: SongAnalysisDocument) -> [(id: StemID, url: URL)] {
-        BucketNotePass.stemAudio(for: document).filter { entry in
+    static func stemAudio(for document: SongAnalysisDocument, gated: Bool = true)
+        -> [(id: StemID, url: URL)]
+    {
+        BucketNotePass.stemAudio(for: document, gated: gated).filter { entry in
             instruments.contains { kind in
                 entry.id == StemID(kind) || entry.id.rawValue.hasPrefix(kind.rawValue + ".")
             }
@@ -229,7 +134,9 @@ enum InstrumentChordPass {
         }
         let found = tracks(for: loaded, document: document)
         guard !found.isEmpty else { return nil }
-        return InstrumentChordTimeline(gridKey: key, tracks: found)
+        return InstrumentChordTimeline(
+            gridKey: key, tracks: found,
+            rests: PlayerRests.intervals(stems: loaded.map { ($0.samples, $0.sampleRate) }))
     }
 
     /// One track per stem that clears the leakage gate and yields chords.
@@ -250,59 +157,141 @@ enum InstrumentChordPass {
         }
     }
 
-    /// The harmony stage's chord chain on one stem's samples.
+    /// The chord chain on one stem's samples: this instrument's chroma, key and attacks only.
     static func chords(
         samples: [Float], sampleRate: Double, document: SongAnalysisDocument
     ) throws -> [EditableChordEvent] {
         let beats = document.beatTimes
         guard beats.count >= 2, let bpm = document.estimatedBPM, bpm > 0 else { return [] }
+        let onsets = try InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate)
+        // The chord network names the chords (Eric, 2026-10-07); the template chain below stays
+        // only for tests, which have no app bundle.
+        if let model = ChordNetRecognizer.bundledModel {
+            let resampled = try BasicPitchNoteTranscriber.resampled(
+                samples, from: sampleRate, to: ChordNetFeatures.sampleRate)
+            return chordLine(
+                segments: try ChordNetRecognizer.segments(
+                    spectrogram: ChordNetFeatures.spectrogram(samples: resampled), model: model),
+                onsets: onsets, beats: beats, sourceDuration: document.sourceDuration)
+        }
         let configuration = try AudioAnalysisConfiguration(
             sampleRate: sampleRate, frameLength: 8_192, hopLength: 4_096)
+        // One instrument's track: no chords where THAT instrument rests.
         let frames = try ChordAnalysisPipeline(configuration: configuration).analyzeFrames(
-            samples: samples)
-        let changePoints = ChromaChangePointDetector.changePoints(frames: frames.chroma)
+            samples: samples, gatesRestingFrames: true)
+        return chordLine(
+            frames: frames.observations,
+            changePoints: ChromaChangePointDetector.changePoints(frames: frames.chroma),
+            onsets: onsets,
+            key: MusicalKeyEstimator().estimate(from: frames.observations),
+            beats: beats, bpm: bpm, barGrid: document.barGrid,
+            sourceDuration: document.sourceDuration
+        ).events
+    }
+
+    /// The ONE chord chain every instrument runs, the guitar's chord line included (Eric,
+    /// 2026-10-07: each instrument's changes from its own stem, "as if each were a separate
+    /// source"). Every input is that instrument's: its chroma frames and change points, its
+    /// attacks, its own key. Decoded on the song's beat grid, each change moved to the
+    /// instrument's attack, filtered and audited there, and finally placed on the nearest
+    /// half-beat.
+    static func chordLine(
+        frames: [ChordObservation], changePoints: [TimeInterval], onsets: [TimeInterval],
+        key: MusicalKey?, beats: [TimeInterval], bpm: Double, barGrid: SongBarGrid?,
+        sourceDuration: TimeInterval?,
+        decoder base: ChordTimelineDecoder = ChordTimelineDecoder(),
+        minimumBeatFraction: Double = ChordEventDurationFilter.defaultMinimumBeatFraction
+    ) -> (
+        events: [EditableChordEvent], evidence: ChordEvidenceAudit.Result,
+        quality: ChordQualityAudit.Result
+    ) {
         let analysis = SongAudioAnalysis(
-            beat: nil, chords: frames.observations, estimatedKey: document.estimatedKey,
-            harmonicChangePoints: changePoints)
-        let onsets = InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate)
-        let bassCues = document.bassNotes.filter { $0.confidence >= 0.5 }.map(\.timestamp)
+            beat: nil, chords: frames, estimatedKey: key, harmonicChangePoints: changePoints)
         let beatLength = MetricalLevelReconciler.medianBeatLength(beatTimes: beats, bpm: bpm) ?? 0
+        // Decode at sub-beat resolution so a change inside a beat can be expressed at all; the
+        // switch penalty scales with the subdivision so flicker costs the same per beat.
         let subdivision = HarmonyDecodeResolution.subdivision(beatLength: beatLength)
         let decodeBeats = ChordTimelineDecoder.subdivided(
-            ChordTimelineDecoder.extendedBackward(
-                beats, toCover: frames.observations.first?.timestamp ?? 0),
+            ChordTimelineDecoder.extendedBackward(beats, toCover: frames.first?.timestamp ?? 0),
             by: subdivision)
-        let meter: ChordTimelineDecoder.BarMeter? = document.barGrid.flatMap { grid in
-            grid.phaseSource == .drumAccents
+        // A measured downbeat restated on the finer grid; an anchored one is no evidence.
+        let meter: ChordTimelineDecoder.BarMeter? = barGrid.flatMap { grid in
+            grid.isMeasured
                 ? ChordTimelineDecoder.BarMeter(
                     beatsPerBar: grid.beatsPerBar * subdivision,
                     barPhase: grid.barPhase * subdivision)
                 : nil
         }
-        var decoder = ChordTimelineDecoder()
+        var decoder = base
         decoder.switchPenalty *= Float(subdivision)
-        var events = BassInformedChordRefiner().refine(
-            decoder.events(
-                from: analysis, key: document.estimatedKey, bassNotes: document.bassNotes,
-                instrumentOnsets: onsets + bassCues, beatTimes: decodeBeats, meter: meter),
-            bassNotes: document.bassNotes)
+        var events = decoder.events(
+            from: analysis, key: key, instrumentOnsets: onsets, beatTimes: decodeBeats,
+            meter: meter)
+        // The decoder's own placement, kept as an alternative to audition against the audio.
+        for index in events.indices {
+            events[index].placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] =
+                events[index].time
+        }
         if !onsets.isEmpty {
             events = ChordOnsetAligner.snap(events, toOnsets: onsets, beatTimes: beats)
+            for index in events.indices {
+                events[index].placementCandidates[
+                    ChordPlacementVariant.instrumentOnset.rawValue] = events[index].time
+            }
         }
         events = ChordEventDurationFilter.merge(
-            events, beatTimes: beats, sourceDuration: document.sourceDuration)
-        events =
-            ChordEvidenceAudit.filtered(
-                events: events, frameObservations: frames.observations, attackOnsets: onsets,
-                changePoints: changePoints, sourceDuration: document.sourceDuration,
-                minimumAttackOnlyDuration: beatLength
-            ).events
-        events =
-            ChordQualityAudit.corrected(
-                events: events, frameObservations: frames.observations,
-                sourceDuration: document.sourceDuration
-            ).events
-        return events.sorted { $0.time < $1.time }
+            events, beatTimes: beats, minimumBeatFraction: minimumBeatFraction,
+            sourceDuration: sourceDuration)
+        // Every surviving change must be an attack or a stable harmonic change of this stem,
+        // judged at the time it was struck.
+        let evidence = ChordEvidenceAudit.filtered(
+            events: events, frameObservations: frames, attackOnsets: onsets,
+            changePoints: changePoints, sourceDuration: sourceDuration,
+            minimumAttackOnlyDuration: beatLength)
+        let quality = ChordQualityAudit.corrected(
+            events: evidence.events, frameObservations: frames, sourceDuration: sourceDuration)
+        // Aligned to the beat, from the attack: the nearest half-beat to where it was struck.
+        // Two changes landing on one half-beat merge like any other sliver.
+        var aligned = quality.events
+        for index in aligned.indices {
+            aligned[index].time = HalfBeatGrid.snapped(aligned[index].time, beats: beats)
+        }
+        aligned = ChordEventDurationFilter.merge(
+            aligned.sorted { $0.time < $1.time }, beatTimes: beats,
+            minimumBeatFraction: minimumBeatFraction, sourceDuration: sourceDuration)
+        return (aligned, evidence.audit, quality.audit)
+    }
+
+    /// The chord line from the chord network (`ChordNetRecognizer`) on one stem: its chords, each
+    /// change moved to this stem's nearest attack, slivers merged, then placed on the nearest
+    /// half-beat. The network's own decoder already charges every change, so the template chain's
+    /// beat-grid decode and its evidence and quality audits do not apply.
+    static func chordLine(
+        segments: [ChordNetSegment], onsets: [TimeInterval], beats: [TimeInterval],
+        sourceDuration: TimeInterval?,
+        minimumBeatFraction: Double = ChordEventDurationFilter.defaultMinimumBeatFraction
+    ) -> [EditableChordEvent] {
+        var events = segments.map { segment in
+            var event = EditableChordEvent(time: segment.start, chord: segment.chord)
+            event.placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] = segment.start
+            return event
+        }
+        if !onsets.isEmpty {
+            events = ChordOnsetAligner.snap(events, toOnsets: onsets, beatTimes: beats)
+            for index in events.indices {
+                events[index].placementCandidates[
+                    ChordPlacementVariant.instrumentOnset.rawValue] = events[index].time
+            }
+        }
+        events = ChordEventDurationFilter.merge(
+            events, beatTimes: beats, minimumBeatFraction: minimumBeatFraction,
+            sourceDuration: sourceDuration)
+        for index in events.indices {
+            events[index].time = HalfBeatGrid.snapped(events[index].time, beats: beats)
+        }
+        return ChordEventDurationFilter.merge(
+            events.sorted { $0.time < $1.time }, beatTimes: beats,
+            minimumBeatFraction: minimumBeatFraction, sourceDuration: sourceDuration)
     }
 
     /// Recomputes when the stored timeline is missing or stale for the current grid — or always
@@ -315,11 +304,105 @@ enum InstrumentChordPass {
         }
         if let fresh = timeline(for: document) {
             document.instrumentChords = fresh
+            let beat =
+                MetricalLevelReconciler.medianBeatLength(
+                    beatTimes: document.beatTimes, bpm: document.estimatedBPM ?? 0) ?? 0
+            document.chords = playedChords(
+                document.chords, tracks: fresh.tracks, rests: fresh.rests ?? [], beatLength: beat)
         }
+    }
+
+    /// CHORD-007: the chart keeps a chord only when a player's own track has it within a beat —
+    /// the two decodes can place one change up to a beat apart, and that is still the player's
+    /// chord. A chord neither the guitar track nor the piano track has is nobody's part: omitted,
+    /// even if the harmony is right. The user's own decisions (accepted, moved) are never dropped.
+    /// Dropping the B of A-B-A leaves the second A restating a chord still held, so it goes too,
+    /// unless the player rested in between and is striking it again.
+    static func playedChords(
+        _ chords: [EditableChordEvent], tracks: [InstrumentChordTrack],
+        rests: [ClosedRange<TimeInterval>], beatLength: TimeInterval
+    ) -> [EditableChordEvent] {
+        guard !tracks.isEmpty else { return chords }
+        var kept: [EditableChordEvent] = []
+        for chord in chords {
+            let isUsers = chord.accepted || chord.manualTime != nil || chord.hidden
+            let played = !InstrumentChordAgreement.agreeingStems(
+                forChord: chord.chord, at: chord.time, tracks: tracks, within: beatLength
+            ).isEmpty
+            guard isUsers || played else { continue }
+            if !isUsers, let last = kept.last(where: { !$0.hidden }), last.chord == chord.chord,
+                !PlayerRests.interrupts(rests, chordTime: last.time, at: chord.time)
+            {
+                continue
+            }
+            kept.append(chord)
+        }
+        return kept
     }
 }
 
 /// Which instrument a chart chord belongs to, from the per-instrument tracks.
+/// When the guitarist and the pianist are NOT playing: runs where the guitar + piano sum stays more
+/// than `SoundingFrameGate.floorDecibels` below its loud level.
+enum PlayerRests {
+    static let hopSeconds = 0.1
+    /// Shorter dips are the space between strums, not a rest.
+    static let minimumSeconds = 1.0
+
+    static func intervals(stems: [(samples: [Float], sampleRate: Double)])
+        -> [ClosedRange<TimeInterval>]
+    {
+        guard let sampleRate = stems.first?.sampleRate, sampleRate > 0 else { return [] }
+        var sum: [Float] = []
+        for stem in stems where stem.sampleRate == sampleRate {
+            if sum.isEmpty {
+                sum = stem.samples
+            } else {
+                let length = min(sum.count, stem.samples.count)
+                vDSP_vadd(sum, 1, stem.samples, 1, &sum, 1, vDSP_Length(length))
+            }
+        }
+        let hop = max(1, Int(hopSeconds * sampleRate))
+        let levels = stride(from: 0, to: sum.count, by: hop).map {
+            SoundingFrameGate.level(of: sum, from: $0, count: hop)
+        }
+        return intervals(levels: levels)
+    }
+
+    static func intervals(levels: [Float]) -> [ClosedRange<TimeInterval>] {
+        let sounding = SoundingFrameGate.sounding(frameLevels: levels)
+        var rests: [ClosedRange<TimeInterval>] = []
+        var runStart: Int?
+        for index in 0...sounding.count {
+            let resting = index < sounding.count && !sounding[index]
+            if resting {
+                runStart = runStart ?? index
+            } else if let start = runStart {
+                let from = Double(start) * hopSeconds
+                let to = Double(index) * hopSeconds
+                if to - from >= minimumSeconds { rests.append(from...to) }
+                runStart = nil
+            }
+        }
+        return rests
+    }
+
+    /// True when the player is not holding a chord struck at `chordTime` any more at `time`:
+    /// `time` is inside a rest, or a rest began after the chord and before `time`.
+    static func interrupts(
+        _ rests: [ClosedRange<TimeInterval>], chordTime: TimeInterval, at time: TimeInterval
+    ) -> Bool {
+        rests.contains { $0.lowerBound > chordTime && $0.lowerBound <= time || $0.contains(time) }
+    }
+
+    /// Where a chord struck at `chordTime` stops being held: the first rest that begins after it.
+    static func end(of chordTime: TimeInterval, rests: [ClosedRange<TimeInterval>])
+        -> TimeInterval?
+    {
+        rests.map(\.lowerBound).filter { $0 > chordTime }.min()
+    }
+}
+
 enum InstrumentChordAgreement {
     /// The chord `track` has sounding at `time`: its latest visible change at or before
     /// `time + grace`, so a change landing just after the chart chord's onset still counts.
@@ -329,15 +412,20 @@ enum InstrumentChordAgreement {
         track.chords.last { !$0.hidden && $0.time <= time + grace }
     }
 
-    /// The instrument whose sounding chord matches `chord` at `time`, or nil when no instrument or
-    /// more than one does — a chord both instruments play belongs to neither. Refined children of
-    /// one instrument (lead and rhythm guitar) count as that one instrument.
-    static func instrument(
-        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack]
-    ) -> StemID? {
-        let agreeing = tracks.filter { sounding(in: $0, at: time)?.chord == chord }.map(\.stemID)
-        let kinds = Set(agreeing.map { $0.rawValue.split(separator: ".").first.map(String.init) })
-        return kinds.count == 1 ? agreeing.first : nil
+    /// Every stem whose own chord track has `chord` sounding at `time`. Empty means no player
+    /// can be credited with the chord — which must not LOOK like a credit: the label used to fall
+    /// back to the accent tint, the same blue as the bass lane, and read as "the bass plays Am"
+    /// on a passage with no bass (Eric, 2026-09-20).
+    /// `within` widens the match to a beat either side: the chart line and a player's track are
+    /// separate decodes and can place the same change up to a beat apart.
+    static func agreeingStems(
+        forChord chord: String, at time: TimeInterval, tracks: [InstrumentChordTrack],
+        within tolerance: TimeInterval = 0
+    ) -> [StemID] {
+        let times = tolerance > 0 ? [time, time - tolerance, time + tolerance] : [time]
+        return tracks.filter { track in
+            times.contains { sounding(in: track, at: $0)?.chord == chord }
+        }.map(\.stemID)
     }
 }
 
@@ -409,5 +497,25 @@ enum InstrumentChordRowFormatter {
             if case .chord(let transposed) = element { return transposed.description }
         }
         return chord
+    }
+}
+
+/// Places a change on the nearest beat or half-beat of the song's beat grid (Eric, 2026-10-07:
+/// "snap to half-beat", so a pushed eighth-note change survives). Times outside the grid are left.
+enum HalfBeatGrid {
+    static func snapped(_ time: TimeInterval, beats: [TimeInterval]) -> TimeInterval {
+        guard let first = beats.first, let last = beats.last, time >= first, time <= last else {
+            return time
+        }
+        var low = 0
+        var high = beats.count - 1
+        while high - low > 1 {
+            let middle = (low + high) / 2
+            if beats[middle] <= time { low = middle } else { high = middle }
+        }
+        let start = beats[low]
+        let end = beats[high]
+        let candidates = [start, (start + end) / 2, end]
+        return candidates.min { abs($0 - time) < abs($1 - time) } ?? time
     }
 }

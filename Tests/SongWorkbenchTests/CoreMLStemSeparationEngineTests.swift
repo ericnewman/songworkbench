@@ -23,6 +23,33 @@ final class CoreMLStemSeparationEngineTests: XCTestCase {
         XCTAssertTrue(CoreMLStemChunkPredictor.halfPrecisionFloatValue(bitPattern: 0x7E00).isNaN)
     }
 
+    func testStemsWithinFullScaleAreStoredAs16BitAndLouderOnesStayFloat() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let frames = 100_000  // more than one read buffer
+        let wave = (0..<frames).map { sin(Float($0) * 0.01) * 0.5 }
+        var hot = wave
+        hot[frames - 1] = 1.2  // over full scale only in the last buffer
+        let quiet = directory.appendingPathComponent("quiet.wav")
+        let loud = directory.appendingPathComponent("loud.wav")
+
+        try KaraokeBackingResidual.writeStereo([wave, wave], to: quiet)
+        try KaraokeBackingResidual.writeStereo([hot, hot], to: loud)
+
+        XCTAssertEqual(try AVAudioFile(forReading: quiet).fileFormat.commonFormat, .pcmFormatInt16)
+        let samples = try KaraokeBackingResidual.loadStereo(quiet)
+        XCTAssertEqual(samples[0].count, frames)
+        XCTAssertEqual(
+            zip(samples[1], wave).map { abs($0 - $1) }.max()!, 0, accuracy: 1.0 / 32_768)
+        XCTAssertEqual(try AVAudioFile(forReading: loud).fileFormat.commonFormat, .pcmFormatFloat32)
+        XCTAssertEqual(try KaraokeBackingResidual.loadStereo(loud)[0], hot)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted(),
+            ["loud.wav", "quiet.wav"])
+    }
+
     func testSeparationPublishesAlignedSixStemSetWithMonotonicProgress() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

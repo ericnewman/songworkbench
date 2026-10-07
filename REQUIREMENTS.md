@@ -102,14 +102,26 @@ text or mark an ID superseded instead of renumbering unrelated requirements.
 ## Tempo and chord timeline
 
 - **CHORD-001** Native full-mix beat/chroma analysis MUST remain available as a fallback.
-- **CHORD-002** Current bass/accompaniment stems SHOULD be used as additional
-  harmonic evidence when available.
+- **CHORD-002** (revised 2026-09-20) The current bass stem SHOULD be used as additional
+  harmonic evidence when available. The summed accompaniment and the separator's `other` stem
+  MUST NOT be: they cannot be attributed to a player (see CHORD-007).
 - **CHORD-003** Results MUST include estimated tempo and editable timestamped
   chord events with confidence when available.
 - **CHORD-004** Machine chord results MUST be draft until explicitly reviewed.
 - **CHORD-005** Manual add, remove, edit, and retime operations MUST remain available.
 - **CHORD-006** The UI MUST identify stale chord results when source, engine,
   model, or relevant configuration identity changes.
+- **CHORD-007** Machine chord and note results answer one question — "What did the Guitarist,
+  Bassist, and Pianist play on this song?" Each result MUST be attributable to the guitar, bass
+  or piano and MUST be read from that instrument's separated stem, never from the composite
+  signal or the vocals. A result that cannot be attributed to one of the three MUST be omitted.
+  Other musicians and sounds are omitted by design. A chart chord counts as a player's when that
+  player's own chord track has it within one beat; a chord no player's track has MUST be omitted,
+  except one the user accepted, moved or hid.
+- **CHORD-008** A result MUST NOT be reported for a player who is not sounding at that moment.
+  Residue in a resting stem, a voice the separator placed in an instrument stem, and a stem that
+  is only separation bleed are not parts. Omission is preferred to a guess. When no separated
+  stems exist, the CHORD-001 full-mix fallback is exempt and MUST be presented as a draft.
 
 ## ChordPro generation
 

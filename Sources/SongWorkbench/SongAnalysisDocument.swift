@@ -6,8 +6,12 @@ import Foundation
 /// owning segment's `text`.
 struct TimedLyricWord: Codable, Equatable, Sendable {
     var text: String
-    var start: TimeInterval
-    var end: TimeInterval
+    /// When the word is sung, measured on the vocals stem by forced alignment (or an onset). nil
+    /// for a word alignment could not place: its time is unknown and is never estimated — it is
+    /// drawn after the word before it, never highlighted, and anchors nothing (Eric, 2026-09-27).
+    /// Always both set or both nil.
+    var start: TimeInterval?
+    var end: TimeInterval?
     var characterRange: Range<Int>
     /// Lowest ASR token confidence among the tokens that render this word (a word is only as
     /// trustworthy as its least certain part). `nil` when the engine reported no per-token
@@ -20,6 +24,36 @@ struct TimedLyricWord: Codable, Equatable, Sendable {
     var timingSource: LyricWordTimingSource? = nil
 }
 
+extension TimedLyricWord {
+    /// True when alignment placed this word and it has started by `time`. An untimed word never
+    /// has: nothing may be inferred about when it is sung.
+    func hasStarted(by time: TimeInterval) -> Bool { start.map { $0 <= time } ?? false }
+
+    /// True when alignment placed this word and `time` falls in its `[start, end)`.
+    func isSounding(at time: TimeInterval) -> Bool {
+        guard let start, let end else { return false }
+        return start <= time && time < end
+    }
+}
+
+extension Sequence where Element == TimedLyricWord {
+    /// Start of the first word alignment placed; nil when it placed none.
+    var firstStart: TimeInterval? { lazy.compactMap(\.start).first }
+    /// End of the last word alignment placed; nil when it placed none.
+    var lastEnd: TimeInterval? { reversed().lazy.compactMap(\.end).first }
+
+    /// Where to DRAW each word on a time axis: its start, or for a word alignment could not place
+    /// the anchor of the word before it (`lineStart` when it leads), so it is drawn right after
+    /// that word. Layout only: never stored, played, highlighted or used to place anything else.
+    func displayAnchors(lineStart: TimeInterval) -> [TimeInterval] {
+        var anchor = lineStart
+        return map { word in
+            if let start = word.start { anchor = start }
+            return anchor
+        }
+    }
+}
+
 /// Provenance of a resolved word's time (see `TimedLyricSegment.resolved`).
 enum LyricWordTimingSource: String, Codable, Sendable {
     /// A corrected word with the same text as a transcribed word: that word's time.
@@ -27,10 +61,9 @@ enum LyricWordTimingSource: String, Codable, Sendable {
     /// A corrected word replacing exactly one transcribed word of different text: the replaced
     /// word's time — still the moment the transcriber heard a word sung there.
     case substituted
-    /// A corrected word with no one-to-one transcribed counterpart, spread by length across the
-    /// transcribed words it replaced or the gap between its matched neighbours. Not acoustic
-    /// evidence of where the word starts.
-    case interpolated
+    /// A corrected word with no one-to-one transcribed counterpart: it has NO time (lyric times
+    /// are measured, never spread — Eric, 2026-09-27). The raw value predates the rename.
+    case unplaced = "interpolated"
 }
 
 /// One transcription mode's candidate text for a `LyricBlendRow`'s time window (backlog #11,
@@ -74,7 +107,7 @@ struct LyricBlendRow: Identifiable, Codable, Equatable, Sendable {
     /// Does NOT consider `overrideText` — see `effectiveText` for the text actually used for
     /// playback/export, which checks the override first.
     func effectiveCandidate(
-        preferenceOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+        preferenceOrder: [TranscriptionMode] = LyricBlendRowBuilder.modeOrder
     ) -> LyricBlendCandidate? {
         if let selectedMode, let match = candidates.first(where: { $0.mode == selectedMode }) {
             return match
@@ -89,7 +122,7 @@ struct LyricBlendRow: Identifiable, Codable, Equatable, Sendable {
     /// non-empty), else `effectiveCandidate()`'s text. `nil` only when there's no override and no
     /// candidate at all.
     func effectiveText(
-        preferenceOrder: [TranscriptionMode] = [.accuracy, .balancedDraft, .fastDraft]
+        preferenceOrder: [TranscriptionMode] = LyricBlendRowBuilder.modeOrder
     ) -> String? {
         if let overrideText {
             let trimmed = overrideText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -182,7 +215,7 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
     /// (word ranges re-derived only if they no longer address the text). With one, the corrected
     /// words are matched in order to the transcribed words: equal text keeps the transcribed time
     /// (`.matched`), a one-for-one replacement keeps the replaced word's time (`.substituted`),
-    /// and anything else is spread across the replaced words or the gap (`.interpolated`). A
+    /// and anything else has no time (`.unplaced`). A
     /// correction on a line with no word timings resolves to no words. `overrideText` is kept so
     /// callers can still tell a corrected line apart; the stored segment is never changed.
     var resolved: TimedLyricSegment {
@@ -191,8 +224,7 @@ struct TimedLyricSegment: Identifiable, Codable, Equatable, Sendable {
         var result = self
         result.text = target
         result.words = LyricWordRanges.words(
-            for: target, from: words, lineStart: start, lineEnd: end,
-            isCorrection: target != text)
+            for: target, from: words, isCorrection: target != text)
         return result
     }
 
@@ -627,6 +659,10 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
     /// Each chordal instrument's own chords (`InstrumentChordPass`). `nil` until computed; may be
     /// stale — check `isCurrent(for:)` against the current grid key before showing it.
     var instrumentChords: InstrumentChordTimeline?
+    /// The instrument `chords` were detected on — guitar, or the instrument that does play when a
+    /// song has no guitar part. The chord line is drawn in its color. nil before the harmony
+    /// stage recorded it (and for a single-file, full-mix analysis).
+    var chordInstrument: StemKind?
     /// The generated chart's layout (`PersistedChartLayout`), written whenever the draft builder
     /// writes `chordProSource`. nil for imported charts and documents from before it existed.
     var chartLayout: PersistedChartLayout?
@@ -668,6 +704,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         case wordTimingFindings
         case wordTimingCheckTag
         case instrumentChords
+        case chordInstrument
         case chartLayout
     }
 
@@ -708,6 +745,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         wordTimingFindings: [WordTimingFinding] = [],
         wordTimingCheckTag: String? = nil,
         instrumentChords: InstrumentChordTimeline? = nil,
+        chordInstrument: StemKind? = nil,
         chartLayout: PersistedChartLayout? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -746,6 +784,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         self.wordTimingFindings = wordTimingFindings
         self.wordTimingCheckTag = wordTimingCheckTag
         self.instrumentChords = instrumentChords
+        self.chordInstrument = chordInstrument
         self.chartLayout = chartLayout
     }
 
@@ -832,6 +871,7 @@ struct SongAnalysisDocument: Codable, Equatable, Sendable {
         wordTimingCheckTag = try container.decodeIfPresent(String.self, forKey: .wordTimingCheckTag)
         instrumentChords = try container.decodeIfPresent(
             InstrumentChordTimeline.self, forKey: .instrumentChords)
+        chordInstrument = try? container.decodeIfPresent(StemKind.self, forKey: .chordInstrument)
         chartLayout = try? container.decodeIfPresent(
             PersistedChartLayout.self, forKey: .chartLayout)
         if chartLayout?.version != PersistedChartLayout.currentVersion { chartLayout = nil }
@@ -877,15 +917,18 @@ struct StoredStemFiles: Codable, Equatable, Sendable {
         accompaniment = files.accompaniment.map(StoredAudioReference.init(url:))
     }
 
-    func resolved() -> StemFiles {
-        StemFiles(
-            vocals: vocals.resolvedURL(),
-            drums: drums.resolvedURL(),
-            bass: bass.resolvedURL(),
-            guitar: guitar?.resolvedURL(),
-            piano: piano?.resolvedURL(),
-            other: other.resolvedURL(),
-            accompaniment: accompaniment?.resolvedURL()
+    /// `followingBookmarks: false` answers from the stored paths (see
+    /// `StoredAudioReference.resolvedURL(followingBookmark:)`).
+    func resolved(followingBookmarks: Bool = true) -> StemFiles {
+        let follow = followingBookmarks
+        return StemFiles(
+            vocals: vocals.resolvedURL(followingBookmark: follow),
+            drums: drums.resolvedURL(followingBookmark: follow),
+            bass: bass.resolvedURL(followingBookmark: follow),
+            guitar: guitar?.resolvedURL(followingBookmark: follow),
+            piano: piano?.resolvedURL(followingBookmark: follow),
+            other: other.resolvedURL(followingBookmark: follow),
+            accompaniment: accompaniment?.resolvedURL(followingBookmark: follow)
         )
     }
 }
@@ -905,10 +948,12 @@ struct StoredStemSetManifest: Codable, Equatable, Sendable {
         self.init(manifest: files.stemSetManifest)
     }
 
-    func resolved() -> StemSetManifest {
+    /// `followingBookmarks: false` answers from the stored paths (see
+    /// `StoredAudioReference.resolvedURL(followingBookmark:)`).
+    func resolved(followingBookmarks: Bool = true) -> StemSetManifest {
         StemSetManifest(
             descriptors: descriptors,
-            assets: assets.map(\.resolved),
+            assets: assets.map { $0.resolved(followingBookmark: followingBookmarks) },
             recipeIdentity: recipeIdentity
         )
     }
@@ -925,8 +970,10 @@ struct StoredStemAsset: Codable, Equatable, Sendable {
         producerID = asset.producerID
     }
 
-    var resolved: StemAsset {
-        StemAsset(id: id, audioURL: audio.resolvedURL(), producerID: producerID)
+    func resolved(followingBookmark: Bool = true) -> StemAsset {
+        StemAsset(
+            id: id, audioURL: audio.resolvedURL(followingBookmark: followingBookmark),
+            producerID: producerID)
     }
 }
 
@@ -939,12 +986,145 @@ struct StoredAudioReference: Codable, Equatable, Sendable {
         bookmarkData = try? url.appScopedBookmarkData()
     }
 
-    func resolvedURL() -> URL {
-        guard let bookmarkData else { return URL(fileURLWithPath: path) }
+    /// `followingBookmark: false` returns the stored path without resolving the bookmark, which
+    /// costs about half a millisecond: enough to matter in a check run on every playback tick.
+    func resolvedURL(followingBookmark: Bool = true) -> URL {
+        if let moved = BulkStorageLocation.relocated(path) { return URL(fileURLWithPath: moved) }
+        guard followingBookmark, let bookmarkData else { return URL(fileURLWithPath: path) }
         var stale = false
         return
             (try? URL(resolvingAppScopedBookmark: bookmarkData, bookmarkDataIsStale: &stale))
             ?? URL(fileURLWithPath: path)
+    }
+}
+
+/// Where the large, re-creatable files live: model packages (`Models`) and separated stems
+/// (`Analysis/Stems`). They default to the app's Application Support folder; Analysis > Move
+/// Models and Stems puts them in any folder, such as one on an external drive (Eric, 2026-10-01:
+/// they were 40 GB of a full boot disk). The library itself (`songs`, `library.json` and the
+/// imported `Sources`) stays in Application Support.
+enum BulkStorageLocation {
+    static let movedFolders = ["Models", "Analysis/Stems"]
+    private static let bookmarkKey = "bulkStorageBookmark"
+    private static let pathKey = "bulkStoragePath"
+    private static let previousPathsKey = "bulkStoragePreviousPaths"
+
+    static let defaultRoot = FileManager.default.urls(
+        for: .applicationSupportDirectory, in: .userDomainMask
+    ).first!.appendingPathComponent("SongWorkbench", isDirectory: true)
+
+    /// Resolved once per launch, so a move takes effect when the app next opens; the folder's
+    /// security scope stays open for the app's lifetime. A chosen folder that can't be reached
+    /// (its drive is unplugged) still answers its path, so the app reports missing models and
+    /// stems instead of quietly downloading 5 GB of models back onto the boot disk.
+    static let root: URL = {
+        let defaults = UserDefaults.standard
+        guard let path = defaults.string(forKey: pathKey) else { return defaultRoot }
+        var stale = false
+        if let data = defaults.data(forKey: bookmarkKey),
+            let url = try? URL(resolvingAppScopedBookmark: data, bookmarkDataIsStale: &stale),
+            url.startAccessingSecurityScopedResource()
+        {
+            if stale, let fresh = try? url.appScopedBookmarkData() {
+                defaults.set(fresh, forKey: bookmarkKey)
+            }
+            return url
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }()
+
+    /// Roots stems were stored under before a move. Song records keep the stem paths they were
+    /// written with, and `relocated` maps those to `root`, so a move never rewrites the library.
+    private static let previousRoots: [String] =
+        ((UserDefaults.standard.stringArray(forKey: previousPathsKey) ?? []) + [defaultRoot.path])
+        .filter { $0 != root.path }
+
+    /// `path` under `root` when it names a stem stored under an earlier root; nil otherwise.
+    static func relocated(_ path: String) -> String? {
+        relocated(path, from: previousRoots, to: root.path)
+    }
+
+    static func relocated(_ path: String, from previousRoots: [String], to root: String) -> String?
+    {
+        for previous in previousRoots {
+            let prefix = previous + "/Analysis/Stems/"
+            if path.hasPrefix(prefix) {
+                return root + "/Analysis/Stems/" + path.dropFirst(prefix.count)
+            }
+        }
+        return nil
+    }
+
+    /// Bytes `move(to:progress:)` would move.
+    static func movableSize() -> Int64 {
+        var total: Int64 = 0
+        for folder in movedFolders {
+            let enumerator = FileManager.default.enumerator(
+                at: root.appendingPathComponent(folder), includingPropertiesForKeys: [.fileSizeKey])
+            while let url = enumerator?.nextObject() as? URL {
+                total += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            }
+        }
+        return total
+    }
+
+    enum MoveError: LocalizedError {
+        case insideCurrentLocation
+        case destinationNotEmpty(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .insideCurrentLocation:
+                "Choose a folder outside the current models and stems folder."
+            case .destinationNotEmpty(let path):
+                "\(path) already exists and isn't empty."
+            }
+        }
+    }
+
+    /// Copies `Models` and `Analysis/Stems` into `destination`, makes it the root from the next
+    /// launch, then deletes the originals. Copying first means a failure part-way leaves every
+    /// original in place and in use; the partial copy is removed.
+    static func move(to destination: URL, progress: (String) -> Void) throws {
+        let manager = FileManager.default
+        let destination = destination.standardizedFileURL
+        guard !(destination.path + "/").hasPrefix(root.standardizedFileURL.path + "/") else {
+            throw MoveError.insideCurrentLocation
+        }
+        var copied: [URL] = []
+        do {
+            for folder in movedFolders {
+                let source = root.appendingPathComponent(folder, isDirectory: true)
+                let target = destination.appendingPathComponent(folder, isDirectory: true)
+                if let existing = try? manager.contentsOfDirectory(atPath: target.path),
+                    !existing.isEmpty
+                {
+                    throw MoveError.destinationNotEmpty(target.path)
+                }
+                try manager.createDirectory(at: target, withIntermediateDirectories: true)
+                copied.append(target)
+                let items = (try? manager.contentsOfDirectory(atPath: source.path)) ?? []
+                for (index, item) in items.enumerated() {
+                    progress("Moving \(folder.lowercased()): \(index + 1) of \(items.count)")
+                    try manager.copyItem(
+                        at: source.appendingPathComponent(item),
+                        to: target.appendingPathComponent(item))
+                }
+            }
+        } catch {
+            for target in copied { try? manager.removeItem(at: target) }
+            throw error
+        }
+        let defaults = UserDefaults.standard
+        defaults.set(try destination.appScopedBookmarkData(), forKey: bookmarkKey)
+        defaults.set(destination.path, forKey: pathKey)
+        defaults.set(
+            Array(Set((defaults.stringArray(forKey: previousPathsKey) ?? []) + [root.path])),
+            forKey: previousPathsKey)
+        progress("Removing the old copies")
+        for folder in movedFolders {
+            try? manager.removeItem(at: root.appendingPathComponent(folder, isDirectory: true))
+        }
     }
 }
 
@@ -989,8 +1169,7 @@ enum LyricWordRanges {
     }
 
     static func words(
-        for text: String, from raw: [TimedLyricWord], lineStart: TimeInterval,
-        lineEnd: TimeInterval, isCorrection: Bool
+        for text: String, from raw: [TimedLyricWord], isCorrection: Bool
     ) -> [TimedLyricWord] {
         let tokens = tokens(in: text)
         guard !raw.isEmpty, !tokens.isEmpty else { return [] }
@@ -1024,26 +1203,10 @@ enum LyricWordRanges {
                 }
                 continue
             }
-            let low: TimeInterval
-            let high: TimeInterval
-            if !replaced.isEmpty {
-                low = raw[replaced.lowerBound].start
-                high = raw[replaced.upperBound - 1].end
-            } else {
-                low = left.0 >= 0 ? (placed[left.0]?.end ?? lineStart) : lineStart
-                high = right.0 < tokens.count ? raw[right.1].start : lineEnd
-            }
-            let span = max(high - low, 0)
-            let weights = run.map { Double(max(tokens[$0].text.count, 1)) }
-            let total = weights.reduce(0, +)
-            var cursor = 0.0
-            for (offset, i) in run.enumerated() {
-                let wordStart = low + span * cursor / total
-                cursor += weights[offset]
+            for i in run {
                 placed[i] = TimedLyricWord(
-                    text: tokens[i].text, start: wordStart, end: low + span * cursor / total,
-                    characterRange: tokens[i].range, confidence: nil,
-                    timingSource: .interpolated)
+                    text: tokens[i].text, start: nil, end: nil, characterRange: tokens[i].range,
+                    confidence: nil, timingSource: .unplaced)
             }
         }
         return placed.compactMap { $0 }

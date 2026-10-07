@@ -43,6 +43,23 @@ Desktop), run the same commands via desktop-commander's `start_process`
    sleep 5; pgrep -fl "SongWorkbench.app/Contents/MacOS/SongWorkbench" || echo "NOT RUNNING - check crash logs: ls -t ~/Library/Logs/DiagnosticReports/SongWorkbench* | head -1"
    ```
 
+## Optimized build for library runs
+
+The recipe above builds Debug (`-Onone`), which is right for debugging and wrong for analysing
+songs: measured 2026-09-19 on one 219 s song with warm caches, Debug took 120 s and Release 6 s
+with identical output. Before a multi-song re-analysis, build and launch the optimized app instead:
+
+```bash
+cd "$(git rev-parse --show-toplevel)" && make app-release 2>&1 | tail -3
+```
+
+```bash
+pkill -f "SongWorkbench.app/Contents/MacOS/SongWorkbench"; APP="$(git rev-parse --show-toplevel)/build/Release/SongWorkbench.app" && open "$APP" && echo "launched $APP"
+```
+
+Launching the Release bundle as the GUI app was not verified on 2026-09-19 — only its headless
+`analyze` CLI was. It shares the bundle ID and team with Debug, so it uses the same container.
+
 ## Notes
 
 - Concurrent builds collide: if the build fails with "input file … was

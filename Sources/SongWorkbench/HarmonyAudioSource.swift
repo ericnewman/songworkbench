@@ -91,8 +91,9 @@ struct HarmonyAudioSourceSelector: Sendable {
         }
 
         if let primary = contributors.first {
+            // "lead": the chords come from ONE of these candidates, not a blend of them.
             let identifier =
-                "harmony-mix-" + contributors.map { $0.kind.rawValue }.joined(separator: "+")
+                "harmony-lead-" + contributors.map { $0.kind.rawValue }.joined(separator: "+")
             return HarmonyAudioSource(
                 url: primary.url,
                 kind: .accompanimentStem,

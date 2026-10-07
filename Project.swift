@@ -13,6 +13,8 @@ let project = Project(
             requirement: .exact("1.24.2")
         ),
         .local(path: "Dependencies/WhisperFramework"),
+        // Qwen3-ASR on MLX: a trimmed local copy of mlx-audio-swift (see its Package.swift).
+        .local(path: "Dependencies/MLXAudioQwen3"),
     ],
     targets: [
         .target(
@@ -34,21 +36,28 @@ let project = Project(
             resources: ["Resources/**"],
             entitlements: .file(path: "SongWorkbench.entitlements"),
             scripts: [
-                // The native Core ML six-stem model is gitignored (172 MB), so it can't be a
-                // declared resource. Without it the app silently falls back to ONNX separation.
+                // The bundled Core ML models are gitignored (172 MB), so they can't be declared
+                // resources. The app does not run without them (Eric, 2026-09-26: no fallback), so a
+                // missing model fails the build instead of producing an app that silently degrades.
                 // This phase was hand-added to the pbxproj once and lost on regeneration; keep it
                 // here so `tuist generate` preserves it.
                 .post(
                     script: """
-                        if [ -d "$SRCROOT/BundledModels/HTDemucs6S_FP16.mlpackage" ]; then
-                          rsync -a --delete "$SRCROOT/BundledModels/HTDemucs6S_FP16.mlpackage" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/"
-                        else
-                          echo "warning: HTDemucs6S_FP16.mlpackage not present; app will use the ONNX separation path"
-                        fi
+                        for m in HTDemucs6S_FP16 LyricsAlignmentMTL BeatThis ChordNet; do
+                          if [ -d "$SRCROOT/BundledModels/$m.mlpackage" ]; then
+                            rsync -a --delete "$SRCROOT/BundledModels/$m.mlpackage" "$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/"
+                          else
+                            echo "error: BundledModels/$m.mlpackage is missing. SongWorkbench does not run without its models; copy BundledModels/ from the main checkout."
+                            exit 1
+                          fi
+                        done
                         """,
                     name: "Copy Bundled CoreML Model",
                     outputPaths: [
-                        "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/HTDemucs6S_FP16.mlpackage"
+                        "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/HTDemucs6S_FP16.mlpackage",
+                        "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/LyricsAlignmentMTL.mlpackage",
+                        "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BeatThis.mlpackage",
+                        "$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ChordNet.mlpackage",
                     ],
                     basedOnDependencyAnalysis: false
                 )
@@ -57,6 +66,7 @@ let project = Project(
                 .package(product: "FluidAudio"),
                 .package(product: "onnxruntime"),
                 .package(product: "WhisperFramework"),
+                .package(product: "MLXAudioQwen3"),
                 .sdk(name: "AppIntents", type: .framework, status: .optional),
             ],
             settings: .settings(base: [

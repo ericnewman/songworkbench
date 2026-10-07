@@ -210,14 +210,17 @@ enum KaraokeBackingResidual {
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 44_100, channels: 2, interleaved: false)!
         let frames = AVAudioFrameCount(channels[0].count)
-        let file = try AVAudioFile(
-            forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32,
-            interleaved: false)
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
-        buffer.frameLength = frames
-        buffer.floatChannelData![0].update(from: channels[0], count: Int(frames))
-        buffer.floatChannelData![1].update(from: channels[1], count: Int(frames))
-        try file.write(from: buffer)
+        do {  // the file closes at the end of this scope, before compaction reads it
+            let file = try AVAudioFile(
+                forWriting: url, settings: format.settings, commonFormat: .pcmFormatFloat32,
+                interleaved: false)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+            buffer.frameLength = frames
+            buffer.floatChannelData![0].update(from: channels[0], count: Int(frames))
+            buffer.floatChannelData![1].update(from: channels[1], count: Int(frames))
+            try file.write(from: buffer)
+        }
+        try StemWAVCompaction.compactIfWithinFullScale(url)
     }
 }
 
@@ -386,6 +389,27 @@ actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
         try options.setGraphOptimizationLevel(.all)
         let threadCount = Self.resolvedIntraOpThreadCount()
         try options.setIntraOpNumThreads(threadCount)
+        #if os(macOS)
+            // Keep this model's convolutions OFF ONNX Runtime's CPU kernels. In 1.24.x
+            // `ArmKleidiAI::MlasConv` caches an indirection table per new input on the calling
+            // thread and never evicts it (see `ORTShortLivedThread`): ~300 MB per run, 24.2 GB by the
+            // end of one song on a 24 GB Mac, outside the arena (so no arena or run option touches
+            // it) and outliving the session by minutes. Refiners overlap Whisper, so each
+            // fresh-separation song swapped harder than the last (transcription 46 s -> 2,381 s
+            // within one library run, 2026-09-19). Fixed upstream by 1.30.0, but the Swift package
+            // publishes nothing past 1.24.2.
+            //
+            // Measured on this model against the CPU path: MLProgram on CPU+GPU is full precision
+            // (max error 3.4e-5, -108 dB), flat at ~2 GB over 14 runs, and 0.12 s per run against
+            // 0.88 s. The default NeuralNetwork format runs half precision off-CPU (-44 dB) and is
+            // not used. Unsupported nodes still fall back to the CPU provider.
+            if ORTIsCoreMLExecutionProviderAvailable() {
+                try options.appendCoreMLExecutionProvider(withOptionsV2: [
+                    "ModelFormat": "MLProgram",
+                    "MLComputeUnits": "CPUAndGPU",
+                ])
+            }
+        #endif
         session = try ORTSession(
             env: environment,
             modelPath: modelURL.path,
@@ -446,11 +470,13 @@ actor ONNXKaraokeChunkPredictor: StemChunkPredicting {
                 NSNumber(value: MDXNetKaraokeSpectrogram.dimT),
             ]
         )
-        let outputs = try session.run(
-            withInputs: ["input": input],
-            outputNames: ["output"],
-            runOptions: nil
-        )
+        let outputs = try ORTShortLivedThread.run {
+            try session.run(
+                withInputs: ["input": input],
+                outputNames: ["output"],
+                runOptions: nil
+            )
+        }
         guard let output = outputs["output"] else {
             throw CoreMLStemSeparationError.invalidPrediction
         }

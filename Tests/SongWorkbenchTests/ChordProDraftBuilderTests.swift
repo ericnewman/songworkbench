@@ -263,10 +263,13 @@ final class ChordProDraftBuilderTests: XCTestCase {
     func testGapChordsBelongToTheRowWhoseWindowHoldsThem() {
         // 120 BPM (0.5 s beats, 2 s bars), fixed-period rows of two bars (4 s). Two lines with a
         // 6 s gap and gap chords 4 beats and 1 beat before the second line. On fixed rows no chord
-        // is folded into a neighbouring line: each belongs to the row whose window holds its onset
-        // (both late chords land in the second line's [8, 12) row, at their true times, so nothing
-        // piles against a row edge), and the silent-but-held window between the lines is its own
-        // chord-only row sustaining the first line's chord.
+        // is folded into a neighbouring line: each belongs to the row whose window holds its onset,
+        // at its true time, and the silent-but-held window between the lines is its own chord-only
+        // row sustaining the first line's chord.
+        //
+        // Both lines open sections, each in the second bar of the song-wide two-bar grid, so
+        // each starts its own row on the bar of its first word (Eric, 2026-10-06): rows begin at
+        // 2 s and 10 s, and the bars between keep the gap chords in the instrumental row.
         let input = ChordProDraftInput(
             title: "Attachment",
             tempo: 120,
@@ -287,11 +290,14 @@ final class ChordProDraftBuilderTests: XCTestCase {
             rows.map(\.kind),
             [.lyric(ordinal: 0), .instrumental(role: .interlude), .lyric(ordinal: 1)])
         XCTAssertEqual(rows[0].chordTimes, [2.2])
-        XCTAssertEqual(rows[1].start, 4.0, accuracy: 0.001)
-        XCTAssertEqual(rows[2].start, 8.0, accuracy: 0.001)
+        XCTAssertEqual(result.rowOrigins[1] ?? -1, 2.0, accuracy: 0.001)
+        XCTAssertEqual(rows[1].start, 6.0, accuracy: 0.001)
         XCTAssertEqual(
-            rows[2].chordTimes, [8.0, 9.5], "both gap chords sit in the row holding them")
-        XCTAssertTrue(result.source.contains("| [C] | [C] |"), result.source)
+            rows[1].chordTimes, [8.0, 9.5], "both gap chords sit in the row holding them")
+        XCTAssertEqual(rows[2].start, 10.0, accuracy: 0.001)
+        XCTAssertEqual(result.rowOrigins[3] ?? -1, 10.0, accuracy: 0.001)
+        XCTAssertTrue(
+            result.source.contains("{end_of_verse}\n{start_of_verse: Verse 2}"), result.source)
     }
 
     func testStaleChartDetectionByAlgorithmTag() {
@@ -338,6 +344,29 @@ final class ChordProDraftBuilderTests: XCTestCase {
             "expected the sustained chord restated at the section start:\n\(document)")
         // But NOT restated on the following non-section line (change-only there).
         XCTAssertFalse(document.contains("[C]Cool sand"), document)
+    }
+
+    func testAChordIsNotRestatedOnceThePlayerHasStopped() {
+        // Same song as above, but the guitarist stops at 10 s and the verse is a cappella — Seven
+        // Bridges Road. Restating [C] on the sung line tells the player to play what nobody plays.
+        var input = ChordProDraftInput(
+            title: "A cappella verse",
+            tempo: 120,
+            lyrics: [
+                TimedLyricSegment(start: 16, end: 18, text: "Warm sun kisses my nose"),
+                TimedLyricSegment(start: 18, end: 20, text: "Cool sand under my toes"),
+            ],
+            chords: [EditableChordEvent(time: 2, chord: "C", confidence: 0.9)],
+            beatTimes: stride(from: 0.0, through: 20.0, by: 0.5).map { $0 }
+        )
+        input.playerRests = [10...20]
+        let document = ChordProDraftBuilder().build(input)
+        XCTAssertFalse(document.contains("[C]Warm sun"), document)
+        XCTAssertTrue(document.contains("Warm sun kisses my nose"), document)
+
+        // A rest that ended BEFORE the chord was struck interrupts nothing.
+        input.playerRests = [0...1.5]
+        XCTAssertTrue(ChordProDraftBuilder().build(input).contains("[C]Warm sun"))
     }
 
     func testRestatementSkippedWhenLineAlreadyStartsWithChord() {

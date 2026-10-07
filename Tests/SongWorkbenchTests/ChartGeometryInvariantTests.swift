@@ -555,8 +555,8 @@ final class ChartGeometryInvariantTests: XCTestCase {
                 moved.end += seconds
                 moved.words = line.words.map { word in
                     var w = word
-                    w.start += seconds
-                    w.end += seconds
+                    w.start = w.start.map { $0 + seconds }
+                    w.end = w.end.map { $0 + seconds }
                     return w
                 }
                 return moved

@@ -1035,3 +1035,46 @@ it in Python, and compare. Swift's mel through PyTorch gave 91.8 % blank (so the
 Swift's mel through Swift's own Core ML call gave 4.2 % (so the feeding was wrong). One comparison
 localised it exactly. Keep a reference implementation runnable for anything ported to Core ML, and
 compare intermediate tensors, not just final outputs.
+
+## 2026-09-26 — A worktree build has no bundled models, and analysis in it silently degrades
+
+**Mistake:** the Release app built in a `.claude/worktrees/` checkout was handed to Eric to test a
+UI change. The worktree has no `BundledModels/`, so the bundle shipped without
+`LyricsAlignmentMTL.mlpackage` and `HTDemucs6S_FP16.mlpackage`; the copy phase only printed
+`warning: LyricsAlignmentMTL.mlpackage not present; the feature that needs it falls back`. A song
+analysed in that app kept the ASR's word times, which spread its first line's nine words 1.21 s
+apart from 0.00 over the instrumental intro, and the result was saved over the song's analysis.
+
+**Eric's rules this broke (2026-09-26):**
+- A song always starts at the LEFT EDGE of the first row, never in the middle of a line.
+- A lyric start is anchored to an onset measured in the audio ONLY — never a computed, kept-ASR, or
+  spread time.
+
+**Rule:** before handing Eric any build, confirm the bundle holds both models
+(`ls <app>/Contents/Resources | grep mlpackage`) and grep the build log for `not present`. In a
+worktree, copy `BundledModels/` and `Derived/` from the main checkout before building. When lyric
+rows start at 0.00 with evenly spaced words, check the transcription stage's `completedAt` and the
+bundle that ran it before suspecting the view.
+
+## 2026-10-06 — A queue test raced the import's own auto-analysis
+
+`testReanalyzeAllSongsQueuesAndReentrantCallDoesNotDuplicateOrRestart` failed about one CI run in
+ten ("2 of 2" instead of "1 of 2"). `importSongs` queues the new songs for analysis, and in tests
+that queue drains in about 5 ms; a 10 ms `waitUntil` poll sometimes resumed mid-drain. Waiting for
+"idle" after an import is not safe either: the import summary appears about 2.5 ms before the queue
+starts running.
+
+**Rule:** a test that drives the analysis queue starts from a restored library
+(`ProjectLibraryDocument(songs:)` + `restoreProjects()`), which starts no analysis, not from
+`importSongs`. When a timing test flakes, log the state transitions with a 2 ms poll before
+choosing what to wait for.
+
+## 2026-10-06 — A beat grid can be wrong by a ratio, and every timing check then reads as noise
+
+Doc Holiday's grid ran at 4/3 of the band's tempo (103.4 vs 77); 8 of 14 album tracks were at 4/3
+or 2x. Words, chords and attacks all landed at chance positions in the measure, which looked like
+"timing skew" and sent the investigation through stem offsets and word-time latency first.
+
+**Rule:** when lyrics or chords look misplaced in the bar, first ask Eric for a counted tempo on
+one or two songs and compare it with `estimatedBPM`; a ratio (4/3, 2, 3/2) means the beat tracker
+picked the wrong level. Python proxies disagreed with each other here; the human count decided it.

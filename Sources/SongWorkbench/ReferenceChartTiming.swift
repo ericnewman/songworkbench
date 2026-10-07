@@ -68,7 +68,7 @@ enum ReferenceChartTiming {
             matched += 1
             cursor = match + 1
             let segment = ours[match]
-            let ourWords = segment.words.sorted { $0.start < $1.start }
+            let ourWords = segment.words
 
             for chord in referenceLine.chords.sorted(by: { $0.column < $1.column }) {
                 let time: TimeInterval
@@ -78,7 +78,13 @@ enum ReferenceChartTiming {
                     time = segment.start
                 } else {
                     let wordIndex = referenceLine.wordIndex(atColumn: chord.column)
-                    time = ourWords[min(max(wordIndex, 0), ourWords.count - 1)].start
+                    // A word alignment could not place has no time, so neither does its chord.
+                    guard let start = ourWords[min(max(wordIndex, 0), ourWords.count - 1)].start
+                    else {
+                        untimed += 1
+                        continue
+                    }
+                    time = start
                 }
                 events.append(
                     EditableChordEvent(time: time, chord: chord.name, confidence: nil))

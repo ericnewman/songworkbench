@@ -255,11 +255,19 @@ final class AppModelTests: XCTestCase {
             try? FileManager.default.removeItem(at: firstURL)
             try? FileManager.default.removeItem(at: secondURL)
         }
+        // A restored library, not an import: importing queues the new songs for analysis, which
+        // drains in about 5 ms here, and re-analyzing while that drain was on its second song
+        // read "2 of 2", not "1 of 2" (about one CI run in ten). Restoring starts nothing.
         let model = AppModel(
-            store: DelayedProjectStore(document: ProjectLibraryDocument()),
+            store: DelayedProjectStore(
+                document: ProjectLibraryDocument(songs: [
+                    StoredSongProject(url: firstURL, settings: PracticeSettings()),
+                    StoredSongProject(url: secondURL, settings: PracticeSettings()),
+                ])),
             storageRoot: makeTestStorageRoot())
-        model.importSongs(from: [firstURL, secondURL])
-        try await waitUntil { model.songs.count >= 2 }
+        await model.restoreProjects()
+        XCTAssertEqual(model.songs.count, 2)
+        XCTAssertFalse(model.isSongAnalysisRunning, "restoring must not start analysis")
 
         model.reanalyzeAllSongs()
 
@@ -282,6 +290,86 @@ final class AppModelTests: XCTestCase {
         // leaked 2-song queue saturates the CPU and starves later tests' 3 s waitUntil polls
         // (measured 2026-08-10: testReimportOfChangedSourceRefreshesStaleLocalCopy's import
         // wait and MusicLibrary's 150 ms provider-error sleep both timed out downstream).
+        model.select(try XCTUnwrap(model.songs.first))
+        XCTAssertFalse(model.isSongAnalysisRunning)
+    }
+
+    /// The flag that gates the Analysis menu must never outlive the work it describes.
+    ///
+    /// On 2026-09-18 a 39-song re-analysis stopped at 16 and "Re-analyze All Songs" stayed
+    /// greyed out for a day. There was no error and no message: `isSongAnalysisRunning` had been
+    /// left set by an early exit, and the only recovery was relaunching the app. The cost of this
+    /// class of bug is that it is INVISIBLE — the UI looks fine, it just refuses to do anything.
+    ///
+    /// This drives the queue and then cancels it, asserting the app is left able to start work
+    /// again. It does not reproduce the original stale-run race (that needs a real pipeline
+    /// finishing after its run is superseded); it pins the invariant that race violated.
+    func testCancellingAnalysisLeavesTheAppAbleToStartAgain() async throws {
+        let firstURL = try makeSilentWAV()
+        let secondURL = try makeSilentWAV()
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let model = AppModel(
+            store: DelayedProjectStore(document: ProjectLibraryDocument()),
+            storageRoot: makeTestStorageRoot())
+        model.importSongs(from: [firstURL, secondURL])
+        try await waitUntil { model.songs.count >= 2 }
+
+        model.reanalyzeAllSongs()
+        XCTAssertTrue(model.isSongAnalysisRunning, "fixture must actually start a run")
+
+        // Cancel the drain the way selecting another song does.
+        model.select(try XCTUnwrap(model.songs.first))
+
+        XCTAssertFalse(
+            model.isSongAnalysisRunning,
+            "the menu stays disabled while this is true, with no error to explain why")
+        XCTAssertNil(model.songAnalysisProgress)
+
+        // The real test: the app can start work again rather than being wedged.
+        model.reanalyzeAllSongs()
+        XCTAssertTrue(
+            model.isSongAnalysisRunning,
+            "a second run must be startable — this is what was broken")
+        XCTAssertNotNil(model.reanalyzeAllStatus)
+
+        model.select(try XCTUnwrap(model.songs.first))
+        XCTAssertFalse(model.isSongAnalysisRunning)
+    }
+
+    /// One unreadable source must not abandon every song behind it in the queue.
+    ///
+    /// The preflight that rejects an unreadable file returns BEFORE `beginAnalysis`, and
+    /// `beginAnalysis.onFinish` was the only thing starting the next queued song — so the queue
+    /// stopped dead on the first song whose file had moved, with no indication that the rest were
+    /// never attempted. Two 39-song re-analyses ended at 16 and at 11 this way.
+    func testQueueContinuesPastASongWhoseSourceIsUnreadable() async throws {
+        let goodURL = try makeSilentWAV()
+        let doomedURL = try makeSilentWAV()
+        defer { try? FileManager.default.removeItem(at: goodURL) }
+
+        let model = AppModel(
+            store: DelayedProjectStore(document: ProjectLibraryDocument()),
+            storageRoot: makeTestStorageRoot())
+        model.importSongs(from: [doomedURL, goodURL])
+        try await waitUntil { model.songs.count >= 2 }
+
+        // Make the first song's source unreadable AFTER import, so the queue meets it mid-drain.
+        try? FileManager.default.removeItem(at: doomedURL)
+
+        model.reanalyzeAllSongs()
+        XCTAssertTrue(model.isSongAnalysisRunning, "fixture must start a run")
+
+        // The queue must not be left holding songs with nothing draining them.
+        try await waitUntil {
+            !model.isSongAnalysisRunning || model.reanalyzeAllStatus != nil
+        }
+        XCTAssertFalse(
+            model.isSongAnalysisRunning && model.reanalyzeAllStatus == nil,
+            "running with no status means the drain was abandoned")
+
         model.select(try XCTUnwrap(model.songs.first))
         XCTAssertFalse(model.isSongAnalysisRunning)
     }

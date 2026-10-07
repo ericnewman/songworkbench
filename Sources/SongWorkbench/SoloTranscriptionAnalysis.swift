@@ -449,8 +449,10 @@ enum SoloTranscriptionPass {
 
     /// The melodic stems (guitars, piano, other, accompaniment) among the document's playable
     /// stem leaves.
-    static func stemAudio(for document: SongAnalysisDocument) -> [(id: StemID, url: URL)] {
-        BucketNotePass.stemAudio(for: document).filter {
+    static func stemAudio(for document: SongAnalysisDocument, gated: Bool = true)
+        -> [(id: StemID, url: URL)]
+    {
+        BucketNotePass.stemAudio(for: document, gated: gated).filter {
             SoloTranscriptionAnalyzer.isMelodicStem($0.id)
         }
     }

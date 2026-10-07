@@ -5,6 +5,8 @@ enum TranscriptionMode: String, Codable, Equatable, Sendable {
     case fastDraft
     case balancedDraft
     case accuracy
+    /// Qwen3-ASR on MLX: the preferred lyric engine when installed (Eric, 2026-10-01).
+    case qwen
 }
 
 enum AnalysisRuntimePlatform: String, Codable, Equatable, Sendable {
@@ -135,7 +137,7 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
             platform: .desktop,
             displayName: "Desktop Advanced",
             stemSeparationTier: .advancedDesktop,
-            transcriptionModes: [.fastDraft, .balancedDraft, .accuracy],
+            transcriptionModes: [.fastDraft, .balancedDraft, .accuracy, .qwen],
             executionPolicy: .concurrentIndependentStages,
             performanceTracks: Set(PerformanceTrackCapability.allCases)
         )
@@ -148,7 +150,7 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
                 platform: .desktop,
                 displayName: "Desktop Full",
                 stemSeparationTier: .fullSixStem,
-                transcriptionModes: [.fastDraft, .balancedDraft, .accuracy],
+                transcriptionModes: [.fastDraft, .balancedDraft, .accuracy, .qwen],
                 executionPolicy: .concurrentIndependentStages,
                 performanceTracks: Set(PerformanceTrackCapability.allCases)
             )
@@ -186,6 +188,8 @@ struct AnalysisCapabilityProfile: Codable, Equatable, Sendable {
                 || transcriptionModes.contains(.balancedDraft)
         case ModelCatalog.whisperAccuracy.id:
             return transcriptionModes.contains(.accuracy)
+        case ModelCatalog.qwen3ASR.id:
+            return transcriptionModes.contains(.qwen)
         default:
             return true
         }
@@ -242,7 +246,8 @@ struct SongAnalysisPipelineRequest: Sendable {
     let outputDirectory: URL
     let title: String
     let stages: Set<SongAnalysisStage>
-    let transcriptionMode: TranscriptionMode
+    /// `var` so the multi-engine transcription stage can re-run the stage in each other mode.
+    var transcriptionMode: TranscriptionMode
     let existingDocument: SongAnalysisDocument
     let chordProReplacementPolicy: ChordProReplacementPolicy
     /// Pitch-preserved decode speed for the transcription pass (Accuracy/Whisper only): < 1 slows
@@ -304,6 +309,7 @@ struct TranscriptionEngineFactory: Sendable {
     var fast: (any TranscriptionEngine)?
     var balanced: (any TranscriptionEngine)?
     var accuracy: (any TranscriptionEngine)?
+    var qwen: (any TranscriptionEngine)? = nil
 
     func engine(for mode: TranscriptionMode) -> (any TranscriptionEngine)? {
         switch mode {
@@ -313,6 +319,8 @@ struct TranscriptionEngineFactory: Sendable {
             balanced
         case .accuracy:
             accuracy
+        case .qwen:
+            qwen
         }
     }
 
@@ -321,6 +329,7 @@ struct TranscriptionEngineFactory: Sendable {
         if fast != nil { modes.insert(.fastDraft) }
         if balanced != nil { modes.insert(.balancedDraft) }
         if accuracy != nil { modes.insert(.accuracy) }
+        if qwen != nil { modes.insert(.qwen) }
         return modes
     }
 
@@ -328,7 +337,8 @@ struct TranscriptionEngineFactory: Sendable {
         TranscriptionEngineFactory(
             fast: profile.allowsTranscriptionMode(.fastDraft) ? fast : nil,
             balanced: profile.allowsTranscriptionMode(.balancedDraft) ? balanced : nil,
-            accuracy: profile.allowsTranscriptionMode(.accuracy) ? accuracy : nil
+            accuracy: profile.allowsTranscriptionMode(.accuracy) ? accuracy : nil,
+            qwen: profile.allowsTranscriptionMode(.qwen) ? qwen : nil
         )
     }
 }
@@ -358,7 +368,9 @@ enum AnalysisTimingPostPasses {
     // (`preRecutLineOnsets`, fix/raw-lyric-onsets).
     // timing-7: a function-word orphan that opens the next line no longer merges back across a
     // gap break, so `regroup` is idempotent (fix/idempotent-regroup).
-    static let versionTag = "timing-7"
+    // timing-8: reference lyrics keep their own line breaks — neither regrouped nor recut.
+    // timing-9: a beat-model grid is never retuned by the lyric lines.
+    static let versionTag = "timing-9"
 
     static func isCurrent(_ document: SongAnalysisDocument) -> Bool {
         document.timingPostPassTag == versionTag
@@ -384,12 +396,23 @@ enum AnalysisTimingPostPasses {
         {
             rawLineStarts = Set(stored.raw)
         }
-        let regrouped = TimedLyricSegmentGrouper.regroup(
-            document.lyrics, lineStartOnsets: rawLineStarts)
-        let verdict = MetricalLevelReconciler.reconcile(
-            bpm: document.estimatedBPM ?? 0,
-            beatTimes: document.beatTimes,
-            lineOnsets: regrouped.map(\.start))
+        // The user's reference lyrics carry the song's real line breaks (their newlines), so they
+        // are neither regrouped by pauses nor recut to the phrase period.
+        let keepsLines = !document.referenceLyrics
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let regrouped =
+            keepsLines
+            ? document.lyrics
+            : TimedLyricSegmentGrouper.regroup(document.lyrics, lineStartOnsets: rawLineStarts)
+        // The beat model measured its tempo on the recording; lyric line onsets must not retune
+        // it.
+        let verdict =
+            document.barGrid?.phaseSource == .beatModel
+            ? nil
+            : MetricalLevelReconciler.reconcile(
+                bpm: document.estimatedBPM ?? 0,
+                beatTimes: document.beatTimes,
+                lineOnsets: regrouped.map(\.start))
         var rescaledMeasuredGrid: SongBarGrid?
         if let verdict, verdict.isRetune {
             document.preReconciliationTiming = PreReconciliationTiming(
@@ -412,8 +435,11 @@ enum AnalysisTimingPostPasses {
         }
         // Recut on the FINAL grid, then carry user annotations (overrideText/accepted) forward
         // from the stored lines — these passes rebuild plain segments straight from words.
-        let recut = PhrasePeriodLineRecutter.recut(
-            regrouped, beatTimes: document.beatTimes, tempo: document.estimatedBPM)
+        let recut =
+            keepsLines
+            ? regrouped
+            : PhrasePeriodLineRecutter.recut(
+                regrouped, beatTimes: document.beatTimes, tempo: document.estimatedBPM)
         document.lyrics = TimedLyricSegment.reconciled(
             newSegments: recut, against: document.lyrics)
         document.preRecutLineOnsets = PreRecutLineOnsets(
@@ -437,7 +463,7 @@ enum AnalysisTimingPostPasses {
     }
 
     private static func lineOnsets(_ lines: [TimedLyricSegment]) -> [TimeInterval] {
-        lines.map { $0.words.first?.start ?? $0.start }
+        lines.map { $0.words.firstStart ?? $0.start }
     }
 }
 
@@ -449,6 +475,22 @@ struct SongAnalysisPipeline: Sendable {
     private let cache: AnalysisResultDiskCache?
     private let executionPolicy: AnalysisPipelineExecutionPolicy
     private let chordProBuilder = ChordProDraftBuilder()
+    /// How the transcription stage measures word times on the vocals stem. A throw fails that
+    /// stage; there is no fallback to the transcriber's times. Tests inject a stand-in because
+    /// they have no app bundle and no decodable stems.
+    var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
+    /// The alignment model's posteriorgram of the vocals stem, which the transcription stage
+    /// scores each engine's words against (`LyricStretchChooser`). A throw skips the other engines
+    /// and keeps the requested mode's lyrics; tests have no model, so they keep one engine.
+    var vocalPosteriorgram: VocalPosteriorgram = MeasuredLyricTiming.posteriorgramWithBundledModel
+    /// The harmony stage's beat grid. The factory sets the bundled beat model
+    /// (`BeatThisTracker.measuredWithBundledModel`); nil keeps the autocorrelation tracker, which
+    /// only tests use (they have no app bundle).
+    var measureBeatGrid: BeatGridMeasurer? = nil
+    /// The harmony stage's chord recognizer for the chord player's stem. The factory sets the
+    /// bundled chord network (`ChordNetRecognizer.segmentsWithBundledModel`); nil keeps the
+    /// chroma template chain, which only tests use (they have no app bundle).
+    var recognizeChords: ChordStemRecognizer? = nil
 
     init(
         stemEngine: (any StemSeparationEngine)?,
@@ -617,7 +659,7 @@ struct SongAnalysisPipeline: Sendable {
                     // immediately after stem separation.
                     transcription = await runStage(
                         .transcription,
-                        runner: TranscriptionStage(),
+                        runner: MultiEngineTranscriptionStage(),
                         context: transcriptionContext
                     )
                     harmony = await runStage(
@@ -628,7 +670,7 @@ struct SongAnalysisPipeline: Sendable {
                 case .concurrentIndependentStages:
                     async let transcriptionOutcome = runStage(
                         .transcription,
-                        runner: TranscriptionStage(),
+                        runner: MultiEngineTranscriptionStage(),
                         context: transcriptionContext
                     )
                     async let harmonyOutcome = runStage(
@@ -660,11 +702,7 @@ struct SongAnalysisPipeline: Sendable {
                 harmony.apply(&document)
                 // Timing post-passes run HERE — where the data was made — so the ChordPro
                 // stage and the persisted document see the same lyrics/beats the app displays.
-                AnalysisTimingPostPasses.apply(to: &document)
-                // Bucket notes are cut on the grid the post-passes just settled, so they run last.
-                BucketNotePass.apply(to: &document, force: true)
-                SoloTranscriptionPass.apply(to: &document, force: true)
-                InstrumentChordPass.apply(to: &document, force: true)
+                applyDerivedPasses(to: &document, force: true)
 
                 completedStages += 1
                 progress(
@@ -779,7 +817,7 @@ struct SongAnalysisPipeline: Sendable {
             case .separation:
                 runner = SeparationStage()
             case .transcription:
-                runner = TranscriptionStage()
+                runner = MultiEngineTranscriptionStage()
             case .harmony:
                 runner = HarmonyStage()
             case .chordPro:
@@ -825,10 +863,7 @@ struct SongAnalysisPipeline: Sendable {
             if stage == .transcription || stage == .harmony,
                 document.stageRecords[stage]?.state == .succeeded
             {
-                AnalysisTimingPostPasses.apply(to: &document)
-                BucketNotePass.apply(to: &document, force: stage == .harmony)
-                SoloTranscriptionPass.apply(to: &document, force: stage == .harmony)
-                InstrumentChordPass.apply(to: &document, force: stage == .harmony)
+                applyDerivedPasses(to: &document, force: stage == .harmony)
             }
 
             completedStages += 1
@@ -844,6 +879,21 @@ struct SongAnalysisPipeline: Sendable {
         }
 
         return SongAnalysisPipelineResult(document: document, wasCancelled: wasCancelled)
+    }
+
+    /// The timing post-passes, then the note and chord passes cut on the grid they settle (so the
+    /// order is fixed). Each is timed: together they were a 60–300 s stretch per song that no
+    /// `analysis-performance` line accounted for (2026-09-19).
+    private func applyDerivedPasses(to document: inout SongAnalysisDocument, force: Bool) {
+        func timed(_ name: String, _ pass: (inout SongAnalysisDocument) -> Void) {
+            let startedAt = ContinuousClock.now
+            pass(&document)
+            AnalysisResourceLog.checkpoint(stage: name, event: "finished", startedAt: startedAt)
+        }
+        timed("timing-post-passes") { AnalysisTimingPostPasses.apply(to: &$0) }
+        timed("bucket-notes") { BucketNotePass.apply(to: &$0, force: force) }
+        timed("solo-transcription") { SoloTranscriptionPass.apply(to: &$0, force: force) }
+        timed("instrument-chords") { InstrumentChordPass.apply(to: &$0, force: force) }
     }
 
     private func runStage(
@@ -921,7 +971,11 @@ struct SongAnalysisPipeline: Sendable {
             harmonyEngine: harmonyEngine,
             chordProBuilder: chordProBuilder,
             chordProReplacementPolicy: request.chordProReplacementPolicy,
-            stageProgress: stageProgress
+            stageProgress: stageProgress,
+            measureWordTimes: measureWordTimes,
+            vocalPosteriorgram: vocalPosteriorgram,
+            measureBeatGrid: measureBeatGrid,
+            recognizeChords: recognizeChords
         )
     }
 
@@ -979,9 +1033,18 @@ enum SongAnalysisPipelineError: LocalizedError, Equatable {
     case missingStemEngine
     case missingTranscriptionEngine(TranscriptionMode)
     case chordProReplacementRequiresConfirmation
+    /// A model the app bundles is absent or unloadable. There is no fallback: analysis stops.
+    case missingBundledModel(String)
+    /// Lyrics need a vocals stem: their word times are measured on it, never kept from the ASR.
+    case noVocalsStemToMeasureLyrics
 
     var errorDescription: String? {
         switch self {
+        case .missingBundledModel(let name):
+            "SongWorkbench is missing its bundled \(name) model and cannot analyze. Rebuild the "
+                + "app with BundledModels/ present."
+        case .noVocalsStemToMeasureLyrics:
+            "Separate the stems first: lyric timing is measured on the vocals stem."
         case .missingStemEngine:
             "Install the stem-separation model before running separation."
         case .missingTranscriptionEngine(let mode):

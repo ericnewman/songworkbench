@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 
 @testable import SongWorkbench
@@ -206,6 +207,35 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertEqual(document.bucketNotes, current)  // forced but no stems → keeps the old
     }
 
+    /// The Review menu's enable checks run on every playback tick, so the ungated listing must
+    /// never open a stem: files that are not audio at all still count as present. The gated list
+    /// (what the passes use) does open them, and drops the unreadable instruments as silent.
+    func testUngatedStemListingNeverOpensAudio() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func notAudio(_ name: String) throws -> URL {
+            let url = directory.appendingPathComponent("\(name).wav")
+            try Data("not audio".utf8).write(to: url)
+            return url
+        }
+        var document = SongAnalysisDocument(
+            sourceDuration: 4, estimatedBPM: 120, beatTimes: [0.5, 1.0, 1.5, 2.0])
+        document.stems = StoredStemFiles(
+            files: StemFiles(
+                vocals: try notAudio("vocals"), drums: try notAudio("drums"),
+                bass: try notAudio("bass"), guitar: try notAudio("guitar"),
+                piano: try notAudio("piano"), other: try notAudio("other")))
+
+        XCTAssertEqual(
+            InstrumentChordPass.stemAudio(for: document, gated: false).map(\.id),
+            [StemID(.guitar), StemID(.piano)])
+        XCTAssertFalse(SoloTranscriptionPass.stemAudio(for: document, gated: false).isEmpty)
+        XCTAssertFalse(BucketNotePass.stemAudio(for: document, gated: false).isEmpty)
+        XCTAssertTrue(InstrumentChordPass.stemAudio(for: document).isEmpty)
+    }
+
     // MARK: - Review row formatting
 
     func testRowsAreWindowedOrderedAndTransposedWithBassLast() {
@@ -244,11 +274,11 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         let rows = BucketNoteRowFormatter.rows(
             timeline: timeline, inWindow: 1.0...2.0, transposedBy: 1)
 
-        // Voice, guitar, then bass last; the empty piano stem is dropped.
+        // Voice, guitar, bass — one row per player, no chord spelled across them; the empty piano
+        // stem is dropped.
         XCTAssertEqual(rows.map(\.label), ["Ld", "Gt", "Bs"])
         XCTAssertEqual(rows[0].cells, [BucketNoteRowCell(time: 1.0, text: "F", isDim: false)])
-        // Guitar E·G#·B transposed up one spells F major; the bucket's combined chord is that same F
-        // on the same cell, so it is not repeated.
+        // Guitar E·G#·B transposed up one spells F major.
         XCTAssertEqual(
             rows[1].cells, [BucketNoteRowCell(time: 1.5, text: "F·A·C (F)", isDim: true)])
         XCTAssertEqual(rows[2].cells.map(\.time), [1.0])  // bucket 6 at 3.0 s is outside
@@ -277,7 +307,9 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertNil(BucketChordNaming.name(pitchClasses: [0, 4, 7, 2]))
     }
 
-    func testBucketChordAcrossRowsEndsOnTheBassCellAndSkipsHiddenStems() {
+    /// Eric, 2026-10-07: every instrument is its own source. Each row is one player's part —
+    /// no chord spelled across players — and a note held into the next bucket is one note.
+    func testEachPlayerKeepsItsOwnRowAndAHeldNoteIsShownOnce() {
         let key = BucketGridKey(bpm: 120, anchor: 0, duration: 2)
         let clicks: [TimeInterval] = [0, 0.5, 1.0, 1.5, 2.0]
         let timeline = BucketNoteTimeline(
@@ -285,14 +317,11 @@ final class BucketNoteAnalyzerTests: XCTestCase {
             stems: [
                 StemBucketNotes(
                     stemID: StemID(.bass),
-                    notes: [
+                    notes: [45, 45, 36].enumerated().map {
                         StemBucketNote(
-                            bucketIndex: 0, midiNote: 45, pitchClasses: [9], confidence: 0.9,
-                            coverage: 1),
-                        StemBucketNote(
-                            bucketIndex: 1, midiNote: 36, pitchClasses: [0], confidence: 0.9,
-                            coverage: 1),
-                    ]),
+                            bucketIndex: $0.offset, midiNote: $0.element,
+                            pitchClasses: [$0.element % 12], confidence: 0.9, coverage: 1)
+                    }),
                 StemBucketNotes(
                     stemID: StemID(.guitar),
                     notes: [
@@ -307,20 +336,14 @@ final class BucketNoteAnalyzerTests: XCTestCase {
 
         let rows = BucketNoteRowFormatter.rows(timeline: timeline, inWindow: 0...2)
         XCTAssertEqual(rows.map(\.label), ["Gt", "Bs"])
-        // Beat 0: guitar C·E alone is an interval; with the bass A the beat spells Am.
-        // Beat 1: guitar names its own C, and the bass cell carries the beat's C as well.
         XCTAssertEqual(rows[0].cells.map(\.text), ["C·E", "C·E·G (C)"])
-        XCTAssertEqual(rows[1].cells.map(\.text), ["A (Am)", "C (C)"])
+        // The A held through the second bucket is one note; the C is a change.
+        XCTAssertEqual(rows[1].cells.map(\.text), ["A", "C"])
+        XCTAssertEqual(rows[1].cells.map(\.time), [0, 1.0])
 
-        // Hiding the bass leaves beat 0 an interval, and beat 1's chord already sits on its cell.
         let guitarOnly = BucketNoteRowFormatter.rows(
             timeline: timeline, hiddenStems: [StemID(.bass)], inWindow: 0...2)
-        XCTAssertEqual(guitarOnly.map { $0.cells.map(\.text) }, [["C·E", "C·E·G (C)"]])
-
-        // Transposed with the chart.
-        XCTAssertEqual(
-            BucketNoteRowFormatter.rows(timeline: timeline, inWindow: 0...2, transposedBy: 2)[1]
-                .cells.map(\.text), ["B (Bm)", "D (D)"])
+        XCTAssertEqual(guitarOnly.map(\.label), ["Gt"])
     }
 
     // MARK: - Helpers
@@ -336,5 +359,61 @@ final class BucketNoteAnalyzerTests: XCTestCase {
     private func mix(_ parts: [Float]...) -> [Float] {
         let count = parts.map(\.count).min() ?? 0
         return (0..<count).map { index in parts.reduce(0) { $0 + $1[index] } / Float(parts.count) }
+    }
+
+    // MARK: - Phantom instruments
+
+    /// A constant-level stereo WAV: only its LEVEL matters to the leakage gate.
+    private func writeLevelWAV(_ name: String, level: Float, in directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let frames = AVAudioFrameCount(44_100)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buffer.frameLength = frames
+        for channel in 0..<2 {
+            buffer.floatChannelData![channel].update(repeating: level, count: Int(frames))
+        }
+        try file.write(from: buffer)
+        return url
+    }
+
+    func testTheOtherStemGetsNoNoteRowWhenThereIsAGuitaristOrPianistToSpeakFor() {
+        let url = URL(fileURLWithPath: "/dev/null")
+        func ids(_ raw: [String]) -> [String] {
+            BucketNotePass.withoutOtherMusicians(raw.map { (StemID(rawValue: $0), url) })
+                .map(\.id.rawValue)
+        }
+        // Six-stem set: `other` is some other musician, omitted by design — children included.
+        XCTAssertEqual(
+            ids(["vocals", "bass", "guitar.lead", "piano", "other", "other.synth"]),
+            ["vocals", "bass", "guitar.lead", "piano"])
+        // Legacy four-stem set: `other` is the only instrument stem there is.
+        XCTAssertEqual(ids(["vocals", "bass", "other"]), ["vocals", "bass", "other"])
+    }
+
+    func testAnInstrumentStemThatIsOnlyResidueGetsNoNoteRow() throws {
+        // Seven Bridges Road, 2026-09-20: the piano stem sat 56 dB below the guitar on a recording
+        // with no piano; self-normalisation amplified the bleed and reported 40 notes on it.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let entries: [(id: StemID, url: URL)] = [
+            (StemID(.guitar), try writeLevelWAV("guitar.wav", level: 0.1, in: directory)),
+            (StemID(.piano), try writeLevelWAV("piano.wav", level: 0.000_15, in: directory)),
+            (StemID(.other), try writeLevelWAV("other.wav", level: 0.02, in: directory)),
+            (StemID(.vocals), try writeLevelWAV("vocals.wav", level: 0.000_15, in: directory)),
+            (
+                StemID(rawValue: "accompaniment"),
+                try writeLevelWAV("accompaniment.wav", level: 0.5, in: directory)
+            ),
+        ]
+
+        let kept = BucketNotePass.withoutPhantomInstruments(entries).map(\.id.rawValue)
+
+        // Piano (-56 dB) goes. `other` (-14 dB) is a quiet real instrument and stays. The voice
+        // is not an instrument stem, and the loud accompaniment SUM must not set the bar.
+        XCTAssertEqual(kept, ["guitar", "other", "vocals", "accompaniment"])
     }
 }

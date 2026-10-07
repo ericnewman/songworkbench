@@ -417,3 +417,90 @@
   `-derivedDataPath` does not override it. The global preference is untouched and still affects
   other projects. Independent of location: a build REPLACES the bundle a running instance was
   launched from, so never build while a long analysis run is in progress.
+- 2026-09-19: `BeatTracker` reports tempo as `60 * envelopeRate / integerLag` (hop 512 @ 44.1 kHz →
+  `5168 / n`: 87.59, 99.38, 112.35…; one step ≈ 2 % at 112 BPM). `DrumBeatGrid` lays a RIGID grid
+  at that tempo, which needs ~0.02 % to hold for four minutes: measured on 16 songs, none stayed
+  on its drums (spread 101–244 ms across the song; chord phase within the beat was flat).
+  `DrumBeatGrid.refinedBPM` resolves the period on the drum onsets (harmony `reduce-31`) and keeps
+  the tracked tempo when no rigid tempo fits. **Detection:** beat-interval sd of 0.0 ms with a BPM
+  equal to `5168 / integer` means the grid is unrefined; drums-vs-grid shift by eighth of the song
+  that ramps and wraps means the tempo is off, a shift that wanders means the performance drifts
+  and no rigid grid can fit (9 of 16 songs — open decision, revises the 2026-09-08 rigid grid).
+- 2026-09-19: Library re-analyses have been running on a Debug (`-Onone`) build (`rerun-app`
+  builds Debug). The Release configuration does not build as configured: it needs
+  `SONGWORKBENCH_DEVELOPMENT_TEAM` + an Apple Distribution identity, and it compiles x86_64, where
+  `Float16` (`CoreMLNativeSixStemEngine`) is unavailable. A local optimized build needs
+  `DEVELOPMENT_TEAM=65FBMF6CMD CODE_SIGN_IDENTITY="Apple Development" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES`.
+  Measured on one 219 s song with stems and caches warm: Debug 120 s (harmony 31.7, transcription
+  53.6, derived passes 64) against Release 6 s (0.5 / 1.4 / 1.0), identical output. Hand-written
+  Swift DSP is 20–60x slower at `-Onone`; Core ML and whisper.cpp are precompiled and unaffected.
+- 2026-09-19: `analysis-performance` now times the derived passes that follow transcription and
+  harmony (`timing-post-passes`, `bucket-notes`, `solo-transcription`, `instrument-chords`) and
+  logs `word-timing ran/measured/from-onsets/kept-asr`. Read it with `/usr/bin/log show` — in zsh
+  bare `log` is a builtin and fails with "too many arguments".
+- 2026-09-19: The karaoke refiner's `ORTSession.run` (ONNX Runtime 1.24.2, `ArmKleidiAI::MlasConv`)
+  grows the process ~330 MB per chunk — to 24.2 GB on the 24 GB Mac — and the memory outlives
+  `session = nil` by minutes. Because refiners overlap transcription and harmony, a fresh-separation
+  song pushes the machine into swap and each later song is slower (transcription 46 s -> 1,099 s
+  within one library run). Reproduces in Python with the same model and ORT version, intermittently.
+  `memory.enable_memory_arena_shrinkage` does NOT help: the leak is `ArmKleidiAI::MlasConv` calling
+  `operator new` outside the arena (found with `MallocStackLogging=lite` + `malloc_history -allBySize`
+  on the Python reproduction). Fixed upstream by 1.30.0; the Swift package stops at 1.24.2. The
+  karaoke predictor therefore runs through the Core ML provider (`MLProgram`, `CPUAndGPU`): same
+  stems to 4e-6, flat 2 GB, 28 chunks in 6 s. Never use the NeuralNetwork format there (-44 dB).
+  DrumSep crashes under the Core ML provider. Mechanism (read from the 1.24.2 source,
+  `mlas/lib/kleidiai/convolve_kleidiai.cpp`): a `thread_local`, never-evicted map of input
+  indirection tables on the thread that CALLS `Run`, keyed on a hash of the convolution input's
+  first 16 floats — new audio adds 8 bytes x output positions x kernel taps per 3x3+ convolution;
+  the same input twice adds nothing, which is why reproductions looked intermittent. Only thread
+  exit frees it, so `ORTShortLivedThread.run` puts every `ORTSession.run` of the karaoke, drum and
+  six-stem predictors on a thread that exits with the call (the only fix on iPad and for DrumSep,
+  which DOES grow: +107 MB/run; six-stem ONNX +16 MB/run; Basic Pitch flat). Thread fix alone in
+  the app: refiner 4.1 -> 4.8 GB flat against 4.2 -> 13.1 GB, lead vocal bit-identical. Base Core
+  ML stems differ 46–56 dB between ANY two runs, so compare refiner outputs, not file hashes.
+  `tuist generate` stomps hand-made pbxproj edits (model-copy phase, signing): add new files'
+  pbxproj lines by hand. **Detection:** `footprint_mb` climbing with
+  `chunk-N-of-M` in the SECOND separation block of a song, and `heap <pid> -sortBySize` showing
+  hundreds of equal non-object blocks at multiples of 8,192 KB (4 x 2048 x 256 floats).
+- 2026-09-20: **Parts come from their own stem, measured or absent.** Chord scoring is cosine
+  similarity, blind to level, and a resting stem holds a faint copy of whatever else sounds — so
+  silence decoded as confident chords (Seven Bridges Road: 27 chords and 56 bass notes under a
+  cappella singing). `ChordalRestGate` strips chord evidence where guitar + piano + other TOGETHER
+  are > 40 dB below the song's loud level; gating on guitar + piano alone is WRONG (on 7 of 35
+  songs `other` carries the harmony for 18-43 % of the song). `VocalShadowGate` drops a bass stem
+  that falls > 15 dB below its own loud level whenever the vocals rest: a real bass plays through
+  the rests (-0.5...-6.5 dB on every library song with one), a low voice cannot (-22, -57 dB).
+  **Detection:** a part that appears only while someone sings, on a stem whose level at that moment
+  is far below its own loud level. Level CANNOT separate vocal bleed in `other` from a quiet
+  keyboard; rest-shadowing and envelope correlation were both tried and failed for `other`.
+- 2026-09-20: `other` joins the chord source PER SONG (Eric: "if Other is not a significant driver
+  of content we should just exclude it completely"). Significant = it carries the music alone
+  (guitar + piano resting, `other` within 20 dB of its loud level) for >= 10 % of the song, and
+  the bass stem is not a vocal shadow; then frames with guitar + piano resting read `other`
+  (`ChordSourceFallback`) and it counts in the rest test. Otherwise it is out of both. Do NOT add
+  `other` as an always-on mix weight: measured against the ground-truth charts it lowered root F1
+  on every song (mean 51.1 -> 48.3 at 0.6, 50.3 at 0.3). Level cannot separate vocal bleed in
+  `other` from a played `other` (three tests, all failed) — only the per-song verdict does.
+- 2026-09-20: **DESIGN OBJECTIVE — "What did the Guitarist, Bassist, and Pianist play on this
+  song?"** Other musicians and sounds are omitted by design (Eric). Recorded in CONTEXT.md and as
+  CHORD-007/008. A chord or note is reported only when attributable to guitar, bass or piano, read
+  from that stem, where that stem is sounding; otherwise omitted even if the harmony is right.
+  Consequences already applied: the main chord line is gated on guitar + piano only
+  (`ChordalRestGate`, harmony `reduce-34`); the `other`-stem chord source (`ChordSourceFallback`,
+  c77d6b0) was REMOVED the same day although it raised bass-root agreement 47 -> 61 %, because
+  "what is the harmony?" is not the question; the preview's beat-chord row pools guitar, piano
+  and bass only and sits on its own row ("Ch") instead of on the bass cell, where "A (Am)" read as
+  the bassist playing a chord. **Detection:** any result whose source is the mix, the vocals,
+  `other`, or the summed accompaniment is out of scope, however well it scores.
+- 2026-09-20: the separator's `other` stem has no note row, no solo tab and no instrument-energy
+  lane when the song has a guitar or piano stem (`BucketNotePass.withoutOtherMusicians`,
+  `buckets-4`) — Eric, applying the design objective. A legacy four-stem set keeps `other`: it is
+  the only instrument stem there. The stem's AUDIO is untouched and still in the mixer.
+- 2026-09-20: a chord event sits on the first decode window that HAS evidence for it
+  (`ChordTimelineDecoder.events(path:windows:)`); an event at confidence exactly 0.6 was the old
+  default for "no evidence" and meant the chord had been backfilled into a rest. Attacks for the
+  main chord line come from guitar + piano only and only where they sound — the onset detector
+  thresholds against local level and fires on noise in silence. `InstrumentChordTimeline.rests`
+  (`PlayerRests`, >= 1 s) is the only record of when the players stop: the chart builder does not
+  restate a held chord through one, a chord's hold line ends at one, and the same chord returning
+  after one is a new event. A chord name is never drawn in the accent tint (it is the bass blue).

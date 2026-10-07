@@ -45,6 +45,13 @@ enum PlatformLifecycle {
             return UIApplication.willTerminateNotification
         #endif
     }
+
+    /// Quits on macOS; iOS apps don't quit themselves.
+    @MainActor static func terminate() {
+        #if os(macOS)
+            NSApplication.shared.terminate(nil)
+        #endif
+    }
 }
 
 /// AVAudioSession setup. macOS has no session concept (no-op); iOS requires a

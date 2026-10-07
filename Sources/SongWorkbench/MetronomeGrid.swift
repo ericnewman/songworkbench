@@ -18,6 +18,7 @@ enum MetronomeGrid {
         let sorted = beatTimes.sorted()
         guard let first = sorted.first else { return [] }
         let anchor = sorted[anchorIndex(barGrid: barGrid, beatCount: sorted.count)]
+        if let followed = followedGrid(sorted, duration: duration) { return followed }
         if let bpm, bpm.isFinite, bpm > 0 {
             let period = 60 / bpm
             guard period > 0.05 else { return sorted }
@@ -25,6 +26,30 @@ enum MetronomeGrid {
         }
         // No tempo: fit the period from the beats themselves, keeping the downbeat anchor.
         return uniformBeatGrid(from: sorted, anchor: anchor, duration: duration) ?? [first]
+    }
+
+    /// Beats whose spacing varies are a grid that follows the drummer
+    /// (`DrumBeatGrid.followedBeatTimes`): a rigid click would walk off the recording, so the
+    /// click IS those beats, carried to both ends of the song at the nearest stretch's tempo.
+    /// A rigid analysis grid (spacing equal to well under a millisecond) returns nil.
+    static func followedGrid(_ sorted: [TimeInterval], duration: TimeInterval) -> [TimeInterval]? {
+        guard sorted.count >= 3, let first = sorted.first, let last = sorted.last else {
+            return nil
+        }
+        let intervals = zip(sorted.dropFirst(), sorted).map { $0 - $1 }
+        guard let shortest = intervals.min(), let longest = intervals.max(), shortest > 0.05,
+            longest - shortest > 0.001
+        else { return nil }
+        // ponytail: recognized by shape, not by a stored flag — a followed grid drifts SMOOTHLY
+        // (neighbouring beat lengths within a few ms; measured 2–5 ms), where a tracker's raw
+        // beats jump by a hop (11.6 ms) or more and still get the rigid click. Persist a flag on
+        // the document if this ever misfires.
+        let steps = zip(intervals.dropFirst(), intervals).map { abs($0 - $1) }
+        guard let largestStep = steps.max(), largestStep < 0.008 else { return nil }
+        let lead = stride(from: first - intervals[0], through: 0, by: -intervals[0]).reversed()
+        let tailStep = intervals[intervals.count - 1]
+        let tail = stride(from: last + tailStep, through: duration, by: tailStep)
+        return Array(lead) + sorted + Array(tail)
     }
 
     /// The phase anchor `clickTimes` uses: the bar grid's first downbeat, clamped into the

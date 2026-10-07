@@ -107,6 +107,13 @@ struct SongWorkbenchApp: App {
                         model.reanalyzeAllSongs()
                     }
                     .disabled(model.isSongAnalysisRunning || model.songs.isEmpty)
+
+                    Divider()
+
+                    Button("Move Models and Stems…") {
+                        chooseBulkStorageLocation(model)
+                    }
+                    .disabled(!model.canMoveBulkStorage)
                 }
 
                 CommandMenu("Recent Songs") {
@@ -122,6 +129,31 @@ struct SongWorkbenchApp: App {
         #endif
     }
 }
+
+#if os(macOS)
+    /// Asks for a folder, confirms, and hands it to `AppModel.moveBulkStorage(to:)`.
+    @MainActor private func chooseBulkStorageLocation(_ model: AppModel) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "Choose a folder for SongWorkbench's models and stems."
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        let size = ByteCountFormatter.string(
+            fromByteCount: BulkStorageLocation.movableSize(), countStyle: .file)
+        let alert = NSAlert()
+        alert.messageText = "Move models and stems to “\(folder.lastPathComponent)”?"
+        alert.informativeText = """
+            \(size) moves to \(folder.path). SongWorkbench quits when the move finishes; open \
+            it again to continue. Keep this drive connected whenever you use SongWorkbench.
+            """
+        alert.addButton(withTitle: "Move")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.moveBulkStorage(to: folder)
+    }
+#endif
 
 private struct AboutCommandButton: View {
     @Environment(\.openWindow) private var openWindow

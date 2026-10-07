@@ -747,7 +747,7 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(words.map(\.start), [1.1, 1.5, 2.0])
         XCTAssertEqual(words.map(\.end), [1.4, 1.9, 2.4])
         // Ascending onsets.
-        XCTAssertEqual(words.map(\.start), words.map(\.start).sorted())
+        XCTAssertEqual(words.compactMap(\.start), words.compactMap(\.start).sorted())
     }
 
     func testGroupingWordSpansMultipleTokensForAttachedContraction() {
@@ -794,7 +794,7 @@ final class TranscriptionTests: XCTestCase {
 
     // MARK: - Reference lyric alignment
 
-    func testReferenceAlignerBorrowsASRTimingsAndUsesReferenceLineBreaks() {
+    func testReferenceAlignerBorrowsASRTimingsAndUsesReferenceLineBreaks() throws {
         // ASR produced one run-on line (one word mis-heard); the reference has the correct words
         // and two lines. Output uses the reference words/lines with ASR timings.
         let asr = [
@@ -810,22 +810,25 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(lines.map(\.text), ["Grass between my toes", "Smoke curls"])
         XCTAssertEqual(lines[0].words.map(\.text), ["Grass", "between", "my", "toes"])
         XCTAssertEqual(lines[0].start, 19.0, accuracy: 0.001)  // borrowed from ASR "grass"
-        XCTAssertEqual(lines[1].words[0].start, 23.0, accuracy: 0.001)  // "Smoke" -> ASR "smoke"
+        // "Smoke" -> ASR "smoke"
+        XCTAssertEqual(try XCTUnwrap(lines[1].words[0].start), 23.0, accuracy: 0.001)
     }
 
-    func testReferenceAlignerInterpolatesWordsTheASRMissed() {
-        // ASR only timed "grass" and "toes"; the reference's "between my" are interpolated between.
+    func testReferenceAlignerLeavesWordsTheASRMissedUntimed() throws {
+        // ASR only timed "grass" and "toes"; the reference's "between my" get no time.
         let asr = [lyricSegment([lyricWord("grass", 19.0, 20.0), lyricWord("toes", 22.0, 22.6)])]
         let lines = ReferenceLyricAligner.align(
             referenceText: "Grass between my toes", asrSegments: asr)
 
         let words = lines[0].words
         XCTAssertEqual(words.map(\.text), ["Grass", "between", "my", "toes"])
-        XCTAssertEqual(words[0].start, 19.0, accuracy: 0.001)
-        XCTAssertEqual(words[3].start, 22.0, accuracy: 0.001)
-        XCTAssertGreaterThanOrEqual(words[1].start, 20.0)  // interpolated inside the gap
-        XCTAssertLessThanOrEqual(words[2].end, 22.0001)
-        XCTAssertLessThanOrEqual(words[1].start, words[2].start)  // monotonic
+        XCTAssertEqual(try XCTUnwrap(words[0].start), 19.0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(words[3].start), 22.0, accuracy: 0.001)
+        // A word's time is measured or absent, never interpolated: unmatched words stay nil.
+        XCTAssertNil(words[1].start)
+        XCTAssertNil(words[1].end)
+        XCTAssertNil(words[2].start)
+        XCTAssertNil(words[2].end)
     }
 
     func testReferenceAlignerComputesCharacterRangesAndKeepsPunctuation() {
@@ -1562,5 +1565,68 @@ extension TranscriptionTests {
         // The same repeat with no vocal onsets under it on a stem is not sung.
         XCTAssertEqual(
             DecodeLoopGuard.removingLoops(chorus, vocalOnsets: [1, 2, 3]).result.segments.count, 1)
+    }
+}
+
+/// Qwen3-ASR returns text only; the engine places its words with the forced aligner.
+final class Qwen3ASRTranscriptionEngineTests: XCTestCase {
+    private struct FixedText: Qwen3ASRTranscribing {
+        let text: String
+        func transcribe(audioURL: URL, language: String?) async throws -> String { text }
+        func releaseResources() async {}
+    }
+
+    private func word(_ text: String, _ start: TimeInterval?) -> ForcedLyricAligner.AlignedWord {
+        ForcedLyricAligner.AlignedWord(
+            text: text, start: start, end: start.map { $0 + 0.4 },
+            reason: start == nil ? .notOnThePath : nil)
+    }
+
+    func testAnUnplacedWordSitsWithTheWordBeforeItAndIsNeverGivenAMeasuredSpan() {
+        let tokens = Qwen3ASRTranscriptionEngine.tokens(for: [
+            word("ooh", nil), word("hello", 1.0), word("there", nil), word("friend", 2.0),
+        ])
+
+        XCTAssertEqual(tokens.map(\.text), ["ooh", "hello", "there", "friend"])
+        XCTAssertEqual(tokens.map(\.startTime), [1.0, 1.0, 1.4, 2.0])
+        // Zero-length: a grouping position, not a time anything may be measured from.
+        XCTAssertEqual(tokens[0].endTime, tokens[0].startTime)
+        XCTAssertEqual(tokens[2].endTime, tokens[2].startTime)
+        XCTAssertTrue(Qwen3ASRTranscriptionEngine.tokens(for: [word("lost", nil)]).isEmpty)
+    }
+
+    func testTheTranscriptBecomesOneTimedSegment() async throws {
+        let audio = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: audio) }
+        do {  // AVAudioFile finishes the file when released.
+            let format = try XCTUnwrap(
+                AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+            let file = try AVAudioFile(forWriting: audio, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32_000))
+            buffer.frameLength = 32_000
+            try file.write(from: buffer)
+        }
+
+        let engine = Qwen3ASRTranscriptionEngine(
+            modelDirectory: URL(fileURLWithPath: "/unused"), modelSizeBytes: 1,
+            runtime: FixedText(text: " Hello there "),
+            timeWords: { words, _ in
+                words.enumerated().map { index, text in
+                    ForcedLyricAligner.AlignedWord(
+                        text: text, start: Double(index), end: Double(index) + 0.5, reason: nil)
+                }
+            })
+
+        let result = try await engine.transcribe(
+            request: TranscriptionRequest(audioURL: audio, localeIdentifier: "en")
+        ) { _ in }
+
+        XCTAssertEqual(result.segments.count, 1)
+        XCTAssertEqual(result.segments[0].tokens.map(\.text), ["Hello", "there"])
+        XCTAssertEqual(result.segments[0].tokens.map(\.startTime), [0, 1])
+        XCTAssertEqual(result.sourceDuration, 2, accuracy: 0.001)
+        XCTAssertEqual(result.engine.modelName, "Qwen3-ASR 1.7B 8-bit")
+        XCTAssertEqual(Qwen3ASRTranscriptionEngine.languageName(for: "en"), "English")
     }
 }

@@ -129,19 +129,42 @@ struct ChordTimelineDecoder: Sendable {
             noChordFloor: noChordFloor
         )
 
+        return Self.mergeSameRootExtensions(Self.events(path: path, windows: windows))
+    }
+
+    /// One event per run of a label, placed at the run's first window that HAS evidence for it.
+    ///
+    /// The path may enter a chord before anything supports it: an evidence-free window costs the
+    /// no-chord state almost nothing, so being "already on D" through a silent intro is cheaper
+    /// than paying a switch penalty when the D arrives. The event used to take the run's first
+    /// window regardless, at a made-up confidence of 0.6 — Seven Bridges Road's opening D sat at
+    /// 0.11 s while the guitar, at -60 dB or lower, did not strike it until 2.0 s (Eric,
+    /// 2026-09-20: "why is the chord not arriving at the time of the visual audio onset").
+    /// A run with no evidence in any of its windows yields no event at all.
+    static func events(path: [String?], windows: [WindowEvidence]) -> [EditableChordEvent] {
         var events: [EditableChordEvent] = []
-        var previous: String?
+        var current: String?
+        var awaitingEvidence = false
         for (index, label) in path.enumerated() {
-            guard let label, label != previous else { continue }
+            // No-chord is a REST: the path only settles there after several evidence-free windows.
+            // The same chord coming back afterwards is a new arrival the player must be told
+            // about, not a continuation of the run before the rest.
+            guard let label else {
+                current = nil
+                continue
+            }
+            if label != current {
+                current = label
+                awaitingEvidence = true
+            }
+            guard awaitingEvidence, let confidence = windows[index].meanRawConfidence[label]
+            else { continue }
+            awaitingEvidence = false
             events.append(
                 EditableChordEvent(
-                    time: windows[index].start,
-                    chord: label,
-                    confidence: windows[index].meanRawConfidence[label] ?? 0.6
-                ))
-            previous = label
+                    time: windows[index].start, chord: label, confidence: confidence))
         }
-        return Self.mergeSameRootExtensions(events)
+        return events
     }
 
     /// Collapses adjacent events that are the same chord under different amounts of colour —

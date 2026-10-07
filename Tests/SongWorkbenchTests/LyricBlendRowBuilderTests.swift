@@ -1,3 +1,4 @@
+import CoreML
 import XCTest
 
 @testable import SongWorkbench
@@ -735,8 +736,14 @@ extension LyricBlendRowBuilderTests {
         for (index, word) in words.enumerated() {
             for other in words[(index + 1)...]
             where LyricWordRanges.key(other.text) == LyricWordRanges.key(word.text) {
+                guard let start = word.start, let end = word.end,
+                    let otherStart = other.start, let otherEnd = other.end
+                else {
+                    XCTFail("\(word.text) or its repeat lost its time", file: file, line: line)
+                    continue
+                }
                 XCTAssertFalse(
-                    other.start < word.end && word.start < other.end,
+                    otherStart < end && start < otherEnd,
                     "\(word.text) sung twice at once", file: file, line: line)
             }
         }
@@ -811,8 +818,8 @@ extension LyricBlendRowBuilderTests {
                             step: Double.random(in: 0.2...1.2, using: &generator))
                         return LyricBlendCandidate(mode: mode, text: line.text, words: line.words)
                     }
-                let start = candidates.flatMap(\.words).map(\.start).min() ?? cursor
-                let end = candidates.flatMap(\.words).map(\.end).max() ?? cursor
+                let start = candidates.flatMap(\.words).compactMap(\.start).min() ?? cursor
+                let end = candidates.flatMap(\.words).compactMap(\.end).max() ?? cursor
                 rows.append(
                     LyricBlendRow(
                         start: start, end: end, candidates: candidates,
@@ -820,6 +827,303 @@ extension LyricBlendRowBuilderTests {
             }
             rows.sort { $0.start < $1.start }
             assertNoOverlapsOrRepeats(LyricBlendRowBuilder.effectiveLyrics(from: rows))
+        }
+    }
+}
+
+/// Choosing each stretch's words by how well they explain the vocal stem (`LyricStretchChooser`).
+final class LyricBlendAcousticChoiceTests: XCTestCase {
+    private static let frame = ForcedLyricAligner.outputFrameDuration
+
+    /// 30 frames of silence with S-AH-N ("sun") sung across frames 5-13.
+    private func sunSung() -> [[Float]] {
+        let low: Float = -6
+        let high: Float = -0.1
+        return (0..<30).map { frame in
+            var row = [Float](repeating: low, count: ArpabetVocabulary.classCount)
+            switch frame {
+            case 5..<8: row[28] = high  // S
+            case 8..<11: row[2] = high  // AH
+            case 11..<14: row[22] = high  // N
+            default: row[ArpabetVocabulary.blankIndex] = high
+            }
+            return row
+        }
+    }
+
+    private let phonemizer = LyricPhonemizer(pronunciations: [
+        "sun": [28, 2, 22], "moon": [21, 33, 22],
+    ])
+
+    private func line(_ text: String, _ start: TimeInterval) -> TimedLyricSegment {
+        TimedLyricSegment(
+            start: start, end: start + 0.3, text: text,
+            words: [
+                TimedLyricWord(
+                    text: text, start: start, end: start + 0.3, characterRange: 0..<text.count)
+            ])
+    }
+
+    func testTheWordsTheAudioHoldsWinOverThePreferredEngine() {
+        let chosen = LyricStretchChooser.chosen(
+            [.accuracy: [line("moon", 0.2)], .balancedDraft: [line("sun", 0.2)]],
+            logProbs: sunSung(), phonemizer: phonemizer)
+
+        XCTAssertEqual(chosen.choices.map(\.mode), [.balancedDraft])
+        XCTAssertEqual(chosen.lyrics.map(\.text), ["sun"])
+    }
+
+    func testThePreferredEngineKeepsAStretchItFits() {
+        let chosen = LyricStretchChooser.chosen(
+            [.accuracy: [line("sun", 0.2)], .balancedDraft: [line("moon", 0.2)]],
+            logProbs: sunSung(), phonemizer: phonemizer)
+
+        XCTAssertEqual(chosen.choices.map(\.mode), [.accuracy])
+    }
+
+    func testAnEngineThatHeardNothingWinsWhereNothingIsSung() {
+        // A hallucinated line over silence: the other engine heard nothing there.
+        let silent = [[Float]](
+            repeating: (0..<ArpabetVocabulary.classCount).map {
+                $0 == ArpabetVocabulary.blankIndex ? -0.1 : -6
+            }, count: 30)
+        let chosen = LyricStretchChooser.chosen(
+            [.accuracy: [line("moon", 0.2)], .balancedDraft: []],
+            logProbs: silent, phonemizer: phonemizer)
+
+        XCTAssertEqual(chosen.choices.map(\.mode), [.balancedDraft])
+        XCTAssertTrue(chosen.lyrics.isEmpty)
+    }
+
+    func testAnEngineThatCoversLessOfTheSingingCannotWin() {
+        // The posteriorgram reads silence (a held vowel can), so "nothing sung" scores best —
+        // but the vocal stem is singing where the preferred engine has words (Eric, 2026-09-30).
+        let silent = [[Float]](
+            repeating: (0..<ArpabetVocabulary.classCount).map {
+                $0 == ArpabetVocabulary.blankIndex ? -0.1 : -6
+            }, count: 30)
+        let chosen = LyricStretchChooser.chosen(
+            [.accuracy: [line("moon", 0.2)], .balancedDraft: []],
+            logProbs: silent, voiced: [0.2...0.5], phonemizer: phonemizer)
+
+        XCTAssertEqual(chosen.choices.map(\.mode), [.accuracy])
+        XCTAssertEqual(chosen.lyrics.map(\.text), ["moon"])
+    }
+
+    /// Real-song measurement against a reference lyric (numbers only, never text). Needs
+    /// SW_BLEND_DIAG_DIR (holding out1/out2/out3 CLI outputs for accuracy/fastDraft/balancedDraft
+    /// and stems/vocals.wav), SW_BLEND_REFERENCE (one sung line per line) and SW_ALIGNMENT_MODEL
+    /// (LyricsAlignmentMTL.mlpackage).
+    func testDiagnosticRealSongChoiceAgainstReference() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let directory = environment["SW_BLEND_DIAG_DIR"],
+            let modelPath = environment["SW_ALIGNMENT_MODEL"]
+        else {
+            throw XCTSkip("set SW_BLEND_DIAG_DIR, SW_ALIGNMENT_MODEL (SW_BLEND_REFERENCE optional)")
+        }
+        let referencePath = environment["SW_BLEND_REFERENCE"]
+        let root = URL(fileURLWithPath: directory)
+        func lyrics(_ folder: String) throws -> [TimedLyricSegment] {
+            let folderURL = root.appendingPathComponent(folder)
+            let file = try XCTUnwrap(
+                FileManager.default.contentsOfDirectory(atPath: folderURL.path)
+                    .first { $0.hasSuffix(".analysis.json") })
+            return try JSONDecoder().decode(
+                SongAnalysisDocument.self,
+                from: Data(contentsOf: folderURL.appendingPathComponent(file))
+            ).lyrics
+        }
+        let rows = LyricBlendRowBuilder.buildRows(
+            fastDraft: try lyrics("out2"), balancedDraft: try lyrics("out3"),
+            accuracy: try lyrics("out1"))
+
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let phonemizer = LyricPhonemizer(
+            pronunciations: LyricPhonemizer.parse(
+                try String(
+                    contentsOf: repository.appendingPathComponent("Resources/cmudict-arpabet.txt"),
+                    encoding: .utf8)))
+        let compiled = try await MLModel.compileModel(at: URL(fileURLWithPath: modelPath))
+        let model = CoreMLLyricsAcousticModel(model: try MLModel(contentsOf: compiled))
+        let samples = try MeasuredLyricTiming.monoSamples(
+            at: root.appendingPathComponent("stems/vocals.wav"))
+        let started = Date()
+        let logProbs = try ForcedLyricAligner.posteriorgram(
+            mel: LyricsAlignmentMel.spectrogram(samples: samples), model: model)
+        let posteriorSeconds = Date().timeIntervalSince(started)
+        func words(_ text: String) -> [String] {
+            text.lowercased().replacingOccurrences(
+                of: "[^a-z0-9' ]", with: " ", options: .regularExpression
+            ).split(separator: " ").map(String.init)
+        }
+        let reference =
+            try referencePath.map {
+                try String(contentsOfFile: $0, encoding: .utf8).split(separator: "\n")
+                    .flatMap { words(String($0)) }
+            } ?? []
+        let voiced = try await AudioFileAnalysisService().vocalActivityIntervals(
+            url: root.appendingPathComponent("stems/vocals.wav"))
+        func lcs(_ a: [String], _ b: [String]) -> Int {
+            var previous = [Int](repeating: 0, count: b.count + 1)
+            for x in a {
+                var current = [0]
+                for (j, y) in b.enumerated() {
+                    current.append(x == y ? previous[j] + 1 : max(previous[j + 1], current[j]))
+                }
+                previous = current
+            }
+            return previous[b.count]
+        }
+        func report(_ label: String, _ lines: [TimedLyricSegment]) {
+            let hypothesis = lines.flatMap { words($0.text) }
+            let matched = Double(lcs(reference, hypothesis))
+            let whole =
+                (voiced.first?.lowerBound ?? 0)...(voiced.last?.upperBound ?? 0)
+            let coverage =
+                LyricStretchChooser.voicedCoverage(of: lines, in: whole, voiced: voiced) ?? 0
+            let texts = lines.map { words($0.text).joined(separator: " ") }
+            let duplicates = texts.indices.filter { index in
+                !texts[index].isEmpty && texts[..<index].contains(texts[index])
+            }.count
+            print(
+                String(
+                    format:
+                        "BLEND %@: lines %d words %d recall %.3f precision %.3f dup-lines %d "
+                        + "voiced-covered %.2f",
+                    label, lines.count, hypothesis.count,
+                    matched / Double(max(reference.count, 1)),
+                    matched / Double(max(hypothesis.count, 1)), duplicates, coverage))
+        }
+        report("accuracy-only", try lyrics("out1"))
+        report("blend-default", LyricBlendRowBuilder.effectiveLyrics(from: rows))
+        let stretch = LyricStretchChooser.chosen(
+            [
+                .accuracy: try lyrics("out1"), .fastDraft: try lyrics("out2"),
+                .balancedDraft: try lyrics("out3"),
+            ],
+            logProbs: logProbs, voiced: voiced, phonemizer: phonemizer)
+        report("stretch-acoustic", stretch.lyrics)
+        let unguarded = LyricStretchChooser.chosen(
+            [
+                .accuracy: try lyrics("out1"), .fastDraft: try lyrics("out2"),
+                .balancedDraft: try lyrics("out3"),
+            ],
+            logProbs: logProbs, phonemizer: phonemizer)
+        report("stretch-without-voice-guard", unguarded.lyrics)
+        if let sweep = environment["SW_BLEND_SWEEP"] {
+            let inputs: [TranscriptionMode: [TimedLyricSegment]] = [
+                .accuracy: try lyrics("out1"), .fastDraft: try lyrics("out2"),
+                .balancedDraft: try lyrics("out3"),
+            ]
+            for setting in sweep.split(separator: ";") {
+                let v = setting.split(separator: ",").compactMap { Double($0) }
+                let result = LyricStretchChooser.chosen(
+                    inputs, logProbs: logProbs, phonemizer: phonemizer,
+                    minimumGap: v[0], padding: v[1], minimumMargin: Float(v[2]))
+                report(
+                    "gap \(v[0]) pad \(v[1]) margin \(v[2]) n=\(result.choices.count)",
+                    result.lyrics)
+            }
+        }
+        // SW_QWEN_TEXT: a Qwen3-ASR transcript of the same stem, timed here by forced alignment and
+        // put through the chooser in each engine's slot (labels are slots, not engines).
+        if let qwenPath = environment["SW_QWEN_TEXT"] {
+            let qwenWords = try String(contentsOfFile: qwenPath, encoding: .utf8)
+                .split(whereSeparator: \.isWhitespace).map(String.init)
+            var text = ""
+            let untimed = qwenWords.map { word -> TimedLyricWord in
+                if !text.isEmpty { text += " " }
+                let lower = text.count
+                text += word
+                return TimedLyricWord(
+                    text: word, start: nil, end: nil, characterRange: lower..<text.count)
+            }
+            let measured = try MeasuredLyricTiming.applied(
+                to: [TimedLyricSegment(start: 0, end: 1, text: text, words: untimed)],
+                stemURL: root.appendingPathComponent("stems/vocals.wav"), onsets: [],
+                model: model, phonemizer: phonemizer)
+            let qwen = measured.lyrics
+            print(
+                "BLEND qwen timed: measured \(measured.outcome.measured) unmeasured "
+                    + "\(measured.outcome.unmeasured)")
+            report("qwen-only", qwen)
+            let whisper = try lyrics("out1")
+            let fast = try lyrics("out2")
+            let balanced = try lyrics("out3")
+            for (label, inputs) in [
+                (
+                    "qwen>balanced>fast",
+                    [.accuracy: qwen, .balancedDraft: balanced, .fastDraft: fast]
+                ),
+                ("qwen>whisper", [.accuracy: qwen, .balancedDraft: whisper]),
+                (
+                    "qwen>whisper>balanced",
+                    [.accuracy: qwen, .balancedDraft: whisper, .fastDraft: balanced]
+                ),
+            ] as [(String, [TranscriptionMode: [TimedLyricSegment]])] {
+                let result = LyricStretchChooser.chosen(
+                    inputs, logProbs: logProbs, voiced: voiced, phonemizer: phonemizer)
+                report("chooser \(label)", result.lyrics)
+            }
+        }
+        let modes = Dictionary(grouping: stretch.choices, by: \.mode).mapValues(\.count)
+        print("BLEND stretches \(stretch.choices.count) by mode \(modes)")
+        print(
+            String(
+                format: "BLEND rows %d posteriorgram %.1fs", rows.count, posteriorSeconds))
+    }
+}
+
+/// Real-song check of lyric COVERAGE against where the vocal stem is actually singing (numbers
+/// only). SW_VOICED_CASES: `;`-separated `label|vocals.wav|analysis.json` triples.
+final class LyricVoicedCoverageDiagnosticTests: XCTestCase {
+    func testDiagnosticLyricsAgainstVocalPresence() async throws {
+        guard let cases = ProcessInfo.processInfo.environment["SW_VOICED_CASES"] else {
+            throw XCTSkip("set SW_VOICED_CASES")
+        }
+        let service = AudioFileAnalysisService()
+        for item in cases.split(separator: ";") {
+            let parts = item.split(separator: "|").map(String.init)
+            let voiced = try await service.vocalActivityIntervals(
+                url: URL(fileURLWithPath: parts[1]))
+            let lyrics = try JSONDecoder().decode(
+                SongAnalysisDocument.self, from: Data(contentsOf: URL(fileURLWithPath: parts[2]))
+            ).lyrics
+            let spans = lyrics.flatMap(\.words).compactMap { word in
+                word.start.map { $0...max($0, word.end ?? $0) }
+            }
+            func overlap(_ a: ClosedRange<TimeInterval>, _ b: ClosedRange<TimeInterval>)
+                -> TimeInterval
+            { max(0, min(a.upperBound, b.upperBound) - max(a.lowerBound, b.lowerBound)) }
+            let voicedSeconds = voiced.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+            // Voiced time within 0.25 s of some word (a sung word's audio outlasts its onset).
+            let covered = voiced.reduce(0.0) { total, interval in
+                let padded = spans.map { ($0.lowerBound - 0.25)...($0.upperBound + 0.25) }
+                    .sorted { $0.lowerBound < $1.lowerBound }
+                var merged: [ClosedRange<TimeInterval>] = []
+                for span in padded {
+                    if let last = merged.last, span.lowerBound <= last.upperBound {
+                        merged[merged.count - 1] =
+                            last.lowerBound...max(last.upperBound, span.upperBound)
+                    } else {
+                        merged.append(span)
+                    }
+                }
+                return total + merged.reduce(0) { $0 + overlap($1, interval) }
+            }
+            let onVoice = spans.filter { span in
+                voiced.contains { overlap(($0.lowerBound - 0.1)...($0.upperBound + 0.1), span) > 0 }
+            }.count
+            let unsung = UntranscribedVocalRegionDetector.regions(
+                voicedIntervals: voiced, lyrics: lyrics)
+            print(
+                String(
+                    format: "VOICED %@: words %d, voiced covered %.2f, words on voice %.2f, "
+                        + "unsung-voiced regions %d (%.0f s of %.0f s voiced)",
+                    parts[0], spans.count, covered / max(voicedSeconds, 1),
+                    Double(onVoice) / Double(max(spans.count, 1)), unsung.count,
+                    unsung.reduce(0) { $0 + $1.upperBound - $1.lowerBound }, voicedSeconds))
         }
     }
 }

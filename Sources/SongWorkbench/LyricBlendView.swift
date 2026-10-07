@@ -302,6 +302,7 @@ private struct LyricBlendRowView: View {
         case .accuracy: .swAccent
         case .balancedDraft: .swViolet
         case .fastDraft: .swAmber
+        case .qwen: .swMint
         }
     }
 }
