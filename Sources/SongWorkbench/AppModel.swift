@@ -2833,6 +2833,29 @@ final class AppModel: ObservableObject {
     @Published private(set) var midiRenditionError: String?
     private var midiRenditionTasks: [StemID: Task<Void, Never>] = [:]
 
+    /// Stems whose Basic Pitch notes are being transcribed for tab.
+    @Published private(set) var noteTranscriptionsInProgress: Set<StemID> = []
+
+    /// Transcribes a stem's notes with Basic Pitch once and stores them with the song (guitar
+    /// tab reads them). No-op when they are already stored or running.
+    func ensureNoteEvents(for id: StemID) {
+        guard noteEvents?.contains(where: { $0.stemID == id }) != true,
+            !noteTranscriptionsInProgress.contains(id),
+            let audioURL = stemSet?.assetsByID[id]?.audioURL
+        else { return }
+        let songID = selectedSongID
+        noteTranscriptionsInProgress.insert(id)
+        Task { [weak self] in
+            let timeline = await Task.detached(priority: .userInitiated) {
+                try? MIDIRenditionSource.transcribe(id: id, audioURL: audioURL).timeline
+            }.value
+            guard let self else { return }
+            self.noteTranscriptionsInProgress.remove(id)
+            guard self.selectedSongID == songID, let timeline else { return }
+            self.noteEvents = (self.noteEvents ?? []).filter { $0.stemID != id } + [timeline]
+        }
+    }
+
     /// Whether a stem can be played as MIDI at all.
     func canPlayAsMIDI(_ id: StemID) -> Bool {
         MIDIInstrumentCategory.category(for: id) != nil

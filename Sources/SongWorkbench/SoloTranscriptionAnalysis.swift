@@ -367,15 +367,18 @@ enum GuitarTabAssigner {
     static let highFretPenalty: Float = 1
     static let highFretThreshold = 15
 
-    static func assign(midiNotes: [Int]) -> [(string: Int, fret: Int)] {
+    /// `tuning` is low string first; the default is a guitar's, and a bass passes its own.
+    static func assign(midiNotes: [Int], tuning: [Int] = standardTuning) -> [(
+        string: Int, fret: Int
+    )] {
         guard !midiNotes.isEmpty else { return [] }
-        let lowest = standardTuning[0]
-        let highest = standardTuning[standardTuning.count - 1] + maximumFret
+        let lowest = tuning[0]
+        let highest = tuning[tuning.count - 1] + maximumFret
         let clamped = midiNotes.map { min(max($0, lowest), highest) }
         let positions = Array(0...(maximumFret - positionSpan))
         // options[i][p]: the (string, fret) to play note i in position p, nil if unreachable.
         let options: [[(string: Int, fret: Int)?]] = clamped.map { midi in
-            positions.map { placement(for: midi, position: $0) }
+            positions.map { placement(for: midi, position: $0, tuning: tuning) }
         }
         var cost = [[Float]](
             repeating: [Float](repeating: .infinity, count: positions.count), count: clamped.count)
@@ -415,11 +418,13 @@ enum GuitarTabAssigner {
 
     /// The string to play `midi` on in `position`: fretted within the span first (lowest fret
     /// wins), else an open string.
-    static func placement(for midi: Int, position: Int) -> (string: Int, fret: Int)? {
+    static func placement(for midi: Int, position: Int, tuning: [Int] = standardTuning)
+        -> (string: Int, fret: Int)?
+    {
         var open: (string: Int, fret: Int)?
         var fretted: (string: Int, fret: Int)?
-        for (string, tuning) in standardTuning.enumerated() {
-            let fret = midi - tuning
+        for (string, open_) in tuning.enumerated() {
+            let fret = midi - open_
             guard fret >= 0, fret <= maximumFret else { continue }
             if fret == 0 {
                 open = (string, 0)

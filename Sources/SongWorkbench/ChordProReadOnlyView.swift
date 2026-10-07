@@ -585,10 +585,12 @@ struct SoloTabBlock: Equatable, Sendable {
     let stemID: StemID
     let label: String
     let columns: [SoloTabColumn]
+    /// Top string first: a guitar's six by default, a bass's four for bass tab.
+    var stringLabels: [String] = SoloTabRowFormatter.stringLabels
 
-    /// The six tab strings as text (high e first) — the monospace rendering and what tests read.
+    /// The tab strings as text (top string first) — the monospace rendering and what tests read.
     var lines: [String] {
-        SoloTabRowFormatter.stringLabels.indices.map { row in
+        stringLabels.indices.map { row in
             columns.map { $0.cells[row] }.joined()
         }
     }
