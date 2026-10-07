@@ -60,9 +60,8 @@ struct AnalysisWorkspaceView: View {
                 // `AppModel.primaryTranscriptionMode`/`runLyricBlendPasses`.
                 //
                 // One place for every choice that costs analysis time: the stem-separation
-                // switches (low-memory separation used to hide in the Models popover, where its
-                // price was invisible) and the transcription sliders, with the running cost of
-                // the current selection under the Analyze button.
+                // switches and the transcription sliders, with the running cost of the current
+                // selection under the Analyze button.
                 Text("Analysis options")
                     .font(.swDisplay(12, weight: .semibold))
                     .foregroundStyle(Color.swTextSecondary)
@@ -70,25 +69,6 @@ struct AnalysisWorkspaceView: View {
                 #if os(macOS)
                     SeparationOptionControls(model: model)
                 #endif
-
-                HStack(spacing: 8) {
-                    Text("Decode speed")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Slider(value: $model.accuracyDecodeSpeed, in: 0.75...1.0, step: 0.05)
-                    Text(
-                        model.accuracyDecodeSpeed >= 0.999
-                            ? "Off"
-                            : "\(Int((model.accuracyDecodeSpeed * 100).rounded()))%"
-                    )
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, alignment: .trailing)
-                }
-                .help(
-                    "Slows the vocals (pitch preserved) before Whisper to help fast or dense "
-                        + "singing; timestamps are mapped back. 100% = off. Changing this "
-                        + "re-transcribes on the next Analyze.")
 
                 HStack(spacing: 8) {
                     Text("Blank unsure words")
@@ -127,9 +107,8 @@ struct AnalysisWorkspaceView: View {
                 // actions icon-only (with accessibility labels + help), and shrink the whole
                 // row to a small control size so it fits the column on every platform.
                 HStack(spacing: 8) {
-                    // Compact re-run right where the settings live, so changing the
-                    // transcription mode / decode speed can be applied without reaching
-                    // for the header's Analyze button.
+                    // Compact re-run right where the settings live, so a changed setting can
+                    // be applied without reaching for the header's Analyze button.
                     AnalyzeSongButton(model: model)
                         .swProminentButtonStyle()
                         .lineLimit(1)
@@ -466,9 +445,9 @@ private struct AnalysisProgressSheet: View {
 
 #if os(macOS)
     /// Every stem-separation choice that costs analysis time, on the main workspace card rather
-    /// than behind a popover. Each refiner adds a whole extra model pass over a stem, and
-    /// low-memory separation slows the base pass down; the "+n min" labels come from the same
-    /// measured factors as the card's headline estimate, so the two cannot disagree.
+    /// than behind a popover. Each refiner adds a whole extra model pass over a stem; the "+n min"
+    /// labels come from the same measured factors as the card's headline estimate, so the two
+    /// cannot disagree.
     private struct SeparationOptionControls: View {
         @ObservedObject var model: AppModel
 
@@ -504,28 +483,6 @@ private struct AnalysisProgressSheet: View {
                 }
                 .font(.caption)
                 .help("Splits the drums stem into kick, snare, toms and cymbals.")
-                Toggle(
-                    isOn: Binding(
-                        get: { model.lowMemorySeparationEnabled },
-                        set: { model.lowMemorySeparationEnabled = $0 }
-                    )
-                ) {
-                    Text("Low-memory separation")
-                        + Text("  \(model.lowMemorySeparationCostSummary)")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-                .font(.caption)
-                .disabled(!model.lowMemorySeparationAvailable)
-                .help(
-                    model.lowMemorySeparationAvailable
-                        ? "Separates with the compatible short-segment model."
-                        : "The installed desktop HTDemucs model requires 7.8-second segments; a compatible short-segment model is not installed."
-                )
-                if !model.lowMemorySeparationAvailable {
-                    Text("Requires a compatible short-segment HTDemucs model.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
                 if !model.advancedStemRefinementEnabled {
                     Text("Analysis runs the six base stems only — the fastest setting.")
                         .font(.caption2)

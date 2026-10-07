@@ -506,21 +506,6 @@ final class AppModel: ObservableObject {
         return "Analyzing \(stageTitle(stage))"
     }
 
-    static let accuracyDecodeSpeedDefaultsKey = "accuracyDecodeSpeed"
-    /// Pitch-preserved playback-speed factor applied to the vocals stem before Whisper (Accuracy)
-    /// transcription. < 1 slows the audio, which can improve recognition of fast / dense singing;
-    /// 1.0 disables it. Timestamps are mapped back to real time afterward. Persisted; the UI bounds
-    /// it to 0.75–1.0.
-    @Published var accuracyDecodeSpeed: Double = {
-        let stored = UserDefaults.standard.double(forKey: AppModel.accuracyDecodeSpeedDefaultsKey)
-        return stored == 0 ? 0.85 : stored
-    }()
-    {
-        didSet {
-            UserDefaults.standard.set(
-                accuracyDecodeSpeed, forKey: AppModel.accuracyDecodeSpeedDefaultsKey)
-        }
-    }
     static let lyricConfidenceThresholdDefaultsKey = "lyricConfidenceThreshold"
     /// Words the transcriber scored below this are DISPLAYED as `___` (see
     /// `LyricConfidencePlaceholder`). `0` disables blanking entirely. Purely a presentation
@@ -1602,7 +1587,8 @@ final class AppModel: ObservableObject {
             existingDocument: existingDocument,
             chordProReplacementPolicy: replaceExistingChordPro
                 ? .replaceExisting : .preserveExisting,
-            transcriptionDecodeRate: min(max(accuracyDecodeSpeed, 0.75), 1.0)
+            // Decode slow-down is off: its slider was removed (Eric, 2026-10-07: not needed).
+            transcriptionDecodeRate: 1.0
         )
         activeAnalysisRunID = analysisCoordinator.run(
             request: request,
