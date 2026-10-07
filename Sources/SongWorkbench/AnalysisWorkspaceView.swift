@@ -1,163 +1,58 @@
 import SwiftUI
 
+/// The Settings window's Analysis pane (Eric, 2026-10-07: "that whole card could move to the
+/// settings window"): model packages, every choice that costs analysis time with its running
+/// estimate, and the selected song's stage status. The per-song actions (Analyze, Reference
+/// Lyrics, Live Capture) and the analysis progress sheet stay in the main window's
+/// `SongActionsCard`.
 struct AnalysisWorkspaceView: View {
     @ObservedObject var model: AppModel
     @State private var showReplacementConfirmation = false
-    @State private var showReferenceLyrics = false
-    @State private var showLiveCapture = false
-    /// Collapsed/expanded state of the card, persisted across launches. The header row (with
-    /// its disclosure triangle) is always visible; the controls and stage rows fold away.
-    @AppStorage("songAnalysisCardExpanded") private var isExpanded = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Button {
-                        withAnimation(.snappy) { isExpanded.toggle() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color.swTextSecondary)
-                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            Label("Song Analysis", systemImage: "waveform.badge.magnifyingglass")
-                                .font(.swDisplay(15, weight: .semibold))
-                                .foregroundStyle(Color.swTextPrimary)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(isExpanded ? "Collapse Song Analysis" : "Expand Song Analysis")
-                    Spacer()
-                    ModelPackagesView(model: model)
-                }
-                // Always-visible activity indicator so a long background run (stem separation
-                // can take minutes on iPad) never looks stalled — shows even when the card is
-                // collapsed. On its own line and truncating, so a long stage message never widens
-                // the column (Eric, 2026-09-14).
-                if model.isSongAnalysisRunning, let p = model.songAnalysisProgress {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text(
-                            "\(p.stage.map(stageTitle) ?? "Analyzing")… "
-                                + "\(Int((p.fractionCompleted * 100).rounded()))%"
-                        )
-                        .font(.swMono(11, weight: .medium))
-                        .foregroundStyle(Color.swMint)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    }
-                }
+            HStack {
+                Label("Song Analysis", systemImage: "waveform.badge.magnifyingglass")
+                    .font(.swDisplay(15, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
+                Spacer()
+                ModelPackagesView(model: model)
             }
 
-            if isExpanded {
-                // No more Fast/Balanced/Accuracy picker (backlog #11, Lyric Blending): every
-                // analysis now runs every installed transcription mode, and the "Lyric Blend"
-                // window is how the user chooses between them per line — see
-                // `AppModel.primaryTranscriptionMode`/`runLyricBlendPasses`.
-                //
-                // One place for every choice that costs analysis time: the stem-separation
-                // switches and the transcription sliders, with the running cost of the current
-                // selection under the Analyze button.
-                Text("Analysis options")
-                    .font(.swDisplay(12, weight: .semibold))
-                    .foregroundStyle(Color.swTextSecondary)
+            // Every analysis runs every installed transcription mode; the Lyric Blend window
+            // chooses between them per line (`AppModel.primaryTranscriptionMode`).
+            Text("Analysis options")
+                .font(.swDisplay(12, weight: .semibold))
+                .foregroundStyle(Color.swTextSecondary)
 
-                #if os(macOS)
-                    SeparationOptionControls(model: model)
-                #endif
+            #if os(macOS)
+                SeparationOptionControls(model: model)
+            #endif
 
-                HStack(spacing: 8) {
-                    Text("Blank unsure words")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Slider(value: $model.lyricConfidenceThreshold, in: 0...0.9, step: 0.05)
-                    Text(
-                        model.lyricConfidenceThreshold <= 0
-                            ? "Off"
-                            : "\(Int((model.lyricConfidenceThreshold * 100).rounded()))%"
-                    )
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, alignment: .trailing)
-                }
+            Label(model.estimatedAnalysisSummary, systemImage: "clock")
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .help(
-                    "Shows a word as ___ when the transcriber's own confidence in it falls below "
-                        + "this. Display only — the real words stay in the document, nothing is "
-                        + "exported blanked, and no re-analysis is needed. Function words and "
-                        + "lines you have corrected yourself are never blanked.")
-                if model.lyricConfidenceThreshold > 0, model.selectedSong != nil {
-                    Text(
-                        model.blankedLyricWordCount == 0
-                            ? "No words below this confidence."
-                            : "\(model.blankedLyricWordCount) word"
-                                + (model.blankedLyricWordCount == 1 ? "" : "s")
-                                + " shown as ___"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
+                    "Wall-clock estimate for the options above, scaled from measured pass "
+                        + "times on an 8-core Mac. It updates as you change them; your "
+                        + "machine and other load will move it."
+                )
 
-                // The workspace lives in a fixed 360pt column; on iOS the bordered buttons
-                // render large and, with full text labels, wrapped to multiple lines and
-                // overflowed. Keep the primary Analyze button labeled but make the secondary
-                // actions icon-only (with accessibility labels + help), and shrink the whole
-                // row to a small control size so it fits the column on every platform.
-                HStack(spacing: 8) {
-                    // Compact re-run right where the settings live, so a changed setting can
-                    // be applied without reaching for the header's Analyze button.
-                    AnalyzeSongButton(model: model)
-                        .swProminentButtonStyle()
-                        .lineLimit(1)
-                        .fixedSize()
-                    Button("Reference Lyrics", systemImage: "text.alignleft") {
-                        showReferenceLyrics = true
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Reference Lyrics")
-                    .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
-                    .help("Paste the real lyrics to align words and line breaks exactly.")
-                    Button("Live Capture", systemImage: "dot.radiowaves.left.and.right") {
-                        showLiveCapture = true
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Live Capture")
-                    .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
-                    .help(
-                        "Detect chords in real time from a loopback device, mic, or another app.")
-                    if !model.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .isEmpty
-                    {
-                        Image(systemName: "checkmark.seal.fill")
-                            .foregroundStyle(Color.swMint)
-                            .help("Lyrics are aligned to your reference text")
-                    }
-                    Spacer()
-                }
-                .controlSize(.small)
+            Divider()
 
-                Label(model.estimatedAnalysisSummary, systemImage: "clock")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help(
-                        "Wall-clock estimate for the options above, scaled from measured pass "
-                            + "times on an 8-core Mac. It updates as you change them; your "
-                            + "machine and other load will move it."
-                    )
-
-                VStack(alignment: .leading, spacing: 9) {
-                    ForEach(SongAnalysisStage.allCases, id: \.self) { stage in
-                        stageRow(stage)
-                    }
+            Text(model.selectedSong.map { "Stages · \($0.title)" } ?? "Stages · no song selected")
+                .font(.swDisplay(12, weight: .semibold))
+                .foregroundStyle(Color.swTextSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(SongAnalysisStage.allCases, id: \.self) { stage in
+                    stageRow(stage)
                 }
             }
         }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .swSurfacePanel(cornerRadius: 12)
+        .padding(20)
+        .frame(width: 420, alignment: .leading)
         .alert("Replace Existing ChordPro?", isPresented: $showReplacementConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Replace", role: .destructive) {
@@ -168,28 +63,6 @@ struct AnalysisWorkspaceView: View {
                 "The current ChordPro was reviewed or imported manually. Replacement creates a new draft."
             )
         }
-        .sheet(isPresented: analysisProgressPresentation) {
-            AnalysisProgressSheet(model: model)
-        }
-        .sheet(isPresented: $showReferenceLyrics) {
-            ReferenceLyricsSheet(model: model)
-        }
-        .sheet(isPresented: $showLiveCapture) {
-            LiveCaptureSheet(model: model)
-        }
-    }
-
-    private var analysisProgressPresentation: Binding<Bool> {
-        Binding(
-            // Stay presented across the whole "Re-analyze All" run, not just each song, so the
-            // sheet doesn't flicker between songs as isSongAnalysisRunning toggles.
-            get: { model.isSongAnalysisRunning || model.reanalyzeAllStatus != nil },
-            set: { isPresented in
-                if !isPresented, model.isSongAnalysisRunning {
-                    model.cancelSongAnalysis()
-                }
-            }
-        )
     }
 
     private func stageRow(_ stage: SongAnalysisStage) -> some View {
@@ -364,7 +237,7 @@ struct ReferenceLyricsSheet: View {
     }
 }
 
-private struct AnalysisProgressSheet: View {
+struct AnalysisProgressSheet: View {
     @ObservedObject var model: AppModel
 
     var body: some View {

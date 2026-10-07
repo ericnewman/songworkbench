@@ -498,6 +498,8 @@ private struct BackgroundStatusBar: View {
 private struct SongActionsCard: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @State private var showReferenceLyrics = false
+    @State private var showLiveCapture = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -531,6 +533,25 @@ private struct SongActionsCard: View {
             }
             .disabled(model.selectedSong == nil)
             .help("Remove the selected song from the library (the file is kept)")
+            Button("Reference Lyrics", systemImage: "text.alignleft") {
+                showReferenceLyrics = true
+            }
+            .labelStyle(.iconOnly)
+            .foregroundStyle(
+                model.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? Color.swTextPrimary : Color.swMint
+            )
+            .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+            .help(
+                model.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "Paste the real lyrics to align words and line breaks exactly."
+                    : "Lyrics are aligned to your reference text — click to edit it")
+            Button("Live Capture", systemImage: "dot.radiowaves.left.and.right") {
+                showLiveCapture = true
+            }
+            .labelStyle(.iconOnly)
+            .disabled(model.selectedSong == nil || model.isSongAnalysisRunning)
+            .help("Detect chords in real time from a loopback device, mic, or another app.")
             AnalyzeSongButton(model: model)
                 .swProminentButtonStyle()
         }
@@ -539,6 +560,30 @@ private struct SongActionsCard: View {
         .padding(.vertical, 8)
         .swSurfacePanel(cornerRadius: 12)
         .fixedSize()
+        // Analysis progress is presented here, in the main window, whoever starts the run (the
+        // Analyze button, Retry in Settings, Re-analyze All).
+        .sheet(isPresented: analysisProgressPresentation) {
+            AnalysisProgressSheet(model: model)
+        }
+        .sheet(isPresented: $showReferenceLyrics) {
+            ReferenceLyricsSheet(model: model)
+        }
+        .sheet(isPresented: $showLiveCapture) {
+            LiveCaptureSheet(model: model)
+        }
+    }
+
+    private var analysisProgressPresentation: Binding<Bool> {
+        Binding(
+            // Stay presented across the whole "Re-analyze All" run, not just each song, so the
+            // sheet doesn't flicker between songs as isSongAnalysisRunning toggles.
+            get: { model.isSongAnalysisRunning || model.reanalyzeAllStatus != nil },
+            set: { isPresented in
+                if !isPresented, model.isSongAnalysisRunning {
+                    model.cancelSongAnalysis()
+                }
+            }
+        )
     }
 }
 
@@ -549,11 +594,6 @@ private struct PlayerView: View {
     @State private var selectedEditor: EditorTab = .lyrics
     /// Mirrors the stem-mix rail's own expansion state so the rail's WIDTH shrinks too.
     @AppStorage(StemMixSidebar.expansionDefaultsKey) private var stemRailExpanded = true
-    /// Initial height of the songs list in the left split: the persisted value from the
-    /// last session, defaulting to a third of the screen. Captured ONCE at init (the split
-    /// view owns the height after that; we only record the user's adjustments).
-    @State private var songListIdealHeight: CGFloat
-    private static let songListHeightDefaultsKey = "songListHeight"
     /// Mirrors `SongSidebar`'s own collapse state (same key) so the OUTER frame shrinks too —
     /// otherwise a collapsed one-row list would still reserve a 150pt-minimum column.
     @AppStorage("songSidebarExpanded") private var songSidebarExpanded = true
@@ -563,9 +603,6 @@ private struct PlayerView: View {
     init(model: AppModel) {
         self.model = model
         playback = model.playback
-        let stored = UserDefaults.standard.double(forKey: Self.songListHeightDefaultsKey)
-        let screenThird = PlatformScreen.visibleHeight(fallback: 900) / 3
-        _songListIdealHeight = State(initialValue: stored >= 150 ? stored : screenThird)
     }
 
     var body: some View {
@@ -607,34 +644,19 @@ private struct PlayerView: View {
         HStack(alignment: .top, spacing: 16) {
             // Left column: the song list on top, the tool cards below it (resizable divider), so
             // the editor gets the whole rest of the window.
-            PlatformVSplit {
+            // Song list and Waveform split the column 50/50 (Eric, 2026-10-07); the Song
+            // Analysis card moved to the Settings window.
+            VStack(spacing: 12) {
                 SongSidebar(model: model)
                     .frame(
                         minHeight: songSidebarExpanded ? 150 : Self.collapsedSongListHeight,
-                        idealHeight: songSidebarExpanded
-                            ? songListIdealHeight : Self.collapsedSongListHeight,
                         maxHeight: songSidebarExpanded ? .infinity : Self.collapsedSongListHeight
                     )
-                    // Persist divider adjustments so the songs area keeps its height across
-                    // sessions (default: a third of the screen). Skipped while collapsed — that
-                    // height is fixed, not a user-chosen divider position.
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.onChange(of: geo.size.height) { _, height in
-                                guard songSidebarExpanded, height >= 150 else { return }
-                                UserDefaults.standard.set(
-                                    Double(height), forKey: Self.songListHeightDefaultsKey)
-                            }
-                        }
-                    )
                 ScrollView {
-                    VStack(spacing: 18) {
-                        waveformContent
-                        AnalysisWorkspaceView(model: model)
-                    }
-                    .padding(12)
+                    waveformContent
+                        .padding(12)
                 }
-                .frame(minHeight: 220)
+                .frame(minHeight: 220, maxHeight: .infinity)
             }
             // 360 matches the expanded stem rail exactly (Eric: same width for the first and
             // last columns, for visual symmetry).
