@@ -59,8 +59,8 @@ struct WorkspaceEditorsView: View {
     }
 }
 
-/// Transport card (left column, under the waveform): the source/mix badge plus
-/// large skip / play-pause buttons.
+/// Transport card (top of the left column): the scrubber, large skip / play-pause buttons,
+/// and pitch / speed.
 struct PlaybackTransportCard: View {
     @ObservedObject var model: AppModel
     // Observed directly (not just read through `model.isActivePlaybackPlaying`) so the single
@@ -78,36 +78,24 @@ struct PlaybackTransportCard: View {
     }
 
     var body: some View {
-        // One THIN full-width bar: identity · transport · scrubber (flexible) · pitch/speed.
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Playback", systemImage: "play.circle")
-                    .font(.swDisplay(12, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                    .lineLimit(1)
-                Text(sourceLabel)
-                    .font(.swDisplay(10))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(Color.swSurface, in: Capsule())
-            }
-            .fixedSize()
+        // Top of the left column, on three lines (Eric, 2026-10-07): the position, the large
+        // transport, then pitch, speed and reset. The play button's badge shows the source.
+        VStack(alignment: .leading, spacing: 10) {
+            PlaybackProgressSlider(model: model)
 
-            HStack(spacing: 12) {
-                Button("Back 10 Seconds", systemImage: "gobackward.10") {
+            HStack(spacing: 28) {
+                Button {
                     model.skipActivePlayback(by: -10)
+                } label: {
+                    transportIcon("gobackward.10", size: 30)
                 }
-                .labelStyle(.iconOnly)
-                .font(.system(size: 18))
-                .swAccentHoverBorder(cornerRadius: 6)
+                .accessibilityLabel("Back 10 Seconds")
+                .swAccentHoverBorder(cornerRadius: 8)
                 .help("Back 10 seconds")
 
                 // One button, acting on whichever source is active (`activePlaybackSource`) —
-                // the Stem Mix pane's Original/Stems switch (`StemMixSidebar.sourcePicker`) is
-                // now what picks the source; this button just plays/pauses it. The small
-                // trailing badge (added by `compactPlayButton`) still signals which source is
-                // live so the transport bar doesn't lose that at-a-glance info.
+                // the Stem Mix pane's Original/Stems switch (`StemMixSidebar.sourcePicker`)
+                // picks the source; the small badge (added by `compactPlayButton`) shows which.
                 compactPlayButton(
                     title: model.isActivePlaybackPlaying ? "Pause" : "Play",
                     disabled: model.selectedSong == nil
@@ -121,23 +109,18 @@ struct PlaybackTransportCard: View {
                     model.toggleActivePlayback()
                 }
 
-                Button("Forward 10 Seconds", systemImage: "goforward.10") {
+                Button {
                     model.skipActivePlayback(by: 10)
+                } label: {
+                    transportIcon("goforward.10", size: 30)
                 }
-                .labelStyle(.iconOnly)
-                .font(.system(size: 18))
-                .swAccentHoverBorder(cornerRadius: 6)
+                .accessibilityLabel("Forward 10 Seconds")
+                .swAccentHoverBorder(cornerRadius: 8)
                 .help("Forward 10 seconds")
             }
-            .fixedSize()
+            .frame(maxWidth: .infinity)
 
-            // Compact scrubber (~3in ideal) — enough travel for seeking without dominating the
-            // bar, but COMPRESSIBLE: a fixed 220 made the whole control row's minimum wider
-            // than the default window's middle column, so the layout clipped the outer panes.
-            PlaybackProgressSlider(model: model)
-                .frame(minWidth: 100, idealWidth: 220, maxWidth: 260)
-
-            HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
                 VStack(spacing: 1) {
                     Slider(
                         value: Binding(
@@ -154,7 +137,6 @@ struct PlaybackTransportCard: View {
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
-                .frame(minWidth: 84, idealWidth: 108, maxWidth: 108)
                 .help("Pitch shift (semitones); playback speed is unaffected")
                 VStack(spacing: 1) {
                     Slider(value: $model.tempoRate, in: 0.5...1.5, step: 0.05)
@@ -164,7 +146,6 @@ struct PlaybackTransportCard: View {
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
-                .frame(minWidth: 84, idealWidth: 108, maxWidth: 108)
                 .help("Playback speed (pitch preserved)")
                 Button("Reset Pitch and Speed", systemImage: "arrow.counterclockwise") {
                     model.pitchSemitones = 0
@@ -175,9 +156,18 @@ struct PlaybackTransportCard: View {
                 .help("Reset pitch and speed")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .swSurfacePanel(cornerRadius: 12)
+    }
+
+    /// A transport symbol at a fixed point size. `.font` on the Button did not reach the symbol
+    /// under this button style, so the icons rendered at control size.
+    private func transportIcon(_ name: String, size: CGFloat) -> some View {
+        Image(systemName: name)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
     }
 
     /// Short pitch caption that fits the compact card: the key transposition when known
@@ -202,17 +192,18 @@ struct PlaybackTransportCard: View {
         help: String,
         action: @escaping () -> Void
     ) -> some View {
-        Button(title, systemImage: isPlaying ? "pause.circle.fill" : "play.circle.fill") {
+        Button {
             action()
+        } label: {
+            transportIcon(isPlaying ? "pause.circle.fill" : "play.circle.fill", size: 46)
         }
-        .labelStyle(.iconOnly)
-        .font(.system(size: 26))
+        .accessibilityLabel(title)
         .disabled(disabled)
-        .swAccentHoverBorder(cornerRadius: 13)
+        .swAccentHoverBorder(cornerRadius: 22)
         .overlay(alignment: .bottomTrailing) {
             if let symbolVariant {
                 Image(systemName: symbolVariant)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(
                         disabled ? Color.swTextSecondary.opacity(0.5) : Color.swTextSecondary
                     )
@@ -220,10 +211,6 @@ struct PlaybackTransportCard: View {
             }
         }
         .help(help)
-    }
-
-    private var sourceLabel: String {
-        model.activePlaybackSource == .stemMix ? "Stem Mix" : "Recording"
     }
 }
 

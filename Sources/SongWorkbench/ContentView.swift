@@ -642,11 +642,10 @@ private struct PlayerView: View {
 
     private var mainColumns: some View {
         HStack(alignment: .top, spacing: 16) {
-            // Left column: the song list on top, the tool cards below it (resizable divider), so
-            // the editor gets the whole rest of the window.
-            // Song list and Waveform split the column 50/50 (Eric, 2026-10-07); the Song
-            // Analysis card moved to the Settings window.
+            // Playback on top, then the song list and Waveform splitting the rest 50/50 (Eric,
+            // 2026-10-07); the Song Analysis card moved to the Settings window.
             VStack(spacing: 12) {
+                PlaybackTransportCard(model: model)
                 SongSidebar(model: model)
                     .frame(
                         minHeight: songSidebarExpanded ? 150 : Self.collapsedSongListHeight,
@@ -688,12 +687,9 @@ private struct PlayerView: View {
                 // the middle pane to save horizontal space in the tool bar") — with it here,
                 // the row's minimum width exceeded the default window's middle column and the
                 // whole layout clipped the outer panes.
+                // Playback moved to the top of the left column (Eric, 2026-10-07).
                 HStack(alignment: .center, spacing: 12) {
-                    PlaybackTransportCard(model: model)
-
                     Spacer(minLength: 8)
-
-                    // Library/analysis actions as real labeled buttons, matching the bar.
                     SongActionsCard(model: model)
                 }
 
