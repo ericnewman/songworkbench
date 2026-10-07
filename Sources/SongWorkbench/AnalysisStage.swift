@@ -48,6 +48,8 @@ struct AnalysisStageContext: Sendable {
     var vocalPosteriorgram: VocalPosteriorgram = MeasuredLyricTiming.posteriorgramWithBundledModel
     /// See `SongAnalysisPipeline.measureBeatGrid`.
     var measureBeatGrid: BeatGridMeasurer? = nil
+    /// See `SongAnalysisPipeline.recognizeChords`.
+    var recognizeChords: ChordStemRecognizer? = nil
     /// When true, a live separation run executes the BASE engine only and the pipeline runs the
     /// refiners itself, concurrently with transcription and harmony. Cache checks still use the
     /// full base+refiners recipe, so a previously completed refined document is still a hit.
@@ -1189,6 +1191,9 @@ struct HarmonyStage: AnalysisStageRunning {
                         // reduce-40: one chord chain for every instrument; changes on the nearest
                         // half-beat to the attack.
                         + "|reduce-40-half-beat-chord-line"
+                        // reduce-41: the chord line comes from the bundled chord network
+                        // (`ChordNetRecognizer`) on the chord player's stem.
+                        + "|reduce-41-chord-network"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1300,16 +1305,32 @@ struct HarmonyStage: AnalysisStageRunning {
                     }
                 )
             // The guitar's chord line runs the same chain as every other instrument's row
-            // (`InstrumentChordPass.chordLine`): this stem's frames, attacks and key only,
-            // changes placed on the nearest half-beat to the attack.
-            let line = InstrumentChordPass.chordLine(
-                frames: result.chords, changePoints: result.harmonicChangePoints ?? [],
-                onsets: instrumentOnsets, key: estimatedKey, beats: resolvedBeatTimes,
-                bpm: estimatedBPM ?? 0, barGrid: barGrid,
-                sourceDuration: context.document.sourceDuration)
-            let alignedChords = line.events
-            let evidenceAudit = line.evidence
-            let qualityAudit = line.quality
+            // (`InstrumentChordPass.chordLine`): this stem's chords and attacks only, changes
+            // placed on the nearest half-beat to the attack. The chord network names the chords
+            // (Eric, 2026-10-07); the template chain stays only for tests, which have no model.
+            let modelSegments = try chordStem.flatMap { stem in
+                try context.recognizeChords.map { try $0(stem) }
+            }
+            // The template chain's audits describe only its own line, so they warn only for it.
+            let alignedChords: [EditableChordEvent]
+            let auditWarnings: [String]
+            if let modelSegments {
+                alignedChords = InstrumentChordPass.chordLine(
+                    segments: modelSegments, onsets: instrumentOnsets, beats: resolvedBeatTimes,
+                    sourceDuration: context.document.sourceDuration)
+                auditWarnings = []
+            } else {
+                let line = InstrumentChordPass.chordLine(
+                    frames: result.chords, changePoints: result.harmonicChangePoints ?? [],
+                    onsets: instrumentOnsets, key: estimatedKey, beats: resolvedBeatTimes,
+                    bpm: estimatedBPM ?? 0, barGrid: barGrid,
+                    sourceDuration: context.document.sourceDuration)
+                alignedChords = line.events
+                auditWarnings = [
+                    ChordEvidenceAudit.warning(for: line.evidence),
+                    ChordQualityAudit.warning(for: line.quality),
+                ].compactMap { $0 }
+            }
             stageProgress(1, "completed")
             return AnalysisStageOutcome { document in
                 document.estimatedBPM = estimatedBPM
@@ -1344,10 +1365,7 @@ struct HarmonyStage: AnalysisStageRunning {
                 document.harmonicChangePoints = result.harmonicChangePoints
                 document.frameChordObservations = result.chords
                 var harmonyRecord = record
-                let warnings = [
-                    ChordEvidenceAudit.warning(for: evidenceAudit),
-                    ChordQualityAudit.warning(for: qualityAudit),
-                ].compactMap { $0 }
+                let warnings = auditWarnings
                 harmonyRecord.qualityWarning =
                     warnings.isEmpty ? nil : warnings.joined(separator: " ")
                 document.stageRecords[.harmony] = harmonyRecord

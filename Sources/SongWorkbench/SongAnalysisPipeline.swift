@@ -487,6 +487,10 @@ struct SongAnalysisPipeline: Sendable {
     /// (`BeatThisTracker.measuredWithBundledModel`); nil keeps the autocorrelation tracker, which
     /// only tests use (they have no app bundle).
     var measureBeatGrid: BeatGridMeasurer? = nil
+    /// The harmony stage's chord recognizer for the chord player's stem. The factory sets the
+    /// bundled chord network (`ChordNetRecognizer.segmentsWithBundledModel`); nil keeps the
+    /// chroma template chain, which only tests use (they have no app bundle).
+    var recognizeChords: ChordStemRecognizer? = nil
 
     init(
         stemEngine: (any StemSeparationEngine)?,
@@ -970,7 +974,8 @@ struct SongAnalysisPipeline: Sendable {
             stageProgress: stageProgress,
             measureWordTimes: measureWordTimes,
             vocalPosteriorgram: vocalPosteriorgram,
-            measureBeatGrid: measureBeatGrid
+            measureBeatGrid: measureBeatGrid,
+            recognizeChords: recognizeChords
         )
     }
 

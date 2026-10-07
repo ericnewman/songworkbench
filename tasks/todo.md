@@ -4797,3 +4797,27 @@ down). Guitar line before this work: 128 chords, 77 % chart chords, 46 changes <
       the extras come from decoding the guitar stem itself.
 - [ ] Match Eric's chart's level of detail on the guitar line (his chart is the target).
 - [ ] Player rests per instrument (`PlayerRests.intervals` still pools guitar and piano).
+
+## 2026-10-07 — Chord network in the app
+
+Eric approved converting the Jiang et al. 2019 chord network (music-x-lab, MIT) to Swift + Core ML,
+no Python at runtime.
+
+- [x] `ChordNet.mlpackage` (1.8 MB, s0 of the 5-model ensemble) by
+      `tools/chord_model_export/export_coreml.py`; argmax parity with PyTorch 99.94-100 %.
+- [x] Decoder (`ChordNetDecoder`): the XHMM Viterbi, 301-chord vocabulary, change penalty 30.
+- [x] Features (`ChordNetFeatures`): librosa's recursive CQT at tuning 0, basis exported by
+      `generate_cqt_basis.py`. Against `librosa.cqt` on Flip Flops: median per-frame error 0.01 %.
+- [x] Chord line from the network for the guitar line and every instrument row; changes on the
+      stem's attacks, then the nearest half-beat. Template chain kept only for tests (no bundle).
+- [x] Build fails without `BundledModels/ChordNet.mlpackage`; MIT notices in `Resources/`.
+
+Review: chart probe, 23 songs, guitar stems (`ChartMatchProbeTests`, `SW_CHORDNET_MODEL`):
+
+| Chain | Chords | Recall | In chart | F1 | Flip Flops F1 |
+|---|---:|---:|---:|---:|---:|
+| Template (before) | 91 | 0.73 | 77 % | 0.47 | 0.58 |
+| Chord network | 83 | 0.79 | 90 % | 0.53 | 0.86 |
+
+In-chart share rose on all 23 songs; F1 fell on 7 (by 0.02-0.12; each has more chords than before, against a coarse
+catalog chart). Swift-only chain on Flip Flops: 0.86, as in Python.

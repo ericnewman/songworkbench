@@ -237,6 +237,7 @@ struct SongAnalysisPipelineFactory: Sendable {
         #if os(macOS)
             if requiresBundledModels {
                 pipeline.measureBeatGrid = BeatThisTracker.measuredWithBundledModel
+                pipeline.recognizeChords = ChordNetRecognizer.segmentsWithBundledModel
             }
         #endif
         return Assembly(

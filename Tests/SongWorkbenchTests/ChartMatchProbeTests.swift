@@ -1,3 +1,4 @@
+import CoreML
 import XCTest
 
 @testable import SongWorkbench
@@ -32,6 +33,8 @@ final class ChartMatchProbeTests: XCTestCase {
         let key: MusicalKey?
         let document: SongAnalysisDocument
         let reference: [Int]
+        /// The chord network's chords, when `SW_CHORDNET_MODEL` names the package.
+        var segments: [ChordNetSegment]? = nil
     }
 
     struct Setting {
@@ -39,19 +42,27 @@ final class ChartMatchProbeTests: XCTestCase {
         let decoder: ChordTimelineDecoder
         let minimumBeatFraction: Double
         let chordalOnly: Bool
+        var model = false
     }
 
     func testChordLineAgainstCharts() async throws {
         guard let setPath = ProcessInfo.processInfo.environment["SW_CHART_PROBE_SET"] else {
             throw XCTSkip("set SW_CHART_PROBE_SET")
         }
+        let model = try ProcessInfo.processInfo.environment["SW_CHORDNET_MODEL"].map {
+            try MLModel(contentsOf: MLModel.compileModel(at: URL(fileURLWithPath: $0)))
+        }
         var songs: [Song] = []
         for line in try String(contentsOfFile: setPath, encoding: .utf8).split(separator: "\n") {
             let fields = line.split(separator: "\t").map(String.init)
             guard fields.count == 4 else { continue }
-            songs.append(
-                try await Self.load(
-                    name: fields[0], stem: fields[1], analysis: fields[2], chart: fields[3]))
+            var song = try await Self.load(
+                name: fields[0], stem: fields[1], analysis: fields[2], chart: fields[3])
+            if let model {
+                song.segments = try ChordNetRecognizer.segments(
+                    stem: URL(fileURLWithPath: fields[1]), model: model)
+            }
+            songs.append(song)
         }
 
         var settings: [Setting] = []
@@ -70,6 +81,15 @@ final class ChartMatchProbeTests: XCTestCase {
                                 chordalOnly: chordalOnly))
                     }
                 }
+            }
+        }
+
+        if model != nil {
+            for minimum in [0.25, 0.5, 1.0] {
+                settings.append(
+                    Setting(
+                        name: "chordnet min \(minimum)", decoder: ChordTimelineDecoder(),
+                        minimumBeatFraction: minimum, chordalOnly: false, model: true))
             }
         }
 
@@ -94,11 +114,12 @@ final class ChartMatchProbeTests: XCTestCase {
                     row.name, row.mean.chords, row.mean.precision, row.mean.recall, row.mean.f1,
                     row.mean.inChart * 100))
         }
-        if let current = rows.first(where: { $0.name == "penalty 1.5 weak 1.3 min 0.25" }) {
+        for name in ["penalty 1.5 weak 1.3 min 0.25", "chordnet min 0.25"] {
+            guard let current = rows.first(where: { $0.name == name }) else { continue }
             for (song, score) in zip(songs, current.perSong) {
                 print(
                     String(
-                        format: "PROBE CURRENT %@ | chords %3d vs chart %3d | F1 %.2f | in chart "
+                        format: "PROBE \(name) | %@ | chords %3d vs chart %3d | F1 %.2f | in chart "
                             + "%.0f%%",
                         song.name, score.chords, song.reference.count, score.f1,
                         score.inChart * 100))
@@ -141,6 +162,14 @@ final class ChartMatchProbeTests: XCTestCase {
 
     static func run(_ song: Song, _ setting: Setting) -> Score {
         guard let bpm = song.document.estimatedBPM else { return Score() }
+        if setting.model, let segments = song.segments {
+            return score(
+                InstrumentChordPass.chordLine(
+                    segments: segments, onsets: song.onsets, beats: song.document.beatTimes,
+                    sourceDuration: song.document.sourceDuration,
+                    minimumBeatFraction: setting.minimumBeatFraction),
+                against: song.reference)
+        }
         let events = InstrumentChordPass.chordLine(
             frames: setting.chordalOnly ? song.chordalFrames : song.frames,
             changePoints: song.changePoints, onsets: song.onsets, key: song.key,

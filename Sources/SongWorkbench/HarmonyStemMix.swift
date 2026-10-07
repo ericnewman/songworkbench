@@ -75,7 +75,7 @@ struct InstrumentChordTimeline: Codable, Equatable, Sendable {
     // instrument-chords-2: a stem's resting frames carry no chord evidence (`SoundingFrameGate`).
     // instrument-chords-3: records `rests`, the stretches where guitar and piano are not playing.
     // instrument-chords-4: drops chart chords no player's track has (CHORD-007).
-    static let currentVersionTag = "instrument-chords-4"
+    static let currentVersionTag = "instrument-chords-5"
 
     var versionTag: String
     var gridKey: BucketGridKey
@@ -163,6 +163,17 @@ enum InstrumentChordPass {
     ) throws -> [EditableChordEvent] {
         let beats = document.beatTimes
         guard beats.count >= 2, let bpm = document.estimatedBPM, bpm > 0 else { return [] }
+        let onsets = try InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate)
+        // The chord network names the chords (Eric, 2026-10-07); the template chain below stays
+        // only for tests, which have no app bundle.
+        if let model = ChordNetRecognizer.bundledModel {
+            let resampled = try BasicPitchNoteTranscriber.resampled(
+                samples, from: sampleRate, to: ChordNetFeatures.sampleRate)
+            return chordLine(
+                segments: try ChordNetRecognizer.segments(
+                    spectrogram: ChordNetFeatures.spectrogram(samples: resampled), model: model),
+                onsets: onsets, beats: beats, sourceDuration: document.sourceDuration)
+        }
         let configuration = try AudioAnalysisConfiguration(
             sampleRate: sampleRate, frameLength: 8_192, hopLength: 4_096)
         // One instrument's track: no chords where THAT instrument rests.
@@ -171,7 +182,7 @@ enum InstrumentChordPass {
         return chordLine(
             frames: frames.observations,
             changePoints: ChromaChangePointDetector.changePoints(frames: frames.chroma),
-            onsets: InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate),
+            onsets: onsets,
             key: MusicalKeyEstimator().estimate(from: frames.observations),
             beats: beats, bpm: bpm, barGrid: document.barGrid,
             sourceDuration: document.sourceDuration
@@ -249,6 +260,38 @@ enum InstrumentChordPass {
             aligned.sorted { $0.time < $1.time }, beatTimes: beats,
             minimumBeatFraction: minimumBeatFraction, sourceDuration: sourceDuration)
         return (aligned, evidence.audit, quality.audit)
+    }
+
+    /// The chord line from the chord network (`ChordNetRecognizer`) on one stem: its chords, each
+    /// change moved to this stem's nearest attack, slivers merged, then placed on the nearest
+    /// half-beat. The network's own decoder already charges every change, so the template chain's
+    /// beat-grid decode and its evidence and quality audits do not apply.
+    static func chordLine(
+        segments: [ChordNetSegment], onsets: [TimeInterval], beats: [TimeInterval],
+        sourceDuration: TimeInterval?,
+        minimumBeatFraction: Double = ChordEventDurationFilter.defaultMinimumBeatFraction
+    ) -> [EditableChordEvent] {
+        var events = segments.map { segment in
+            var event = EditableChordEvent(time: segment.start, chord: segment.chord)
+            event.placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] = segment.start
+            return event
+        }
+        if !onsets.isEmpty {
+            events = ChordOnsetAligner.snap(events, toOnsets: onsets, beatTimes: beats)
+            for index in events.indices {
+                events[index].placementCandidates[
+                    ChordPlacementVariant.instrumentOnset.rawValue] = events[index].time
+            }
+        }
+        events = ChordEventDurationFilter.merge(
+            events, beatTimes: beats, minimumBeatFraction: minimumBeatFraction,
+            sourceDuration: sourceDuration)
+        for index in events.indices {
+            events[index].time = HalfBeatGrid.snapped(events[index].time, beats: beats)
+        }
+        return ChordEventDurationFilter.merge(
+            events.sorted { $0.time < $1.time }, beatTimes: beats,
+            minimumBeatFraction: minimumBeatFraction, sourceDuration: sourceDuration)
     }
 
     /// Recomputes when the stored timeline is missing or stale for the current grid — or always
