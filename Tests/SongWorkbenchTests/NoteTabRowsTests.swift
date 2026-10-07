@@ -95,4 +95,16 @@ final class NoteTabRowsTests: XCTestCase {
         }
         XCTAssertTrue(placements.allSatisfy { (0..<4).contains($0.string) })
     }
+
+    func testTheChordLaneLeadsWithTheChordStillSoundingAndSkipsHiddenChords() {
+        let chords = [
+            EditableChordEvent(time: 0.2, chord: "G", confidence: 1),
+            EditableChordEvent(time: 1.4, chord: "C", confidence: 1),
+            EditableChordEvent(time: 1.6, chord: "Am", confidence: 1, hidden: true),
+        ]
+        let lane = NoteTabFormatter.chordLane(chords, inWindow: 1.0...1.9)
+        XCTAssertEqual(lane.map(\.label), ["G", "C"])
+        XCTAssertEqual(lane.map(\.isHeld), [true, false])
+        XCTAssertEqual(lane.first?.time, 1.0)
+    }
 }

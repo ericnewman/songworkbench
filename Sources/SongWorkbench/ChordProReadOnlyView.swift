@@ -580,6 +580,14 @@ struct SoloTabColumn: Equatable, Sendable {
     let cells: [String]
 }
 
+/// A chord name on a tab block's chord lane. `isHeld` marks the chord still sounding from
+/// before the block's window, drawn dimmed at its left edge.
+struct SoloTabChord: Equatable, Sendable {
+    let time: TimeInterval
+    let label: String
+    var isHeld = false
+}
+
 /// A solo passage's tab inside one chart line's window.
 struct SoloTabBlock: Equatable, Sendable {
     let stemID: StemID
@@ -587,6 +595,8 @@ struct SoloTabBlock: Equatable, Sendable {
     let columns: [SoloTabColumn]
     /// Top string first: a guitar's six by default, a bass's four for bass tab.
     var stringLabels: [String] = SoloTabRowFormatter.stringLabels
+    /// Chord names drawn on a lane above the strings (bass and guitar tab); empty for solo tab.
+    var chords: [SoloTabChord] = []
 
     /// The tab strings as text (top string first) — the monospace rendering and what tests read.
     var lines: [String] {

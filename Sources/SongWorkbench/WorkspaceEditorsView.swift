@@ -2960,9 +2960,16 @@ struct ChordProAppPreview: View {
         return tabStems.sorted {
             BucketNoteRowFormatter.displayOrder($0) < BucketNoteRowFormatter.displayOrder($1)
         }
-        .compactMap {
-            NoteTabFormatter.block(
-                for: $0, bucketNotes: tabBucketGrid, noteEvents: noteEvents, inWindow: window)
+        .compactMap { stemID in
+            // Guitar tab carries the guitar's own chords; bass has no chord track, so bass tab
+            // carries the chord line it plays under.
+            let chords =
+                NoteTabFormatter.instrument(for: stemID) == .guitar
+                ? instrumentChords?.tracks.first { $0.stemID == stemID }?.chords ?? chordEvents
+                : chordEvents
+            return NoteTabFormatter.block(
+                for: stemID, bucketNotes: tabBucketGrid, noteEvents: noteEvents,
+                chords: chords.sorted { $0.time < $1.time }, inWindow: window)
         }
     }
 
@@ -4988,8 +4995,7 @@ private struct ChordProPreviewLineView: View {
 
     /// Height the bucket rows and solo blocks take together.
     private func stemRowsReserve(bucketRowCount: Int, soloBlocks: [SoloTabBlock]) -> CGFloat {
-        bucketRowReserve * CGFloat(bucketRowCount)
-            + soloStringReserve * CGFloat(soloBlocks.reduce(0) { $0 + $1.stringLabels.count })
+        bucketRowReserve * CGFloat(bucketRowCount) + tabBlocksHeight(soloBlocks)
     }
 
     /// The per-stem bucket rows stacked from `baseY`, then the solo tab blocks (six strings
@@ -5018,31 +5024,108 @@ private struct ChordProPreviewLineView: View {
                     .offset(x: max(entry.xs[index], labelReserve), y: rowY)
             }
         }
+        let tabTop = baseY + bucketRowReserve * CGFloat(bucketRows.count)
         ForEach(Array(soloBlocks.enumerated()), id: \.offset) { blockIndex, entry in
-            let blockY =
-                baseY + bucketRowReserve * CGFloat(bucketRows.count)
-                + soloStringReserve
-                * CGFloat(
-                    soloBlocks.prefix(blockIndex).reduce(0) { $0 + $1.block.stringLabels.count })
+            let blockTop =
+                tabTop + soloBlocks.prefix(blockIndex).reduce(0) { $0 + tabBlockHeight($1.block) }
             let tabColor = entry.block.stemID.laneColor
-            ForEach(Array(entry.block.stringLabels.enumerated()), id: \.offset) {
-                row, label in
+            let lineEnd = (entry.xs.last ?? 0) + scale.scaled(14)
+            // A rule above every tab block, so stacked blocks read as separate instruments
+            // (Eric, 2026-10-07).
+            tabRule(at: blockTop + tabRuleReserve / 2, width: lineEnd)
+            let laneTop = blockTop + tabRuleReserve
+            if !entry.block.chords.isEmpty {
+                ForEach(Array(entry.block.chords.enumerated()), id: \.offset) { _, chord in
+                    Text(chord.label)
+                        .font(ChordProChartTypography.chord(size: scale.chordSize * 0.8))
+                        .foregroundStyle(tabColor.opacity(chord.isHeld ? 0.45 : 1))
+                        .offset(
+                            x: max(rhythmicX(forTime: chord.time), scale.scaled(12)), y: laneTop)
+                }
+            }
+            let stringsTop = laneTop + (entry.block.chords.isEmpty ? 0 : tabChordLaneReserve)
+            ForEach(Array(entry.block.stringLabels.enumerated()), id: \.offset) { row, label in
+                let rowY = stringsTop + soloStringReserve * CGFloat(row)
                 Text(label)
                     .font(.swDisplay(scale.scaled(8), weight: .semibold))
                     .foregroundStyle(tabColor.opacity(0.85))
-                    .offset(x: 0, y: blockY + soloStringReserve * CGFloat(row))
+                    .offset(x: 0, y: rowY)
+                // The string as a real line, broken around each fret number (Eric, 2026-10-07:
+                // "instead of dashes, could we draw real lines").
+                let gaps = entry.block.columns.indices.compactMap {
+                    index -> ClosedRange<CGFloat>? in
+                    let cell = entry.block.columns[index].cells[row]
+                    guard cell != SoloTabRowFormatter.rest else { return nil }
+                    let digits = CGFloat(cell.filter(\.isNumber).count)
+                    return
+                        (entry.xs[index] - scale.scaled(1.5))...(entry.xs[index]
+                        + digits * scale.scaled(5.6) + scale.scaled(1.5))
+                }
+                ForEach(
+                    Array(
+                        tabStringSegments(from: scale.scaled(12), to: lineEnd, gaps: gaps)
+                            .enumerated()),
+                    id: \.offset
+                ) { _, segment in
+                    Rectangle()
+                        .fill(tabColor.opacity(0.35))
+                        .frame(width: segment.upperBound - segment.lowerBound, height: 0.75)
+                        .offset(x: segment.lowerBound, y: rowY + soloStringReserve / 2)
+                }
             }
             ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
                 ForEach(Array(column.cells.enumerated()), id: \.offset) { row, cell in
-                    Text(cell)
-                        .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
-                        .foregroundStyle(
-                            tabColor.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
-                        )
-                        .offset(x: entry.xs[index], y: blockY + soloStringReserve * CGFloat(row))
+                    if cell != SoloTabRowFormatter.rest {
+                        Text(cell.filter(\.isNumber))
+                            .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
+                            .foregroundStyle(tabColor)
+                            .offset(
+                                x: entry.xs[index], y: stringsTop + soloStringReserve * CGFloat(row)
+                            )
+                    }
                 }
             }
+            // And one under the last block, between the tab and the waveform.
+            if blockIndex == soloBlocks.count - 1 {
+                tabRule(
+                    at: blockTop + tabBlockHeight(entry.block) + tabRuleReserve / 2, width: lineEnd)
+            }
         }
+    }
+
+    /// Height of one tab block: its rule, its chord lane when it has chords, and its strings.
+    private func tabBlockHeight(_ block: SoloTabBlock) -> CGFloat {
+        tabRuleReserve + (block.chords.isEmpty ? 0 : tabChordLaneReserve)
+            + soloStringReserve * CGFloat(block.stringLabels.count)
+    }
+
+    /// Height of all tab blocks on a row, including the closing rule under the last one.
+    private func tabBlocksHeight(_ blocks: [SoloTabBlock]) -> CGFloat {
+        blocks.isEmpty ? 0 : blocks.reduce(0) { $0 + tabBlockHeight($1) } + tabRuleReserve
+    }
+
+    private var tabRuleReserve: CGFloat { scale.scaled(7) }
+    private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
+
+    private func tabRule(at y: CGFloat, width: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color.swTextSecondary.opacity(0.3))
+            .frame(width: max(width, 0), height: 1)
+            .offset(x: 0, y: y)
+    }
+
+    /// `start...end` with the `gaps` cut out, as the line pieces to draw.
+    private func tabStringSegments(
+        from start: CGFloat, to end: CGFloat, gaps: [ClosedRange<CGFloat>]
+    ) -> [ClosedRange<CGFloat>] {
+        var segments: [ClosedRange<CGFloat>] = []
+        var cursor = start
+        for gap in gaps.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if gap.lowerBound > cursor { segments.append(cursor...gap.lowerBound) }
+            cursor = max(cursor, gap.upperBound)
+        }
+        if end > cursor { segments.append(cursor...end) }
+        return segments
     }
 
     private var rhythmicHarmonyRows:
@@ -5683,8 +5766,7 @@ private struct ChordProPreviewLineView: View {
         // Bucket rows (one per stem) sit between the harmony rows and the bass-onset row.
         let bucketReserve: CGFloat = bucketRowReserve * CGFloat(bucketRows.count)
         // Solo tab (six strings per block) sits between the bucket rows and the bass-onset row.
-        let soloReserve: CGFloat =
-            soloStringReserve * CGFloat(soloBlocks.reduce(0) { $0 + $1.block.stringLabels.count })
+        let soloReserve: CGFloat = tabBlocksHeight(soloBlocks.map(\.block))
         let bassReserve: CGFloat = bassXs.isEmpty ? 0 : bassRowReserve
         let totalWidth = rhythmicFrameWidth
         let contentHeight =

@@ -35,9 +35,12 @@ enum NoteTabFormatter {
     }
 
     /// The stem's tab inside `window`, or nil when it has nothing to show there.
+    /// `chords` (time-sorted) fill the block's chord lane: the guitar's own chords on guitar tab,
+    /// the chord line on bass tab (Eric, 2026-10-07: the guitar chord in the guitar tab row, the
+    /// bass chord in the bass row). Not transposed, so they match the frets beneath them.
     static func block(
         for stemID: StemID, bucketNotes: BucketNoteTimeline?, noteEvents: [NoteEventTimeline]?,
-        inWindow window: ClosedRange<TimeInterval>
+        chords: [EditableChordEvent] = [], inWindow window: ClosedRange<TimeInterval>
     ) -> SoloTabBlock? {
         guard let instrument = instrument(for: stemID), let bucketNotes else { return nil }
         let clicks = bucketNotes.clickTimes
@@ -84,7 +87,26 @@ enum NoteTabFormatter {
         }
         return SoloTabBlock(
             stemID: stemID, label: BucketNoteRowFormatter.label(for: stemID), columns: columns,
-            stringLabels: instrument.labels)
+            stringLabels: instrument.labels, chords: chordLane(chords, inWindow: window))
+    }
+
+    /// The chords inside `window`, led by the one still sounding at its start.
+    static func chordLane(
+        _ chords: [EditableChordEvent], inWindow window: ClosedRange<TimeInterval>
+    )
+        -> [SoloTabChord]
+    {
+        let shown = chords.filter { !$0.hidden }
+        var lane = shown.filter { window.contains($0.time) }.map {
+            SoloTabChord(time: $0.time, label: $0.chord)
+        }
+        if lane.first.map({ $0.time > window.lowerBound + 0.05 }) ?? true,
+            let held = shown.last(where: { $0.time < window.lowerBound })
+        {
+            lane.insert(
+                SoloTabChord(time: window.lowerBound, label: held.chord, isHeld: true), at: 0)
+        }
+        return lane
     }
 
     /// The bucket whose half-open span holds `time`.
