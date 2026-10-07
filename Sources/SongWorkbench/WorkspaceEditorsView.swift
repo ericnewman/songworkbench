@@ -60,7 +60,7 @@ struct WorkspaceEditorsView: View {
 }
 
 /// Transport card (top of the left column): large rewind / skip / play-pause buttons, the
-/// scrubber, and pitch / speed.
+/// scrubber, pitch / speed, and the song's filename.
 struct PlaybackTransportCard: View {
     @ObservedObject var model: AppModel
     // Observed directly (not just read through `model.isActivePlaybackPlaying`) so the single
@@ -164,6 +164,16 @@ struct PlaybackTransportCard: View {
                 .labelStyle(.iconOnly)
                 .disabled(model.pitchSemitones == 0 && model.tempoRate == 1)
                 .help("Reset pitch and speed")
+            }
+
+            if let song = model.selectedSong {
+                Text(song.url.lastPathComponent)
+                    .font(.swMono(10))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity)
+                    .help(song.url.path)
             }
         }
         .padding(12)

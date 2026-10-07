@@ -264,7 +264,9 @@ private struct SongSidebar: View {
                     .allowsHitTesting(false)
             }
         }
-        .navigationTitle("Songs")
+        // The window title bar carries the song's name (Eric, 2026-10-07), so the editor tabs can
+        // sit right under it.
+        .navigationTitle(model.selectedSong?.title ?? AboutInfo.appName)
         .hideSystemNavigationBarCompat()
         .focused($listFocused)
         .task { listFocused = true }
@@ -665,38 +667,18 @@ private struct PlayerView: View {
             // full width up top (thin, scrubber gets the extra width) so play/pause/seek
             // stays available across ALL editor views (Lyrics, Stems, ChordPro).
             VStack(alignment: .center, spacing: 12) {
-                // Title first, then one thin row: playback controls left, actions right.
-                if let song = model.selectedSong {
-                    VStack(spacing: 4) {
-                        Text(song.title)
-                            .font(.swDisplay(22, weight: .semibold))
-                            .foregroundStyle(Color.swTextPrimary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.center)
-                        Text(song.url.lastPathComponent)
-                            .font(.swMono(11))
-                            .foregroundStyle(Color.swTextSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-
-                // ONE control row — playback · song actions. The editor tab picker lives at
-                // the top of the middle pane instead (Eric: "move the segmented control into
-                // the middle pane to save horizontal space in the tool bar") — with it here,
-                // the row's minimum width exceeded the default window's middle column and the
-                // whole layout clipped the outer panes.
-                // Playback moved to the top of the left column (Eric, 2026-10-07).
-                HStack(alignment: .center, spacing: 12) {
-                    Spacer(minLength: 8)
-                    SongActionsCard(model: model)
-                }
-
+                // The song's name is in the window title bar and its filename under the playback
+                // controls, so the tabs and the editor start right under the title bar (Eric,
+                // 2026-10-07).
                 if model.selectedSong != nil {
                     HStack(alignment: .top, spacing: 12) {
                         VStack(spacing: 12) {
-                            editorTabPicker
+                            // Tabs and the song actions share one row.
+                            HStack(alignment: .center, spacing: 12) {
+                                editorTabPicker
+                                Spacer(minLength: 8)
+                                SongActionsCard(model: model)
+                            }
                             WorkspaceEditorsView(model: model, selectedEditor: selectedEditor)
                             if let error = playback.errorMessage ?? model.projectErrorMessage {
                                 Label(error, systemImage: "exclamationmark.triangle.fill")
