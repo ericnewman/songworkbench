@@ -1078,15 +1078,26 @@ struct HarmonyStage: AnalysisStageRunning {
                 guard let stems = context.document.stems?.resolved() else { return false }
                 return VocalShadowGate.isShadow(stemURL: stems.bass, vocalsURL: stems.vocals)
             }()
+            // The ONE stem the chord line listens to (Eric, 2026-10-07: "it's critical that only
+            // the guitar stem be used"): the player `analyze(weighted:)` chose — guitar, else the
+            // instrument that does play. Its chroma is the only label evidence, and it alone
+            // licenses, places and gates changes below. Piano attacks, bass onsets and bass
+            // re-rooting each added changes the guitarist never played.
+            let chordStem: URL? = {
+                guard let stems = context.document.stems?.resolved() else { return nil }
+                switch rawResult.chordInstrument.flatMap(StemKind.init) {
+                case .guitar: return stems.guitar
+                case .piano: return stems.piano
+                default: return stems.guitar ?? stems.piano
+                }
+            }()
             let result: SongAudioAnalysis = {
-                guard let stems = context.document.stems?.resolved() else { return rawResult }
-                // A chord must be attributable to the guitarist or the pianist. A legacy stem set
-                // with neither stem has nobody to attribute to, and is left as it was.
-                let players = [stems.guitar, stems.piano].compactMap { $0 }
-                guard !players.isEmpty else { return rawResult }
+                // No chords where the chord player rests. A legacy stem set with neither player
+                // has nobody to attribute to, and is left as it was.
+                guard let chordStem else { return rawResult }
                 return SongAudioAnalysis(
                     beat: rawResult.beat,
-                    chords: ChordalRestGate.applied(to: rawResult.chords, stemURLs: players),
+                    chords: ChordalRestGate.applied(to: rawResult.chords, stemURLs: [chordStem]),
                     estimatedKey: rawResult.estimatedKey,
                     harmonicChangePoints: rawResult.harmonicChangePoints)
             }()
@@ -1180,6 +1191,9 @@ struct HarmonyStage: AnalysisStageRunning {
                         // on the whole recording (`BeatThisTracker`); the autocorrelation tracker
                         // picked 4/3 or 2x the real tempo on 8 of 14 album tracks.
                         + "|reduce-37-beat-model"
+                        // reduce-38: the chord line listens to the chord player's stem alone —
+                        // its attacks and rests only, no piano attacks, no bass cues or re-rooting.
+                        + "|reduce-38-chord-player-only"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1240,37 +1254,19 @@ struct HarmonyStage: AnalysisStageRunning {
             stageProgress(0.88, "detecting harmony notes")
             let detectedVocalHarmonyNotes = await detectVocalHarmonies(context)
             stageProgress(0.92, "aligning chord changes")
-            // Instrumental onsets from the GUITAR stem (falling back to "other"/accompaniment):
-            // computed BEFORE decoding so the Viterbi can discount its switch penalty for beat
-            // windows that start on an attack, then reused to snap event times. Best-effort —
-            // any failure or missing stem yields [] and both uses degrade gracefully.
-            // Attacks from EVERY chordal stem, not just the loudest one. This used to read
-            // `guitar ?? other ?? accompaniment` — first match wins — so a chord struck on piano
-            // or on an organ living in `other` produced no attack evidence at all, even though
-            // the chroma mix already listens to guitar AND piano. A piano-led change then had
-            // nothing to license it: the decoder charged full switch penalty, and
-            // `ChordEvidenceAudit` saw an unsupported marker.
-            //
-            // Vocals, drums, and bass stay out by design — a sung third flips a power chord to
-            // major, drums are broadband noise, and bass moves under held chords.
-            // Loaded one stem at a time (each is released before the next) so this costs no
-            // extra peak memory over the single-stem version.
-            // Guitar and piano only (Design objective): an attack in the separator's `other` stem
-            // is nobody's strum, and chords were being snapped to it. A legacy stem set with
-            // neither stem keeps its old sources.
-            let playerStems: [URL] = {
-                guard let stems = context.document.stems?.resolved() else { return [] }
-                return [stems.guitar, stems.piano].compactMap { $0 }
-            }()
+            // Attacks from the chord player's stem only: they license the decoder's cheaper
+            // switches and are what change times snap to. Piano attacks under a guitar chord line
+            // licensed changes the guitarist never made. A legacy stem set with no player keeps
+            // its old sources. The detector thresholds against LOCAL level, so in near-silence it
+            // fires on noise (Seven Bridges Road: "attacks" under a guitar at -60 dB); an attack
+            // counts only where the player is sounding.
+            let playerStems: [URL] = chordStem.map { [$0] } ?? []
             let onsetStems: [URL] = {
-                guard let stems = context.document.stems?.resolved() else { return [] }
-                guard playerStems.isEmpty else { return playerStems }
+                guard playerStems.isEmpty, let stems = context.document.stems?.resolved() else {
+                    return playerStems
+                }
                 return [stems.other, stems.accompaniment].compactMap { $0 }
             }()
-            // The detector thresholds against LOCAL level, so in near-silence it fires on noise:
-            // Seven Bridges Road had "attacks" at 0.55, 1.02, 1.33, 1.64 s under a guitar at
-            // -60 dB, and its re-entry chord was snapped to one at 45.61 s, 0.15 s before the
-            // strum. An attack counts only where guitar + piano are sounding.
             let instrumentOnsets: [TimeInterval] = ChordalRestGate.sounding(
                 InstrumentOnsetDetector.mergedOnsets(urls: onsetStems), stemURLs: playerStems)
             // Key-aware Viterbi decoding over beat windows: a diatonic prior scales frame
@@ -1279,14 +1275,6 @@ struct HarmonyStage: AnalysisStageRunning {
             // per-window voting, which let transient out-of-key chroma noise win 28% of the
             // events on the reference song. Switches landing on instrument onsets are charged
             // a reduced penalty so real one-beat changes survive the smoothing.
-            // Switch-discount cues for the decoder: instrument attacks PLUS confident bass
-            // note onsets — chord changes co-occur with bass root movement, so a beat window
-            // starting on either cue pays the reduced switch penalty. (Snapping below keeps
-            // using the pure instrument onsets: bass onsets mark WHEN changes are plausible,
-            // not the exact instrumental attack to align the label to.)
-            let bassCues = (detectedBassNotes ?? context.document.bassNotes)
-                .filter { $0.confidence >= 0.5 }
-                .map(\.timestamp)
             // Harmonic-rhythm prior for the decoder: estimate the bar phase from drum-stem
             // accent energy at the resolved beats (kick/snare land on strong beats regardless
             // of where anything else enters), mirroring the preview's `refreshGrid` cue with
@@ -1356,19 +1344,17 @@ struct HarmonyStage: AnalysisStageRunning {
             // the onset/downbeat discounts (real changes attack; stray frames don't).
             var decoder = ChordTimelineDecoder()
             decoder.switchPenalty *= Float(decodeSubdivision)
-            var chords = BassInformedChordRefiner().refine(
-                decoder.events(
-                    from: result,
-                    key: estimatedKey,
-                    bassNotes: detectedBassNotes ?? context.document.bassNotes,
-                    instrumentOnsets: instrumentOnsets + bassCues,
-                    // Decode on the SAME drum-locked grid every downstream consumer (snap,
-                    // duration filter, consensus, ChordPro, playback) uses — not the harmony
-                    // engine's own pre-lock estimate embedded in `result`.
-                    beatTimes: decodeBeatTimes,
-                    meter: decodeMeter
-                ),
-                bassNotes: detectedBassNotes ?? []
+            // No bass anywhere in the chord line: bass onsets as switch cues and bass re-rooting
+            // (frame- and event-level) each turned a walking bass under a held guitar chord into
+            // chord changes. The bass line has its own row.
+            var chords = decoder.events(
+                from: result,
+                key: estimatedKey,
+                instrumentOnsets: instrumentOnsets,
+                // Decode on the SAME grid every downstream consumer (snap, duration filter,
+                // consensus, ChordPro, playback) uses — not the harmony engine's own estimate.
+                beatTimes: decodeBeatTimes,
+                meter: decodeMeter
             )
             // Record the decoder's OWN placement before anything moves it. These times sit
             // exactly on `resolvedBeatTimes` by construction (`windowEvidence` pools evidence

@@ -171,4 +171,33 @@ final class InstrumentChordPassTests: XCTestCase {
             chordRows: rows)
         XCTAssertEqual(merged.map(\.label), ["n", "GtC", "n", "PnC", "n"])
     }
+
+    /// Eric, 2026-10-07: only the chord player's stem decides the chord line. A walking bass
+    /// under one held guitar chord must not re-root it or license a change.
+    func testAWalkingBassDoesNotChangeTheChordLine() throws {
+        let rate = 22_050.0
+        // Eight seconds of a C major triad (C4 E4 G4).
+        let samples = (0..<Int(8 * rate)).map { index -> Float in
+            let time = Double(index) / rate
+            return Float(
+                [261.63, 329.63, 392.0].reduce(0) { $0 + 0.2 * sin(2 * .pi * $1 * time) })
+        }
+        var document = SongAnalysisDocument()
+        document.estimatedBPM = 120
+        document.beatTimes = stride(from: 0.0, through: 8.0, by: 0.5).map { $0 }
+        document.sourceDuration = 8
+        let alone = try InstrumentChordPass.chords(
+            samples: samples, sampleRate: rate, document: document)
+        // A, F, G, E under the held C: each a plausible re-rooting (Am, F, ...) if the bass voted.
+        document.bassNotes = [45, 41, 43, 40, 45, 41, 43, 40].enumerated().map {
+            BassNoteObservation(
+                timestamp: Double($0.offset), midiNote: $0.element, confidence: 0.95)
+        }
+        let withBass = try InstrumentChordPass.chords(
+            samples: samples, sampleRate: rate, document: document)
+
+        XCTAssertFalse(alone.isEmpty)
+        XCTAssertEqual(withBass.map(\.chord), alone.map(\.chord))
+        XCTAssertEqual(withBass.map(\.time), alone.map(\.time))
+    }
 }

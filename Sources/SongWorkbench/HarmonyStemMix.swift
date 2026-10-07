@@ -19,9 +19,9 @@ enum HarmonyStemMix {
     /// frequently not what the guitarist is fretting — inversions, pedal points, and walking lines
     /// under a held chord all move the bass without any chord change. Folding it into the chroma
     /// manufactures those as root changes, and `ChordClassifier.rootWeight` (1.6) already biases
-    /// classification toward root energy, so bass evidence would be counted twice. The bass stem
-    /// is already used where it belongs: `BassInformedChordRefiner` and `BassChordReconciler`
-    /// arbitrate the root AFTER a triad has been chosen, which is the sound way to use it.
+    /// classification toward root energy, so bass evidence would be counted twice. Nor does the
+    /// bass arbitrate the chord line afterwards (Eric, 2026-10-07: only the guitar stem): it has
+    /// its own Bass Notes row, and `BassChordReconciler` only rounds bass notes to the chords.
     ///
     /// ponytail: this is one constant, not a setting. Raise `bass` above 0 to include it and
     /// measure the result against the ground-truth corpus before keeping the change.
@@ -172,8 +172,8 @@ enum InstrumentChordPass {
         let analysis = SongAudioAnalysis(
             beat: nil, chords: frames.observations, estimatedKey: document.estimatedKey,
             harmonicChangePoints: changePoints)
+        // This stem's own attacks only; no bass (see the harmony stage's chord line).
         let onsets = InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate)
-        let bassCues = document.bassNotes.filter { $0.confidence >= 0.5 }.map(\.timestamp)
         let beatLength = MetricalLevelReconciler.medianBeatLength(beatTimes: beats, bpm: bpm) ?? 0
         let subdivision = HarmonyDecodeResolution.subdivision(beatLength: beatLength)
         let decodeBeats = ChordTimelineDecoder.subdivided(
@@ -189,11 +189,9 @@ enum InstrumentChordPass {
         }
         var decoder = ChordTimelineDecoder()
         decoder.switchPenalty *= Float(subdivision)
-        var events = BassInformedChordRefiner().refine(
-            decoder.events(
-                from: analysis, key: document.estimatedKey, bassNotes: document.bassNotes,
-                instrumentOnsets: onsets + bassCues, beatTimes: decodeBeats, meter: meter),
-            bassNotes: document.bassNotes)
+        var events = decoder.events(
+            from: analysis, key: document.estimatedKey, instrumentOnsets: onsets,
+            beatTimes: decodeBeats, meter: meter)
         if !onsets.isEmpty {
             events = ChordOnsetAligner.snap(events, toOnsets: onsets, beatTimes: beats)
         }
