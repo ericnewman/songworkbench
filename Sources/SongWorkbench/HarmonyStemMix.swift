@@ -187,7 +187,9 @@ enum InstrumentChordPass {
     static func chordLine(
         frames: [ChordObservation], changePoints: [TimeInterval], onsets: [TimeInterval],
         key: MusicalKey?, beats: [TimeInterval], bpm: Double, barGrid: SongBarGrid?,
-        sourceDuration: TimeInterval?
+        sourceDuration: TimeInterval?,
+        decoder base: ChordTimelineDecoder = ChordTimelineDecoder(),
+        minimumBeatFraction: Double = ChordEventDurationFilter.defaultMinimumBeatFraction
     ) -> (
         events: [EditableChordEvent], evidence: ChordEvidenceAudit.Result,
         quality: ChordQualityAudit.Result
@@ -209,7 +211,7 @@ enum InstrumentChordPass {
                     barPhase: grid.barPhase * subdivision)
                 : nil
         }
-        var decoder = ChordTimelineDecoder()
+        var decoder = base
         decoder.switchPenalty *= Float(subdivision)
         var events = decoder.events(
             from: analysis, key: key, instrumentOnsets: onsets, beatTimes: decodeBeats,
@@ -227,7 +229,8 @@ enum InstrumentChordPass {
             }
         }
         events = ChordEventDurationFilter.merge(
-            events, beatTimes: beats, sourceDuration: sourceDuration)
+            events, beatTimes: beats, minimumBeatFraction: minimumBeatFraction,
+            sourceDuration: sourceDuration)
         // Every surviving change must be an attack or a stable harmonic change of this stem,
         // judged at the time it was struck.
         let evidence = ChordEvidenceAudit.filtered(
@@ -244,7 +247,7 @@ enum InstrumentChordPass {
         }
         aligned = ChordEventDurationFilter.merge(
             aligned.sorted { $0.time < $1.time }, beatTimes: beats,
-            sourceDuration: sourceDuration)
+            minimumBeatFraction: minimumBeatFraction, sourceDuration: sourceDuration)
         return (aligned, evidence.audit, quality.audit)
     }
 

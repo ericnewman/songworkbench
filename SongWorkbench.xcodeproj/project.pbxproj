@@ -231,6 +231,7 @@
 		F71AFA7148AF16AEBF6D2270 /* LiveCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7DF81C66633761377D62A71 /* LiveCapture.swift */; };
 		F7EADB756F1F4F61F0D7E2DD /* BouncingBallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D662F3A35DD30742CEE6F7F /* BouncingBallTests.swift */; };
 		AEC39ABC1FF44F79ADEEBA5B /* UnmeasuredLyricWordTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C662AF76CD4B538C5E2794 /* UnmeasuredLyricWordTests.swift */; };
+		69FA4B58F3C2555BA768520D /* ChartMatchProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C59B62512BFF82CD5B24FFB3 /* ChartMatchProbeTests.swift */; };
 		4C7D539434D97AE2B2BCAEE3 /* BeatThisTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C94C66CAC1D1AEEB4A76D80 /* BeatThisTrackerTests.swift */; };
 		F93D9E296BEC1826E531BF50 /* SongAnalysisPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ABE13A8BDBF3949FAF87B88 /* SongAnalysisPipelineTests.swift */; };
 		F95B3EA0C5CEC9A23F38E1F3 /* ChordProPlaybackHighlightTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A49F117449E8EB6B11F1744 /* ChordProPlaybackHighlightTests.swift */; };
@@ -410,6 +411,7 @@
 		8C2E935552A1885C1EFE5AD5 /* AudioPlaybackServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlaybackServiceTests.swift; sourceTree = "<group>"; };
 		8D662F3A35DD30742CEE6F7F /* BouncingBallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BouncingBallTests.swift; sourceTree = "<group>"; };
 		31C662AF76CD4B538C5E2794 /* UnmeasuredLyricWordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnmeasuredLyricWordTests.swift; sourceTree = "<group>"; };
+		C59B62512BFF82CD5B24FFB3 /* ChartMatchProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartMatchProbeTests.swift; sourceTree = "<group>"; };
 		4C94C66CAC1D1AEEB4A76D80 /* BeatThisTrackerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatThisTrackerTests.swift; sourceTree = "<group>"; };
 		8F4699ECA5A1E022B964304D /* SoloTranscriptionDiagnosticTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoloTranscriptionDiagnosticTests.swift; sourceTree = "<group>"; };
 		8FBFDBF70A3E5690798DAA93 /* RhymeSyllableScorer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RhymeSyllableScorer.swift; sourceTree = "<group>"; };
@@ -721,6 +723,7 @@
 				CFAA2DCA1E1D72145BB4338A /* BeatTrackingTests.swift */,
 				8D662F3A35DD30742CEE6F7F /* BouncingBallTests.swift */,
 				31C662AF76CD4B538C5E2794 /* UnmeasuredLyricWordTests.swift */,
+				C59B62512BFF82CD5B24FFB3 /* ChartMatchProbeTests.swift */,
 				4C94C66CAC1D1AEEB4A76D80 /* BeatThisTrackerTests.swift */,
 				24022043B76D35DBF72688A3 /* BucketChordAgreementDiagnosticTests.swift */,
 				5EE99A876925AE2C91D8D1CC /* BucketNoteAnalyzerTests.swift */,
@@ -1136,6 +1139,7 @@
 				B457037F04B498CF30A6196B /* BeatTrackingTests.swift in Sources */,
 				F7EADB756F1F4F61F0D7E2DD /* BouncingBallTests.swift in Sources */,
 				AEC39ABC1FF44F79ADEEBA5B /* UnmeasuredLyricWordTests.swift in Sources */,
+				69FA4B58F3C2555BA768520D /* ChartMatchProbeTests.swift in Sources */,
 				4C7D539434D97AE2B2BCAEE3 /* BeatThisTrackerTests.swift in Sources */,
 				BE1A711F4F025D8E5B9383AE /* BucketChordAgreementDiagnosticTests.swift in Sources */,
 				73E83306DD7892137C05C4A8 /* BucketNoteAnalyzerTests.swift in Sources */,
