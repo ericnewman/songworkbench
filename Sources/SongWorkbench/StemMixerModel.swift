@@ -11,12 +11,18 @@ struct StemMixState: Codable, Equatable, Sendable {
     /// Stereo position, −1 (hard left) … 0 (center) … +1 (hard right) — a traditional
     /// mixer pan pot per stem.
     var pan: Float
+    /// Stems mode plays this stem's MIDI rendition instead of its audio (Eric, 2026-10-07).
+    var playsMIDI: Bool
 
-    init(gain: Float = 1, isMuted: Bool = false, isSoloed: Bool = false, pan: Float = 0) {
+    init(
+        gain: Float = 1, isMuted: Bool = false, isSoloed: Bool = false, pan: Float = 0,
+        playsMIDI: Bool = false
+    ) {
         self.gain = min(max(gain, 0), Self.maximumGain)
         self.isMuted = isMuted
         self.isSoloed = isSoloed
         self.pan = min(max(pan, -1), 1)
+        self.playsMIDI = playsMIDI
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -24,6 +30,7 @@ struct StemMixState: Codable, Equatable, Sendable {
         case isMuted
         case isSoloed
         case pan
+        case playsMIDI
     }
 
     init(from decoder: Decoder) throws {
@@ -33,7 +40,8 @@ struct StemMixState: Codable, Equatable, Sendable {
             gain: try container.decode(Float.self, forKey: .gain),
             isMuted: try container.decode(Bool.self, forKey: .isMuted),
             isSoloed: try container.decode(Bool.self, forKey: .isSoloed),
-            pan: try container.decodeIfPresent(Float.self, forKey: .pan) ?? 0
+            pan: try container.decodeIfPresent(Float.self, forKey: .pan) ?? 0,
+            playsMIDI: try container.decodeIfPresent(Bool.self, forKey: .playsMIDI) ?? false
         )
     }
 }
@@ -129,6 +137,10 @@ struct StemMixerModel: Codable, Equatable, Sendable {
 
     mutating func setGain(_ gain: Float, for kind: StemKind) {
         setGain(gain, for: kind.id)
+    }
+
+    mutating func setPlaysMIDI(_ playsMIDI: Bool, for id: StemID) {
+        update(id) { $0.playsMIDI = playsMIDI }
     }
 
     mutating func setMuted(_ isMuted: Bool, for id: StemID) {

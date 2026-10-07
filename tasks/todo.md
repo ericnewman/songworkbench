@@ -4854,3 +4854,11 @@ in Settings, with General MIDI drums for the drum pieces. Research on robust sin
 - [ ] Tests: GM drum mapping; note scheduling from a seek point; mixer state round-trip.
 
 ### Review
+
+- Phase 1 shipped as `bdd3553`. Flip Flops: 4 voices from 1,328 notes, written in 31 s (Debug).
+- Phase 2 renders each MIDI rendition offline to `Derived/midi/` and plays it through the stem's own
+  player, so no separate MIDI clock or scheduling was needed (the "note scheduling from a seek point"
+  item is moot). Flip Flops bass: Basic Pitch 771 notes in 4.7 s, render 0.33 s (Debug); notes
+  above MIDI 64 dropped as overtones.
+- Tests: 1244 run, 1 failure (`testAWalkingBassDoesNotChangeTheChordLine`, failing on `main` too).
+- Not yet checked on screen: the ♪ strip toggle, the MIDI Instruments Settings tab, listening.

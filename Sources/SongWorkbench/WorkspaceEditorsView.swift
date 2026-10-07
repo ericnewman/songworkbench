@@ -6893,6 +6893,17 @@ struct StemMixSidebar: View {
                 miniToggle("S", isOn: state.isSoloed, tint: Color.swAccent) {
                     model.setStemSoloed($0, for: channel.id)
                 }
+                // Audio or MIDI rendition, per strip (Eric, 2026-10-07); the instrument is chosen
+                // per track type in Settings.
+                if model.canPlayAsMIDI(channel.id) {
+                    miniToggle(
+                        model.midiRenditionsInProgress.contains(channel.id) ? "…" : "♪",
+                        isOn: state.playsMIDI, tint: Color.swMint
+                    ) {
+                        model.setStemPlaysMIDI($0, for: channel.id)
+                    }
+                    .help(midiHelp(for: channel))
+                }
             }
 
             ScribbleStrip(text: shortName(channel.displayName))
@@ -6904,6 +6915,21 @@ struct StemMixSidebar: View {
     /// the triangle that shows or hides them. The parent itself is not playing —
     /// `StemMixGraph.activeNodes` drops it once it has children — so this fader reaches the audio
     /// through those children (see `StemMixerModel.effectiveGain(for:activeIDs:parentByID:)`).
+
+    private func midiHelp(for channel: StemMixerChannel) -> String {
+        if model.midiRenditionsInProgress.contains(channel.id) {
+            return "Preparing \(channel.displayName) as MIDI…"
+        }
+        let instrument =
+            MIDIInstrumentCategory.category(for: channel.id).map {
+                GeneralMIDI.name(
+                    program: MIDIInstrumentPreferences.program(for: $0), drums: $0.isDrumKit)
+            } ?? ""
+        return model.stemMixer[channel.id].playsMIDI
+            ? "Playing \(channel.displayName) as MIDI (\(instrument)); click for its audio"
+            : "Play \(channel.displayName) as MIDI (\(instrument))"
+    }
+
     private func groupStrip(_ channel: StemMixerChannel) -> some View {
         let state = model.stemMixer[channel.id]
         let isExpanded = expandedStemGroups.contains(channel.id)
@@ -7069,7 +7095,14 @@ struct StemMixSidebar: View {
         case "guitar": return "Gtr"
         case "piano": return "Pno"
         case "other": return "Oth"
-        default: return String(displayName.prefix(3)).capitalized
+        case "backing": return "Bck"
+        default:
+            // "Voice 3" → "V3", so four voice strips stay tellable apart.
+            if displayName.hasPrefix("Voice "), let number = displayName.split(separator: " ").last
+            {
+                return "V\(number)"
+            }
+            return String(displayName.prefix(3)).capitalized
         }
     }
 
@@ -7104,7 +7137,7 @@ struct StemMixSidebar: View {
                 )
         }
         .buttonStyle(.plain)
-        .help(label == "M" ? "Mute" : "Solo")
+        .help(label == "M" ? "Mute" : label == "S" ? "Solo" : "")
     }
 }
 

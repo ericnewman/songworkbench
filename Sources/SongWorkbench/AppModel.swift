@@ -2820,6 +2820,129 @@ final class AppModel: ObservableObject {
         stemPlayback.apply(stemMixer)
     }
 
+    // MARK: - MIDI renditions (Eric, 2026-10-07)
+
+    /// Basic Pitch notes per stem, stored with the song once a stem is first played as MIDI.
+    @Published var noteEvents: [NoteEventTimeline]? {
+        didSet { persistSelectedAnalysis() }
+    }
+    /// Ready rendition files for the selected song, by stem.
+    @Published private(set) var midiRenditionURLs: [StemID: URL] = [:]
+    /// Stems whose rendition is being transcribed or rendered.
+    @Published private(set) var midiRenditionsInProgress: Set<StemID> = []
+    @Published private(set) var midiRenditionError: String?
+    private var midiRenditionTasks: [StemID: Task<Void, Never>] = [:]
+
+    /// Whether a stem can be played as MIDI at all.
+    func canPlayAsMIDI(_ id: StemID) -> Bool {
+        MIDIInstrumentCategory.category(for: id) != nil
+    }
+
+    func setStemPlaysMIDI(_ playsMIDI: Bool, for id: StemID) {
+        stemMixer.setPlaysMIDI(playsMIDI, for: id)
+        if playsMIDI {
+            prepareMIDIRendition(for: id)
+        } else {
+            midiRenditionTasks[id]?.cancel()
+            reloadStemPlaybackKeepingPosition()
+        }
+    }
+
+    /// The stem set as played: any stem switched to MIDI whose rendition is ready plays that
+    /// rendition's file in place of its audio.
+    func playbackManifest(for manifest: StemSetManifest) -> StemSetManifest {
+        let assets = manifest.assets.map { asset -> StemAsset in
+            guard stemMixer[asset.id].playsMIDI, let url = midiRenditionURLs[asset.id] else {
+                return asset
+            }
+            return StemAsset(
+                id: asset.id, audioURL: url, producerID: MIDIRenditionSource.versionTag)
+        }
+        return StemSetManifest(
+            descriptors: manifest.descriptors, assets: assets,
+            recipeIdentity: manifest.recipeIdentity)
+    }
+
+    /// Prepares every stem currently switched to MIDI (after a song loads or an instrument
+    /// changes in Settings).
+    func prepareMIDIRenditions() {
+        guard let stemSet else { return }
+        for asset in stemSet.assets where stemMixer[asset.id].playsMIDI {
+            prepareMIDIRendition(for: asset.id)
+        }
+    }
+
+    private func prepareMIDIRendition(for id: StemID) {
+        guard let stemSet, let audioURL = stemSet.assetsByID[id]?.audioURL,
+            let category = MIDIInstrumentCategory.category(for: id)
+        else { return }
+        let program = MIDIInstrumentPreferences.program(for: category)
+        let duration = stemPlayback.duration > 0 ? stemPlayback.duration : sourceDuration ?? 0
+        var notesDocument = SongAnalysisDocument()
+        notesDocument.vocalHarmonyNotes = vocalHarmonyNotes
+        notesDocument.noteEvents = noteEvents
+        let stored = MIDIRenditionSource.storedNotes(for: id, in: notesDocument)
+        let songID = selectedSongID
+        midiRenditionTasks[id]?.cancel()
+        midiRenditionsInProgress.insert(id)
+        midiRenditionError = nil
+        midiRenditionTasks[id] = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                () -> Result<(URL, NoteEventTimeline?), Error> in
+                do {
+                    var timeline: NoteEventTimeline?
+                    var notes = stored
+                    if notes == nil {
+                        let heard = try MIDIRenditionSource.transcribe(id: id, audioURL: audioURL)
+                        notes = heard.notes
+                        timeline = heard.timeline
+                    }
+                    notes = category.playable(notes ?? [])
+                    let url = MIDIRenditionSource.cacheURL(
+                        for: id, stemAudio: audioURL, notes: notes ?? [], program: program)
+                    if !FileManager.default.fileExists(atPath: url.path) {
+                        try FileManager.default.createDirectory(
+                            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        let sampleRate = MIDIRenditionRenderer.sampleRate(of: audioURL)
+                        try MIDIRenditionRenderer.render(
+                            notes: notes ?? [], program: program, drumKit: category.isDrumKit,
+                            duration: duration, sampleRate: sampleRate, to: url)
+                    }
+                    return .success((url, timeline))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard let self, !Task.isCancelled, self.selectedSongID == songID else { return }
+            self.midiRenditionsInProgress.remove(id)
+            switch result {
+            case .success(let (url, timeline)):
+                if let timeline {
+                    self.noteEvents =
+                        (self.noteEvents ?? []).filter { $0.stemID != id } + [timeline]
+                }
+                self.midiRenditionURLs[id] = url
+                if self.stemMixer[id].playsMIDI { self.reloadStemPlaybackKeepingPosition() }
+            case .failure(let error):
+                self.midiRenditionError =
+                    "MIDI for \(id.rawValue) failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Reloads the stem players from `playbackManifest`, keeping the playhead and play state.
+    private func reloadStemPlaybackKeepingPosition() {
+        guard let stemSet else { return }
+        let time = stemPlayback.currentTime
+        let wasPlaying = stemPlayback.isPlaying
+        try? stemPlayback.load(playbackManifest(for: stemSet), mixer: stemMixer)
+        stemPlayback.loadClickTrack(beatTimes: beatTimes, bpm: estimatedBPM, barGrid: barGrid)
+        stemPlayback.setPitch(semitones: pitchSemitones)
+        stemPlayback.setTempo(rate: tempoRate)
+        stemPlayback.seek(to: time)
+        if wasPlaying { stemPlayback.play() }
+    }
+
     func setStemPan(_ pan: Float, for kind: StemKind) {
         setStemPan(pan, for: kind.id)
     }
@@ -3152,6 +3275,10 @@ final class AppModel: ObservableObject {
     }
 
     private func applyAnalysis(_ analysis: SongAnalysisDocument) {
+        for task in midiRenditionTasks.values { task.cancel() }
+        midiRenditionTasks.removeAll()
+        midiRenditionsInProgress.removeAll()
+        midiRenditionURLs.removeAll()
         isApplyingAnalysis = true
         var analysis = analysis
         // The regroup/reconcile/recut trio lives in the PIPELINE now (`AnalysisTimingPostPasses`)
@@ -3190,6 +3317,7 @@ final class AppModel: ObservableObject {
         bassNotes = analysis.bassNotes
         vocalHarmonyNotes = analysis.vocalHarmonyNotes
         bucketNotes = analysis.bucketNotes
+        noteEvents = analysis.noteEvents
         instrumentChords = analysis.instrumentChords
         chordInstrument = analysis.chordInstrument
         soloTranscriptions = analysis.soloTranscriptions
@@ -3223,7 +3351,8 @@ final class AppModel: ObservableObject {
         }
         if let stemFiles, stemAudioFilesExist(stemFiles: stemFiles, stemSet: stemSet) {
             if let stemSet {
-                try? stemPlayback.load(stemSet, mixer: stemMixer)
+                try? stemPlayback.load(playbackManifest(for: stemSet), mixer: stemMixer)
+                prepareMIDIRenditions()
             } else {
                 try? stemPlayback.load(stemFiles, mixer: stemMixer)
             }
@@ -3342,6 +3471,7 @@ final class AppModel: ObservableObject {
             vocalHarmonyNotes: vocalHarmonyNotes,
             bucketNotes: bucketNotes,
             soloTranscriptions: soloTranscriptions,
+            noteEvents: noteEvents,
             estimatedKey: estimatedKey,
             chordConfidenceThreshold: chordConfidenceThreshold,
             chordPlacementPicks: chordPlacementPicks,

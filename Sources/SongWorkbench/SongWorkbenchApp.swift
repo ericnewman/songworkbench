@@ -48,8 +48,15 @@ struct SongWorkbenchApp: App {
             }
             .windowResizability(.contentSize)
             Settings {
-                AnalysisWorkspaceView(model: model)
-                    .preferredColorScheme(.dark)
+                TabView {
+                    AnalysisWorkspaceView(model: model)
+                        .tabItem {
+                            Label("Analysis", systemImage: "waveform.badge.magnifyingglass")
+                        }
+                    MIDIInstrumentSettingsView(model: model)
+                        .tabItem { Label("MIDI Instruments", systemImage: "pianokeys") }
+                }
+                .preferredColorScheme(.dark)
             }
             Window("Lyric Blend", id: "lyricBlend") {
                 LyricBlendView(model: model)
