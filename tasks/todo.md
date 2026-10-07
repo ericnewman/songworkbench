@@ -4772,3 +4772,28 @@ Review: `swift test` 1225 tests, 0 failures, 36 skipped; lint clean on Sources/T
 the in-app chart with the new rows (needs a re-analysis in the app); tempos Eric has not counted
 (Sevens and Elevens 97.5 -> 145.9, Eight Miles High 112.3 -> 129.7, All I got is Time 124 -> 76.5,
 One night on Broadway 109.6 -> 79.6).
+
+## 2026-10-07 — Every instrument a separate source
+
+Eric: "rely on each instrument's own stem to identify its chord or note changes. These should not
+be interdependent at all and should work as if each were a separate source." Rows per instrument
+in its own colour, chosen in the preview pane; changes timed by each stem's own onsets, snapped to
+the nearest half-beat.
+
+Reference: Eric's chart of Flip Flops And Barbeque (E major; the recording sounds a half step
+down). Guitar line before this work: 128 chords, 77 % chart chords, 46 changes < 2 beats apart.
+
+- [x] Guitar chord line uses the guitar stem alone (17e165a).
+- [x] No cross-instrument links: bass notes not rounded to guitar chords (`BassChordReconciler`),
+      no vocal filter on bass/note rows (`VocalShadowGate`), no chord vote across sung lines
+      (`ChorusChordConsensus`), each instrument's own key prior, no combined-chord note row.
+- [x] One chord pipeline for every instrument (`InstrumentChordPass.chordLine`).
+- [x] Chord and note changes at their stem's onsets, snapped to the nearest half-beat
+      (`HalfBeatGrid`; note rows on half-beat buckets, a cell only where the note changes).
+- [x] Review pane: a Display panel of checkboxes (Eric: a dialog, not a dropdown) — per
+      instrument Chords and Notes, bass line, harmonies, solo tab, grid, waveform, bouncing balls.
+      Not yet seen in the running app.
+- [x] Re-measure Flip Flops: 124 chords, 77 % chart chords, 47 changes < 2 beats — unchanged;
+      the extras come from decoding the guitar stem itself.
+- [ ] Match Eric's chart's level of detail on the guitar line (his chart is the target).
+- [ ] Player rests per instrument (`PlayerRests.intervals` still pools guitar and piano).

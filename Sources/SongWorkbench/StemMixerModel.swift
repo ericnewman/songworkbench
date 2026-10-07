@@ -312,8 +312,7 @@ enum InstrumentEnergyLanes {
     }
 
     /// Pitched stems the analysis refused to treat as a part: present in the stem set but without
-    /// a row in the note timeline. That is a bass stem that is only the low voice
-    /// (`VocalShadowGate`) or an instrument stem that is only separation residue
+    /// a row in the note timeline: an instrument stem that is only separation residue
     /// (`BucketNotePass.withoutPhantomInstruments`). Their audio is real and stays in the mixer;
     /// drawn as INSTRUMENT ENERGY under an a cappella line it says a bass is playing (Eric,
     /// 2026-09-20). Drums have no note row by design and are never listed. Nothing is listed

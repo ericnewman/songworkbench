@@ -200,4 +200,17 @@ final class InstrumentChordPassTests: XCTestCase {
         XCTAssertEqual(withBass.map(\.chord), alone.map(\.chord))
         XCTAssertEqual(withBass.map(\.time), alone.map(\.time))
     }
+
+    /// Eric, 2026-10-07: changes snap to the nearest half-beat of the beat grid.
+    func testChangesSnapToTheNearestHalfBeat() {
+        let beats: [TimeInterval] = [0, 0.5, 1.0, 1.6]
+        XCTAssertEqual(HalfBeatGrid.snapped(0.24, beats: beats), 0.25)
+        XCTAssertEqual(HalfBeatGrid.snapped(0.1, beats: beats), 0)
+        XCTAssertEqual(HalfBeatGrid.snapped(0.9, beats: beats), 1.0)
+        // A longer beat has its own midpoint.
+        XCTAssertEqual(HalfBeatGrid.snapped(1.32, beats: beats), 1.3, accuracy: 1e-9)
+        // Outside the grid nothing moves.
+        XCTAssertEqual(HalfBeatGrid.snapped(2.0, beats: beats), 2.0)
+        XCTAssertEqual(BucketNotePass.halfBeats([0, 0.5, 1.0]), [0, 0.25, 0.5, 0.75, 1.0])
+    }
 }

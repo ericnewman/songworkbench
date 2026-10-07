@@ -157,7 +157,7 @@ enum InstrumentChordPass {
         }
     }
 
-    /// The harmony stage's chord chain on one stem's samples.
+    /// The chord chain on one stem's samples: this instrument's chroma, key and attacks only.
     static func chords(
         samples: [Float], sampleRate: Double, document: SongAnalysisDocument
     ) throws -> [EditableChordEvent] {
@@ -168,19 +168,41 @@ enum InstrumentChordPass {
         // One instrument's track: no chords where THAT instrument rests.
         let frames = try ChordAnalysisPipeline(configuration: configuration).analyzeFrames(
             samples: samples, gatesRestingFrames: true)
-        let changePoints = ChromaChangePointDetector.changePoints(frames: frames.chroma)
+        return chordLine(
+            frames: frames.observations,
+            changePoints: ChromaChangePointDetector.changePoints(frames: frames.chroma),
+            onsets: InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate),
+            key: MusicalKeyEstimator().estimate(from: frames.observations),
+            beats: beats, bpm: bpm, barGrid: document.barGrid,
+            sourceDuration: document.sourceDuration
+        ).events
+    }
+
+    /// The ONE chord chain every instrument runs, the guitar's chord line included (Eric,
+    /// 2026-10-07: each instrument's changes from its own stem, "as if each were a separate
+    /// source"). Every input is that instrument's: its chroma frames and change points, its
+    /// attacks, its own key. Decoded on the song's beat grid, each change moved to the
+    /// instrument's attack, filtered and audited there, and finally placed on the nearest
+    /// half-beat.
+    static func chordLine(
+        frames: [ChordObservation], changePoints: [TimeInterval], onsets: [TimeInterval],
+        key: MusicalKey?, beats: [TimeInterval], bpm: Double, barGrid: SongBarGrid?,
+        sourceDuration: TimeInterval?
+    ) -> (
+        events: [EditableChordEvent], evidence: ChordEvidenceAudit.Result,
+        quality: ChordQualityAudit.Result
+    ) {
         let analysis = SongAudioAnalysis(
-            beat: nil, chords: frames.observations, estimatedKey: document.estimatedKey,
-            harmonicChangePoints: changePoints)
-        // This stem's own attacks only; no bass (see the harmony stage's chord line).
-        let onsets = InstrumentOnsetDetector.onsets(samples: samples, sampleRate: sampleRate)
+            beat: nil, chords: frames, estimatedKey: key, harmonicChangePoints: changePoints)
         let beatLength = MetricalLevelReconciler.medianBeatLength(beatTimes: beats, bpm: bpm) ?? 0
+        // Decode at sub-beat resolution so a change inside a beat can be expressed at all; the
+        // switch penalty scales with the subdivision so flicker costs the same per beat.
         let subdivision = HarmonyDecodeResolution.subdivision(beatLength: beatLength)
         let decodeBeats = ChordTimelineDecoder.subdivided(
-            ChordTimelineDecoder.extendedBackward(
-                beats, toCover: frames.observations.first?.timestamp ?? 0),
+            ChordTimelineDecoder.extendedBackward(beats, toCover: frames.first?.timestamp ?? 0),
             by: subdivision)
-        let meter: ChordTimelineDecoder.BarMeter? = document.barGrid.flatMap { grid in
+        // A measured downbeat restated on the finer grid; an anchored one is no evidence.
+        let meter: ChordTimelineDecoder.BarMeter? = barGrid.flatMap { grid in
             grid.isMeasured
                 ? ChordTimelineDecoder.BarMeter(
                     beatsPerBar: grid.beatsPerBar * subdivision,
@@ -190,25 +212,40 @@ enum InstrumentChordPass {
         var decoder = ChordTimelineDecoder()
         decoder.switchPenalty *= Float(subdivision)
         var events = decoder.events(
-            from: analysis, key: document.estimatedKey, instrumentOnsets: onsets,
-            beatTimes: decodeBeats, meter: meter)
+            from: analysis, key: key, instrumentOnsets: onsets, beatTimes: decodeBeats,
+            meter: meter)
+        // The decoder's own placement, kept as an alternative to audition against the audio.
+        for index in events.indices {
+            events[index].placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] =
+                events[index].time
+        }
         if !onsets.isEmpty {
             events = ChordOnsetAligner.snap(events, toOnsets: onsets, beatTimes: beats)
+            for index in events.indices {
+                events[index].placementCandidates[
+                    ChordPlacementVariant.instrumentOnset.rawValue] = events[index].time
+            }
         }
         events = ChordEventDurationFilter.merge(
-            events, beatTimes: beats, sourceDuration: document.sourceDuration)
-        events =
-            ChordEvidenceAudit.filtered(
-                events: events, frameObservations: frames.observations, attackOnsets: onsets,
-                changePoints: changePoints, sourceDuration: document.sourceDuration,
-                minimumAttackOnlyDuration: beatLength
-            ).events
-        events =
-            ChordQualityAudit.corrected(
-                events: events, frameObservations: frames.observations,
-                sourceDuration: document.sourceDuration
-            ).events
-        return events.sorted { $0.time < $1.time }
+            events, beatTimes: beats, sourceDuration: sourceDuration)
+        // Every surviving change must be an attack or a stable harmonic change of this stem,
+        // judged at the time it was struck.
+        let evidence = ChordEvidenceAudit.filtered(
+            events: events, frameObservations: frames, attackOnsets: onsets,
+            changePoints: changePoints, sourceDuration: sourceDuration,
+            minimumAttackOnlyDuration: beatLength)
+        let quality = ChordQualityAudit.corrected(
+            events: evidence.events, frameObservations: frames, sourceDuration: sourceDuration)
+        // Aligned to the beat, from the attack: the nearest half-beat to where it was struck.
+        // Two changes landing on one half-beat merge like any other sliver.
+        var aligned = quality.events
+        for index in aligned.indices {
+            aligned[index].time = HalfBeatGrid.snapped(aligned[index].time, beats: beats)
+        }
+        aligned = ChordEventDurationFilter.merge(
+            aligned.sorted { $0.time < $1.time }, beatTimes: beats,
+            sourceDuration: sourceDuration)
+        return (aligned, evidence.audit, quality.audit)
     }
 
     /// Recomputes when the stored timeline is missing or stale for the current grid — or always
@@ -414,5 +451,25 @@ enum InstrumentChordRowFormatter {
             if case .chord(let transposed) = element { return transposed.description }
         }
         return chord
+    }
+}
+
+/// Places a change on the nearest beat or half-beat of the song's beat grid (Eric, 2026-10-07:
+/// "snap to half-beat", so a pushed eighth-note change survives). Times outside the grid are left.
+enum HalfBeatGrid {
+    static func snapped(_ time: TimeInterval, beats: [TimeInterval]) -> TimeInterval {
+        guard let first = beats.first, let last = beats.last, time >= first, time <= last else {
+            return time
+        }
+        var low = 0
+        var high = beats.count - 1
+        while high - low > 1 {
+            let middle = (low + high) / 2
+            if beats[middle] <= time { low = middle } else { high = middle }
+        }
+        let start = beats[low]
+        let end = beats[high]
+        let candidates = [start, (start + end) / 2, end]
+        return candidates.min { abs($0 - time) < abs($1 - time) } ?? time
     }
 }

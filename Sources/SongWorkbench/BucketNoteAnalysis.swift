@@ -63,7 +63,9 @@ struct BucketNoteTimeline: Codable, Equatable, Sendable {
     // buckets-3: a bass stem that is only a shadow of the singing is left out (`VocalShadowGate`),
     // and so is an instrument stem that is only separation residue (`withoutPhantomInstruments`).
     // buckets-4: no row for the separator's `other` stem when a guitar or piano stem exists.
-    static let currentVersionTag = "buckets-4"
+    // buckets-5: no stem is filtered against the vocals; each is its own source (2026-10-07).
+    // buckets-6: half-beat buckets.
+    static let currentVersionTag = "buckets-6"
 
     var versionTag: String
     var gridKey: BucketGridKey
@@ -375,12 +377,9 @@ enum BucketNotePass {
                 entries.append((StemID(rawValue: "accompaniment"), accompaniment))
             }
         }
-        // A bass stem that is only a shadow of the singing has no part to show (`VocalShadowGate`).
-        let vocalsURL = gated ? document.stems?.resolved().vocals : nil
-        let pitched = withoutOtherMusicians(entries).filter { entry in
-            guard let role = BucketNoteAnalyzer.role(for: entry.id) else { return false }
-            guard role == .bass, let vocalsURL else { return true }
-            return !VocalShadowGate.isShadow(stemURL: entry.url, vocalsURL: vocalsURL)
+        // Every stem is its own source (Eric, 2026-10-07): none is filtered against the vocals.
+        let pitched = withoutOtherMusicians(entries).filter {
+            BucketNoteAnalyzer.role(for: $0.id) != nil
         }
         return (gated ? withoutPhantomInstruments(pitched) : pitched).sorted { $0.id < $1.id }
     }
@@ -436,9 +435,12 @@ enum BucketNotePass {
     /// no grid or no stems; a stem whose file cannot be read is simply absent from the result.
     static func timeline(for document: SongAnalysisDocument) -> BucketNoteTimeline? {
         guard let key = gridKey(for: document) else { return nil }
-        let clicks = MetronomeGrid.clickTimes(
-            beatTimes: document.beatTimes, bpm: document.estimatedBPM, barGrid: document.barGrid,
-            duration: key.duration)
+        // Half-beat buckets (Eric, 2026-10-07: changes snap to the half-beat), so a pushed
+        // eighth-note change lands where it was played.
+        let clicks = halfBeats(
+            MetronomeGrid.clickTimes(
+                beatTimes: document.beatTimes, bpm: document.estimatedBPM,
+                barGrid: document.barGrid, duration: key.duration))
         guard clicks.count >= 2 else { return nil }
         let audio = stemAudio(for: document)
         guard !audio.isEmpty else { return nil }
@@ -452,6 +454,11 @@ enum BucketNotePass {
         }
         guard !stems.isEmpty else { return nil }
         return BucketNoteTimeline(gridKey: key, clickTimes: clicks, stems: stems)
+    }
+
+    /// Every beat and the midpoint after it.
+    static func halfBeats(_ beats: [TimeInterval]) -> [TimeInterval] {
+        zip(beats, beats.dropFirst()).flatMap { [$0, ($0 + $1) / 2] } + beats.suffix(1)
     }
 
     /// Recomputes the timeline when the stored one is missing or stale for the document's

@@ -926,9 +926,7 @@ struct HarmonyStage: AnalysisStageRunning {
     /// `bassNotes` unchanged) when there is no bass stem, and swallows any
     /// failure so bass detection can never fail the harmony stage. Honors
     /// cancellation.
-    private func detectBassNotes(_ context: AnalysisStageContext, bassIsVocalShadow: Bool)
-        -> [BassNoteObservation]?
-    {
+    private func detectBassNotes(_ context: AnalysisStageContext) -> [BassNoteObservation]? {
         guard (try? Task.checkCancellation()) != nil else { return nil }
         // Resolve the bass stem and analyze it. The analyzer opens the file with
         // security-scoped access itself, so we must NOT pre-gate on
@@ -937,10 +935,6 @@ struct HarmonyStage: AnalysisStageRunning {
         // detection. A nil/empty result leaves existing bassNotes untouched.
         guard let stems = context.document.stems?.resolved() else { return nil }
         let bassURL = stems.bass
-        // A bass stem that only ever sounds while someone sings is the low voice, not a bass:
-        // report NO notes (an empty list replaces stale ones; `nil` would keep them). Phantom
-        // bass notes also feed the chord decoder's switch cues and the bass-informed re-rooting.
-        if bassIsVocalShadow { return [] }
         guard let notes = try? bassLineAnalyzer.analyze(url: bassURL), !notes.isEmpty else {
             return nil
         }
@@ -1073,11 +1067,6 @@ struct HarmonyStage: AnalysisStageRunning {
             // a cappella stretch) scored as confidently as playing. Applied to the cached raw
             // frames, so it needs no re-chroma. Stems only: on a full-mix fallback the voice is in
             // the signal and a level says nothing about the instruments.
-            // A bass stem that only ever sounds while someone sings is the low voice, not a bass.
-            let bassIsVocalShadow: Bool = {
-                guard let stems = context.document.stems?.resolved() else { return false }
-                return VocalShadowGate.isShadow(stemURL: stems.bass, vocalsURL: stems.vocals)
-            }()
             // The ONE stem the chord line listens to (Eric, 2026-10-07: "it's critical that only
             // the guitar stem be used"): the player `analyze(weighted:)` chose — guitar, else the
             // instrument that does play. Its chroma is the only label evidence, and it alone
@@ -1194,6 +1183,12 @@ struct HarmonyStage: AnalysisStageRunning {
                         // reduce-38: the chord line listens to the chord player's stem alone —
                         // its attacks and rests only, no piano attacks, no bass cues or re-rooting.
                         + "|reduce-38-chord-player-only"
+                        // reduce-39: every instrument its own source — no chorus vote over the
+                        // chords, no vocal filter on the bass, bass notes not rounded to chords.
+                        + "|reduce-39-independent-instruments"
+                        // reduce-40: one chord chain for every instrument; changes on the nearest
+                        // half-beat to the attack.
+                        + "|reduce-40-half-beat-chord-line"
                 ),
                 modelIdentifier: nil,
                 modelVersion: nil,
@@ -1249,8 +1244,9 @@ struct HarmonyStage: AnalysisStageRunning {
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
             stageProgress(0.82, "detecting bass")
-            let detectedBassNotes = detectBassNotes(
-                context, bassIsVocalShadow: bassIsVocalShadow)
+            // The bass stem's own notes. Every instrument is its own source (Eric, 2026-10-07):
+            // the bass is not filtered against the vocals nor rounded to the guitar's chords.
+            let detectedBassNotes = detectBassNotes(context)
             stageProgress(0.88, "detecting harmony notes")
             let detectedVocalHarmonyNotes = await detectVocalHarmonies(context)
             stageProgress(0.92, "aligning chord changes")
@@ -1303,136 +1299,18 @@ struct HarmonyStage: AnalysisStageRunning {
                         $0.words.firstStart ?? $0.start
                     }
                 )
-            // A phase nothing measured must not drive the decoder's metric prior — anchoring to
-            // beat 0 is the right DISPLAY convention but it is not evidence about where the
-            // downbeats are.
-            let meter: ChordTimelineDecoder.BarMeter? =
-                barGrid.isMeasured
-                ? ChordTimelineDecoder.BarMeter(
-                    beatsPerBar: barGrid.beatsPerBar, barPhase: barGrid.barPhase)
-                : nil
-            // Decode at sub-beat resolution. The decoder emits at most one chord per window, so
-            // on the raw beat grid a change landing inside a beat cannot be expressed at all —
-            // which is why relaxing the duration filter alone could not recover eighth-note
-            // changes. Only the decode grid is subdivided; `resolvedBeatTimes` still governs
-            // snapping, the duration filter, and everything the chart draws.
-            // Cover audio before the first drum hit: the drum-locked grid starts at the first
-            // hit, so a solo-guitar intro had no decode windows and produced no chords at all.
-            let beatLength =
-                MetricalLevelReconciler.medianBeatLength(
-                    beatTimes: resolvedBeatTimes, bpm: estimatedBPM ?? 0) ?? 0
-            let decodeSubdivision = HarmonyDecodeResolution.subdivision(
-                beatLength: beatLength)
-            let decodeBeatTimes = ChordTimelineDecoder.subdivided(
-                ChordTimelineDecoder.extendedBackward(
-                    resolvedBeatTimes,
-                    toCover: result.chords.first?.timestamp ?? 0),
-                by: decodeSubdivision)
-            // The meter is expressed in windows, so it has to be restated on the finer grid or
-            // "beat 1 of the bar" would point at the wrong window.
-            let decodeMeter = meter.map {
-                ChordTimelineDecoder.BarMeter(
-                    beatsPerBar: $0.beatsPerBar * decodeSubdivision,
-                    barPhase: $0.barPhase * decodeSubdivision
-                )
-            }
-            // The switch penalty is per state-change; windows are now `decodeSubdivision`
-            // times shorter, so an unscaled penalty would make flicker `decodeSubdivision`
-            // times cheaper per beat — one noisy frame alone in a thin window could buy a
-            // chord. Scaling by the subdivision keeps per-beat flicker economics identical to
-            // the beat-window contract, while a GENUINE sub-beat change still gets in through
-            // the onset/downbeat discounts (real changes attack; stray frames don't).
-            var decoder = ChordTimelineDecoder()
-            decoder.switchPenalty *= Float(decodeSubdivision)
-            // No bass anywhere in the chord line: bass onsets as switch cues and bass re-rooting
-            // (frame- and event-level) each turned a walking bass under a held guitar chord into
-            // chord changes. The bass line has its own row.
-            var chords = decoder.events(
-                from: result,
-                key: estimatedKey,
-                instrumentOnsets: instrumentOnsets,
-                // Decode on the SAME grid every downstream consumer (snap, duration filter,
-                // consensus, ChordPro, playback) uses — not the harmony engine's own estimate.
-                beatTimes: decodeBeatTimes,
-                meter: decodeMeter
-            )
-            // Record the decoder's OWN placement before anything moves it. These times sit
-            // exactly on `resolvedBeatTimes` by construction (`windowEvidence` pools evidence
-            // between consecutive beats), which is precisely why chord-vs-beat agreement can
-            // never be used as evidence that the beat grid is right.
-            for index in chords.indices {
-                chords[index].placementCandidates[ChordPlacementVariant.beatQuantized.rawValue] =
-                    chords[index].time
-            }
-            // Snap chord-change times to where the instrumental actually changes. The beat grid
-            // guards the snap: it must never compress two real events to sub-beat spacing (the
-            // duration filter below would then delete a genuine change).
-            if !instrumentOnsets.isEmpty {
-                chords = ChordOnsetAligner.snap(
-                    chords, toOnsets: instrumentOnsets, beatTimes: resolvedBeatTimes)
-                // The snapped placement, recorded as an ALTERNATIVE rather than silently becoming
-                // the only answer. It is still what `time` carries, so nothing renders
-                // differently — but the two can now be auditioned against the recording, which is
-                // the only way to tell which is right: the `.cho` charts are untimed AND were
-                // generated by earlier versions of this pipeline, so there is no external timing
-                // ground truth to score against. Deliberately NOT recorded when the snap did not
-                // run: an absent candidate means "unavailable", and duplicating the beat time
-                // under this key would fake an alternative that was never computed.
-                for index in chords.indices {
-                    chords[index].placementCandidates[
-                        ChordPlacementVariant.instrumentOnset.rawValue] = chords[index].time
-                }
-            }
-            // Onset snapping (and its nondecreasing clamp) can compress neighbouring events to
-            // sub-beat spacing; merge those slivers into the preceding chord. Runs LAST so it
-            // sees final event times on the resolved (drum-locked) beat grid.
-            chords = ChordEventDurationFilter.merge(
-                chords,
-                beatTimes: resolvedBeatTimes,
-                sourceDuration: context.document.sourceDuration
-            )
-            // One-to-one evidence audit: a marker is a claim that a chordal instrument ATTACKED
-            // here, so every surviving event must map to either an instrument attack or a stable
-            // harmonic change in the frame-level observations. Events nothing supports are the
-            // decoder reporting active harmony rather than a played change — the main source of
-            // over-segmentation — and are dropped before they can reach the chart. Self-guarding:
-            // when MOST events look unsupported the stem is the suspect (bleed, a quiet
-            // fingerpicked part with no discrete attacks), so the audit reports and drops nothing.
-            let evidence = ChordEvidenceAudit.filtered(
-                events: chords,
-                frameObservations: result.chords,
-                attackOnsets: instrumentOnsets,
-                changePoints: result.harmonicChangePoints,
-                sourceDuration: context.document.sourceDuration,
-                minimumAttackOnlyDuration: beatLength
-            )
-            chords = evidence.events
-            // Quality audit: the frame-level classifier read the third straight from chroma with
-            // no key prior, so where it decisively disagrees with the decoded major/minor it wins.
-            // This is the counterweight to `KeyPriorChordRescorer` discounting a parallel-minor
-            // tonic — the `Dm`-corrected-to-`D` failure.
-            let quality = ChordQualityAudit.corrected(
-                events: chords,
-                frameObservations: result.chords,
-                sourceDuration: context.document.sourceDuration
-            )
-            chords = quality.events
-            // Events whose third the audio positively confirmed. The repeated-section vote below
-            // may not flip these back on the strength of the other choruses.
-            let qualityProtectedIDs = Set(
-                quality.audit.confirmedEventIndices.compactMap { index in
-                    chords.indices.contains(index) ? chords[index].id : nil
-                })
-            let alignedChords = chords
-            let evidenceAudit = evidence.audit
-            let qualityAudit = quality.audit
+            // The guitar's chord line runs the same chain as every other instrument's row
+            // (`InstrumentChordPass.chordLine`): this stem's frames, attacks and key only,
+            // changes placed on the nearest half-beat to the attack.
+            let line = InstrumentChordPass.chordLine(
+                frames: result.chords, changePoints: result.harmonicChangePoints ?? [],
+                onsets: instrumentOnsets, key: estimatedKey, beats: resolvedBeatTimes,
+                bpm: estimatedBPM ?? 0, barGrid: barGrid,
+                sourceDuration: context.document.sourceDuration)
+            let alignedChords = line.events
+            let evidenceAudit = line.evidence
+            let qualityAudit = line.quality
             stageProgress(1, "completed")
-            // With the chord timeline final, re-arbitrate BORDERLINE bass-note roundings
-            // against it — ambiguous fractional pitches snap to the concurrent chord's
-            // tone; decisive ones stay (see `BassChordReconciler`).
-            let reconciledBassNotes = detectedBassNotes.map {
-                BassChordReconciler.snapped($0, chords: alignedChords)
-            }
             return AnalysisStageOutcome { document in
                 document.estimatedBPM = estimatedBPM
                 document.beatTimes = resolvedBeatTimes
@@ -1442,16 +1320,18 @@ struct HarmonyStage: AnalysisStageRunning {
                 document.timingPostPassTag = nil
                 document.estimatedKey = estimatedKey
                 document.chordInstrument = rawResult.chordInstrument.flatMap(StemKind.init)
-                // A3: identically-sung lines vote on one shared progression (label rewrite
-                // only), so repeated choruses can't decode to different chords. No-op when
-                // lyrics aren't available yet.
-                document.chords = ChorusChordConsensus.applied(
-                    chords: alignedChords,
-                    lyrics: document.lyrics,
-                    beatTimes: resolvedBeatTimes,
-                    protectedIDs: qualityProtectedIDs)
-                if let reconciledBassNotes {
-                    document.bassNotes = reconciledBassNotes
+                // The guitar's chords as its stem heard them: no vote across repeated sung lines.
+                document.chords = alignedChords
+                // Each bass note at its own onset, on the nearest half-beat.
+                if let detectedBassNotes {
+                    document.bassNotes = detectedBassNotes.map { note in
+                        var snapped = BassNoteObservation(
+                            timestamp: HalfBeatGrid.snapped(
+                                note.timestamp, beats: resolvedBeatTimes),
+                            midiNote: note.midiNote, confidence: note.confidence)
+                        snapped.pitch = note.pitch
+                        return snapped
+                    }
                 }
                 if let detectedVocalHarmonyNotes {
                     document.vocalHarmonyNotes = detectedVocalHarmonyNotes
