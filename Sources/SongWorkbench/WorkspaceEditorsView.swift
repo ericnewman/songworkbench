@@ -1393,6 +1393,155 @@ struct ChordProTabEditor: View {
     @AppStorage("chordProFontSize") private var chordProFontSize: Double = 15
     /// Drives the small chord-confidence-shading legend popover in the toolbar (backlog #15).
     @State private var showConfidenceLegend = false
+    /// The Display panel (`displayOptionsPanel`).
+    @State private var showDisplayOptions = false
+
+    /// Everything the chart can show, as one small panel of checkboxes (Eric, 2026-10-07: "a small
+    /// dialog box with checkboxes" rather than a dropdown). Instruments first, one line each: its
+    /// own chords and its own notes, each drawn as its own row in that instrument's colour.
+    private var displayOptionsPanel: some View {
+        Form {
+            if config.showsReviewAffordances {
+                Section("Instruments") {
+                    ForEach(instrumentOptionStems, id: \.self) { stemID in
+                        LabeledContent(bucketStemMenuTitle(stemID)) {
+                            HStack(spacing: 14) {
+                                instrumentChordsToggle(stemID)
+                                instrumentNotesToggle(stemID)
+                            }
+                        }
+                    }
+                    Toggle("Bass line (detected notes)", isOn: $showBassNotes)
+                        .disabled(model.bassNotes.isEmpty)
+                    HStack {
+                        Toggle("Vocal harmonies", isOn: $showHarmonies)
+                        Picker("Voices", selection: $harmonyMaxVoices) {
+                            Text("2").tag(2)
+                            Text("3").tag(3)
+                            Text("4").tag(4)
+                        }
+                        .fixedSize()
+                    }
+                    .disabled(model.vocalHarmonyNotes.isEmpty)
+                    Toggle("Solo tab", isOn: $showSoloTab)
+                        .disabled(model.soloTranscriptions == nil)
+                    HStack {
+                        Button(
+                            model.isComputingInstrumentChords
+                                ? "Computing chords…"
+                                : model.isInstrumentChordTimelineCurrent
+                                    ? "Recompute chords" : "Compute chords"
+                        ) { model.computeInstrumentChords() }
+                        .disabled(!model.canComputeInstrumentChords)
+                        Button(
+                            model.isComputingBucketNotes
+                                ? "Computing notes…"
+                                : model.isBucketTimelineCurrent
+                                    ? "Recompute notes" : "Compute notes"
+                        ) { model.computeBucketNotes() }
+                        .disabled(!model.canComputeBucketNotes)
+                        Button(
+                            model.isComputingSolos
+                                ? "Computing solo tab…"
+                                : model.isSoloTimelineCurrent
+                                    ? "Recompute solo tab" : "Compute solo tab"
+                        ) { model.computeSolos() }
+                        .disabled(!model.canComputeSolos)
+                    }
+                    .controlSize(.small)
+                }
+                Section("Grid and waveform") {
+                    Toggle("Beat dots", isOn: $beatDotsEnabled)
+                    Toggle("Waveform", isOn: $showWaveform)
+                    Picker("Instrument energy", selection: $instrumentEnergyPerStem) {
+                        Text("Combined").tag(false)
+                        Text("Per instrument").tag(true)
+                    }
+                    .disabled(!showWaveform)
+                    ForEach(
+                        InstrumentEnergyLanes.lanes(
+                            from: model.stemWaveforms, perStem: true, hidden: [],
+                            withoutAPart: InstrumentEnergyLanes.stemsWithoutAPart(
+                                model.stemWaveforms, timeline: model.bucketNotes)),
+                        id: \.id
+                    ) { lane in
+                        Toggle(
+                            "\(lane.displayName) energy",
+                            isOn: Binding(
+                                get: { !hiddenEnergyStems.contains(lane.id) },
+                                set: { setEnergyStemHidden(lane.id, !$0) }))
+                    }
+                    .disabled(!showWaveform || !instrumentEnergyPerStem)
+                    Toggle("Chord time labels", isOn: $showChordTimeLabels)
+                }
+            }
+            Section("Bouncing balls") {
+                Toggle("Word ball", isOn: $bouncingBallEnabled)
+                Toggle("Chord ball", isOn: $chordBallEnabled)
+                Toggle("Chord pop", isOn: $chordPopBallEnabled)
+            }
+            Section("Layout") {
+                Picker("Beats per row", selection: $beatsPerRow) {
+                    Text("Auto").tag(0)
+                    Text("4").tag(4)
+                    Text("8").tag(8)
+                    Text("16").tag(16)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .toggleStyle(.checkbox)
+        .frame(width: 420)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Every instrument with a chord line or a note row, in the rows' display order.
+    private var instrumentOptionStems: [StemID] {
+        let chordStems = (model.instrumentChords?.tracks ?? []).map(\.stemID)
+        let noteStems = (model.bucketNotes?.stems ?? []).map(\.stemID)
+        let lead = model.chordInstrument.map { [StemID($0)] } ?? []
+        return Array(Set(chordStems + noteStems + lead)).sorted {
+            BucketNoteRowFormatter.displayOrder($0) < BucketNoteRowFormatter.displayOrder($1)
+        }
+    }
+
+    private func isChordLineInstrument(_ stemID: StemID) -> Bool {
+        guard let lead = model.chordInstrument else { return false }
+        return stemID == StemID(lead) || stemID.rawValue.hasPrefix(lead.rawValue + ".")
+    }
+
+    /// The chart's chord line is this instrument's chords, so its box is always ticked; any other
+    /// instrument's chords are its own row, off until chosen.
+    @ViewBuilder
+    private func instrumentChordsToggle(_ stemID: StemID) -> some View {
+        if isChordLineInstrument(stemID) {
+            Toggle("Chords", isOn: .constant(true))
+                .disabled(true)
+                .help("This instrument's chords are the chart's chord line")
+        } else {
+            Toggle(
+                "Chords",
+                isOn: Binding(
+                    get: { shownInstrumentChordStems.contains(stemID) },
+                    set: { setInstrumentChordStemShown(stemID, $0) })
+            )
+            .disabled(!(model.instrumentChords?.tracks ?? []).contains { $0.stemID == stemID })
+        }
+    }
+
+    /// This instrument's own note row.
+    private func instrumentNotesToggle(_ stemID: StemID) -> some View {
+        Toggle(
+            "Notes",
+            isOn: Binding(
+                get: { showBucketNotes && !hiddenBucketStems.contains(stemID) },
+                set: { shown in
+                    if shown { showBucketNotes = true }
+                    setBucketStemHidden(stemID, !shown)
+                })
+        )
+        .disabled(!(model.bucketNotes?.stems ?? []).contains { $0.stemID == stemID })
+    }
 
     /// The chart's proportional zoom, resolved from the stored point size.
     private var chartScale: ChordProChartScale {
@@ -1730,129 +1879,14 @@ struct ChordProTabEditor: View {
                 if config.showsReviewAffordances {
                     chordConfidenceControl
                 }
-                Menu {
-                    if config.showsReviewAffordances {
-                        Toggle("Beat dots", isOn: $beatDotsEnabled)
-                        Toggle("Waveform", isOn: $showWaveform)
-                        Picker("Instrument Energy", selection: $instrumentEnergyPerStem) {
-                            Text("Combined").tag(false)
-                            Text("Per Instrument").tag(true)
-                        }
-                        .disabled(!showWaveform)
-                        Menu("Energy Stems") {
-                            ForEach(
-                                InstrumentEnergyLanes.lanes(
-                                    from: model.stemWaveforms, perStem: true, hidden: [],
-                                    withoutAPart: InstrumentEnergyLanes.stemsWithoutAPart(
-                                        model.stemWaveforms, timeline: model.bucketNotes)),
-                                id: \.id
-                            ) { lane in
-                                Toggle(
-                                    lane.displayName,
-                                    isOn: Binding(
-                                        get: { !hiddenEnergyStems.contains(lane.id) },
-                                        set: { setEnergyStemHidden(lane.id, !$0) }))
-                            }
-                        }
-                        .disabled(!showWaveform || !instrumentEnergyPerStem)
-                        Toggle("Show Bass Notes", isOn: $showBassNotes)
-                            .disabled(model.bassNotes.isEmpty)
-                        Toggle("Harmonies", isOn: $showHarmonies)
-                            .disabled(model.vocalHarmonyNotes.isEmpty)
-                        Picker("Max Voices", selection: $harmonyMaxVoices) {
-                            Text("2").tag(2)
-                            Text("3").tag(3)
-                            Text("4").tag(4)
-                        }
-                        .disabled(model.vocalHarmonyNotes.isEmpty)
-                        Toggle("Bucket Notes", isOn: $showBucketNotes)
-                            .disabled(model.bucketNotes == nil)
-                        if let timeline = model.bucketNotes {
-                            Menu("Bucket Stems") {
-                                ForEach(
-                                    timeline.stems.sorted {
-                                        BucketNoteRowFormatter.displayOrder($0.stemID)
-                                            < BucketNoteRowFormatter.displayOrder($1.stemID)
-                                    }, id: \.stemID
-                                ) { stem in
-                                    Toggle(
-                                        bucketStemMenuTitle(stem.stemID),
-                                        isOn: Binding(
-                                            get: { !hiddenBucketStems.contains(stem.stemID) },
-                                            set: { setBucketStemHidden(stem.stemID, !$0) }))
-                                }
-                            }
-                            .disabled(!showBucketNotes)
-                        }
-                        Button(
-                            model.isComputingBucketNotes
-                                ? "Computing Bucket Notes…"
-                                : model.bucketNotes == nil
-                                    ? "Compute Bucket Notes"
-                                    : model.isBucketTimelineCurrent
-                                        ? "Recompute Bucket Notes"
-                                        : "Recompute Bucket Notes (grid changed)"
-                        ) {
-                            model.computeBucketNotes()
-                        }
-                        .disabled(!model.canComputeBucketNotes)
-                        ForEach(optionalInstrumentChordTracks, id: \.stemID) { track in
-                            Toggle(
-                                "\(bucketStemMenuTitle(track.stemID)) Chords",
-                                isOn: Binding(
-                                    get: { shownInstrumentChordStems.contains(track.stemID) },
-                                    set: { setInstrumentChordStemShown(track.stemID, $0) }))
-                        }
-                        Button(
-                            model.isComputingInstrumentChords
-                                ? "Computing Instrument Chords…"
-                                : model.instrumentChords == nil
-                                    ? "Compute Instrument Chords"
-                                    : model.isInstrumentChordTimelineCurrent
-                                        ? "Recompute Instrument Chords"
-                                        : "Recompute Instrument Chords (grid changed)"
-                        ) {
-                            model.computeInstrumentChords()
-                        }
-                        .disabled(!model.canComputeInstrumentChords)
-                        Toggle("Solo Tab", isOn: $showSoloTab)
-                            .disabled(model.soloTranscriptions == nil)
-                        Button(
-                            model.isComputingSolos
-                                ? "Computing Solo Tab…"
-                                : model.soloTranscriptions == nil
-                                    ? "Compute Solo Tab"
-                                    : model.isSoloTimelineCurrent
-                                        ? "Recompute Solo Tab"
-                                        : "Recompute Solo Tab (grid changed)"
-                        ) {
-                            model.computeSolos()
-                        }
-                        .disabled(!model.canComputeSolos)
-                        Toggle("Chord Time Labels", isOn: $showChordTimeLabels)
+                Button("Display", systemImage: "eye") { showDisplayOptions = true }
+                    .help(
+                        "Choose what the chart shows: each instrument's chords and notes, the "
+                            + "bouncing balls, the grid and the waveform"
+                    )
+                    .popover(isPresented: $showDisplayOptions, arrowEdge: .bottom) {
+                        displayOptionsPanel
                     }
-                    Section("Bouncing Balls") {
-                        Toggle("Word Ball", isOn: $bouncingBallEnabled)
-                        Toggle("Chord Ball", isOn: $chordBallEnabled)
-                        Toggle("Chord Pop", isOn: $chordPopBallEnabled)
-                    }
-                    Picker("Beats per Row", selection: $beatsPerRow) {
-                        Text("Auto").tag(0)
-                        Text("4").tag(4)
-                        Text("8").tag(8)
-                        Text("16").tag(16)
-                    }
-                } label: {
-                    Label("View", systemImage: "eye")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help(
-                    config.showsReviewAffordances
-                        ? "Show/hide beat dots, measure barlines, the per-line waveform, "
-                            + "the detected bass note row, "
-                            + "and each chord's raw detected timestamp"
-                        : "Choose which bouncing balls show and the chart row length")
             }
             if config.showsReviewAffordances {
                 // Chord-placement A/B. A chord change is an inference, but WHERE it sits is a
