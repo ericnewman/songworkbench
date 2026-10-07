@@ -72,8 +72,8 @@ enum NoteTabFormatter {
                 starts[bucket, default: []].append(event.midiNote)
             }
         }
-        guard !starts.isEmpty else { return nil }
-
+        // A window with nothing played still draws its empty strings (Eric, 2026-10-07: the lines
+        // "should always be present").
         let frets = fretted(starts, instrument: instrument)
         let rest = SoloTabRowFormatter.rest
         let columns = (first...last).map { bucket -> SoloTabColumn in

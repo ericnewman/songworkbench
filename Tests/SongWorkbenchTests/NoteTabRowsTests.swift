@@ -73,6 +73,18 @@ final class NoteTabRowsTests: XCTestCase {
                 for: StemKind.guitar.id, bucketNotes: timeline, noteEvents: nil, inWindow: 0...1.4))
     }
 
+    func testTabStringsShowEvenWhereNothingIsPlayed() throws {
+        let timeline = grid(stems: [
+            StemBucketNotes(stemID: StemKind.bass.id, notes: [bucket(0, 40)])
+        ])
+        let block = try XCTUnwrap(
+            NoteTabFormatter.block(
+                for: StemKind.bass.id, bucketNotes: timeline, noteEvents: nil, inWindow: 2.0...2.9))
+        XCTAssertEqual(block.columns.count, 4)
+        XCTAssertTrue(
+            block.columns.allSatisfy { $0.cells.allSatisfy { $0 == SoloTabRowFormatter.rest } })
+    }
+
     func testTabStaysInsideTheRowWindow() throws {
         let timeline = grid(stems: [
             StemBucketNotes(
