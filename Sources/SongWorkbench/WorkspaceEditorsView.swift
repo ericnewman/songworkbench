@@ -2661,11 +2661,45 @@ struct ChordProAppPreview: View {
     ) -> some View {
         let rowScale = fittedScale(availableWidth: availableWidth)
         let songGutterSeconds = fixedPeriodGutterSeconds(for: document)
-        ForEach(indexedBlocks(for: document), id: \.offset) { item in
-            blockRow(
-                for: item, in: document, scale: rowScale, songGutterSeconds: songGutterSeconds
-            )
-            .id(item.offset)
+        let items = indexedBlocks(for: document)
+        // Tempo, key and the like ride on one line under the title (Eric, 2026-10-07: "reduce or
+        // eliminate the unnecessary white space").
+        let metadata = items.compactMap { item -> String? in
+            if case .metadata(let label, let value) = item.block { return "\(label) \(value)" }
+            return nil
+        }
+        ForEach(items.filter { takesSpace($0.block) }, id: \.offset) { item in
+            if case .title(let title) = item.block {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.title2.bold())
+                    if !metadata.isEmpty {
+                        Text(metadata.joined(separator: "  ·  "))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .id(item.offset)
+            } else {
+                blockRow(
+                    for: item, in: document, scale: rowScale, songGutterSeconds: songGutterSeconds
+                )
+                .id(item.offset)
+            }
+        }
+    }
+
+    /// Whether a block gets a row of its own. Hidden directives (`{time}`, `{x_chord_times}` with
+    /// chord time labels off) and blank lines draw nothing, but each still took the list's row
+    /// spacing; metadata is drawn under the title instead.
+    private func takesSpace(_ block: ChordProPreviewBlock) -> Bool {
+        switch block {
+        case .metadata: return false
+        case .directive: return showChordTimeLabels
+        case .lyric(let line):
+            return
+                !(line.chords.isEmpty
+                && line.lyric.trimmingCharacters(in: .whitespaces).isEmpty)
+        default: return true
         }
     }
 
