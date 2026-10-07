@@ -365,7 +365,11 @@ enum BucketNotePass {
     {
         var entries: [(id: StemID, url: URL)] = []
         if let manifest = document.stemSet?.resolved(followingBookmarks: gated) {
-            entries = StemMixGraph(manifest: manifest).activeNodes.map { ($0.id, $0.audioURL) }
+            // Derived voice tracks are filtered from the vocals: listening to them would count
+            // the singing twice.
+            entries = StemMixGraph(manifest: manifest).activeNodes
+                .filter { $0.role != .derived }
+                .map { ($0.id, $0.audioURL) }
         } else if let files = document.stems?.resolved(followingBookmarks: gated) {
             entries = [
                 (StemID(.vocals), files.vocals), (StemID(.bass), files.bass),

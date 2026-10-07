@@ -120,6 +120,9 @@ enum StemRole: String, Codable, Sendable {
     case refinement
     case transcription
     case residual
+    /// Rendered by the app from analysis results (a harmony voice track), not by a separator. It
+    /// never replaces its parent in the mix, and the note passes never listen to it.
+    case derived
 }
 
 struct StemDescriptor: Codable, Equatable, Sendable {
@@ -434,6 +437,7 @@ struct StemMixGraph: Equatable, Sendable {
         let parentID: StemID?
         let audioURL: URL
         let order: Int
+        var role: StemRole = .source
     }
 
     let nodes: [Node]
@@ -446,13 +450,18 @@ struct StemMixGraph: Equatable, Sendable {
                 id: descriptor.id,
                 parentID: descriptor.parentID,
                 audioURL: asset.audioURL,
-                order: descriptor.order
+                order: descriptor.order,
+                role: descriptor.role
             )
         }
     }
 
+    /// A parent leaves the mix only for children that partition its audio. Derived children (voice
+    /// tracks filtered out of the vocals) sit beside it, so a song whose lead/backing split failed
+    /// still plays its vocals.
     var activeNodes: [Node] {
-        let parentIDsWithChildren = Set(nodes.compactMap(\.parentID))
+        let parentIDsWithChildren = Set(
+            nodes.filter { $0.role != .derived }.compactMap(\.parentID))
         return
             nodes
             .filter { node in !parentIDsWithChildren.contains(node.id) }

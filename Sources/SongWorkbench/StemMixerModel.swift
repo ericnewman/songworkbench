@@ -114,6 +114,11 @@ struct StemMixerModel: Codable, Equatable, Sendable {
         states[id] ?? StemMixState()
     }
 
+    /// True once this stem has stored mixer state (a user change, or a default set for it).
+    func hasState(for id: StemID) -> Bool {
+        states[id] != nil
+    }
+
     subscript(kind: StemKind) -> StemMixState {
         self[kind.id]
     }
@@ -401,10 +406,23 @@ enum StemVoiceDisplayNames {
         }
         guard !vocalChildren.isEmpty else { return [:] }
 
-        return Dictionary(
-            uniqueKeysWithValues: vocalChildren.enumerated().map { offset, node in
-                (node.id, "Voice \(offset + 1)")
+        // Lead and Backing by name, harmony voice tracks by the Review chart's voice number, any
+        // other part by position (Eric, 2026-10-07: "Lead, Backing, Voice 1–4").
+        var names: [StemID: String] = [:]
+        var position = 0
+        for node in vocalChildren {
+            if node.id == .vocalLead {
+                names[node.id] = "Lead"
+            } else if node.id == .vocalBacking {
+                names[node.id] = "Backing"
+            } else if VoiceTrackPass.isVoiceTrack(node.id) {
+                let number = node.id.rawValue.dropFirst(VoiceTrackPass.idPrefix.count)
+                names[node.id] = "Voice \(number)"
+            } else {
+                position += 1
+                names[node.id] = "Voice \(position)"
             }
-        )
+        }
+        return names
     }
 }

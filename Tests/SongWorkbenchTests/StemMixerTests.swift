@@ -137,9 +137,10 @@ final class StemMixerTests: XCTestCase {
 
         let channels = StemMixerChannelProjector.channels(for: manifest)
         XCTAssertEqual(channels.map(\.displayName), ["Vocals", "Bass"])
-        // The numbering the user reads is on the PARTS, under the vocals group.
+        // The names the user reads are on the PARTS, under the vocals group (Eric, 2026-10-07:
+        // Lead and Backing, so Voice 1–4 can match the Review chart's harmony voices).
         XCTAssertEqual(
-            channels.first?.children.map(\.displayName), ["Voice 1", "Voice 2"])
+            channels.first?.children.map(\.displayName), ["Lead", "Backing"])
     }
 
     func testMixerChannelsNumberFutureFourPartVocalChildren() {
@@ -392,7 +393,7 @@ final class StemMixerTests: XCTestCase {
 
         XCTAssertEqual(
             StemWaveformLaneProjector.targets(for: manifest).map(\.displayName),
-            ["Voice 1", "Voice 2"]
+            ["Lead", "Backing"]
         )
     }
 
