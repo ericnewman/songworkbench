@@ -59,8 +59,8 @@ struct WorkspaceEditorsView: View {
     }
 }
 
-/// Transport card (top of the left column): the scrubber, large skip / play-pause buttons,
-/// and pitch / speed.
+/// Transport card (top of the left column): large rewind / skip / play-pause buttons, the
+/// scrubber, and pitch / speed.
 struct PlaybackTransportCard: View {
     @ObservedObject var model: AppModel
     // Observed directly (not just read through `model.isActivePlaybackPlaying`) so the single
@@ -78,12 +78,20 @@ struct PlaybackTransportCard: View {
     }
 
     var body: some View {
-        // Top of the left column, on three lines (Eric, 2026-10-07): the position, the large
-        // transport, then pitch, speed and reset. The play button's badge shows the source.
+        // Top of the left column, on three lines (Eric, 2026-10-07): the large transport, the
+        // position, then pitch, speed and reset. The play button's badge shows the source.
         VStack(alignment: .leading, spacing: 10) {
-            PlaybackProgressSlider(model: model)
+            HStack(spacing: 22) {
+                Button {
+                    model.seekActivePlayback(to: 0)
+                } label: {
+                    transportIcon("backward.end.fill", size: 26)
+                }
+                .accessibilityLabel("Rewind to Start")
+                .swAccentHoverBorder(cornerRadius: 8)
+                .disabled(model.selectedSong == nil)
+                .help("Rewind to the start")
 
-            HStack(spacing: 28) {
                 Button {
                     model.skipActivePlayback(by: -10)
                 } label: {
@@ -119,6 +127,8 @@ struct PlaybackTransportCard: View {
                 .help("Forward 10 seconds")
             }
             .frame(maxWidth: .infinity)
+
+            PlaybackProgressSlider(model: model)
 
             HStack(alignment: .center, spacing: 12) {
                 VStack(spacing: 1) {
