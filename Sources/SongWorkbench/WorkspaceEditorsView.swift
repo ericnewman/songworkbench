@@ -1569,6 +1569,12 @@ struct ChordProTabEditor: View {
         Set(shownTabStemsStorage.split(separator: ",").map { StemID(rawValue: String($0)) })
     }
 
+    private func ensureGuitarTabNotes() {
+        for stemID in shownTabStems where NoteTabFormatter.instrument(for: stemID) == .guitar {
+            model.ensureNoteEvents(for: stemID)
+        }
+    }
+
     private func instrumentTabToggle(_ stemID: StemID) -> some View {
         Toggle(
             model.noteTranscriptionsInProgress.contains(stemID) ? "Tab…" : "Tab",
@@ -1935,6 +1941,13 @@ struct ChordProTabEditor: View {
             // overlays, so it belongs on both surfaces (Eric: the slider goes in both tabs).
             fontSizeControl
                 .onChange(of: beatsPerRow) { _, _ in model.chartBeatsPerRowChanged() }
+                // The Tab switches carry across songs, but guitar tab reads Basic Pitch notes
+                // that each song transcribes once: start it whenever a song opens with guitar
+                // tab on, or its guitar tab silently never appears.
+                .onChange(of: model.selectedSongID, initial: true) { _, _ in
+                    ensureGuitarTabNotes()
+                }
+                .onChange(of: model.stemSet?.assets.map(\.id)) { _, _ in ensureGuitarTabNotes() }
             if config.showsPlaybackControls {
                 if model.isChartLyricsStale {
                     Text(
@@ -5133,10 +5146,14 @@ private struct ChordProPreviewLineView: View {
                             .enumerated()),
                     id: \.offset
                 ) { _, segment in
+                    // Whole-pixel lines: a 0.75 pt line at a fractional y split across two pixel
+                    // rows and all but vanished (only two of a bass tab's four strings showed).
                     Rectangle()
-                        .fill(tabColor.opacity(0.35))
-                        .frame(width: segment.upperBound - segment.lowerBound, height: 0.75)
-                        .offset(x: segment.lowerBound, y: rowY + soloStringReserve / 2)
+                        .fill(tabColor.opacity(0.55))
+                        .frame(width: segment.upperBound - segment.lowerBound, height: 1)
+                        .offset(
+                            x: segment.lowerBound,
+                            y: (rowY + soloStringReserve / 2).rounded())
                 }
             }
             ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
@@ -5170,14 +5187,14 @@ private struct ChordProPreviewLineView: View {
         blocks.isEmpty ? 0 : blocks.reduce(0) { $0 + tabBlockHeight($1) } + tabRuleReserve
     }
 
-    private var tabRuleReserve: CGFloat { scale.scaled(7) }
+    private var tabRuleReserve: CGFloat { scale.scaled(12) }
     private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
 
     private func tabRule(at y: CGFloat, width: CGFloat) -> some View {
         Rectangle()
-            .fill(Color.swTextSecondary.opacity(0.3))
+            .fill(Color.swTextSecondary.opacity(0.5))
             .frame(width: max(width, 0), height: 1)
-            .offset(x: 0, y: y)
+            .offset(x: 0, y: y.rounded())
     }
 
     /// `start...end` with the `gaps` cut out, as the line pieces to draw.
