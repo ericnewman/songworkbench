@@ -112,7 +112,11 @@ struct ChordProDraftBuilder: Sendable {
     /// notes appear only in the Bass Notes row (Eric, 2026-09-27).
     /// 10 = each section starts a row on the bar holding its first word; the bars before it end
     /// the previous section as a shorter row (Eric, 2026-10-06).
-    static let algorithmVersion = 10
+    /// 11 = a section's first word sung within the pickup gutter before a downbeat starts the
+    /// section on that downbeat, not on the bar before it (Flip Flops, verse 2).
+    /// 12 = a line's opening pickup is drawn on its line's row, in the gutter, and the row starts
+    /// at the pickup — not crammed onto the end of the row before (Eric, 2026-10-07).
+    static let algorithmVersion = 12
     static var algorithmTag: String { "alg\(algorithmVersion)" }
 
     /// True when a persisted chart's provenance says it was built by a DIFFERENT algorithm
@@ -519,7 +523,7 @@ struct ChordProDraftBuilder: Sendable {
 
         struct Span {
             let window: Int
-            let start: TimeInterval
+            var start: TimeInterval
             var end: TimeInterval
             let chords: [RenderableChordEvent]
             let line: ChartLyricLine?
@@ -552,6 +556,17 @@ struct ChordProDraftBuilder: Sendable {
                     window: window.index, start: leadingStart ?? window.start, end: window.end,
                     chords: own.sorted { $0.time < $1.time }, line: line))
             leadingStart = nil
+        }
+        // A row whose line opens on a pickup starts at that word, so the ball and the highlight
+        // (which turn together, at row starts) reach the row as the pickup is sung; the row before
+        // ends there. The row's downbeat (`origins`) stays on its window.
+        for i in spans.indices.dropFirst() {
+            if let first = spans[i].line?.segment.words.first?.start, first < spans[i].start,
+                first > spans[i - 1].start
+            {
+                spans[i].start = first
+                spans[i - 1].end = first
+            }
         }
 
         var lines: [String] = []

@@ -66,8 +66,16 @@ struct ChartRowGrid: Equatable, Sendable {
         func floored(_ beatIndex: Double, to length: Int) -> Int {
             Int(((beatIndex - Double(anchor)) / Double(length)).rounded(.down))
         }
+        // A first word sung within the pickup gutter before a downbeat is an anacrusis into that
+        // bar, so the section starts on it. Flooring it instead started Flip Flops' second verse
+        // a bar early ("Charcoal" 0.6 beat ahead of the downbeat): a half row, then every verse
+        // row a bar out of phase with its lines. The pickup word itself still stays at the end of
+        // the row where it sounds, like any other pickup.
+        let pickup = Double(ChartPickupGutter.maximumBeats)
         let restarts = Set(
-            sectionStarts.map { anchor + floored(measure.beatIndex(atTime: $0), to: bar) * bar }
+            sectionStarts.map {
+                anchor + floored(measure.beatIndex(atTime: $0) + pickup, to: bar) * bar
+            }
         ).sorted()
 
         var index = floored(measure.beatIndex(atTime: 0), to: period)
@@ -92,6 +100,18 @@ struct ChartRowGrid: Equatable, Sendable {
         }
         return ChartRowGrid(
             periodBeats: period, anchorBeatIndex: anchor, measure: measure, windows: windows)
+    }
+
+    /// The row a pickup sung at `time` leads into: the row whose downbeat follows `time` within
+    /// the pickup gutter, or nil. A line's opening pickup belongs on that row, drawn in its gutter,
+    /// not crammed onto the end of the row before (Eric, 2026-10-07, on Flip Flops: "first word of
+    /// verses is still crammed in to the end of the lines").
+    func pickupWindow(forTime time: TimeInterval) -> Int? {
+        let beat = measure.beatIndex(atTime: time)
+        return windows.first {
+            Double($0.startBeat) > beat
+                && Double($0.startBeat) - beat <= Double(ChartPickupGutter.maximumBeats)
+        }?.index
     }
 
     /// The row index a song time falls in. A time exactly on a boundary belongs to the later row,
@@ -143,10 +163,11 @@ struct ChartLyricLine: Equatable, Codable, Sendable {
 /// Cuts lyric lines onto fixed-period rows. Pure: stored lyrics are never rewritten — the cut is
 /// derived from them every time, so a row change can never feed back into what it was cut from.
 enum ChartLyricLineCutter {
-    /// Chart lines in row order. Every word belongs to the window holding its onset — a pickup sung
-    /// before a row's downbeat stays at the end of the row where it sounds, because the song is one
-    /// continuous stretch of bars (Eric, 2026-09-14: "the sound must be accounted for within the
-    /// bars and measures"). A hand-corrected line (non-empty `overrideText`) and a line without
+    /// Chart lines in row order. Every word belongs to the window holding its onset, except a
+    /// line's opening pickup: words that START a line within the pickup gutter before a downbeat
+    /// move onto that downbeat's row and draw in its gutter (`ChartRowGrid.pickupWindow`; Eric,
+    /// 2026-10-07, replacing the 2026-09-14 rule that every pickup stays where it sounds). A
+    /// pickup inside a line still stays in the row where it sounds. A hand-corrected line (non-empty `overrideText`) and a line without
     /// word timings are never split.
     static func lines(from lyrics: [TimedLyricSegment], grid: ChartRowGrid) -> [ChartLyricLine] {
         let sorted = lyrics.sorted {
@@ -177,9 +198,15 @@ enum ChartLyricLineCutter {
             // A word alignment could not place has no time: it stays in the window of the word
             // before it (the line's first window when it leads).
             var current = grid.windowIndex(forTime: line.start)
-            let windows = line.words.map { word -> Int in
+            var windows = line.words.map { word -> Int in
                 if let start = word.start { current = grid.windowIndex(forTime: start) }
                 return current
+            }
+            // A line opening on a pickup: its words before the next downbeat move onto that row.
+            if let firstStart = line.words.first?.start,
+                let pickupRow = grid.pickupWindow(forTime: firstStart)
+            {
+                for i in windows.indices where windows[i] < pickupRow { windows[i] = pickupRow }
             }
             let lastWindow = windows.last ?? 0
             var start = 0

@@ -80,6 +80,21 @@ final class ChartRowGridTests: XCTestCase {
                 beatTimes: beats, bpm: 120, barGrid: nil, phraseBeats: 8, duration: 24,
                 sectionStarts: [8.4]))
         XCTAssertEqual(aligned.windows.map(\.beats), [8, 8, 8, 8, 8, 8])
+        // A section whose first word is a pickup into a row's downbeat (Flip Flops, verse 2:
+        // "Charcoal" 0.6 beat early) starts on that downbeat: no short row, and the pickup word
+        // stays at the end of the row before.
+        let pickup = try XCTUnwrap(
+            ChartRowGrid.make(
+                beatTimes: beats, bpm: 120, barGrid: nil, phraseBeats: 8, duration: 24,
+                sectionStarts: [7.7]))
+        XCTAssertEqual(pickup.windows.map(\.beats), [8, 8, 8, 8, 8, 8])
+        XCTAssertEqual(pickup.windowIndex(forTime: 7.7), pickup.windows[1].index)
+        // Earlier than the gutter is not a pickup: the section keeps the bar holding the word.
+        let early = try XCTUnwrap(
+            ChartRowGrid.make(
+                beatTimes: beats, bpm: 120, barGrid: nil, phraseBeats: 8, duration: 24,
+                sectionStarts: [6.7]))
+        XCTAssertEqual(early.windows.map(\.beats), [8, 4, 8, 8, 8, 8, 8])
     }
 
     func testTimesMapToTheirRowWithBoundariesBelongingToTheLaterRow() throws {
@@ -171,15 +186,37 @@ final class ChartRowGridTests: XCTestCase {
         XCTAssertEqual(lines[0].segment.end, 12.0)
     }
 
-    /// The song is one continuous stretch of bars (Eric, 2026-09-14): a pickup sung before a row's
-    /// downbeat stays at the end of the row where it sounds, and the line continues on the next row.
-    func testAPickupStaysInTheRowWhereItSounds() throws {
+    /// A line's opening pickup moves onto its line's row (Eric, 2026-10-07: "first word of verses
+    /// is still crammed in to the end of the lines"); a pickup inside a line stays where it sounds.
+    func testALinesOpeningPickupMovesOntoItsRowButAMidLinePickupStays() throws {
         // "And" one beat before the row-3 downbeat (12 s); the rest sings in row 3.
-        let source = line("And then we sing", [11.5, 12.0, 13.0, 14.0], end: 15.0)
-        let lines = ChartLyricLineCutter.lines(from: [source], grid: try cutterGrid())
-        XCTAssertEqual(lines.map(\.windowIndex), [2, 3])
-        XCTAssertEqual(lines.map(\.segment.text), ["And", "then we sing"])
-        XCTAssertEqual(lines.map(\.continuesOnNextRow), [true, false])
+        let opening = line("And then we sing", [11.5, 12.0, 13.0, 14.0], end: 15.0)
+        let lines = ChartLyricLineCutter.lines(from: [opening], grid: try cutterGrid())
+        XCTAssertEqual(lines.map(\.windowIndex), [3])
+        XCTAssertEqual(lines.map(\.segment.text), ["And then we sing"])
+        XCTAssertTrue(lines[0].isWholeSourceLine)
+        // Starting further out than the gutter, the line splits where it sounds as before.
+        let midLine = line(
+            "We go and then we sing", [10.0, 10.5, 11.5, 12.0, 13.0, 14.0], end: 15.0)
+        let split = ChartLyricLineCutter.lines(from: [midLine], grid: try cutterGrid())
+        XCTAssertEqual(split.map(\.segment.text), ["We go and", "then we sing"])
+    }
+
+    /// A section's opening pickup is drawn on the section's first row, not crammed onto the end of
+    /// the row before (Eric, 2026-10-07, Flip Flops verse 2: "Charcoal" 0.6 beat early).
+    func testASectionsOpeningPickupMovesOntoTheSectionsRow() throws {
+        let grid = try XCTUnwrap(
+            ChartRowGrid.make(
+                beatTimes: (0..<80).map { Double($0) * 0.5 }, bpm: 120, barGrid: nil,
+                phraseBeats: 8, duration: 40, sectionStarts: [11.7]))
+        let source = line("Charcoal crackles sparks fly", [11.7, 12.4, 13.0, 14.0], end: 15.0)
+        let lines = ChartLyricLineCutter.lines(from: [source], grid: grid)
+        XCTAssertEqual(lines.map(\.windowIndex), [3])
+        XCTAssertEqual(lines.map(\.segment.text), ["Charcoal crackles sparks fly"])
+        XCTAssertTrue(lines[0].isWholeSourceLine)
+        // Further out than the gutter is not a pickup.
+        XCTAssertNil(grid.pickupWindow(forTime: 10.9))
+        XCTAssertEqual(grid.pickupWindow(forTime: 11.7), 3)
     }
 
     func testShortLinesInOneRowMergeAndAreAcceptedOnlyTogether() throws {

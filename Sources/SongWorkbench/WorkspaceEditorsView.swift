@@ -59,8 +59,8 @@ struct WorkspaceEditorsView: View {
     }
 }
 
-/// Transport card (left column, under the waveform): the source/mix badge plus
-/// large skip / play-pause buttons.
+/// Transport card (top of the left column): large rewind / skip / play-pause buttons, the
+/// scrubber, pitch / speed, and the song's filename.
 struct PlaybackTransportCard: View {
     @ObservedObject var model: AppModel
     // Observed directly (not just read through `model.isActivePlaybackPlaying`) so the single
@@ -78,36 +78,32 @@ struct PlaybackTransportCard: View {
     }
 
     var body: some View {
-        // One THIN full-width bar: identity · transport · scrubber (flexible) · pitch/speed.
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Playback", systemImage: "play.circle")
-                    .font(.swDisplay(12, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
-                    .lineLimit(1)
-                Text(sourceLabel)
-                    .font(.swDisplay(10))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(Color.swSurface, in: Capsule())
-            }
-            .fixedSize()
-
-            HStack(spacing: 12) {
-                Button("Back 10 Seconds", systemImage: "gobackward.10") {
-                    model.skipActivePlayback(by: -10)
+        // Top of the left column, on three lines (Eric, 2026-10-07): the large transport, the
+        // position, then pitch, speed and reset. The play button's badge shows the source.
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 22) {
+                Button {
+                    model.seekActivePlayback(to: 0)
+                } label: {
+                    transportIcon("backward.end.fill", size: 26)
                 }
-                .labelStyle(.iconOnly)
-                .font(.system(size: 18))
-                .swAccentHoverBorder(cornerRadius: 6)
+                .accessibilityLabel("Rewind to Start")
+                .swAccentHoverBorder(cornerRadius: 8)
+                .disabled(model.selectedSong == nil)
+                .help("Rewind to the start")
+
+                Button {
+                    model.skipActivePlayback(by: -10)
+                } label: {
+                    transportIcon("gobackward.10", size: 30)
+                }
+                .accessibilityLabel("Back 10 Seconds")
+                .swAccentHoverBorder(cornerRadius: 8)
                 .help("Back 10 seconds")
 
                 // One button, acting on whichever source is active (`activePlaybackSource`) —
-                // the Stem Mix pane's Original/Stems switch (`StemMixSidebar.sourcePicker`) is
-                // now what picks the source; this button just plays/pauses it. The small
-                // trailing badge (added by `compactPlayButton`) still signals which source is
-                // live so the transport bar doesn't lose that at-a-glance info.
+                // the Stem Mix pane's Original/Stems switch (`StemMixSidebar.sourcePicker`)
+                // picks the source; the small badge (added by `compactPlayButton`) shows which.
                 compactPlayButton(
                     title: model.isActivePlaybackPlaying ? "Pause" : "Play",
                     disabled: model.selectedSong == nil
@@ -121,23 +117,20 @@ struct PlaybackTransportCard: View {
                     model.toggleActivePlayback()
                 }
 
-                Button("Forward 10 Seconds", systemImage: "goforward.10") {
+                Button {
                     model.skipActivePlayback(by: 10)
+                } label: {
+                    transportIcon("goforward.10", size: 30)
                 }
-                .labelStyle(.iconOnly)
-                .font(.system(size: 18))
-                .swAccentHoverBorder(cornerRadius: 6)
+                .accessibilityLabel("Forward 10 Seconds")
+                .swAccentHoverBorder(cornerRadius: 8)
                 .help("Forward 10 seconds")
             }
-            .fixedSize()
+            .frame(maxWidth: .infinity)
 
-            // Compact scrubber (~3in ideal) — enough travel for seeking without dominating the
-            // bar, but COMPRESSIBLE: a fixed 220 made the whole control row's minimum wider
-            // than the default window's middle column, so the layout clipped the outer panes.
             PlaybackProgressSlider(model: model)
-                .frame(minWidth: 100, idealWidth: 220, maxWidth: 260)
 
-            HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
                 VStack(spacing: 1) {
                     Slider(
                         value: Binding(
@@ -154,7 +147,6 @@ struct PlaybackTransportCard: View {
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
-                .frame(minWidth: 84, idealWidth: 108, maxWidth: 108)
                 .help("Pitch shift (semitones); playback speed is unaffected")
                 VStack(spacing: 1) {
                     Slider(value: $model.tempoRate, in: 0.5...1.5, step: 0.05)
@@ -164,7 +156,6 @@ struct PlaybackTransportCard: View {
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
-                .frame(minWidth: 84, idealWidth: 108, maxWidth: 108)
                 .help("Playback speed (pitch preserved)")
                 Button("Reset Pitch and Speed", systemImage: "arrow.counterclockwise") {
                     model.pitchSemitones = 0
@@ -174,10 +165,29 @@ struct PlaybackTransportCard: View {
                 .disabled(model.pitchSemitones == 0 && model.tempoRate == 1)
                 .help("Reset pitch and speed")
             }
+
+            if let song = model.selectedSong {
+                Text(song.url.lastPathComponent)
+                    .font(.swMono(10))
+                    .foregroundStyle(Color.swTextSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity)
+                    .help(song.url.path)
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .swSurfacePanel(cornerRadius: 12)
+    }
+
+    /// A transport symbol at a fixed point size. `.font` on the Button did not reach the symbol
+    /// under this button style, so the icons rendered at control size.
+    private func transportIcon(_ name: String, size: CGFloat) -> some View {
+        Image(systemName: name)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
     }
 
     /// Short pitch caption that fits the compact card: the key transposition when known
@@ -202,17 +212,18 @@ struct PlaybackTransportCard: View {
         help: String,
         action: @escaping () -> Void
     ) -> some View {
-        Button(title, systemImage: isPlaying ? "pause.circle.fill" : "play.circle.fill") {
+        Button {
             action()
+        } label: {
+            transportIcon(isPlaying ? "pause.circle.fill" : "play.circle.fill", size: 46)
         }
-        .labelStyle(.iconOnly)
-        .font(.system(size: 26))
+        .accessibilityLabel(title)
         .disabled(disabled)
-        .swAccentHoverBorder(cornerRadius: 13)
+        .swAccentHoverBorder(cornerRadius: 22)
         .overlay(alignment: .bottomTrailing) {
             if let symbolVariant {
                 Image(systemName: symbolVariant)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(
                         disabled ? Color.swTextSecondary.opacity(0.5) : Color.swTextSecondary
                     )
@@ -220,10 +231,6 @@ struct PlaybackTransportCard: View {
             }
         }
         .help(help)
-    }
-
-    private var sourceLabel: String {
-        model.activePlaybackSource == .stemMix ? "Stem Mix" : "Recording"
     }
 }
 
@@ -1382,6 +1389,9 @@ struct ChordProTabEditor: View {
     /// people reading the chart want to see. Off by default (Eric: make these labels optional,
     /// default off).
     @AppStorage("reviewShowChordTimeLabels") private var showChordTimeLabels = false
+    /// Small bar numbers on the chart's barlines, so a report can say "bar 37" (Eric, 2026-10-07:
+    /// on by default, both tabs, bar 1 = the song's first downbeat).
+    @AppStorage("chartShowMeasureNumbers") private var showMeasureNumbers = true
     /// Show a second, amber ball bouncing chord-onset to chord-onset alongside the white word
     /// ball. The white ball keeps tapping words (Eric's model, 2026-07-02) — this adds the chord
     /// cue next to it rather than replacing it, because what matters is how the two RELATE.
@@ -1413,42 +1423,50 @@ struct ChordProTabEditor: View {
                     }
                     Toggle("Bass line (detected notes)", isOn: $showBassNotes)
                         .disabled(model.bassNotes.isEmpty)
-                    HStack {
-                        Toggle("Vocal harmonies", isOn: $showHarmonies)
-                        Picker("Voices", selection: $harmonyMaxVoices) {
-                            Text("2").tag(2)
-                            Text("3").tag(3)
-                            Text("4").tag(4)
-                        }
-                        .fixedSize()
+                    // One control per row: a toggle and a picker sharing a Form row left a tall
+                    // blank row under the toggle.
+                    Toggle("Vocal harmonies", isOn: $showHarmonies)
+                        .disabled(model.vocalHarmonyNotes.isEmpty)
+                    Picker("Harmony voices", selection: $harmonyMaxVoices) {
+                        Text("2").tag(2)
+                        Text("3").tag(3)
+                        Text("4").tag(4)
                     }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
                     .disabled(model.vocalHarmonyNotes.isEmpty)
                     Toggle("Solo tab", isOn: $showSoloTab)
                         .disabled(model.soloTranscriptions == nil)
-                    HStack {
-                        Button(
-                            model.isComputingInstrumentChords
-                                ? "Computing chords…"
-                                : model.isInstrumentChordTimelineCurrent
-                                    ? "Recompute chords" : "Compute chords"
-                        ) { model.computeInstrumentChords() }
-                        .disabled(!model.canComputeInstrumentChords)
-                        Button(
-                            model.isComputingBucketNotes
-                                ? "Computing notes…"
-                                : model.isBucketTimelineCurrent
-                                    ? "Recompute notes" : "Compute notes"
-                        ) { model.computeBucketNotes() }
-                        .disabled(!model.canComputeBucketNotes)
-                        Button(
-                            model.isComputingSolos
-                                ? "Computing solo tab…"
-                                : model.isSoloTimelineCurrent
-                                    ? "Recompute solo tab" : "Compute solo tab"
-                        ) { model.computeSolos() }
-                        .disabled(!model.canComputeSolos)
+                    // Short titles so the three buttons fit the panel's width; the row label
+                    // says what they do (first compute and recompute run the same action).
+                    LabeledContent("Compute") {
+                        HStack(spacing: 6) {
+                            Button(model.isComputingInstrumentChords ? "Chords…" : "Chords") {
+                                model.computeInstrumentChords()
+                            }
+                            .disabled(!model.canComputeInstrumentChords)
+                            .help(
+                                model.isInstrumentChordTimelineCurrent
+                                    ? "Recompute each instrument's chords"
+                                    : "Compute each instrument's chords")
+                            Button(model.isComputingBucketNotes ? "Notes…" : "Notes") {
+                                model.computeBucketNotes()
+                            }
+                            .disabled(!model.canComputeBucketNotes)
+                            .help(
+                                model.isBucketTimelineCurrent
+                                    ? "Recompute each instrument's notes"
+                                    : "Compute each instrument's notes")
+                            Button(model.isComputingSolos ? "Solo tab…" : "Solo tab") {
+                                model.computeSolos()
+                            }
+                            .disabled(!model.canComputeSolos)
+                            .help(
+                                model.isSoloTimelineCurrent
+                                    ? "Recompute the solo tab" : "Compute the solo tab")
+                        }
+                        .controlSize(.small)
                     }
-                    .controlSize(.small)
                 }
                 Section("Grid and waveform") {
                     Toggle("Beat dots", isOn: $beatDotsEnabled)
@@ -1481,6 +1499,7 @@ struct ChordProTabEditor: View {
                 Toggle("Chord pop", isOn: $chordPopBallEnabled)
             }
             Section("Layout") {
+                Toggle("Measure numbers", isOn: $showMeasureNumbers)
                 Picker("Beats per row", selection: $beatsPerRow) {
                     Text("Auto").tag(0)
                     Text("4").tag(4)
@@ -1491,8 +1510,9 @@ struct ChordProTabEditor: View {
         }
         .formStyle(.grouped)
         .toggleStyle(.checkbox)
-        .frame(width: 420)
-        .fixedSize(horizontal: false, vertical: true)
+        // Natural size on both axes. A grouped Form is wider than its rows (about 490 pt for
+        // these), and a fixed 420 pt width clipped every row on both edges.
+        .fixedSize()
     }
 
     /// Every instrument with a chord line or a note row, in the rows' display order.
@@ -1724,6 +1744,7 @@ struct ChordProTabEditor: View {
                                 && model.isSoloTimelineCurrent ? model.soloTranscriptions : nil,
                             showChordTimeLabels: config.showsReviewAffordances
                                 && showChordTimeLabels,
+                            showMeasureNumbers: showMeasureNumbers,
                             songChordTimes: model.placedChordTimes,
                             lyricSegments: sortedLyricSegments,
                             chordEvents: model.chordEvents,
@@ -2751,6 +2772,8 @@ struct ChordProAppPreview: View {
     /// Shows the raw `{x_chord_times: ...}` directive text (View menu's "Chord Time Labels"
     /// toggle) instead of hiding it — off by default.
     var showChordTimeLabels = false
+    /// Number each row's barlines (Display panel's "Measure numbers").
+    var showMeasureNumbers = false
     /// Every chord onset in the song (placement-resolved), so the sounding-chord highlight can
     /// end at the NEXT onset even when it lives on another row.
     var songChordTimes: [TimeInterval] = []
@@ -3392,6 +3415,17 @@ struct ChordProAppPreview: View {
         let itemBeatDots = beatDotValue(for: item, in: document)
         // Barlines are a pure function of the beat grid — never lyric-gated, never optional.
         let itemShowBarlines = true
+        // Bar 1 is the song's first downbeat; a row's downbeat is on the grid, so rounding only
+        // absorbs float noise.
+        let itemFirstBarNumber: Int? =
+            showMeasureNumbers
+            ? rowDownbeat.flatMap { downbeat in
+                measureGrid.map { grid in
+                    Int(
+                        ((grid.beatIndex(atTime: downbeat) - Double(grid.barPhase))
+                            / Double(max(grid.beatsPerBar, 1))).rounded()) + 1
+                }
+            } : nil
         let itemTrailingRest = trailingRestSeconds(
             lastWordEnd: lineWords.lastEnd,
             nextLineStart: nextLineStart)
@@ -3433,6 +3467,7 @@ struct ChordProAppPreview: View {
             continuesOnNextRow: itemContinues,
             gridBeatTimes: beatTimes,
             showBarlines: itemShowBarlines,
+            firstBarNumber: itemFirstBarNumber,
             chordOnsetTimes: chordOnsetTimes,
             instrumentEnergy: rowEnergy.series,
             instrumentEnergyStart: rowEnergy.start,
@@ -4208,6 +4243,8 @@ private struct ChordProPreviewBlockView: View {
     var gridBeatTimes: [TimeInterval] = []
     /// Draw faint measure barlines on the shared grid (own toggle, independent of beat dots).
     var showBarlines = false
+    /// The bar number at this row's downbeat; nil hides measure numbers.
+    var firstBarNumber: Int?
     /// Detected chord onset times (sorted) so each chord sits at its true impulse onset.
     var chordOnsetTimes: [TimeInterval] = []
     /// Instrument energy under this row (`ChordProAppPreview.instrumentEnergy`): one series per
@@ -4382,6 +4419,7 @@ private struct ChordProPreviewBlockView: View {
                         continuesOnNextRow: continuesOnNextRow,
                         gridBeatTimes: gridBeatTimes,
                         showBarlines: showBarlines,
+                        firstBarNumber: firstBarNumber,
                         chordOnsetTimes: chordOnsetTimes,
                         instrumentEnergy: instrumentEnergy,
                         instrumentEnergyStart: instrumentEnergyStart,
@@ -4754,6 +4792,8 @@ private struct ChordProPreviewLineView: View {
     var gridBeatTimes: [TimeInterval] = []
     /// Draw faint measure barlines on the shared grid — own toggle, independent of the beat dots.
     var showBarlines = false
+    /// The bar number at this row's downbeat (`gutterPx`); nil hides measure numbers.
+    var firstBarNumber: Int?
     /// All detected chord-change onset times (sorted), used to place each chord's leading edge at
     /// its true impulse onset rather than the beat or the word it's typeset over.
     var chordOnsetTimes: [TimeInterval] = []
@@ -5621,6 +5661,7 @@ private struct ChordProPreviewLineView: View {
                     .frame(width: 1, height: contentHeight)
                     .position(x: x, y: contentHeight / 2)
             }
+            measureNumbers
             ForEach(Array(dots.enumerated()), id: \.offset) { _, x in
                 Circle()
                     .fill(Color.swTextSecondary.opacity(0.55))
@@ -5998,6 +6039,29 @@ private struct ChordProPreviewLineView: View {
         return result
     }
 
+    /// Small bar numbers just right of each barline at the top of the row, counted from the row's
+    /// downbeat (`firstBarNumber` sits at `gutterPx`). Bars before the song's first downbeat get no
+    /// number.
+    @ViewBuilder private var measureNumbers: some View {
+        if let firstBarNumber, !barlineXs.isEmpty {
+            let barPx = CGFloat(beatsPerBar) * pixelsPerBeat
+            ForEach(Array(barlineXs.enumerated()), id: \.offset) { _, x in
+                let number = firstBarNumber + Int(((x - gutterPx) / barPx).rounded())
+                // The barline closing the row's frame is the next row's downbeat, which that row
+                // numbers itself.
+                let closesFrame = phraseWidth.map { x >= gutterPx + $0 - 0.5 } ?? false
+                if number >= 1, !closesFrame {
+                    Text("\(number)")
+                        .font(.system(size: scale.scaled(8), weight: .medium).monospacedDigit())
+                        .foregroundStyle(Color.swTextSecondary.opacity(0.7))
+                        .fixedSize()
+                        .offset(x: x + scale.scaled(2), y: 0)
+                        .accessibilityLabel("Bar \(number)")
+                }
+            }
+        }
+    }
+
     /// Width of one phrase — the reference extent this row is drawn against — or nil when the song
     /// has no recoverable phrase period.
     private var phraseWidth: CGFloat? {
@@ -6257,6 +6321,7 @@ private struct ChordProPreviewLineView: View {
                     .frame(width: 1, height: contentHeight)
                     .position(x: x, y: contentHeight / 2)
             }
+            measureNumbers
             ForEach(Array(beatDotPositions.enumerated()), id: \.offset) { _, x in
                 Circle()
                     .fill(Color.swTextSecondary.opacity(0.55))

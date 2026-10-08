@@ -140,21 +140,6 @@ extension URL {
     }
 }
 
-/// `VSplitView` (draggable divider) on macOS; a plain `VStack` on iPadOS until a
-/// proper adaptive layout replaces it. Children are forwarded as-is, so on macOS the
-/// panes behave exactly like the previous direct `VSplitView` usage.
-struct PlatformVSplit<Content: View>: View {
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        #if os(macOS)
-            VSplitView { content() }
-        #else
-            VStack(spacing: 0) { content() }
-        #endif
-    }
-}
-
 extension View {
     /// `.onExitCommand` (Escape) exists on macOS/tvOS only; no-op on iPadOS.
     @ViewBuilder

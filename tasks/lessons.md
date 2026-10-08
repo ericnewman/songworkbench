@@ -1078,3 +1078,26 @@ or 2x. Words, chords and attacks all landed at chance positions in the measure, 
 **Rule:** when lyrics or chords look misplaced in the bar, first ask Eric for a counted tempo on
 one or two songs and compare it with `estimatedBPM`; a ratio (4/3, 2, 3/2) means the beat tracker
 picked the wrong level. Python proxies disagreed with each other here; the human count decided it.
+
+## 2026-10-07 — A section's pickup word started its verse a bar early
+
+Flip Flops' second verse opens on "Charcoal", sung 0.6 beat before the downbeat. The 2026-10-06
+section rule floored the first word to the bar holding it, so the verse started on the bar BEFORE
+the downbeat: a 4-beat row after the interlude, then every verse row a bar out of phase with its
+lines, which read as the lyrics losing sync. Verse 1 had the same pickup and looked right only
+because its "Charcoal" was not a section start.
+
+**Rule:** anything that snaps a sung onset to a bar or row must treat an onset within the pickup
+gutter (`ChartPickupGutter.maximumBeats`) before a downbeat as belonging to that downbeat. Check a
+new row rule against a section that opens on a pickup, not only on one that opens after beat one.
+
+## 2026-10-07 — A line's opening pickup belongs on its own row
+
+The 2026-09-14 rule kept every pickup in the row where it sounds. On Flip Flops that left each
+verse's first word ("Grass", "Charcoal") and line openers ("Kids", "It's a") alone at the end of
+the row before. Eric chose to move a line's opening pickup onto its line's row.
+
+**Rule:** words that START a line within `ChartPickupGutter.maximumBeats` before a downbeat go on
+that downbeat's row, drawn in its gutter, and the row (ball and highlight together) starts at the
+pickup while its downbeat stays in `rowOrigins`. A pickup inside a line still stays where it
+sounds. Chart geometry tests measure rows downbeat to downbeat, not start to start.

@@ -47,6 +47,10 @@ struct SongWorkbenchApp: App {
                     .preferredColorScheme(.dark)
             }
             .windowResizability(.contentSize)
+            Settings {
+                AnalysisWorkspaceView(model: model)
+                    .preferredColorScheme(.dark)
+            }
             Window("Lyric Blend", id: "lyricBlend") {
                 LyricBlendView(model: model)
                     .preferredColorScheme(.dark)
