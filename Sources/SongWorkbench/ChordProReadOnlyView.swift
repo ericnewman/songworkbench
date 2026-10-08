@@ -421,7 +421,7 @@ struct BucketNoteRowCell: Equatable, Sendable {
 struct BucketNoteRow: Equatable, Sendable {
     let stemID: StemID
     let label: String
-    let cells: [BucketNoteRowCell]
+    var cells: [BucketNoteRowCell]
 }
 
 /// Names the chord an exact set of pitch classes spells, for the bucket rows' "(Am)" suffix.
@@ -592,7 +592,7 @@ struct SoloTabChord: Equatable, Sendable {
 struct SoloTabBlock: Equatable, Sendable {
     let stemID: StemID
     let label: String
-    let columns: [SoloTabColumn]
+    var columns: [SoloTabColumn]
     /// Top string first: a guitar's six by default, a bass's four for bass tab.
     var stringLabels: [String] = SoloTabRowFormatter.stringLabels
     /// Chord names drawn on a lane above the strings (bass and guitar tab); empty for solo tab.

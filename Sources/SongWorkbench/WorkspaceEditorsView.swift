@@ -5048,7 +5048,17 @@ private struct ChordProPreviewLineView: View {
     private var rhythmicBucketRows: [(row: BucketNoteRow, xs: [CGFloat])] {
         guard !rowBucketRows.isEmpty, hasRowRuler else { return [] }
         return rowBucketRows.map { row in
-            (row: row, xs: row.cells.map { rhythmicX(forTime: $0.time) })
+            let xs = row.cells.map { rhythmicX(forTime: $0.time) }
+            // As for tab: cells left of the row label's reserve all draw at its edge and print
+            // over each other ("B#" over "B"); only the last of them is kept.
+            guard let lastPinned = xs.lastIndex(where: { $0 <= bucketRowLabelReserve }),
+                lastPinned > 0
+            else {
+                return (row: row, xs: xs)
+            }
+            var trimmed = row
+            trimmed.cells = Array(row.cells[lastPinned...])
+            return (row: trimmed, xs: Array(xs[lastPinned...]))
         }
     }
 
@@ -5058,7 +5068,15 @@ private struct ChordProPreviewLineView: View {
     private var rhythmicSoloBlocks: [(block: SoloTabBlock, xs: [CGFloat])] {
         guard !rowSoloBlocks.isEmpty, hasRowRuler else { return [] }
         return rowSoloBlocks.map { block in
-            (block: block, xs: block.columns.map { rhythmicX(forTime: $0.time) })
+            let xs = block.columns.map { rhythmicX(forTime: $0.time) }
+            // Columns before the row's drawable edge are all pinned to x = 0 and printed on top
+            // of each other; only the last of them (what is sounding at the edge) is kept.
+            guard let lastPinned = xs.lastIndex(where: { $0 <= 0.5 }), lastPinned > 0 else {
+                return (block: block, xs: xs)
+            }
+            var trimmed = block
+            trimmed.columns = Array(block.columns[lastPinned...])
+            return (block: trimmed, xs: Array(xs[lastPinned...]))
         }
     }
 
@@ -5068,6 +5086,9 @@ private struct ChordProPreviewLineView: View {
     private var hasRowRuler: Bool {
         !rhythmicWords.isEmpty || (rhythmicSpacing && lineDuration > 0)
     }
+
+    /// Room for a bucket row's label ("Bs", "PnC") at its left edge; cells start past it.
+    private var bucketRowLabelReserve: CGFloat { scale.scaled(26) }
 
     /// Height the bucket rows and solo blocks take together.
     private func stemRowsReserve(bucketRowCount: Int, soloBlocks: [SoloTabBlock]) -> CGFloat {
@@ -5092,7 +5113,7 @@ private struct ChordProPreviewLineView: View {
             // The label sits at x = 0, and so does any cell at the row's first instant — every
             // chord row's dimmed "still sounding from the row before" cell among them — which
             // printed one on top of the other ("D" over "GtC"). A colliding cell clears the label.
-            let labelReserve = scale.scaled(26)
+            let labelReserve = bucketRowLabelReserve
             ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
                 Text(cell.text)
                     .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
@@ -5125,10 +5146,12 @@ private struct ChordProPreviewLineView: View {
             let stringsTop = laneTop + (entry.block.chords.isEmpty ? 0 : tabChordLaneReserve)
             ForEach(Array(entry.block.stringLabels.enumerated()), id: \.offset) { row, label in
                 let rowY = stringsTop + soloStringReserve * CGFloat(row)
+                // In the margin left of the row, so no fret ever sits on a label: a row's first
+                // columns are real beats (the pickup gutter), not label space.
                 Text(label)
                     .font(.swDisplay(scale.scaled(8), weight: .semibold))
                     .foregroundStyle(tabColor.opacity(0.85))
-                    .offset(x: 0, y: rowY)
+                    .offset(x: -tabLabelWidth, y: rowY)
                 // The string as a real line, broken around each fret number (Eric, 2026-10-07:
                 // "instead of dashes, could we draw real lines").
                 let gaps = entry.block.columns.indices.compactMap {
@@ -5136,15 +5159,17 @@ private struct ChordProPreviewLineView: View {
                     let cell = entry.block.columns[index].cells[row]
                     guard cell != SoloTabRowFormatter.rest else { return nil }
                     let digits = CGFloat(cell.filter(\.isNumber).count)
-                    let x = fretX(entry.xs[index])
+                    let x = entry.xs[index]
                     return
                         (x - scale.scaled(1.5))...(x + digits * scale.scaled(5.6)
                         + scale.scaled(1.5))
                 }
                 ForEach(
                     Array(
-                        tabStringSegments(from: scale.scaled(12), to: lineEnd, gaps: gaps)
-                            .enumerated()),
+                        tabStringSegments(
+                            from: 0, to: lineEnd, gaps: gaps
+                        )
+                        .enumerated()),
                     id: \.offset
                 ) { _, segment in
                     // Whole-pixel lines: a 0.75 pt line at a fractional y split across two pixel
@@ -5164,7 +5189,7 @@ private struct ChordProPreviewLineView: View {
                             .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
                             .foregroundStyle(tabColor)
                             .offset(
-                                x: fretX(entry.xs[index]),
+                                x: entry.xs[index],
                                 y: stringsTop + soloStringReserve * CGFloat(row)
                             )
                     }
@@ -5192,7 +5217,8 @@ private struct ChordProPreviewLineView: View {
     private var tabRuleReserve: CGFloat { scale.scaled(12) }
 
     /// A fret's x, kept clear of the string labels at the row's left edge.
-    private func fretX(_ x: CGFloat) -> CGFloat { max(x, scale.scaled(12)) }
+    /// How far left of the row the string labels (e B G D A E) sit.
+    private var tabLabelWidth: CGFloat { scale.scaled(9) }
     private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
 
     private func tabRule(at y: CGFloat, width: CGFloat) -> some View {
