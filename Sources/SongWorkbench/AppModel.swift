@@ -2463,7 +2463,10 @@ final class AppModel: ObservableObject {
         lastOpenedBySongID[song.id] = Date()
         playback.load(song.url)
         applySettings(settingsBySongID[song.id] ?? PracticeSettings())
-        applyAnalysis(analysisBySongID[song.id] ?? SongAnalysisDocument())
+        // Every song opens on a fresh mixer, all stems enabled and none on MIDI (Eric, 2026-10-08:
+        // "these mixer controls should not be preserved between songs"); a solo left on from last
+        // time had silenced the vocals.
+        applyAnalysis(analysisBySongID[song.id] ?? SongAnalysisDocument(), freshMixer: true)
         loadWaveform(for: song)
         loadVocalActivity(for: song)
         loadStemWaveforms(for: song)
@@ -3297,7 +3300,7 @@ final class AppModel: ObservableObject {
         scheduleSave()
     }
 
-    private func applyAnalysis(_ analysis: SongAnalysisDocument) {
+    private func applyAnalysis(_ analysis: SongAnalysisDocument, freshMixer: Bool = false) {
         for task in midiRenditionTasks.values { task.cancel() }
         midiRenditionTasks.removeAll()
         midiRenditionsInProgress.removeAll()
@@ -3353,7 +3356,7 @@ final class AppModel: ObservableObject {
         } else {
             stemSet = nil
         }
-        stemMixer = analysis.stemMixer
+        stemMixer = freshMixer ? StemMixerModel() : analysis.stemMixer
         lyricReviewState = analysis.lyricReviewState
         chordReviewState = analysis.chordReviewState
         chordProReviewState = analysis.chordProReviewState
