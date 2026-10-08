@@ -120,19 +120,29 @@ final class NoteTabRowsTests: XCTestCase {
         XCTAssertEqual(lane.first?.time, 1.0)
     }
 
-    func testTabTransposesWithTheChartNotesAndChordsAlike() throws {
+    func testChordNamesFollowTheChartButFretsFollowOnlyTheTuning() throws {
         let timeline = grid(stems: [
             StemBucketNotes(stemID: StemKind.bass.id, notes: [bucket(0, 39)])  // Eb2
         ])
-        let block = try XCTUnwrap(
+        func soundedFret(_ block: SoloTabBlock) throws -> Int {
+            let column = try XCTUnwrap(block.columns.first)
+            let row = try XCTUnwrap(column.cells.firstIndex { $0 != SoloTabRowFormatter.rest })
+            let tuning = NoteTabFormatter.bassTuning.reversed() as [Int]
+            return tuning[row] + Int(column.cells[row].filter(\.isNumber))!
+        }
+        let chords = [EditableChordEvent(time: 0, chord: "Eb", confidence: 1)]
+        // The chart transposed up a half step: the names move, the frets stay as played.
+        let transposed = try XCTUnwrap(
             NoteTabFormatter.block(
-                for: StemKind.bass.id, bucketNotes: timeline, noteEvents: nil,
-                chords: [EditableChordEvent(time: 0, chord: "Eb", confidence: 1)],
+                for: StemKind.bass.id, bucketNotes: timeline, noteEvents: nil, chords: chords,
                 inWindow: 0...0.9, transposedBy: 1))
-        XCTAssertEqual(block.chords.map(\.label), ["E"])
-        let column = try XCTUnwrap(block.columns.first)
-        let row = try XCTUnwrap(column.cells.firstIndex { $0 != SoloTabRowFormatter.rest })
-        let tuning = NoteTabFormatter.bassTuning.reversed() as [Int]
-        XCTAssertEqual(tuning[row] + Int(column.cells[row].filter(\.isNumber))!, 40, "Eb2 up to E2")
+        XCTAssertEqual(transposed.chords.map(\.label), ["E"])
+        XCTAssertEqual(try soundedFret(transposed), 39)
+        // Tuned down a half step: the frets are the E shape the player fingers.
+        let tunedDown = try XCTUnwrap(
+            NoteTabFormatter.block(
+                for: StemKind.bass.id, bucketNotes: timeline, noteEvents: nil, chords: chords,
+                inWindow: 0...0.9, transposedBy: 1, fretOffset: 1))
+        XCTAssertEqual(try soundedFret(tunedDown), 40, "fingered as E2 on the lowered strings")
     }
 }

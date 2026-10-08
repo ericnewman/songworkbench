@@ -1692,14 +1692,16 @@ struct ChordProTabEditor: View {
                         // "hide it all" flags through it would leave the two surfaces free to
                         // drift back together.
                         ChordProReadOnlyView(
-                            source: previewSource, transpose: model.chordProTranspose,
+                            source: previewSource, transpose: model.chordDisplayTranspose,
                             scale: chartScale)
                     case .preview:
                         let chart = ChordProAppPreview(
                             barGrid: model.barGrid,
                             source: previewSource,
                             scale: chartScale,
-                            transpose: config.supportsTranspose ? model.chordProTranspose : 0,
+                            // Without the chart's transposition, a tuned-down band's chord names still move.
+                            transpose: config.supportsTranspose
+                                ? model.chordDisplayTranspose : (model.tunedDownHalfStep ? 1 : 0),
                             auditionedPlacement: model.auditionedPlacement,
                             placementPicks: model.chordPlacementPicks,
                             ballVisibility: ballVisibility,
@@ -1762,6 +1764,7 @@ struct ChordProTabEditor: View {
                                 && model.isBucketTimelineCurrent ? model.bucketNotes : nil,
                             hiddenBucketStems: hiddenBucketStems,
                             tabStems: config.showsReviewAffordances ? shownTabStems : [],
+                            tabFretOffset: model.tabFretOffset,
                             tabBucketGrid: model.isBucketTimelineCurrent ? model.bucketNotes : nil,
                             noteEvents: model.noteEvents,
                             // The chord line is ONE player's chords, in that player's color; each
@@ -1988,6 +1991,12 @@ struct ChordProTabEditor: View {
                 )
                 .fixedSize()
             }
+            Toggle("Guitar tuned down a half step", isOn: $model.tunedDownHalfStep)
+                .toggleStyle(.checkbox)
+                .fixedSize()
+                .help(
+                    "Chord names read a half step up, as the shapes a band tuned to Eb plays; "
+                        + "tab is fretted for the lowered tuning.")
             Button("Export...", systemImage: "square.and.arrow.up") {
                 exportDocument()
             }
@@ -2186,7 +2195,7 @@ struct ChordProTabEditor: View {
             do {
                 switch config.kind {
                 case .chordPro:
-                    try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
+                    try model.exportChordPro(to: url, transposedBy: model.chordDisplayTranspose)
                 case .bassNote:
                     try model.exportBassNoteChordPro(to: url)
                 }
@@ -2207,7 +2216,7 @@ struct ChordProTabEditor: View {
                 .appendingPathComponent(baseName.isEmpty ? "chart" : baseName)
                 .appendingPathExtension("cho")
             do {
-                try model.exportChordPro(to: fileURL, transposedBy: model.chordProTranspose)
+                try model.exportChordPro(to: fileURL, transposedBy: model.chordDisplayTranspose)
             } catch {
                 errorMessage = "Could not prepare the chart: \(error.localizedDescription)"
                 return
@@ -2829,6 +2838,8 @@ struct ChordProAppPreview: View {
     /// Bass and guitar tab (`NoteTabFormatter`): the stems switched on, the bucket grid it is cut
     /// on (independent of the note-row toggle), and the Basic Pitch notes guitar tab reads.
     var tabStems: Set<StemID> = []
+    /// Semitones tab notes move before fretting (`AppModel.tabFretOffset`): the tuning only.
+    var tabFretOffset = 0
     var tabBucketGrid: BucketNoteTimeline?
     var noteEvents: [NoteEventTimeline]?
     /// The player the chord line's chords were detected on (`SongAnalysisDocument.chordInstrument`):
@@ -3004,7 +3015,7 @@ struct ChordProAppPreview: View {
             return NoteTabFormatter.block(
                 for: stemID, bucketNotes: tabBucketGrid, noteEvents: noteEvents,
                 chords: chords.sorted { $0.time < $1.time }, inWindow: window,
-                transposedBy: transpose)
+                transposedBy: transpose, fretOffset: tabFretOffset)
         }
     }
 

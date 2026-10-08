@@ -775,6 +775,19 @@ final class AppModel: ObservableObject {
             persistSelectedSettings()
         }
     }
+    /// The song is played on instruments tuned down a half step (`PracticeSettings`).
+    @Published var tunedDownHalfStep = false {
+        didSet { persistSelectedSettings() }
+    }
+
+    /// Semitones every displayed chord name moves: the chart's transposition, plus one when the
+    /// band is tuned down a half step (the names then read as the shapes they finger).
+    var chordDisplayTranspose: Int { chordProTranspose + (tunedDownHalfStep ? 1 : 0) }
+
+    /// Semitones tab notes move before fretting: only the tuning. Tab shows the frets as played,
+    /// whatever the chart's transposition (Eric, 2026-10-08: "leave the tabs in E as played").
+    var tabFretOffset: Int { tunedDownHalfStep ? 1 : 0 }
+
     /// Render-only timing offset (ms) for the ChordPro bouncing ball / position
     /// indicator. Single source of truth read by the ball clock; never touches audio.
     @Published var chordProTimingOffsetMS = 0 {
@@ -3280,6 +3293,7 @@ final class AppModel: ObservableObject {
         loopRegion = settings.loopRegion?.clamped(to: playback.duration)
         chordProTranspose = settings.chordProTranspose
         chordProTimingOffsetMS = settings.chordProTimingOffsetMS
+        tunedDownHalfStep = settings.tunedDownHalfStep
         isApplyingSettings = false
         playback.setPitch(semitones: pitchSemitones)
         playback.setTempo(rate: tempoRate)
@@ -3295,7 +3309,8 @@ final class AppModel: ObservableObject {
             tempoRate: tempoRate,
             loopRegion: loopRegion,
             chordProTranspose: chordProTranspose,
-            chordProTimingOffsetMS: chordProTimingOffsetMS
+            chordProTimingOffsetMS: chordProTimingOffsetMS,
+            tunedDownHalfStep: tunedDownHalfStep
         )
         scheduleSave()
     }

@@ -5,9 +5,9 @@ import Foundation
 ///
 /// One column per half-beat bucket, on the same grid as the note row. Bass reads its note row
 /// (one real pitch per bucket). Guitar reads Basic Pitch notes, because its note row keeps only
-/// pitch classes, which have no octave and so no fret. Transposed with the chart, notes and chord
-/// names alike, so the tab is playable in the key the chart shows (Eric, 2026-10-08: the tab's
-/// chords stayed in the old key on a chart transposed up a half step).
+/// pitch classes, which have no octave and so no fret. The chord lane's names follow the chart's
+/// transposition; the frets follow only the instrument's tuning, so they stay as played (Eric,
+/// 2026-10-08: "leave the tabs in E as played").
 enum NoteTabFormatter {
     /// E1 A1 D2 G2, low to high.
     static let bassTuning = [28, 33, 38, 43]
@@ -38,11 +38,12 @@ enum NoteTabFormatter {
     /// The stem's tab inside `window`, or nil when it has nothing to show there.
     /// `chords` (time-sorted) fill the block's chord lane: the guitar's own chords on guitar tab,
     /// the chord line on bass tab (Eric, 2026-10-07: the guitar chord in the guitar tab row, the
-    /// bass chord in the bass row). `semitones` transposes the notes and the chord names together.
+    /// bass chord in the bass row). `semitones` transposes the chord names; `fretOffset` moves the
+    /// notes before fretting (1 for an instrument tuned down a half step).
     static func block(
         for stemID: StemID, bucketNotes: BucketNoteTimeline?, noteEvents: [NoteEventTimeline]?,
         chords: [EditableChordEvent] = [], inWindow window: ClosedRange<TimeInterval>,
-        transposedBy semitones: Int = 0
+        transposedBy semitones: Int = 0, fretOffset: Int = 0
     ) -> SoloTabBlock? {
         guard let instrument = instrument(for: stemID), let bucketNotes else { return nil }
         let clicks = bucketNotes.clickTimes
@@ -62,7 +63,7 @@ enum NoteTabFormatter {
                     continue
                 }
                 if (first...last).contains(note.bucketIndex) {
-                    starts[note.bucketIndex] = [midi + semitones]
+                    starts[note.bucketIndex] = [midi + fretOffset]
                 }
             }
         case .guitar:
@@ -73,7 +74,7 @@ enum NoteTabFormatter {
                 guard let bucket = bucketIndex(of: event.onset, clicks: clicks),
                     (first...last).contains(bucket)
                 else { continue }
-                starts[bucket, default: []].append(event.midiNote + semitones)
+                starts[bucket, default: []].append(event.midiNote + fretOffset)
             }
         }
         // A window with nothing played still draws its empty strings (Eric, 2026-10-07: the lines
