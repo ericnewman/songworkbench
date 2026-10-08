@@ -138,7 +138,7 @@ final class VoiceTrackSeparationTests: XCTestCase {
         try file.write(from: buffer)
     }
 
-    func testThePassWritesMutedVoiceStripsAndRerunsOnlyWhenTheNotesChange() throws {
+    func testThePassWritesEnabledVoiceStripsAndRerunsOnlyWhenTheNotesChange() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("voice-pass-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -163,12 +163,12 @@ final class VoiceTrackSeparationTests: XCTestCase {
             voiceAssets.map(\.id.rawValue).sorted(), ["vocals.voice.1", "vocals.voice.2"])
         for asset in voiceAssets {
             XCTAssertTrue(FileManager.default.fileExists(atPath: asset.audioURL.path))
-            XCTAssertTrue(document.stemMixer[asset.id].isMuted, "voice strips start muted")
+            XCTAssertFalse(document.stemMixer[asset.id].isMuted, "voice strips start enabled")
             XCTAssertEqual(first.descriptorsByID[asset.id]?.role, .derived)
         }
 
-        // Unchanged notes: nothing is rewritten, and the user's unmute survives.
-        document.stemMixer.setMuted(false, for: VoiceTrackPass.stemID(forVoice: 0))
+        // Unchanged notes: nothing is rewritten, and the user's mute survives.
+        document.stemMixer.setMuted(true, for: VoiceTrackPass.stemID(forVoice: 0))
         let written =
             try FileManager.default.attributesOfItem(
                 atPath: voiceAssets[0].audioURL.path)[.modificationDate] as? Date
@@ -177,7 +177,7 @@ final class VoiceTrackSeparationTests: XCTestCase {
             try FileManager.default.attributesOfItem(
                 atPath: voiceAssets[0].audioURL.path)[.modificationDate] as? Date,
             written)
-        XCTAssertFalse(document.stemMixer[VoiceTrackPass.stemID(forVoice: 0)].isMuted)
+        XCTAssertTrue(document.stemMixer[VoiceTrackPass.stemID(forVoice: 0)].isMuted)
 
         // A voice disappears from the harmony notes: its strip goes.
         document.vocalHarmonyNotes.removeLast()

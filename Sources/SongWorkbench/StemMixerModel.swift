@@ -122,11 +122,6 @@ struct StemMixerModel: Codable, Equatable, Sendable {
         states[id] ?? StemMixState()
     }
 
-    /// True once this stem has stored mixer state (a user change, or a default set for it).
-    func hasState(for id: StemID) -> Bool {
-        states[id] != nil
-    }
-
     subscript(kind: StemKind) -> StemMixState {
         self[kind.id]
     }

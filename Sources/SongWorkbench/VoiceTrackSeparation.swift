@@ -149,9 +149,10 @@ enum VoiceTrackRenderer {
     }
 }
 
-/// Writes one audio track per detected harmony voice and registers it under Vocals as a muted
-/// strip (Eric, 2026-10-07: ordinary strips that start muted, named Voice 1–4 like the Review
-/// chart). Runs after the stem set is final; re-runs only when the harmony notes change.
+/// Writes one audio track per detected harmony voice and registers it under Vocals as its own
+/// strip, named Voice 1–4 like the Review chart. Strips start enabled like every other stem
+/// (Eric, 2026-10-08, replacing "start muted"). Runs after the stem set is final; re-runs only
+/// when the harmony notes change.
 enum VoiceTrackPass {
     static let versionTag = "voice-tracks-1"
     static let idPrefix = "vocals.voice."
@@ -237,9 +238,6 @@ enum VoiceTrackPass {
                     id: id, parentID: StemKind.vocals.id, role: .derived,
                     displayName: "Voice \(voice + 1)", order: 300 + voice))
             assets.append(StemAsset(id: id, audioURL: url, producerID: producer))
-            if !document.stemMixer.hasState(for: id) {
-                document.stemMixer.setMuted(true, for: id)
-            }
         }
         updated = StemSetManifest(
             descriptors: StemSetManifest.mergingDescriptors(updated.descriptors, descriptors),
