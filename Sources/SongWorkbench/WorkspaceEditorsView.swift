@@ -1406,6 +1406,15 @@ struct ChordProTabEditor: View {
     /// The Display panel (`displayOptionsPanel`).
     @State private var showDisplayOptions = false
 
+    private var tunedDownToggle: some View {
+        Toggle("Guitar tuned down a half step", isOn: $model.tunedDownHalfStep)
+            .toggleStyle(.checkbox)
+            .fixedSize()
+            .help(
+                "Chord names read a half step up, as the shapes a band tuned to Eb plays; "
+                    + "tab is fretted for the lowered tuning.")
+    }
+
     /// Everything the chart can show, as one small panel of checkboxes (Eric, 2026-10-07: "a small
     /// dialog box with checkboxes" rather than a dropdown). Instruments first, one line each: its
     /// own chords and its own notes, each drawn as its own row in that instrument's colour.
@@ -1418,6 +1427,9 @@ struct ChordProTabEditor: View {
                             HStack(spacing: 14) {
                                 instrumentChordsToggle(stemID)
                                 instrumentNotesToggle(stemID)
+                                if NoteTabFormatter.instrument(for: stemID) != nil {
+                                    instrumentTabToggle(stemID)
+                                }
                             }
                         }
                     }
@@ -1499,6 +1511,8 @@ struct ChordProTabEditor: View {
                 Toggle("Chord pop", isOn: $chordPopBallEnabled)
             }
             Section("Layout") {
+                // Also here: the Review toolbar has no room left for it.
+                tunedDownToggle
                 Toggle("Measure numbers", isOn: $showMeasureNumbers)
                 Picker("Beats per row", selection: $beatsPerRow) {
                     Text("Auto").tag(0)
@@ -1547,6 +1561,34 @@ struct ChordProTabEditor: View {
             )
             .disabled(!(model.instrumentChords?.tracks ?? []).contains { $0.stemID == stemID })
         }
+    }
+
+    /// Bass and guitar notes as tablature (Eric, 2026-10-07), beside the note row.
+    @AppStorage("reviewShownTabStems") private var shownTabStemsStorage = ""
+    private var shownTabStems: Set<StemID> {
+        Set(shownTabStemsStorage.split(separator: ",").map { StemID(rawValue: String($0)) })
+    }
+
+    private func instrumentTabToggle(_ stemID: StemID) -> some View {
+        Toggle(
+            model.noteTranscriptionsInProgress.contains(stemID) ? "Tab…" : "Tab",
+            isOn: Binding(
+                get: { shownTabStems.contains(stemID) },
+                set: { shown in
+                    var stems = shownTabStems
+                    if shown { stems.insert(stemID) } else { stems.remove(stemID) }
+                    shownTabStemsStorage = stems.map(\.rawValue).sorted().joined(separator: ",")
+                    // Guitar tab reads Basic Pitch notes; transcribe the stem the first time.
+                    if shown, NoteTabFormatter.instrument(for: stemID) == .guitar {
+                        model.ensureNoteEvents(for: stemID)
+                    }
+                })
+        )
+        .disabled(!(model.bucketNotes?.stems ?? []).contains { $0.stemID == stemID })
+        .help(
+            NoteTabFormatter.instrument(for: stemID) == .guitar
+                ? "Guitar tab from the stem's transcribed notes (transcribed the first time)"
+                : "Bass tab from the bass note row")
     }
 
     /// This instrument's own note row.
@@ -1661,14 +1703,16 @@ struct ChordProTabEditor: View {
                         // "hide it all" flags through it would leave the two surfaces free to
                         // drift back together.
                         ChordProReadOnlyView(
-                            source: previewSource, transpose: model.chordProTranspose,
+                            source: previewSource, transpose: model.chordDisplayTranspose,
                             scale: chartScale)
                     case .preview:
                         let chart = ChordProAppPreview(
                             barGrid: model.barGrid,
                             source: previewSource,
                             scale: chartScale,
-                            transpose: config.supportsTranspose ? model.chordProTranspose : 0,
+                            // Without the chart's transposition, a tuned-down band's chord names still move.
+                            transpose: config.supportsTranspose
+                                ? model.chordDisplayTranspose : (model.tunedDownHalfStep ? 1 : 0),
                             auditionedPlacement: model.auditionedPlacement,
                             placementPicks: model.chordPlacementPicks,
                             ballVisibility: ballVisibility,
@@ -1730,6 +1774,10 @@ struct ChordProTabEditor: View {
                             bucketNotes: config.showsReviewAffordances && showBucketNotes
                                 && model.isBucketTimelineCurrent ? model.bucketNotes : nil,
                             hiddenBucketStems: hiddenBucketStems,
+                            tabStems: config.showsReviewAffordances ? shownTabStems : [],
+                            tabFretOffset: model.tabFretOffset,
+                            tabBucketGrid: model.isBucketTimelineCurrent ? model.bucketNotes : nil,
+                            noteEvents: model.noteEvents,
                             // The chord line is ONE player's chords, in that player's color; each
                             // other instrument's own chord line is added only when switched on.
                             chordLineInstrument: model.chordInstrument,
@@ -1953,6 +2001,7 @@ struct ChordProTabEditor: View {
                     value: $model.chordProTranspose, in: -12...12
                 )
                 .fixedSize()
+                tunedDownToggle
             }
             Button("Export...", systemImage: "square.and.arrow.up") {
                 exportDocument()
@@ -2152,7 +2201,7 @@ struct ChordProTabEditor: View {
             do {
                 switch config.kind {
                 case .chordPro:
-                    try model.exportChordPro(to: url, transposedBy: model.chordProTranspose)
+                    try model.exportChordPro(to: url, transposedBy: model.chordDisplayTranspose)
                 case .bassNote:
                     try model.exportBassNoteChordPro(to: url)
                 }
@@ -2173,7 +2222,7 @@ struct ChordProTabEditor: View {
                 .appendingPathComponent(baseName.isEmpty ? "chart" : baseName)
                 .appendingPathExtension("cho")
             do {
-                try model.exportChordPro(to: fileURL, transposedBy: model.chordProTranspose)
+                try model.exportChordPro(to: fileURL, transposedBy: model.chordDisplayTranspose)
             } catch {
                 errorMessage = "Could not prepare the chart: \(error.localizedDescription)"
                 return
@@ -2627,11 +2676,45 @@ struct ChordProAppPreview: View {
     ) -> some View {
         let rowScale = fittedScale(availableWidth: availableWidth)
         let songGutterSeconds = fixedPeriodGutterSeconds(for: document)
-        ForEach(indexedBlocks(for: document), id: \.offset) { item in
-            blockRow(
-                for: item, in: document, scale: rowScale, songGutterSeconds: songGutterSeconds
-            )
-            .id(item.offset)
+        let items = indexedBlocks(for: document)
+        // Tempo, key and the like ride on one line under the title (Eric, 2026-10-07: "reduce or
+        // eliminate the unnecessary white space").
+        let metadata = items.compactMap { item -> String? in
+            if case .metadata(let label, let value) = item.block { return "\(label) \(value)" }
+            return nil
+        }
+        ForEach(items.filter { takesSpace($0.block) }, id: \.offset) { item in
+            if case .title(let title) = item.block {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.title2.bold())
+                    if !metadata.isEmpty {
+                        Text(metadata.joined(separator: "  ·  "))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .id(item.offset)
+            } else {
+                blockRow(
+                    for: item, in: document, scale: rowScale, songGutterSeconds: songGutterSeconds
+                )
+                .id(item.offset)
+            }
+        }
+    }
+
+    /// Whether a block gets a row of its own. Hidden directives (`{time}`, `{x_chord_times}` with
+    /// chord time labels off) and blank lines draw nothing, but each still took the list's row
+    /// spacing; metadata is drawn under the title instead.
+    private func takesSpace(_ block: ChordProPreviewBlock) -> Bool {
+        switch block {
+        case .metadata: return false
+        case .directive: return showChordTimeLabels
+        case .lyric(let line):
+            return
+                !(line.chords.isEmpty
+                && line.lyric.trimmingCharacters(in: .whitespaces).isEmpty)
+        default: return true
         }
     }
 
@@ -2758,6 +2841,13 @@ struct ChordProAppPreview: View {
     /// nil = toggle off or the timeline is stale for the current grid.
     var bucketNotes: BucketNoteTimeline?
     var hiddenBucketStems: Set<StemID> = []
+    /// Bass and guitar tab (`NoteTabFormatter`): the stems switched on, the bucket grid it is cut
+    /// on (independent of the note-row toggle), and the Basic Pitch notes guitar tab reads.
+    var tabStems: Set<StemID> = []
+    /// Semitones tab notes move before fretting (`AppModel.tabFretOffset`): the tuning only.
+    var tabFretOffset = 0
+    var tabBucketGrid: BucketNoteTimeline?
+    var noteEvents: [NoteEventTimeline]?
     /// The player the chord line's chords were detected on (`SongAnalysisDocument.chordInstrument`):
     /// every chord name is drawn in its color.
     var chordLineInstrument: StemKind?
@@ -2907,6 +2997,32 @@ struct ChordProAppPreview: View {
                     transposedBy: transpose)
             } ?? []
         return InstrumentChordRowFormatter.interleaved(noteRows: noteRows, chordRows: chordRows)
+    }
+
+    /// Bass and guitar tab for the stems switched on, cut on this row's window.
+    private func tabBlocks(
+        forLyricOrdinal ordinal: Int?, rowStart: TimeInterval, rowDuration: TimeInterval
+    ) -> [SoloTabBlock] {
+        guard !tabStems.isEmpty,
+            let window = ChordProPreviewLineWindowResolver.stemRowWindow(
+                lyricOrdinal: ordinal, lyricLineWindows: lyricLineWindows, rowStart: rowStart,
+                rowDuration: rowDuration)
+        else { return [] }
+        return tabStems.sorted {
+            BucketNoteRowFormatter.displayOrder($0) < BucketNoteRowFormatter.displayOrder($1)
+        }
+        .compactMap { stemID in
+            // Guitar tab carries the guitar's own chords; bass has no chord track, so bass tab
+            // carries the chord line it plays under.
+            let chords =
+                NoteTabFormatter.instrument(for: stemID) == .guitar
+                ? instrumentChords?.tracks.first { $0.stemID == stemID }?.chords ?? chordEvents
+                : chordEvents
+            return NoteTabFormatter.block(
+                for: stemID, bucketNotes: tabBucketGrid, noteEvents: noteEvents,
+                chords: chords.sorted { $0.time < $1.time }, inWindow: window,
+                transposedBy: transpose, fretOffset: tabFretOffset)
+        }
     }
 
     private func soloBlocks(
@@ -3442,8 +3558,13 @@ struct ChordProAppPreview: View {
             forLyricOrdinal: item.lyricOrdinal)
         let itemBucketRows = bucketRows(
             forLyricOrdinal: item.lyricOrdinal, rowStart: strip.start, rowDuration: strip.duration)
-        let itemSoloBlocks = soloBlocks(
-            forLyricOrdinal: item.lyricOrdinal, rowStart: strip.start, rowDuration: strip.duration)
+        let itemSoloBlocks =
+            soloBlocks(
+                forLyricOrdinal: item.lyricOrdinal, rowStart: strip.start,
+                rowDuration: strip.duration)
+            + tabBlocks(
+                forLyricOrdinal: item.lyricOrdinal, rowStart: strip.start,
+                rowDuration: strip.duration)
         ChordProPreviewBlockView(
             block: item.block,
             scale: rowScale,
@@ -4925,10 +5046,8 @@ private struct ChordProPreviewLineView: View {
     }
 
     /// Height the bucket rows and solo blocks take together.
-    private func stemRowsReserve(bucketRowCount: Int, soloBlockCount: Int) -> CGFloat {
-        bucketRowReserve * CGFloat(bucketRowCount)
-            + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
-            * CGFloat(soloBlockCount)
+    private func stemRowsReserve(bucketRowCount: Int, soloBlocks: [SoloTabBlock]) -> CGFloat {
+        bucketRowReserve * CGFloat(bucketRowCount) + tabBlocksHeight(soloBlocks)
     }
 
     /// The per-stem bucket rows stacked from `baseY`, then the solo tab blocks (six strings
@@ -4957,30 +5076,108 @@ private struct ChordProPreviewLineView: View {
                     .offset(x: max(entry.xs[index], labelReserve), y: rowY)
             }
         }
+        let tabTop = baseY + bucketRowReserve * CGFloat(bucketRows.count)
         ForEach(Array(soloBlocks.enumerated()), id: \.offset) { blockIndex, entry in
-            let blockY =
-                baseY + bucketRowReserve * CGFloat(bucketRows.count)
-                + soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
-                * CGFloat(blockIndex)
+            let blockTop =
+                tabTop + soloBlocks.prefix(blockIndex).reduce(0) { $0 + tabBlockHeight($1.block) }
             let tabColor = entry.block.stemID.laneColor
-            ForEach(Array(SoloTabRowFormatter.stringLabels.enumerated()), id: \.offset) {
-                row, label in
+            let lineEnd = (entry.xs.last ?? 0) + scale.scaled(14)
+            // A rule above every tab block, so stacked blocks read as separate instruments
+            // (Eric, 2026-10-07).
+            tabRule(at: blockTop + tabRuleReserve / 2, width: lineEnd)
+            let laneTop = blockTop + tabRuleReserve
+            if !entry.block.chords.isEmpty {
+                ForEach(Array(entry.block.chords.enumerated()), id: \.offset) { _, chord in
+                    Text(chord.label)
+                        .font(ChordProChartTypography.chord(size: scale.chordSize * 0.8))
+                        .foregroundStyle(tabColor.opacity(chord.isHeld ? 0.45 : 1))
+                        .offset(
+                            x: max(rhythmicX(forTime: chord.time), scale.scaled(12)), y: laneTop)
+                }
+            }
+            let stringsTop = laneTop + (entry.block.chords.isEmpty ? 0 : tabChordLaneReserve)
+            ForEach(Array(entry.block.stringLabels.enumerated()), id: \.offset) { row, label in
+                let rowY = stringsTop + soloStringReserve * CGFloat(row)
                 Text(label)
                     .font(.swDisplay(scale.scaled(8), weight: .semibold))
                     .foregroundStyle(tabColor.opacity(0.85))
-                    .offset(x: 0, y: blockY + soloStringReserve * CGFloat(row))
+                    .offset(x: 0, y: rowY)
+                // The string as a real line, broken around each fret number (Eric, 2026-10-07:
+                // "instead of dashes, could we draw real lines").
+                let gaps = entry.block.columns.indices.compactMap {
+                    index -> ClosedRange<CGFloat>? in
+                    let cell = entry.block.columns[index].cells[row]
+                    guard cell != SoloTabRowFormatter.rest else { return nil }
+                    let digits = CGFloat(cell.filter(\.isNumber).count)
+                    return
+                        (entry.xs[index] - scale.scaled(1.5))...(entry.xs[index]
+                        + digits * scale.scaled(5.6) + scale.scaled(1.5))
+                }
+                ForEach(
+                    Array(
+                        tabStringSegments(from: scale.scaled(12), to: lineEnd, gaps: gaps)
+                            .enumerated()),
+                    id: \.offset
+                ) { _, segment in
+                    Rectangle()
+                        .fill(tabColor.opacity(0.35))
+                        .frame(width: segment.upperBound - segment.lowerBound, height: 0.75)
+                        .offset(x: segment.lowerBound, y: rowY + soloStringReserve / 2)
+                }
             }
             ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
                 ForEach(Array(column.cells.enumerated()), id: \.offset) { row, cell in
-                    Text(cell)
-                        .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
-                        .foregroundStyle(
-                            tabColor.opacity(cell == SoloTabRowFormatter.rest ? 0.45 : 1)
-                        )
-                        .offset(x: entry.xs[index], y: blockY + soloStringReserve * CGFloat(row))
+                    if cell != SoloTabRowFormatter.rest {
+                        Text(cell.filter(\.isNumber))
+                            .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
+                            .foregroundStyle(tabColor)
+                            .offset(
+                                x: entry.xs[index], y: stringsTop + soloStringReserve * CGFloat(row)
+                            )
+                    }
                 }
             }
+            // And one under the last block, between the tab and the waveform.
+            if blockIndex == soloBlocks.count - 1 {
+                tabRule(
+                    at: blockTop + tabBlockHeight(entry.block) + tabRuleReserve / 2, width: lineEnd)
+            }
         }
+    }
+
+    /// Height of one tab block: its rule, its chord lane when it has chords, and its strings.
+    private func tabBlockHeight(_ block: SoloTabBlock) -> CGFloat {
+        tabRuleReserve + (block.chords.isEmpty ? 0 : tabChordLaneReserve)
+            + soloStringReserve * CGFloat(block.stringLabels.count)
+    }
+
+    /// Height of all tab blocks on a row, including the closing rule under the last one.
+    private func tabBlocksHeight(_ blocks: [SoloTabBlock]) -> CGFloat {
+        blocks.isEmpty ? 0 : blocks.reduce(0) { $0 + tabBlockHeight($1) } + tabRuleReserve
+    }
+
+    private var tabRuleReserve: CGFloat { scale.scaled(7) }
+    private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
+
+    private func tabRule(at y: CGFloat, width: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color.swTextSecondary.opacity(0.3))
+            .frame(width: max(width, 0), height: 1)
+            .offset(x: 0, y: y)
+    }
+
+    /// `start...end` with the `gaps` cut out, as the line pieces to draw.
+    private func tabStringSegments(
+        from start: CGFloat, to end: CGFloat, gaps: [ClosedRange<CGFloat>]
+    ) -> [ClosedRange<CGFloat>] {
+        var segments: [ClosedRange<CGFloat>] = []
+        var cursor = start
+        for gap in gaps.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if gap.lowerBound > cursor { segments.append(cursor...gap.lowerBound) }
+            cursor = max(cursor, gap.upperBound)
+        }
+        if end > cursor { segments.append(cursor...end) }
+        return segments
     }
 
     private var rhythmicHarmonyRows:
@@ -5621,9 +5818,7 @@ private struct ChordProPreviewLineView: View {
         // Bucket rows (one per stem) sit between the harmony rows and the bass-onset row.
         let bucketReserve: CGFloat = bucketRowReserve * CGFloat(bucketRows.count)
         // Solo tab (six strings per block) sits between the bucket rows and the bass-onset row.
-        let soloReserve: CGFloat =
-            soloStringReserve * CGFloat(SoloTabRowFormatter.stringLabels.count)
-            * CGFloat(soloBlocks.count)
+        let soloReserve: CGFloat = tabBlocksHeight(soloBlocks.map(\.block))
         let bassReserve: CGFloat = bassXs.isEmpty ? 0 : bassRowReserve
         let totalWidth = rhythmicFrameWidth
         let contentHeight =
@@ -6309,7 +6504,7 @@ private struct ChordProPreviewLineView: View {
         let bucketRows = rhythmicBucketRows
         let soloBlocks = rhythmicSoloBlocks
         let stemReserve = stemRowsReserve(
-            bucketRowCount: bucketRows.count, soloBlockCount: soloBlocks.count)
+            bucketRowCount: bucketRows.count, soloBlocks: soloBlocks.map(\.block))
         let contentHeight = contentBandHeight + ballTopReserve + stemReserve
         return ZStack(alignment: .topLeading) {
             // A bar is every `beatsPerBar` beats in the instrumental passages and untimed
@@ -6893,6 +7088,17 @@ struct StemMixSidebar: View {
                 miniToggle("S", isOn: state.isSoloed, tint: Color.swAccent) {
                     model.setStemSoloed($0, for: channel.id)
                 }
+                // Audio or MIDI rendition, per strip (Eric, 2026-10-07); the instrument is chosen
+                // per track type in Settings.
+                if model.canPlayAsMIDI(channel.id) {
+                    miniToggle(
+                        model.midiRenditionsInProgress.contains(channel.id) ? "…" : "♪",
+                        isOn: state.playsMIDI, tint: Color.swMint
+                    ) {
+                        model.setStemPlaysMIDI($0, for: channel.id)
+                    }
+                    .help(midiHelp(for: channel))
+                }
             }
 
             ScribbleStrip(text: shortName(channel.displayName))
@@ -6904,6 +7110,21 @@ struct StemMixSidebar: View {
     /// the triangle that shows or hides them. The parent itself is not playing —
     /// `StemMixGraph.activeNodes` drops it once it has children — so this fader reaches the audio
     /// through those children (see `StemMixerModel.effectiveGain(for:activeIDs:parentByID:)`).
+
+    private func midiHelp(for channel: StemMixerChannel) -> String {
+        if model.midiRenditionsInProgress.contains(channel.id) {
+            return "Preparing \(channel.displayName) as MIDI…"
+        }
+        let instrument =
+            MIDIInstrumentCategory.category(for: channel.id).map {
+                GeneralMIDI.name(
+                    program: MIDIInstrumentPreferences.program(for: $0), drums: $0.isDrumKit)
+            } ?? ""
+        return model.stemMixer[channel.id].playsMIDI
+            ? "Playing \(channel.displayName) as MIDI (\(instrument)); click for its audio"
+            : "Play \(channel.displayName) as MIDI (\(instrument))"
+    }
+
     private func groupStrip(_ channel: StemMixerChannel) -> some View {
         let state = model.stemMixer[channel.id]
         let isExpanded = expandedStemGroups.contains(channel.id)
@@ -7069,7 +7290,14 @@ struct StemMixSidebar: View {
         case "guitar": return "Gtr"
         case "piano": return "Pno"
         case "other": return "Oth"
-        default: return String(displayName.prefix(3)).capitalized
+        case "backing": return "Bck"
+        default:
+            // "Voice 3" → "V3", so four voice strips stay tellable apart.
+            if displayName.hasPrefix("Voice "), let number = displayName.split(separator: " ").last
+            {
+                return "V\(number)"
+            }
+            return String(displayName.prefix(3)).capitalized
         }
     }
 
@@ -7104,7 +7332,7 @@ struct StemMixSidebar: View {
                 )
         }
         .buttonStyle(.plain)
-        .help(label == "M" ? "Mute" : "Solo")
+        .help(label == "M" ? "Mute" : label == "S" ? "Solo" : "")
     }
 }
 

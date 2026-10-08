@@ -4821,3 +4821,44 @@ Review: chart probe, 23 songs, guitar stems (`ChartMatchProbeTests`, `SW_CHORDNE
 
 In-chart share rose on all 23 songs; F1 fell on 7 (by 0.02-0.12; each has more chords than before, against a coarse
 catalog chart). Swift-only chain on Flip Flops: 0.86, as in Python.
+
+## 2026-10-07 — Harmony voice tracks and MIDI renditions of stems
+
+Eric: isolate each vocal harmony voice as its own Stem Mix strip (filtered audio and a guide tone),
+and let Stems playback switch any stem between its audio and a MIDI instrument, chosen per track
+in Settings, with General MIDI drums for the drum pieces. Research on robust singer separation:
+`docs/research/harmony-voice-separation-2026-10.md` (background agent).
+
+### Phase 1 — Harmony voice strips (filtered audio)
+- [ ] `VoiceTrackRenderer`: for each harmony voice, an F0-informed harmonic mask over the vocal
+      stem each note was detected on (STFT, keep the note's partials over its span), written as
+      `<stems>/Derived/voices/vocals.voice.N.wav`. Pure core over `[Float]`, thin file wrapper.
+- [ ] `VoiceTrackPass` (derived pass, after the refinement fold): versioned by a tag plus a digest
+      of `vocalHarmonyNotes`; merges `vocals.voice.N` descriptors (role `.derived`) and assets into
+      `stemSet`; progress and cancellation; skipped when current.
+- [ ] Derived strips are audible only while soloed, so the full mix never doubles the vocals.
+- [ ] Note, bucket and solo passes and harmony detection ignore derived stems.
+- [ ] A derived strip never hides its parent's audio (`activeNodes` keeps a parent whose only
+      children are derived).
+- [ ] Tests: mask keeps a note's partials and rejects another voice's; pass is idempotent and
+      re-runs when the harmony notes change; mixer gain rule; derived stems excluded.
+
+### Phase 2 — MIDI rendition per strip
+- [ ] `MIDIRenditionSource`: notes per stem — `noteEvents` for pitched stems, harmony notes for
+      voice strips, onsets mapped to GM drum notes for drum pieces.
+- [ ] Playback: an `AVAudioUnitSampler` per stem on the stem mixer, loaded from the system GM bank
+      (`gs_instruments.dls`), scheduled against the same clock as the audio players, with the
+      strip's gain, pan, mute and solo.
+- [ ] Per-strip Audio/MIDI switch in Stems mode, persisted in `StemMixerModel`.
+- [ ] Settings: a GM instrument picker per track kind (drums use the GM standard kit).
+- [ ] Tests: GM drum mapping; note scheduling from a seek point; mixer state round-trip.
+
+### Review
+
+- Phase 1 shipped as `bdd3553`. Flip Flops: 4 voices from 1,328 notes, written in 31 s (Debug).
+- Phase 2 renders each MIDI rendition offline to `Derived/midi/` and plays it through the stem's own
+  player, so no separate MIDI clock or scheduling was needed (the "note scheduling from a seek point"
+  item is moot). Flip Flops bass: Basic Pitch 771 notes in 4.7 s, render 0.33 s (Debug); notes
+  above MIDI 64 dropped as overtones.
+- Tests: 1244 run, 1 failure (`testAWalkingBassDoesNotChangeTheChordLine`, failing on `main` too).
+- Not yet checked on screen: the ♪ strip toggle, the MIDI Instruments Settings tab, listening.

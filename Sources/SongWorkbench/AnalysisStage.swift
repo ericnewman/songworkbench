@@ -231,9 +231,12 @@ struct SeparationStage: AnalysisStageRunning {
 extension AnalysisStageContext {
     var effectiveStemEngine: (any StemSeparationEngine)? {
         guard let stemEngine else { return nil }
-        guard !stemRefiners.isEmpty else { return stemEngine }
+        // A wide stereo mix is separated channel by channel (`ChannelSplitStemEngine`); a centred
+        // one goes straight through with the same metadata, so its cache is untouched.
+        let base = ChannelSplitStemEngine(base: stemEngine)
+        guard !stemRefiners.isEmpty else { return base }
         return StemRefinementPipelineEngine(
-            baseEngine: stemEngine,
+            baseEngine: base,
             refiners: stemRefiners,
             sourceDigest: sourceDigest,
             segmentConfiguration: "six-stem-44.1k-stereo"
@@ -257,6 +260,14 @@ extension AnalysisStageContext {
         document: SongAnalysisDocument,
         sourceDigest: String
     ) -> Bool {
+        // A wide song whose stems came from a plain stereo pass is separated again, channel by
+        // channel (ponytail: reads the whole source to measure its width on each check; cache
+        // the width on the document if checks get slow).
+        if ChannelSplitStemEngine.needsResplit(
+            sourceURL: request.sourceURL, storedStemSet: document.stemSet)
+        {
+            return false
+        }
         let policy = SeparationCachingPolicy(currentEngine: currentEngine)
         if let expectedStemRecipeIdentity {
             return policy.isStemSetCacheHit(

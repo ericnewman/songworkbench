@@ -761,6 +761,8 @@ struct SongAnalysisPipeline: Sendable {
                         document.stageRecords[.separation] = record
                     }
                 }
+                // Voice tracks are filtered out of the final stem set, so they come after the fold.
+                VoiceTrackPass.apply(to: &document)
 
                 // Skip the standalone harmony iteration; it has been handled.
                 index += 1
@@ -864,6 +866,7 @@ struct SongAnalysisPipeline: Sendable {
                 document.stageRecords[stage]?.state == .succeeded
             {
                 applyDerivedPasses(to: &document, force: stage == .harmony)
+                VoiceTrackPass.apply(to: &document)
             }
 
             completedStages += 1

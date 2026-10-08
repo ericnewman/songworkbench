@@ -130,6 +130,31 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.pitchSemitones, firstSettings.pitchSemitones)
     }
 
+    /// Eric, 2026-10-08: "these mixer controls should not be preserved between songs" — a solo
+    /// saved on a song silenced its vocals the next time it was opened.
+    func testEverySongOpensOnAFreshMixer() async throws {
+        let url = try makeSilentWAV()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var analysis = SongAnalysisDocument()
+        analysis.stemMixer.setSoloed(true, for: StemKind.piano.id)
+        analysis.stemMixer.setMuted(true, for: StemKind.drums.id)
+        analysis.stemMixer.setPlaysMIDI(true, for: StemKind.bass.id)
+        let model = AppModel(
+            store: DelayedProjectStore(
+                document: ProjectLibraryDocument(songs: [
+                    StoredSongProject(url: url, settings: PracticeSettings(), analysis: analysis)
+                ])),
+            storageRoot: makeTestStorageRoot())
+        await model.restoreProjects()
+        let song = try XCTUnwrap(model.songs.first)
+        model.select(song)
+
+        XCTAssertEqual(model.stemMixer, StemMixerModel())
+        XCTAssertFalse(model.stemMixer[StemKind.piano.id].isSoloed)
+        XCTAssertFalse(model.stemMixer[StemKind.drums.id].isMuted)
+        XCTAssertFalse(model.stemMixer[StemKind.bass.id].playsMIDI)
+    }
+
     func testBassNoteSourcePrefersDetectedBassNotes() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }

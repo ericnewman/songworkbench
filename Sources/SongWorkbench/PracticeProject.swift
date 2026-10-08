@@ -23,6 +23,10 @@ struct PracticeSettings: Codable, Equatable, Sendable {
     /// bouncing ball / position indicator is *drawn*. Positive = indicator runs
     /// ahead of playback; negative = behind. Does not affect audio playback.
     var chordProTimingOffsetMS = 0
+    /// The band plays this song on instruments tuned down a half step (Eb standard): chord names
+    /// read one semitone up, as the shapes they finger, and tab is fretted for the lowered
+    /// tuning (Eric, 2026-10-08).
+    var tunedDownHalfStep = false
 
     mutating func normalize() {
         pitchSemitones = PitchShift.normalized(pitchSemitones)
@@ -45,6 +49,8 @@ extension PracticeSettings {
             try container.decodeIfPresent(Int.self, forKey: .chordProTranspose) ?? 0
         chordProTimingOffsetMS =
             try container.decodeIfPresent(Int.self, forKey: .chordProTimingOffsetMS) ?? 0
+        tunedDownHalfStep =
+            try container.decodeIfPresent(Bool.self, forKey: .tunedDownHalfStep) ?? false
     }
 }
 
