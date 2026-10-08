@@ -2418,25 +2418,28 @@ struct ChordProTabEditor: View {
                     rowNumber: row.number
                 )
             case .instrumental:
-                guard !row.chordTimes.isEmpty else { return nil }
+                // Intros and solos: the lyric ball waits at the next sung line instead of
+                // bouncing across the instrumental row (Eric, 2026-10-08); the chord ball still
+                // tracks the chords. The chart keeps the playing row in view.
+                guard let next = timeline.nextLyricRow(after: now) else { return nil }
                 return BeatBallInput(
                     currentTime: now,
                     ordinal: -1,
                     windowStart: row.start,
-                    windowEnd: row.end,
+                    windowEnd: next.start,
                     words: [],
                     bpm: bpm,
                     beatTimes: beatTimes,
                     isWaiting: true,
-                    chordTimes: row.chordTimes,
-                    rowNumber: row.number
+                    rowNumber: next.number,
+                    scrollRowNumber: row.number
                 )
             }
         }
         // Before the first row (a short intro that has no chord-only row of its own):
-        // park a waiting ball at the first row when the wait is noticeable.
+        // park a waiting ball at the first sung row when the wait is noticeable.
         guard
-            let next = timeline.nextRow(after: now),
+            let next = timeline.nextLyricRow(after: now),
             next.start - now > 0, next.start >= Self.waitingBallMinimumGap
         else { return nil }
         return BeatBallInput(
@@ -2448,7 +2451,8 @@ struct ChordProTabEditor: View {
             bpm: bpm,
             beatTimes: beatTimes,
             isWaiting: true,
-            rowNumber: next.number
+            rowNumber: next.number,
+            scrollRowNumber: timeline.nextRow(after: now)?.number
         )
     }
 
@@ -2650,6 +2654,9 @@ struct BeatBallInput: Equatable {
     /// this ball belongs to. Non-nil only on the proven-aligned timeline path; the preview
     /// then matches rows by number instead of walking blocks with adjacency heuristics.
     var rowNumber: Int? = nil
+    /// The row the chart keeps in view while the ball waits elsewhere (a solo's own row, while
+    /// the ball waits at the next sung line). nil = `rowNumber`.
+    var scrollRowNumber: Int? = nil
 }
 
 // Internal (not private) so the headless pixel-render audit can instantiate the REAL preview.
@@ -3702,7 +3709,9 @@ struct ChordProAppPreview: View {
     }
     private var waitingTarget: WaitingScrollTarget? {
         guard let beatBall, beatBall.isWaiting else { return nil }
-        if let rowNumber = beatBall.rowNumber { return .displayLine(rowNumber) }
+        if let rowNumber = beatBall.scrollRowNumber ?? beatBall.rowNumber {
+            return .displayLine(rowNumber)
+        }
         return .lyricOrdinal(beatBall.ordinal)
     }
 

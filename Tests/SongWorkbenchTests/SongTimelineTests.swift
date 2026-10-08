@@ -186,4 +186,26 @@ extension SongTimelineTests {
                 lyrics[0], TimedLyricSegment(start: 20, end: 22, text: "other line"),
             ]))
     }
+
+    /// The lyric ball waits at the next SUNG row through intros and solos (Eric, 2026-10-08).
+    func testTheNextLyricRowSkipsInstrumentalRows() {
+        func row(_ number: Int, _ kind: SongTimeline.Row.Kind, _ start: TimeInterval)
+            -> SongTimeline.Row
+        {
+            SongTimeline.Row(
+                number: number, kind: kind, start: start, end: start + 4, chordTimes: [],
+                containsUntranscribedVocals: false)
+        }
+        let timeline = SongTimeline(rows: [
+            row(1, .instrumental(role: .intro), 0),
+            row(2, .lyric(ordinal: 0), 4),
+            row(3, .instrumental(role: .interlude), 8),
+            row(4, .instrumental(role: .interlude), 12),
+            row(5, .lyric(ordinal: 1), 16),
+        ])
+        XCTAssertEqual(timeline.nextLyricRow(after: 1)?.number, 2)
+        XCTAssertEqual(timeline.nextLyricRow(after: 9)?.number, 5, "a solo waits for the verse")
+        XCTAssertNil(timeline.nextLyricRow(after: 17), "nothing left to sing")
+        XCTAssertEqual(timeline.nextRow(after: 9)?.number, 4)
+    }
 }
