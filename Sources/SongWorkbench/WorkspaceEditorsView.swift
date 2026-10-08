@@ -5136,9 +5136,10 @@ private struct ChordProPreviewLineView: View {
                     let cell = entry.block.columns[index].cells[row]
                     guard cell != SoloTabRowFormatter.rest else { return nil }
                     let digits = CGFloat(cell.filter(\.isNumber).count)
+                    let x = fretX(entry.xs[index])
                     return
-                        (entry.xs[index] - scale.scaled(1.5))...(entry.xs[index]
-                        + digits * scale.scaled(5.6) + scale.scaled(1.5))
+                        (x - scale.scaled(1.5))...(x + digits * scale.scaled(5.6)
+                        + scale.scaled(1.5))
                 }
                 ForEach(
                     Array(
@@ -5163,7 +5164,8 @@ private struct ChordProPreviewLineView: View {
                             .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
                             .foregroundStyle(tabColor)
                             .offset(
-                                x: entry.xs[index], y: stringsTop + soloStringReserve * CGFloat(row)
+                                x: fretX(entry.xs[index]),
+                                y: stringsTop + soloStringReserve * CGFloat(row)
                             )
                     }
                 }
@@ -5188,6 +5190,9 @@ private struct ChordProPreviewLineView: View {
     }
 
     private var tabRuleReserve: CGFloat { scale.scaled(12) }
+
+    /// A fret's x, kept clear of the string labels at the row's left edge.
+    private func fretX(_ x: CGFloat) -> CGFloat { max(x, scale.scaled(12)) }
     private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
 
     private func tabRule(at y: CGFloat, width: CGFloat) -> some View {
