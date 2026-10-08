@@ -3003,7 +3003,8 @@ struct ChordProAppPreview: View {
                 : chordEvents
             return NoteTabFormatter.block(
                 for: stemID, bucketNotes: tabBucketGrid, noteEvents: noteEvents,
-                chords: chords.sorted { $0.time < $1.time }, inWindow: window)
+                chords: chords.sorted { $0.time < $1.time }, inWindow: window,
+                transposedBy: transpose)
         }
     }
 

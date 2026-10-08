@@ -5,8 +5,9 @@ import Foundation
 ///
 /// One column per half-beat bucket, on the same grid as the note row. Bass reads its note row
 /// (one real pitch per bucket). Guitar reads Basic Pitch notes, because its note row keeps only
-/// pitch classes, which have no octave and so no fret. Not transposed with the chart: frets are
-/// where the recorded player's fingers were, as for the solo tab.
+/// pitch classes, which have no octave and so no fret. Transposed with the chart, notes and chord
+/// names alike, so the tab is playable in the key the chart shows (Eric, 2026-10-08: the tab's
+/// chords stayed in the old key on a chart transposed up a half step).
 enum NoteTabFormatter {
     /// E1 A1 D2 G2, low to high.
     static let bassTuning = [28, 33, 38, 43]
@@ -37,10 +38,11 @@ enum NoteTabFormatter {
     /// The stem's tab inside `window`, or nil when it has nothing to show there.
     /// `chords` (time-sorted) fill the block's chord lane: the guitar's own chords on guitar tab,
     /// the chord line on bass tab (Eric, 2026-10-07: the guitar chord in the guitar tab row, the
-    /// bass chord in the bass row). Not transposed, so they match the frets beneath them.
+    /// bass chord in the bass row). `semitones` transposes the notes and the chord names together.
     static func block(
         for stemID: StemID, bucketNotes: BucketNoteTimeline?, noteEvents: [NoteEventTimeline]?,
-        chords: [EditableChordEvent] = [], inWindow window: ClosedRange<TimeInterval>
+        chords: [EditableChordEvent] = [], inWindow window: ClosedRange<TimeInterval>,
+        transposedBy semitones: Int = 0
     ) -> SoloTabBlock? {
         guard let instrument = instrument(for: stemID), let bucketNotes else { return nil }
         let clicks = bucketNotes.clickTimes
@@ -59,7 +61,9 @@ enum NoteTabFormatter {
                 if let previous, previous.bucket == note.bucketIndex - 1, previous.midi == midi {
                     continue
                 }
-                if (first...last).contains(note.bucketIndex) { starts[note.bucketIndex] = [midi] }
+                if (first...last).contains(note.bucketIndex) {
+                    starts[note.bucketIndex] = [midi + semitones]
+                }
             }
         case .guitar:
             guard let events = noteEvents?.first(where: { $0.stemID == stemID })?.events else {
@@ -69,7 +73,7 @@ enum NoteTabFormatter {
                 guard let bucket = bucketIndex(of: event.onset, clicks: clicks),
                     (first...last).contains(bucket)
                 else { continue }
-                starts[bucket, default: []].append(event.midiNote)
+                starts[bucket, default: []].append(event.midiNote + semitones)
             }
         }
         // A window with nothing played still draws its empty strings (Eric, 2026-10-07: the lines
@@ -87,24 +91,29 @@ enum NoteTabFormatter {
         }
         return SoloTabBlock(
             stemID: stemID, label: BucketNoteRowFormatter.label(for: stemID), columns: columns,
-            stringLabels: instrument.labels, chords: chordLane(chords, inWindow: window))
+            stringLabels: instrument.labels,
+            chords: chordLane(chords, inWindow: window, transposedBy: semitones))
     }
 
     /// The chords inside `window`, led by the one still sounding at its start.
     static func chordLane(
-        _ chords: [EditableChordEvent], inWindow window: ClosedRange<TimeInterval>
+        _ chords: [EditableChordEvent], inWindow window: ClosedRange<TimeInterval>,
+        transposedBy semitones: Int = 0
     )
         -> [SoloTabChord]
     {
+        func name(_ chord: String) -> String {
+            InstrumentChordRowFormatter.transposedName(chord, by: semitones)
+        }
         let shown = chords.filter { !$0.hidden }
         var lane = shown.filter { window.contains($0.time) }.map {
-            SoloTabChord(time: $0.time, label: $0.chord)
+            SoloTabChord(time: $0.time, label: name($0.chord))
         }
         if lane.first.map({ $0.time > window.lowerBound + 0.05 }) ?? true,
             let held = shown.last(where: { $0.time < window.lowerBound })
         {
             lane.insert(
-                SoloTabChord(time: window.lowerBound, label: held.chord, isHeld: true), at: 0)
+                SoloTabChord(time: window.lowerBound, label: name(held.chord), isHeld: true), at: 0)
         }
         return lane
     }

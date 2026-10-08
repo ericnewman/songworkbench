@@ -119,4 +119,20 @@ final class NoteTabRowsTests: XCTestCase {
         XCTAssertEqual(lane.map(\.isHeld), [true, false])
         XCTAssertEqual(lane.first?.time, 1.0)
     }
+
+    func testTabTransposesWithTheChartNotesAndChordsAlike() throws {
+        let timeline = grid(stems: [
+            StemBucketNotes(stemID: StemKind.bass.id, notes: [bucket(0, 39)])  // Eb2
+        ])
+        let block = try XCTUnwrap(
+            NoteTabFormatter.block(
+                for: StemKind.bass.id, bucketNotes: timeline, noteEvents: nil,
+                chords: [EditableChordEvent(time: 0, chord: "Eb", confidence: 1)],
+                inWindow: 0...0.9, transposedBy: 1))
+        XCTAssertEqual(block.chords.map(\.label), ["E"])
+        let column = try XCTUnwrap(block.columns.first)
+        let row = try XCTUnwrap(column.cells.firstIndex { $0 != SoloTabRowFormatter.rest })
+        let tuning = NoteTabFormatter.bassTuning.reversed() as [Int]
+        XCTAssertEqual(tuning[row] + Int(column.cells[row].filter(\.isNumber))!, 40, "Eb2 up to E2")
+    }
 }
