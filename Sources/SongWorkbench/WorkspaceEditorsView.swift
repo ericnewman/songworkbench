@@ -1406,6 +1406,15 @@ struct ChordProTabEditor: View {
     /// The Display panel (`displayOptionsPanel`).
     @State private var showDisplayOptions = false
 
+    private var tunedDownToggle: some View {
+        Toggle("Guitar tuned down a half step", isOn: $model.tunedDownHalfStep)
+            .toggleStyle(.checkbox)
+            .fixedSize()
+            .help(
+                "Chord names read a half step up, as the shapes a band tuned to Eb plays; "
+                    + "tab is fretted for the lowered tuning.")
+    }
+
     /// Everything the chart can show, as one small panel of checkboxes (Eric, 2026-10-07: "a small
     /// dialog box with checkboxes" rather than a dropdown). Instruments first, one line each: its
     /// own chords and its own notes, each drawn as its own row in that instrument's colour.
@@ -1502,6 +1511,8 @@ struct ChordProTabEditor: View {
                 Toggle("Chord pop", isOn: $chordPopBallEnabled)
             }
             Section("Layout") {
+                // Also here: the Review toolbar has no room left for it.
+                tunedDownToggle
                 Toggle("Measure numbers", isOn: $showMeasureNumbers)
                 Picker("Beats per row", selection: $beatsPerRow) {
                     Text("Auto").tag(0)
@@ -1990,13 +2001,8 @@ struct ChordProTabEditor: View {
                     value: $model.chordProTranspose, in: -12...12
                 )
                 .fixedSize()
+                tunedDownToggle
             }
-            Toggle("Guitar tuned down a half step", isOn: $model.tunedDownHalfStep)
-                .toggleStyle(.checkbox)
-                .fixedSize()
-                .help(
-                    "Chord names read a half step up, as the shapes a band tuned to Eb plays; "
-                        + "tab is fretted for the lowered tuning.")
             Button("Export...", systemImage: "square.and.arrow.up") {
                 exportDocument()
             }
