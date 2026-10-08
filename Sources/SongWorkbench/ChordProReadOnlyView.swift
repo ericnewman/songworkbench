@@ -597,6 +597,9 @@ struct SoloTabBlock: Equatable, Sendable {
     var stringLabels: [String] = SoloTabRowFormatter.stringLabels
     /// Chord names drawn on a lane above the strings (bass and guitar tab); empty for solo tab.
     var chords: [SoloTabChord] = []
+    /// The stem those chords were heard on, whose color they are drawn in: the guitar on guitar
+    /// tab, the chord line's player on bass tab (Eric, 2026-10-08: use the stem colors).
+    var chordStemID: StemID?
 
     /// The tab strings as text (top string first) — the monospace rendering and what tests read.
     var lines: [String] {

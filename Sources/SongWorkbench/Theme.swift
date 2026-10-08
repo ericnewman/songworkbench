@@ -88,6 +88,9 @@ extension Color {
     /// Teal — the piano stem's color, clear of the guitar violet and of the review states' mint,
     /// amber and coral (Eric, 2026-09-14: near-white piano read as uncolored next to lyric text).
     static let swTeal = Color(hex: 0x22B8CF)
+    /// Piano's lane: teal sat 24° from the bass blue and read as the same player (Eric,
+    /// 2026-10-08).
+    static let swPink = Color(hex: 0xF06595)
     /// Primary text.
     static let swTextPrimary = Color(hex: 0xE9ECEF)
     /// Secondary / muted text.
@@ -104,7 +107,7 @@ extension StemKind {
         case .drums: .swCoral
         case .bass: .swAccent
         case .guitar: .swViolet
-        case .piano: .swTeal
+        case .piano: .swPink
         case .other: .swTextSecondary
         }
     }

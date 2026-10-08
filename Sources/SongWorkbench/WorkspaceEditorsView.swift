@@ -3014,14 +3014,16 @@ struct ChordProAppPreview: View {
         .compactMap { stemID in
             // Guitar tab carries the guitar's own chords; bass has no chord track, so bass tab
             // carries the chord line it plays under.
-            let chords =
+            // Each lane is drawn in the color of the stem its chords came from.
+            let ownTrack =
                 NoteTabFormatter.instrument(for: stemID) == .guitar
-                ? instrumentChords?.tracks.first { $0.stemID == stemID }?.chords ?? chordEvents
-                : chordEvents
+                ? instrumentChords?.tracks.first { $0.stemID == stemID } : nil
+            let chords = ownTrack?.chords ?? chordEvents
+            let chordStemID = ownTrack?.stemID ?? chordLineInstrument.map { StemID($0) }
             return NoteTabFormatter.block(
                 for: stemID, bucketNotes: tabBucketGrid, noteEvents: noteEvents,
-                chords: chords.sorted { $0.time < $1.time }, inWindow: window,
-                transposedBy: transpose, fretOffset: tabFretOffset)
+                chords: chords.sorted { $0.time < $1.time }, chordStemID: chordStemID,
+                inWindow: window, transposedBy: transpose, fretOffset: tabFretOffset)
         }
     }
 
@@ -5090,7 +5092,10 @@ private struct ChordProPreviewLineView: View {
                 ForEach(Array(entry.block.chords.enumerated()), id: \.offset) { _, chord in
                     Text(chord.label)
                         .font(ChordProChartTypography.chord(size: scale.chordSize * 0.8))
-                        .foregroundStyle(tabColor.opacity(chord.isHeld ? 0.45 : 1))
+                        .foregroundStyle(
+                            (entry.block.chordStemID?.laneColor ?? tabColor)
+                                .opacity(chord.isHeld ? 0.45 : 1)
+                        )
                         .offset(
                             x: max(rhythmicX(forTime: chord.time), scale.scaled(12)), y: laneTop)
                 }
@@ -5276,16 +5281,33 @@ private struct ChordProPreviewLineView: View {
     /// Decays rather than switching off so the eye reads it as an attack (matching how the click
     /// itself is an exponentially-decaying sample), and so two chords a beat apart never both sit
     /// at full brightness.
+    ///
+    /// The chord sounding now is boxed in its player's color for as long as it sounds (Eric,
+    /// 2026-10-08: "draw a box around the chords that sound"), and the onset glow is that color
+    /// too, never amber: amber is the vocals' color.
     @ViewBuilder
     private func chordOnsetGlow(at index: Int) -> some View {
         let intensity = chordOnsetIntensity(at: index)
-        if intensity > 0 {
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(Color.swAmber.opacity(0.35 * intensity))
-                .padding(-scale.scaled(2))
-                .shadow(color: .swAmber.opacity(0.9 * intensity), radius: 5 * intensity)
-                .allowsHitTesting(false)
+        let color = chordPlayerColor
+        ZStack {
+            if intensity > 0 {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(color.opacity(0.3 * intensity))
+                    .shadow(color: color.opacity(0.9 * intensity), radius: 5 * intensity)
+            }
+            if isChordSounding(at: index) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(color, lineWidth: 1.5)
+            }
         }
+        .padding(-scale.scaled(2))
+        .allowsHitTesting(false)
+    }
+
+    /// The chord line's player's color (`chordLineInstrument`), primary text before the harmony
+    /// stage has recorded who plays.
+    private var chordPlayerColor: Color {
+        chordLineInstrument?.laneColor ?? .swTextPrimary
     }
 
     /// Index of the chord SOUNDING at the playhead on THIS row, or nil: the latest onset at or
@@ -5314,8 +5336,8 @@ private struct ChordProPreviewLineView: View {
         soundingChordIndex == index
     }
 
-    /// Foreground for a chord label: amber while sounding, otherwise the color of the player the
-    /// chord line's chords were detected on (`chordLineInstrument`).
+    /// Foreground for a chord label: the color of the player the chord line's chords were
+    /// detected on (`chordLineInstrument`), brightest while it sounds.
     private func chordLabelStyle(at index: Int) -> AnyShapeStyle {
         AnyShapeStyle(chordLabelColor(at: index))
     }
@@ -5325,15 +5347,15 @@ private struct ChordProPreviewLineView: View {
     /// expect to be seeing any blue notes"). A label with no event behind it is the chart
     /// RESTATING a chord that is still held — a continuation, drawn dim, not an arrival.
     private func chordLabelColor(at index: Int) -> Color {
-        if isChordSounding(at: index) { return .swAmber }
         // Every chord on the line is the one player's (guitar, or the instrument that does play):
-        // drawn in that player's color (Eric, 2026-09-27). Primary text before the harmony stage
-        // has recorded the player.
-        let color = chordLineInstrument?.laneColor ?? .swTextPrimary
+        // drawn in that player's color (Eric, 2026-09-27). The sounding chord is that color at
+        // full strength; while one sounds the others dim slightly (Eric, 2026-10-08).
+        let color = chordPlayerColor
+        if isChordSounding(at: index) { return color }
         guard rowChordEvents.indices.contains(index), rowChordEvents[index] != nil else {
-            return color.opacity(0.6)
+            return color.opacity(0.5)
         }
-        return color
+        return soundingChordIndex == nil ? color : color.opacity(0.75)
     }
 
     /// Scale for a chord label at the playhead: pops to 1.3× exactly AT the onset and settles
@@ -5367,7 +5389,7 @@ private struct ChordProPreviewLineView: View {
                 CGFloat(max(line.chords[index].name.count, 1)) * characterWidth / 2
             let lift = chordOnsetIntensity(at: index)
             Circle()
-                .fill(Color.swAmber)
+                .fill(chordPlayerColor)
                 .frame(width: ballDiameter, height: ballDiameter)
                 .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                 .opacity(0.95)
@@ -5990,7 +6012,7 @@ private struct ChordProPreviewLineView: View {
             soundingChordBall(chordXs: chordXs)
             if let chordBall {
                 Circle()
-                    .fill(Color.swAmber)
+                    .fill(chordPlayerColor)
                     .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
