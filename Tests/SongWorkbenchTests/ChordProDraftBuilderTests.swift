@@ -60,6 +60,38 @@ final class ChordProDraftBuilderTests: XCTestCase {
     /// a mis-transcribed word. Classified per line, that line reads as a verse and used to split
     /// the chorus into Chorus / Verse(1 line) / Chorus. Measured on the real library, 40 of 130
     /// sections held one line or fewer before this smoothing pass.
+    /// Beach Weather shape: each verse ends on a hook line that also recurs mid-chorus, so text
+    /// alone calls it the chorus opener. The bar grid puts the next line on the 8-bar phrase.
+    func testVerseTailHookThatRecursMidChorusStaysInTheVerseWhenTheNextLineIsOnThePhrase() {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "Morning tide rolls slowly in"),
+            TimedLyricSegment(start: 4, end: 6, text: "Gulls are circling overhead"),
+            TimedLyricSegment(start: 8, end: 10, text: "Sandals left beside the pier"),
+            TimedLyricSegment(start: 13, end: 15, text: "High in low places"),
+            TimedLyricSegment(start: 16, end: 18, text: "Turn the radio up loud"),
+            TimedLyricSegment(start: 20, end: 22, text: "Dancing barefoot on the deck"),
+            TimedLyricSegment(start: 24, end: 26, text: "High in low places"),
+            TimedLyricSegment(start: 28, end: 30, text: "Sunshine pouring like wine"),
+            TimedLyricSegment(start: 32, end: 34, text: "Evening lanterns start to glow"),
+            TimedLyricSegment(start: 36, end: 38, text: "Neighbors gather round the fire"),
+            TimedLyricSegment(start: 40, end: 42, text: "Stories older than the sea"),
+            TimedLyricSegment(start: 45, end: 47, text: "High in low places"),
+            TimedLyricSegment(start: 48, end: 50, text: "Turn the radio up loud"),
+            TimedLyricSegment(start: 52, end: 54, text: "Dancing barefoot on the deck"),
+            TimedLyricSegment(start: 56, end: 58, text: "High in low places"),
+            TimedLyricSegment(start: 60, end: 62, text: "Sunshine pouring like wine"),
+        ]
+        let beats = stride(from: 0.0, to: 64, by: 0.5).map { $0 }
+
+        let sections = SongStructureAnalyzer().vocalSections(for: lyrics, beatTimes: beats)
+        XCTAssertEqual(sections.map(\.label), ["Verse 1", "Chorus", "Verse 2", "Chorus"])
+        XCTAssertEqual(sections.map(\.start), [0, 16, 32, 48])
+
+        // Without a beat grid there is no evidence to move the boundary.
+        XCTAssertEqual(
+            SongStructureAnalyzer().vocalSections(for: lyrics).map(\.start), [0, 13, 32, 45])
+    }
+
     func testNonRepeatingLineInsideAChorusDoesNotSplitItIntoAOneLineVerse() {
         let lyrics = [
             TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),

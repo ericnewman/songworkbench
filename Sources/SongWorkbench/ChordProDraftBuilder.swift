@@ -218,7 +218,9 @@ struct ChordProDraftBuilder: Sendable {
             guard let cutoff = tailCutoff else { return true }
             return TrailingLyricTailPruner.substantiveLineStart(line) < cutoff - 0.02
         }
-        let vocalSections = SongStructureAnalyzer().vocalSections(for: bodyLyrics)
+        let vocalSections = SongStructureAnalyzer().vocalSections(
+            for: bodyLyrics, beatTimes: input.beatTimes,
+            beatsPerBar: input.barGrid?.beatsPerBar ?? 4)
         let sectionByStart: [TimeInterval: SongStructureAnalyzer.VocalSection] =
             vocalSections.count >= 2
             ? Dictionary(
@@ -1340,7 +1342,11 @@ struct SongStructureAnalyzer: Sendable {
         var label: String
     }
 
-    func vocalSections(for lyrics: [TimedLyricSegment]) -> [VocalSection] {
+    /// `beatTimes` (optional) lets a chorus start move off a verse's tail line onto the phrase
+    /// downbeat; see `phraseAlignedChorusStarts`.
+    func vocalSections(
+        for lyrics: [TimedLyricSegment], beatTimes: [TimeInterval] = [], beatsPerBar: Int = 4
+    ) -> [VocalSection] {
         let lines = lyrics.filter { !wordSet($0.text).isEmpty }.sorted { $0.start < $1.start }
         guard !lines.isEmpty else { return [] }
 
@@ -1350,10 +1356,9 @@ struct SongStructureAnalyzer: Sendable {
         // `minimumNormalizedLength: 1` keeps this analyzer's historical inclusiveness (short
         // repeated lines still classify as chorus material; the consensus applies its own
         // stricter floor before letting them vote).
-        let repeatedIDs = Set(
-            RepeatedLyricLineGroups.groups(
-                in: lines, similarity: chorusSimilarity, minimumNormalizedLength: 1
-            ).flatMap { $0 }.map(\.id))
+        let repeatedGroups = RepeatedLyricLineGroups.groups(
+            in: lines, similarity: chorusSimilarity, minimumNormalizedLength: 1)
+        let repeatedIDs = Set(repeatedGroups.flatMap { $0 }.map(\.id))
         var isChorus = lines.map { repeatedIDs.contains($0.id) }
 
         smoothIsolatedClassifications(&isChorus, lines: lines)
@@ -1398,9 +1403,12 @@ struct SongStructureAnalyzer: Sendable {
         }
         blockBoundaries.append(lines.count)
 
-        let mergedRanges = mergedGapFragmentedVerseBlocks(
-            blockBoundaries: blockBoundaries, boundaryWasGapOnly: boundaryWasGapOnly,
-            isChorus: isChorus)
+        let mergedRanges = phraseAlignedChorusStarts(
+            mergedGapFragmentedVerseBlocks(
+                blockBoundaries: blockBoundaries, boundaryWasGapOnly: boundaryWasGapOnly,
+                isChorus: isChorus),
+            lines: lines, isChorus: isChorus, repeatedGroups: repeatedGroups,
+            beatTimes: beatTimes, beatsPerBar: beatsPerBar)
 
         var sections: [VocalSection] = mergedRanges.map { range in
             VocalSection(
@@ -1469,6 +1477,74 @@ struct SongStructureAnalyzer: Sendable {
             guard gapBefore < sectionGap, gapAfter < sectionGap else { continue }
             isChorus[i] = original[i - 1]
         }
+    }
+
+    /// Hands a chorus block's first line back to the verse before it when that line is a verse
+    /// tail the text matcher mistook for the chorus opener.
+    ///
+    /// Beach Weather (2026-10-09, Eric): each verse ends on a short hook line that ALSO recurs in
+    /// the middle of every chorus, so it scores as chorus and each chorus started one bar early
+    /// (verse 7 bars, chorus 13). Text alone cannot tell the two readings apart; the bar grid
+    /// can: the next line lands exactly 8 bars after the verse's first line, the hook line does
+    /// not. The move needs all three: the opener recurs at a non-opening position inside a chorus
+    /// block, the next line starts a whole number of 4-bar phrases after the preceding verse's
+    /// first line, the opener itself does not, and every other verse→chorus boundary opened by
+    /// that same line agrees.
+    private func phraseAlignedChorusStarts(
+        _ ranges: [Range<Int>], lines: [TimedLyricSegment], isChorus: [Bool],
+        repeatedGroups: [[TimedLyricSegment]], beatTimes: [TimeInterval], beatsPerBar: Int
+    ) -> [Range<Int>] {
+        guard beatTimes.count >= 2, beatsPerBar > 0, ranges.count >= 2 else { return ranges }
+        let phraseBeats = 4 * beatsPerBar
+        func nearestBeat(_ time: TimeInterval) -> Int {
+            beatTimes.indices.min { abs(beatTimes[$0] - time) < abs(beatTimes[$1] - time) }!
+        }
+        func isPhraseAligned(_ from: TimeInterval, _ to: TimeInterval) -> Bool {
+            let beats = nearestBeat(to) - nearestBeat(from)
+            return beats > 0 && beats % phraseBeats == 0
+        }
+        var groupOf: [TimedLyricSegment.ID: Int] = [:]
+        for (index, group) in repeatedGroups.enumerated() {
+            for line in group { groupOf[line.id] = index }
+        }
+        // Groups that occur somewhere inside a chorus block other than its first line.
+        var midChorusGroups = Set<Int>()
+        for range in ranges where isChorus[range.lowerBound] {
+            for i in range.dropFirst() {
+                if let group = groupOf[lines[i].id] { midChorusGroups.insert(group) }
+            }
+        }
+
+        // A verse→chorus boundary qualifies when the next line sits on the phrase and the opener
+        // does not. Chorus blocks are grouped by their opener's repeat group.
+        var qualifies: [Int: [Int]] = [:]
+        var disqualified = Set<Int>()
+        for k in 1..<ranges.count {
+            let verse = ranges[k - 1]
+            let chorus = ranges[k]
+            guard isChorus[chorus.lowerBound], !isChorus[verse.lowerBound],
+                let group = groupOf[lines[chorus.lowerBound].id], midChorusGroups.contains(group)
+            else { continue }
+            let verseStart = lines[verse.lowerBound].start
+            if chorus.count >= 2,
+                isPhraseAligned(verseStart, lines[chorus.lowerBound + 1].start),
+                !isPhraseAligned(verseStart, lines[chorus.lowerBound].start)
+            {
+                qualifies[group, default: []].append(k)
+            } else {
+                disqualified.insert(group)
+            }
+        }
+        // Move only when every verse→chorus boundary opened by that line agrees (at least two),
+        // so the choruses keep one common opener; a lone phrase coincidence moves nothing.
+        var result = ranges
+        for (group, blocks) in qualifies where blocks.count >= 2 && !disqualified.contains(group) {
+            for k in blocks {
+                result[k - 1] = result[k - 1].lowerBound..<(result[k - 1].upperBound + 1)
+                result[k] = (result[k].lowerBound + 1)..<result[k].upperBound
+            }
+        }
+        return result
     }
 
     private func mergedGapFragmentedVerseBlocks(
@@ -1668,7 +1744,8 @@ struct LyricSectionDeriver: Sendable {
             }
             return true
         }
-        let vocalSections = SongStructureAnalyzer().vocalSections(for: bodyLines)
+        let vocalSections = SongStructureAnalyzer().vocalSections(
+            for: bodyLines, beatTimes: beatTimes)
         let sectionLabelByStart =
             vocalSections.count >= 2
             ? Dictionary(

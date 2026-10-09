@@ -1101,3 +1101,14 @@ the row before. Eric chose to move a line's opening pickup onto its line's row.
 that downbeat's row, drawn in its gutter, and the row (ball and highlight together) starts at the
 pickup while its downbeat stays in `rowOrigins`. A pickup inside a line still stays where it
 sounds. Chart geometry tests measure rows downbeat to downbeat, not start to start.
+
+## 2026-10-09 — A verse's last line opened the chorus a bar early
+
+Beach Weather: each verse ends on a short hook line that also recurs mid-chorus, so word-set
+repetition classified it as chorus and both choruses started one bar early (verse 7 bars, chorus
+13). Text cannot separate "verse tail" from "chorus opener" when the line repeats in both places.
+
+**Rule:** settle a chorus boundary that text leaves ambiguous with the bar grid (the real opener
+lands on a 4-bar phrase from the verse's first line), and move a boundary only when every chorus
+opened by that line agrees. A per-chorus phrase test alone moved one chorus in three other songs
+and left their siblings behind; check a section rule against the whole library for one-off moves.
