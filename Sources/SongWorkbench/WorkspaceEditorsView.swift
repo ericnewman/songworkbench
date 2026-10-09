@@ -5161,7 +5161,7 @@ private struct ChordProPreviewLineView: View {
                     let digits = CGFloat(cell.filter(\.isNumber).count)
                     let x = entry.xs[index]
                     return
-                        (x - scale.scaled(1.5))...(x + digits * scale.scaled(5.6)
+                        (x - scale.scaled(1.5))...(x + digits * tabFretFontSize * 0.62
                         + scale.scaled(1.5))
                 }
                 ForEach(
@@ -5186,7 +5186,7 @@ private struct ChordProPreviewLineView: View {
                 ForEach(Array(column.cells.enumerated()), id: \.offset) { row, cell in
                     if cell != SoloTabRowFormatter.rest {
                         Text(cell.filter(\.isNumber))
-                            .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
+                            .font(ChordProChartTypography.lyric(size: tabFretFontSize))
                             .foregroundStyle(tabColor)
                             .offset(
                                 x: entry.xs[index],
@@ -5217,6 +5217,9 @@ private struct ChordProPreviewLineView: View {
     private var tabRuleReserve: CGFloat { scale.scaled(12) }
 
     /// A fret's x, kept clear of the string labels at the row's left edge.
+    /// Fret numbers: a little larger than the 9 pt they started at (Eric, 2026-10-09).
+    private var tabFretFontSize: CGFloat { scale.scaled(10.5) }
+
     /// How far left of the row the string labels (e B G D A E) sit.
     private var tabLabelWidth: CGFloat { scale.scaled(9) }
     private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
