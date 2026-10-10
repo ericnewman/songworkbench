@@ -509,3 +509,6 @@
   `{comment}`s. Exports also drop `{x_chord_times}` and flatten `|` bar rows to chord lines.
   The stored chart keeps all of these for the in-app preview
   (`ChordProDocument.externalExport`, 2026-10-10).
+- The native six-stem separation model stays loaded for the app session
+  (`ResidentSeparationEngine`, Eric 2026-10-10): saves ~6 s of Neural Engine compile per
+  separated song for ~1.5 GB resident; memory-pressure warnings release it.
