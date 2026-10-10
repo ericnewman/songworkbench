@@ -42,6 +42,9 @@ struct AnalysisStageContext: Sendable {
     let chordProBuilder: ChordProDraftBuilder
     let chordProReplacementPolicy: ChordProReplacementPolicy
     var stageProgress: @Sendable (Double, String) -> Void
+    /// The vocals stem's activity, onset and pitch evidence, shared by every transcription
+    /// engine pass on the same file (see `VocalEvidence`).
+    var vocalEvidence: VocalEvidence? = nil
     /// See `SongAnalysisPipeline.measureWordTimes`.
     var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
     /// See `SongAnalysisPipeline.vocalPosteriorgram`.
@@ -299,6 +302,40 @@ extension AnalysisStageContext {
 /// Measured on Doc Holiday against a reference lyric (2026-09-28, word recall / precision):
 /// Whisper alone 0.647 / 0.605 with one line looped 7 times; stretch choice across Whisper and
 /// both Parakeet profiles 0.738 / 0.746 with the reference's own three repeats.
+/// What the transcription stage measures on its input audio around decoding. It depends on the
+/// audio file only, so the engine passes share one copy: computing it per pass cost 36 s of the
+/// 45 s each cached engine took on a 192 s song, Debug build (pitch salience 26.7 s, 2026-10-10).
+struct VocalEvidence: Sendable {
+    let audioURL: URL
+    /// Strict VAD: the decode-collapse check and the tail gates.
+    let strictVoiced: [ClosedRange<TimeInterval>]
+    let vocalOnset: TimeInterval?
+    /// Sung evidence for the wordless-gap rescue and the untranscribed-region flags. On the
+    /// vocals stem it is PITCH salience, not energy — the energy-only strict VAD both flagged
+    /// loud-section bleed as unsung vocals (phantom "vocals — not transcribed" on true
+    /// instrumentals) and missed soft melodic vocals entirely (Settle Down's doo-doo intro,
+    /// below the peak-relative gate). Full-mix fallback keeps strict VAD: on a mix, everything
+    /// is pitched.
+    let sungEvidence: [ClosedRange<TimeInterval>]
+    /// Vocal-stem onsets: the decode-loop guard's acoustic check and the final onset snap.
+    let stemOnsets: [TimeInterval]
+
+    init(audioURL: URL, hasStems: Bool) {
+        self.audioURL = audioURL
+        let strictVoiced =
+            (try? VocalActivityEnvelope.voicedIntervals(
+                url: audioURL, configuration: .strictVocalPresence)) ?? []
+        self.strictVoiced = strictVoiced
+        vocalOnset = hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
+        sungEvidence =
+            hasStems
+            ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
+            : strictVoiced
+        stemOnsets =
+            hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
+    }
+}
+
 struct MultiEngineTranscriptionStage: AnalysisStageRunning {
     let stage: SongAnalysisStage = .transcription
 
@@ -321,7 +358,11 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
             }
             return ranged
         }
-        let primary = await TranscriptionStage().run(pass(0, context))
+        var shared = context
+        shared.vocalEvidence = VocalEvidence(
+            audioURL: context.document.stems?.resolved().vocals ?? context.request.sourceURL,
+            hasStems: context.document.stems != nil)
+        let primary = await TranscriptionStage().run(pass(0, shared))
         guard !primary.wasCancelled,
             context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty,
@@ -360,7 +401,9 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
                 stageProgress: context.stageProgress,
                 measureWordTimes: context.measureWordTimes,
                 vocalPosteriorgram: context.vocalPosteriorgram)
-            let outcome = await TranscriptionStage().run(pass(offset + 1, modeContext))
+            var evidenceContext = modeContext
+            evidenceContext.vocalEvidence = shared.vocalEvidence
+            let outcome = await TranscriptionStage().run(pass(offset + 1, evidenceContext))
             await context.transcriptionEngineFactory.engine(for: mode)?.releaseResources()
             guard !outcome.wasCancelled else { return primary }
             var modeDocument = context.document
@@ -436,27 +479,14 @@ struct TranscriptionStage: AnalysisStageRunning {
                     request.transcriptionLanguage.map { "language-\($0)" } ?? "auto",
                 ].joined(separator: "|")
             )
-            // Strict VAD is needed both for the decode-collapse check below and for the tail
-            // gates further down — computed once here.
-            let strictVAD = VocalActivityEnvelope.Configuration.strictVocalPresence
-            let strictVoiced =
-                (try? VocalActivityEnvelope.voicedIntervals(
-                    url: audioURL, configuration: strictVAD)) ?? []
-            let vocalOnset: TimeInterval? =
-                hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
-            // Sung evidence for the wordless-gap rescue and the untranscribed-region flags below.
-            // On the vocals stem it is PITCH salience, not energy — the energy-only strict VAD
-            // both flagged loud-section bleed as unsung vocals (phantom "vocals — not
-            // transcribed" on true instrumentals) and missed soft melodic vocals entirely
-            // (Settle Down's doo-doo intro, below the peak-relative gate). Full-mix fallback
-            // keeps strict VAD: on a mix, everything is pitched.
-            let sungEvidence =
-                hasStems
-                ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
-                : strictVoiced
-            // Vocal-stem onsets: the decode-loop guard's acoustic check and the final onset snap.
-            let stemOnsets: [TimeInterval] =
-                hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
+            // Shared across engine passes when the multi-engine stage computed it already.
+            let evidence =
+                context.vocalEvidence.flatMap { $0.audioURL == audioURL ? $0 : nil }
+                ?? VocalEvidence(audioURL: audioURL, hasStems: hasStems)
+            let strictVoiced = evidence.strictVoiced
+            let vocalOnset = evidence.vocalOnset
+            let sungEvidence = evidence.sungEvidence
+            let stemOnsets = evidence.stemOnsets
 
             /// One transcription pass at `rate` (slow-rendering a temp copy when < 1.0), with
             /// timestamps mapped back to the real timeline.
