@@ -32,6 +32,38 @@ struct ChordProDocument: Equatable, Sendable {
         elements.map(\.sourceText).joined()
     }
 
+    /// Rewrites section markers as plain label lines ("Verse 1:", "Chorus:") for files leaving
+    /// the app. JustChords does not render `{start_of_verse}` environments or section names held
+    /// in `{comment}` (Eric, 2026-10-10). The stored chart keeps the directives: the in-app
+    /// preview parses them.
+    static func sectionLabelStyle(_ source: String) -> String {
+        source.components(separatedBy: "\n").compactMap { line -> String? in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}") else { return line }
+            let body = trimmed.dropFirst().dropLast()
+            let parts = body.split(separator: ":", maxSplits: 1)
+            guard !parts.isEmpty else { return line }
+            let key = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = parts.count == 2 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+            let defaults = [
+                "start_of_verse": "Verse", "sov": "Verse", "start_of_chorus": "Chorus",
+                "soc": "Chorus", "start_of_bridge": "Bridge", "sob": "Bridge",
+            ]
+            if let name = defaults[key] { return "\(value.isEmpty ? name : value):" }
+            if ["end_of_verse", "eov", "end_of_chorus", "eoc", "end_of_bridge", "eob"]
+                .contains(key)
+            {
+                return nil
+            }
+            // Generated section comments: "Intro · 6 bars", "Instrumental · 8 bars", "Outro".
+            if key == "comment" || key == "c" {
+                let name = value.components(separatedBy: " · ")[0]
+                if ["Intro", "Instrumental", "Outro"].contains(name) { return "\(name):" }
+            }
+            return line
+        }.joined(separator: "\n")
+    }
+
     private static func transposeKeyDirective(_ source: String, by semitones: Int) -> String {
         let pattern = #"(?i)(\{\s*(?:key|k)\s*:\s*)([A-G](?:#|b)?)([^}]*)\}"#
         guard

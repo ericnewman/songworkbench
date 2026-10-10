@@ -504,3 +504,7 @@
   (`PlayerRests`, >= 1 s) is the only record of when the players stop: the chart builder does not
   restate a held chord through one, a chord's hold line ends at one, and the same chord returning
   after one is a new event. A chord name is never drawn in the accent tint (it is the bass blue).
+- Exported `.cho` files (Export, Open in JustChords, CLI) write sections as label lines
+  (`Verse 1:`, `Chorus:`, `Intro:`): JustChords ignores `{start_of_verse}` and section
+  `{comment}`s. The stored chart keeps the directives for the in-app preview
+  (`ChordProDocument.sectionLabelStyle`, 2026-10-10).

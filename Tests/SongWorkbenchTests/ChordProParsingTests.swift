@@ -97,4 +97,41 @@ final class ChordProParsingTests: XCTestCase {
             XCTAssertNotNil((error as? LocalizedError)?.errorDescription, file: file, line: line)
         }
     }
+
+    func testSectionLabelStyleReplacesSectionDirectivesAndSectionComments() {
+        let source = """
+            {title: Song}
+            {comment: Generated analysis draft - review required}
+
+            {comment: Intro · 6 bars}
+            [F]
+
+            {start_of_verse: Verse 1}
+            [Bb]Line one
+
+            {end_of_verse}
+            {start_of_chorus}
+            [F]Line two
+
+            {end_of_chorus}
+            {comment: Outro}
+            """
+        XCTAssertEqual(
+            ChordProDocument.sectionLabelStyle(source),
+            """
+            {title: Song}
+            {comment: Generated analysis draft - review required}
+
+            Intro:
+            [F]
+
+            Verse 1:
+            [Bb]Line one
+
+            Chorus:
+            [F]Line two
+
+            Outro:
+            """)
+    }
 }
