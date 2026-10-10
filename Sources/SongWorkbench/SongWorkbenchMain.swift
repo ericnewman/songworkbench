@@ -219,7 +219,7 @@ enum SongWorkbenchMain {
                 if !result.document.chordProSource.isEmpty {
                     let chartURL = outputDirectory.appendingPathComponent("\(title).cho")
                     try Data(
-                        ChordProDocument.sectionLabelStyle(result.document.chordProSource).utf8
+                        ChordProDocument.externalExport(result.document.chordProSource).utf8
                     ).write(to: chartURL)
                     log("wrote \(chartURL.path)")
                     if command.printChart { print(result.document.chordProSource) }

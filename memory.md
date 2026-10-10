@@ -506,5 +506,6 @@
   after one is a new event. A chord name is never drawn in the accent tint (it is the bass blue).
 - Exported `.cho` files (Export, Open in JustChords, CLI) write sections as label lines
   (`Verse 1:`, `Chorus:`, `Intro:`): JustChords ignores `{start_of_verse}` and section
-  `{comment}`s. The stored chart keeps the directives for the in-app preview
-  (`ChordProDocument.sectionLabelStyle`, 2026-10-10).
+  `{comment}`s. Exports also drop `{x_chord_times}` and flatten `|` bar rows to chord lines.
+  The stored chart keeps all of these for the in-app preview
+  (`ChordProDocument.externalExport`, 2026-10-10).

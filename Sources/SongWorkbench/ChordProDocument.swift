@@ -35,10 +35,19 @@ struct ChordProDocument: Equatable, Sendable {
     /// Rewrites section markers as plain label lines ("Verse 1:", "Chorus:") for files leaving
     /// the app. JustChords does not render `{start_of_verse}` environments or section names held
     /// in `{comment}` (Eric, 2026-10-10). The stored chart keeps the directives: the in-app
-    /// preview parses them.
-    static func sectionLabelStyle(_ source: String) -> String {
+    /// preview parses them. `{x_chord_times}` (chord timing for the in-app chart) is dropped too:
+    /// other apps have no use for it. Bar rows lose their `|` and beat dots.
+    static func externalExport(_ source: String) -> String {
         source.components(separatedBy: "\n").compactMap { line -> String? in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Bar rows ("| . | [Bb] . | [F] |", grid "| G | C |") become a plain chord line:
+            // JustChords reads the bars and beat dots as lyric text.
+            if trimmed.hasPrefix("|"), trimmed.hasSuffix("|") {
+                return trimmed.split(separator: " ")
+                    .filter { $0 != "|" && $0 != "." }
+                    .map { $0.hasPrefix("[") ? String($0) : "[\($0)]" }
+                    .joined(separator: " ")
+            }
             guard trimmed.hasPrefix("{"), trimmed.hasSuffix("}") else { return line }
             let body = trimmed.dropFirst().dropLast()
             let parts = body.split(separator: ":", maxSplits: 1)
@@ -48,13 +57,14 @@ struct ChordProDocument: Equatable, Sendable {
             let defaults = [
                 "start_of_verse": "Verse", "sov": "Verse", "start_of_chorus": "Chorus",
                 "soc": "Chorus", "start_of_bridge": "Bridge", "sob": "Bridge",
+                "start_of_grid": "Instrumental", "sog": "Instrumental",
             ]
             if let name = defaults[key] { return "\(value.isEmpty ? name : value):" }
-            if ["end_of_verse", "eov", "end_of_chorus", "eoc", "end_of_bridge", "eob"]
-                .contains(key)
-            {
-                return nil
-            }
+            let dropped: Set = [
+                "end_of_verse", "eov", "end_of_chorus", "eoc", "end_of_bridge", "eob",
+                "end_of_grid", "eog", "x_chord_times",
+            ]
+            if dropped.contains(key) { return nil }
             // Generated section comments: "Intro · 6 bars", "Instrumental · 8 bars", "Outro".
             if key == "comment" || key == "c" {
                 let name = value.components(separatedBy: " · ")[0]

@@ -1782,6 +1782,9 @@ extension AppModelTests {
         defer { try? FileManager.default.removeItem(at: exportURL) }
         try model.exportChordPro(to: exportURL, transposedBy: 0)
         let exported = try String(contentsOf: exportURL, encoding: .utf8)
-        XCTAssertTrue(exported.contains("{x_chord_times: 10.200:G}"), exported)
+        XCTAssertTrue(
+            model.chordProSource.contains("{x_chord_times: 10.200:G}"), model.chordProSource)
+        XCTAssertTrue(exported.contains("[G]second line"), exported)
+        XCTAssertFalse(exported.contains("x_chord_times"), exported)
     }
 }

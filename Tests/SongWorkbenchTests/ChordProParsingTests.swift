@@ -104,26 +104,27 @@ final class ChordProParsingTests: XCTestCase {
             {comment: Generated analysis draft - review required}
 
             {comment: Intro · 6 bars}
-            [F]
+            | . | . . . [Bb] | [F] |
 
             {start_of_verse: Verse 1}
             [Bb]Line one
 
             {end_of_verse}
             {start_of_chorus}
+            {x_chord_times: 40.480:F}
             [F]Line two
 
             {end_of_chorus}
             {comment: Outro}
             """
         XCTAssertEqual(
-            ChordProDocument.sectionLabelStyle(source),
+            ChordProDocument.externalExport(source),
             """
             {title: Song}
             {comment: Generated analysis draft - review required}
 
             Intro:
-            [F]
+            [Bb] [F]
 
             Verse 1:
             [Bb]Line one
@@ -133,5 +134,8 @@ final class ChordProParsingTests: XCTestCase {
 
             Outro:
             """)
+        XCTAssertEqual(
+            ChordProDocument.externalExport("{start_of_grid}\n| G | C |\n{end_of_grid}"),
+            "Instrumental:\n[G] [C]")
     }
 }

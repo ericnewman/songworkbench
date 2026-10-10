@@ -3191,7 +3191,7 @@ final class AppModel: ObservableObject {
         }
         let document = try ChordProDocument(parsing: chordProSource)
         let exported = document.transposed(by: semitones).export()
-        try ChordProDocument.sectionLabelStyle(exported).write(
+        try ChordProDocument.externalExport(exported).write(
             to: url,
             atomically: true,
             encoding: .utf8
