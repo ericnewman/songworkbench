@@ -200,28 +200,36 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
             let finalizeEnd = isLast ? frameCount : min(chunkStart + strideFrames, frameCount)
             let regionLength = max(0, finalizeEnd - chunkStart)
 
-            var regionStems = Dictionary(
-                uniqueKeysWithValues: predictor.supportedStems.map {
-                    (
-                        $0,
-                        [
-                            [Float](repeating: 0, count: regionLength),
-                            [Float](repeating: 0, count: regionLength),
-                        ]
-                    )
-                })
-            for localFrame in 0..<regionLength {
-                let w0 = chunkWeight(
-                    localFrame: localFrame, chunkIndex: chunkIndex, chunkCount: chunkCount)
-                let inHead = carry != nil && localFrame < overlapFrames
-                let wTotal = inHead ? w0 + carryWeights[localFrame] : w0
-                let inverse = 1 / max(wTotal, 1e-6)
-                for kind in predictor.supportedStems {
-                    for channel in 0..<2 {
-                        var value = prediction.samplesByStem[kind]![channel][localFrame] * w0
-                        if inHead { value += carry![kind]![channel][localFrame] }
-                        regionStems[kind]![channel][localFrame] = value * inverse
+            // Overlap-add, vectorized: per frame `(prediction * w0 + carry) / max(wTotal, 1e-6)`,
+            // the same IEEE multiply/add/multiply sequence the scalar loop ran, so the stems are
+            // bit-identical. The scalar loop's per-sample dictionary lookups cost ~0.14 s of each
+            // 0.59 s chunk with the GPU idle (Release, 2026-10-10).
+            let weights = (0..<regionLength).map {
+                chunkWeight(localFrame: $0, chunkIndex: chunkIndex, chunkCount: chunkCount)
+            }
+            let headLength = carry == nil ? 0 : min(overlapFrames, regionLength)
+            var inverse = weights
+            for frame in 0..<regionLength {
+                let total =
+                    frame < headLength ? weights[frame] + carryWeights[frame] : weights[frame]
+                inverse[frame] = 1 / max(total, 1e-6)
+            }
+            var regionStems: [StemKind: [[Float]]] = [:]
+            for kind in predictor.supportedStems {
+                let predicted = prediction.samplesByStem[kind]!
+                regionStems[kind] = (0..<2).map { channel in
+                    var value = vDSP.multiply(predicted[channel][0..<regionLength], weights)
+                    if headLength > 0 {
+                        let carried = carry![kind]![channel]
+                        value.withUnsafeMutableBufferPointer { out in
+                            carried.withUnsafeBufferPointer { tail in
+                                vDSP_vadd(
+                                    out.baseAddress!, 1, tail.baseAddress!, 1, out.baseAddress!, 1,
+                                    vDSP_Length(headLength))
+                            }
+                        }
                     }
+                    return vDSP.multiply(value, inverse)
                 }
             }
             try writer.append(regionStems, frameCount: regionLength)
@@ -230,27 +238,24 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
             if !isLast {
                 let tailGlobal = chunkStart + strideFrames
                 let tailLength = min(overlapFrames, max(0, frameCount - tailGlobal))
-                var nextCarry = Dictionary(
-                    uniqueKeysWithValues: predictor.supportedStems.map {
-                        (
-                            $0,
-                            [
-                                [Float](repeating: 0, count: overlapFrames),
-                                [Float](repeating: 0, count: overlapFrames),
-                            ]
-                        )
-                    })
-                var nextWeights = [Float](repeating: 0, count: overlapFrames)
-                for j in 0..<tailLength {
-                    let localFrame = strideFrames + j
-                    let w = chunkWeight(
-                        localFrame: localFrame, chunkIndex: chunkIndex, chunkCount: chunkCount)
-                    nextWeights[j] = w
-                    for kind in predictor.supportedStems {
-                        for channel in 0..<2 {
-                            nextCarry[kind]![channel][j] =
-                                prediction.samplesByStem[kind]![channel][localFrame] * w
+                let nextWeights = (0..<overlapFrames).map { j in
+                    j < tailLength
+                        ? chunkWeight(
+                            localFrame: strideFrames + j, chunkIndex: chunkIndex,
+                            chunkCount: chunkCount)
+                        : 0
+                }
+                var nextCarry: [StemKind: [[Float]]] = [:]
+                for kind in predictor.supportedStems {
+                    nextCarry[kind] = prediction.samplesByStem[kind]!.map { channel in
+                        var tail = [Float](repeating: 0, count: overlapFrames)
+                        if tailLength > 0 {
+                            vDSP.multiply(
+                                channel[strideFrames..<(strideFrames + tailLength)],
+                                nextWeights[0..<tailLength],
+                                result: &tail[0..<tailLength])
                         }
+                        return tail
                     }
                 }
                 carry = nextCarry
