@@ -20,7 +20,7 @@ struct CoreMLNativeSixStemSeparationEngine: StemSeparationEngine, Sendable {
     private let engine: CoreMLStemSeparationEngine
     let metadata: StemSeparationEngineMetadata
 
-    init(modelURL: URL) async throws {
+    init(modelURL: URL, keepsModelLoaded: Bool = false) async throws {
         metadata = Self.metadata
         let predictor = try await CoreMLSixStemChunkPredictor(modelURL: modelURL)
         engine = CoreMLStemSeparationEngine(
@@ -30,6 +30,7 @@ struct CoreMLNativeSixStemSeparationEngine: StemSeparationEngine, Sendable {
             segmentFrames: ONNXSixStemSeparationEngine.defaultSegmentFrames,
             overlapFrames: ONNXSixStemSeparationEngine.defaultSegmentFrames / 4,
             normalizesAudio: true,
+            releasesModelAfterSeparation: !keepsModelLoaded,
             metadata: Self.metadata
         )
     }
@@ -39,6 +40,42 @@ struct CoreMLNativeSixStemSeparationEngine: StemSeparationEngine, Sendable {
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
         try await engine.separate(request: request, progress: progress)
+    }
+}
+
+/// Keeps the native six-stem engine loaded for the app session (Eric, 2026-10-10). Loading it
+/// costs ~6 s per song, mostly Neural Engine compilation that Core ML repeats on every load;
+/// resident, it holds ~1.5 GB while the later stages run. Memory-pressure warnings drop it, and
+/// the next song loads it again.
+actor ResidentSeparationEngine {
+    static let shared = ResidentSeparationEngine()
+
+    private var engine: CoreMLNativeSixStemSeparationEngine?
+    private var modelURL: URL?
+    private var pressureSource: DispatchSourceMemoryPressure?
+
+    func engine(modelURL: URL) async throws -> CoreMLNativeSixStemSeparationEngine {
+        if let engine, self.modelURL == modelURL { return engine }
+        let loaded = try await CoreMLNativeSixStemSeparationEngine(
+            modelURL: modelURL, keepsModelLoaded: true)
+        engine = loaded
+        self.modelURL = modelURL
+        watchMemoryPressure()
+        return loaded
+    }
+
+    func release() {
+        engine = nil
+        modelURL = nil
+        AnalysisResourceLog.checkpoint(stage: "separation-model", event: "resident-released")
+    }
+
+    private func watchMemoryPressure() {
+        guard pressureSource == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical])
+        source.setEventHandler { Task { await ResidentSeparationEngine.shared.release() } }
+        source.resume()
+        pressureSource = source
     }
 }
 

@@ -130,7 +130,7 @@ struct SongAnalysisPipelineFactory: Sendable {
             stemEngine = DeferredStemSeparationEngine(
                 metadata: CoreMLNativeSixStemSeparationEngine.metadata
             ) {
-                try await CoreMLNativeSixStemSeparationEngine(modelURL: nativeURL)
+                try await ResidentSeparationEngine.shared.engine(modelURL: nativeURL)
             }
             baseStemPackage = await installedPackage(ModelCatalog.htdemucs)
         } else if capabilityProfile.stemSeparationTier == .fullSixStem

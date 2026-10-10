@@ -58,6 +58,8 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
     private let segmentFrames: Int
     private let overlapFrames: Int
     private let normalizesAudio: Bool
+    /// False for an engine kept loaded between songs (`ResidentSeparationEngine`).
+    private let releasesModelAfterSeparation: Bool
 
     let metadata: StemSeparationEngineMetadata
 
@@ -66,6 +68,7 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         segmentFrames: Int = 441_000,
         overlapFrames: Int = 44_100,
         normalizesAudio: Bool = false,
+        releasesModelAfterSeparation: Bool = true,
         metadata: StemSeparationEngineMetadata = StemSeparationEngineMetadata(
             engineIdentifier: "coreml-htdemucs",
             engineVersion: "1",
@@ -77,6 +80,7 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
         self.segmentFrames = segmentFrames
         self.overlapFrames = overlapFrames
         self.normalizesAudio = normalizesAudio
+        self.releasesModelAfterSeparation = releasesModelAfterSeparation
         self.metadata = metadata
     }
 
@@ -93,10 +97,10 @@ struct CoreMLStemSeparationEngine: StemSeparationEngine, Sendable {
                 throw CoreMLStemSeparationError.invalidConfiguration
             }
             let result = try await performSeparation(request: request, progress: progress)
-            await predictor.releaseResources()
+            if releasesModelAfterSeparation { await predictor.releaseResources() }
             return result
         } catch {
-            await predictor.releaseResources()
+            if releasesModelAfterSeparation { await predictor.releaseResources() }
             throw error
         }
     }
