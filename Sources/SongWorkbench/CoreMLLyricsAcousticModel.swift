@@ -43,8 +43,8 @@ struct CoreMLLyricsAcousticModel: LyricsAcousticModel, @unchecked Sendable {
     /// Loads the bundled package, or nil when it is not present or cannot be compiled.
     static func load(configuration: MLModelConfiguration = MLModelConfiguration()) -> Self? {
         guard let url = bundledURL else { return nil }
-        // A .mlpackage has to be compiled before it can be loaded; Core ML caches the result.
-        guard let compiled = try? MLModel.compileModel(at: url),
+        // A .mlpackage has to be compiled before it can be loaded (once, see CompiledModelStore).
+        guard let compiled = try? CompiledModelStore.url(for: url),
             let model = try? MLModel(contentsOf: compiled, configuration: configuration)
         else { return nil }
         return Self(model: model)

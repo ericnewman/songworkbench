@@ -43,6 +43,40 @@ struct CoreMLNativeSixStemSeparationEngine: StemSeparationEngine, Sendable {
     }
 }
 
+/// Compiled `.mlmodelc` copies of bundled `.mlpackage`s, one per model, in the app's Caches.
+///
+/// `MLModel.compileModel(at:)` writes a NEW directory under tmp on every call and never removes
+/// it. The word-timing, beat and chord models were compiled per use: 2026-10-10 the app's tmp
+/// held 1,133 LyricsAlignmentMTL copies (27 GB) and 173 BeatThis copies (7 GB) on a nearly
+/// full disk. Compiling takes under 0.1 s, so this is about disk, not speed.
+enum CompiledModelStore {
+    static func url(for modelURL: URL) throws -> URL {
+        if modelURL.pathExtension == "mlmodelc" { return modelURL }
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SongWorkbench", isDirectory: true)
+            .appendingPathComponent("CompiledModels", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cached = directory.appendingPathComponent(
+            modelURL.deletingPathExtension().lastPathComponent + ".mlmodelc", isDirectory: true)
+        func modified(_ url: URL) -> Date? {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+        }
+        if let source = modified(modelURL), let compiled = modified(cached), compiled >= source {
+            return cached
+        }
+        let fresh = try MLModel.compileModel(at: modelURL)
+        // Concurrent callers may race here; whoever loses keeps the winner's copy.
+        if FileManager.default.fileExists(atPath: cached.path) {
+            _ = try? FileManager.default.replaceItemAt(cached, withItemAt: fresh)
+        } else if (try? FileManager.default.moveItem(at: fresh, to: cached)) == nil {
+            try? FileManager.default.removeItem(at: fresh)
+        }
+        try? FileManager.default.removeItem(at: fresh)
+        return cached
+    }
+}
+
 /// Keeps the native six-stem engine loaded for the app session (Eric, 2026-10-10). Loading it
 /// costs ~6 s per song, mostly Neural Engine compilation that Core ML repeats on every load;
 /// resident, it holds ~1.5 GB while the later stages run. Memory-pressure warnings drop it, and
@@ -107,29 +141,8 @@ actor CoreMLSixStemChunkPredictor: StemChunkPredicting {
         )
     }
 
-    /// Compiling the 172 MB mlpackage takes seconds; cache the .mlmodelc beside the app's other
-    /// caches and reuse it while it is newer than its source.
     private static func compiledModelURL(for modelURL: URL) async throws -> URL {
-        if modelURL.pathExtension == "mlmodelc" { return modelURL }
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SongWorkbench", isDirectory: true)
-            .appendingPathComponent("CompiledModels", isDirectory: true)
-        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
-        let cached = caches.appendingPathComponent(
-            modelURL.deletingPathExtension().lastPathComponent + ".mlmodelc", isDirectory: true)
-        let sourceDate =
-            (try? modelURL.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate
-        let cachedDate =
-            (try? cached.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate
-        if let sourceDate, let cachedDate, cachedDate >= sourceDate {
-            return cached
-        }
-        let compiled = try await MLModel.compileModel(at: modelURL)
-        try? FileManager.default.removeItem(at: cached)
-        try FileManager.default.moveItem(at: compiled, to: cached)
-        return cached
+        try CompiledModelStore.url(for: modelURL)
     }
 
     func predict(_ chunk: StereoAudioChunk) async throws -> StemChunkPrediction {

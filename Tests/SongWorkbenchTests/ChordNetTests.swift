@@ -81,4 +81,22 @@ final class ChordNetTests: XCTestCase {
                 toFile: parts[1] + ".lab", atomically: true, encoding: .utf8)
         }
     }
+
+    /// Compiling a bundled package must reuse one cached copy: `MLModel.compileModel` alone left
+    /// a new tmp directory per call (34 GB of them by 2026-10-10).
+    func testCompiledModelStoreReusesOneCompiledCopy() throws {
+        let package = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("BundledModels/ChordNet.mlpackage")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: package.path))
+        let first = try CompiledModelStore.url(for: package)
+        let firstDate = try first.resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate
+        let second = try CompiledModelStore.url(for: package)
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(
+            try second.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate, firstDate, "second call must not recompile")
+        XCTAssertNotNil(try? MLModel(contentsOf: second))
+    }
 }

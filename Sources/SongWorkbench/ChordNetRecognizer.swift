@@ -30,7 +30,7 @@ enum ChordNetRecognizer {
     /// 2026-09-26).
     /// Core ML models are safe to predict from several threads.
     nonisolated(unsafe) static let bundledModel: MLModel? = bundledURL.flatMap {
-        try? MLModel(contentsOf: MLModel.compileModel(at: $0))
+        try? MLModel(contentsOf: CompiledModelStore.url(for: $0))
     }
 
     @Sendable
