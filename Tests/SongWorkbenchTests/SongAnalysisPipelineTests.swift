@@ -1722,3 +1722,46 @@ private func documentWithStubVocalsStem() -> SongAnalysisDocument {
 private let keepingWordTimes: WordTimeMeasurer = { lyrics, _, _ in
     (lyrics, MeasuredLyricTiming.Outcome(ran: true))
 }
+
+final class AnalysisProgressMeterTests: XCTestCase {
+    private func progress(
+        _ stage: SongAnalysisStage, _ fraction: Double, _ message: String
+    ) -> SongAnalysisPipelineProgress {
+        SongAnalysisPipelineProgress(
+            stage: stage, completedStages: 0, totalStages: 4, stageFraction: fraction,
+            message: message)
+    }
+
+    /// A re-analysis: separation and transcription come from cache. They used to fill 50% of the
+    /// bar at once; now the bar spans only harmony, the derived passes, and the chart.
+    func testCachedStagesLeaveTheBarAndTheRemainingWorkFillsIt() {
+        let meter = AnalysisProgressMeter(stages: Set(SongAnalysisStage.allCases))
+        var last = meter.stamped(progress(.separation, 1, "loadedFromCache")).fractionCompleted
+        XCTAssertEqual(last, 0, accuracy: 0.001)
+        last = meter.stamped(progress(.transcription, 1, "loadedFromCache")).fractionCompleted
+        XCTAssertEqual(last, 0, accuracy: 0.001)
+
+        var seen = [last]
+        for fraction in [0.1, 0.3, 0.55, 1] {
+            seen.append(meter.stamped(progress(.harmony, fraction, "step")).fractionCompleted)
+        }
+        for fraction in [0.33, 0.75, 1] {
+            seen.append(meter.derivedPasses(fraction: fraction, message: "pass").fractionCompleted)
+        }
+        seen.append(meter.stamped(progress(.chordPro, 0, "Finished chordPro")).fractionCompleted)
+
+        XCTAssertEqual(seen, seen.sorted(), "never moves backwards")
+        XCTAssertLessThan(seen[4], 0.5, "harmony is the smaller share of what remains")
+        XCTAssertEqual(seen.last!, 1, accuracy: 0.001)
+    }
+
+    /// Transcription and harmony run concurrently; each adds its share instead of the last
+    /// reporter overwriting the other.
+    func testConcurrentStagesAddUp() {
+        let meter = AnalysisProgressMeter(stages: [.transcription, .harmony])
+        let afterTranscription = meter.stamped(progress(.transcription, 0.5, "t"))
+            .fractionCompleted
+        let afterBoth = meter.stamped(progress(.harmony, 0.5, "h")).fractionCompleted
+        XCTAssertGreaterThan(afterBoth, afterTranscription)
+    }
+}

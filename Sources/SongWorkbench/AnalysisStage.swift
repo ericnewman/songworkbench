@@ -41,7 +41,7 @@ struct AnalysisStageContext: Sendable {
     let harmonyEngine: any SongHarmonyAnalyzing
     let chordProBuilder: ChordProDraftBuilder
     let chordProReplacementPolicy: ChordProReplacementPolicy
-    let stageProgress: @Sendable (Double, String) -> Void
+    var stageProgress: @Sendable (Double, String) -> Void
     /// See `SongAnalysisPipeline.measureWordTimes`.
     var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
     /// See `SongAnalysisPipeline.vocalPosteriorgram`.
@@ -303,8 +303,25 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
     let stage: SongAnalysisStage = .transcription
 
     func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
-        let primary = await TranscriptionStage().run(context)
         let requested = context.request.transcriptionMode
+        let others = LyricBlendRowBuilder.modeOrder.filter {
+            $0 != requested && context.transcriptionEngineFactory.engine(for: $0) != nil
+        }
+        // Each engine pass reports 0...1; give each its share of the stage so the bar keeps
+        // moving through the second and third engines instead of pinning at the first's 100%.
+        let mayBlend =
+            context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty && context.document.stems?.resolved().vocals != nil
+        let passCount = Double(mayBlend ? others.count + 1 : 1)
+        func pass(_ index: Int, _ passContext: AnalysisStageContext) -> AnalysisStageContext {
+            var ranged = passContext
+            let report = context.stageProgress
+            ranged.stageProgress = { fraction, message in
+                report((Double(index) + fraction) / passCount, message)
+            }
+            return ranged
+        }
+        let primary = await TranscriptionStage().run(pass(0, context))
         guard !primary.wasCancelled,
             context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty,
@@ -315,9 +332,6 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
         guard primaryDocument.stageRecords[.transcription]?.state == .succeeded,
             !primaryDocument.lyrics.isEmpty
         else { return primary }
-        let others = LyricBlendRowBuilder.modeOrder.filter {
-            $0 != requested && context.transcriptionEngineFactory.engine(for: $0) != nil
-        }
         guard !others.isEmpty,
             let logProbs = try? await Task.detached(
                 priority: .userInitiated,
@@ -332,7 +346,7 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
         var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
             requested: primaryDocument.lyrics
         ]
-        for mode in others {
+        for (offset, mode) in others.enumerated() {
             guard !Task.isCancelled else { return primary }
             var request = context.request
             request.transcriptionMode = mode
@@ -346,7 +360,7 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
                 stageProgress: context.stageProgress,
                 measureWordTimes: context.measureWordTimes,
                 vocalPosteriorgram: context.vocalPosteriorgram)
-            let outcome = await TranscriptionStage().run(modeContext)
+            let outcome = await TranscriptionStage().run(pass(offset + 1, modeContext))
             await context.transcriptionEngineFactory.engine(for: mode)?.releaseResources()
             guard !outcome.wasCancelled else { return primary }
             var modeDocument = context.document
@@ -964,7 +978,7 @@ struct HarmonyStage: AnalysisStageRunning {
         // or cancelled) degrades to the whole-vocals path below, same as no refiner at all.
         var refinedManifest: StemSetManifest?
         if let awaitRefined = context.awaitRefinedStemSet {
-            context.stageProgress(0.88, "waiting for voice stems")
+            context.stageProgress(0.40, "waiting for voice stems")
             refinedManifest = await awaitRefined()
         }
         let vocalSources = vocalHarmonySources(
@@ -1104,7 +1118,7 @@ struct HarmonyStage: AnalysisStageRunning {
                     harmonicChangePoints: rawResult.harmonicChangePoints)
             }()
             try Task.checkCancellation()
-            stageProgress(0.75, "reducing chords")
+            stageProgress(0.10, "reducing chords")
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: source.kind,
@@ -1217,7 +1231,7 @@ struct HarmonyStage: AnalysisStageRunning {
             )
             // The bundled beat model on the whole recording, when the pipeline has it (the app
             // always does; tests have no bundle and keep the autocorrelation tracker below).
-            stageProgress(0.80, "tracking beats")
+            stageProgress(0.12, "tracking beats")
             let modelGrid = try context.measureBeatGrid.map { try $0(context.request.sourceURL) }
             let trackedBPM: Double? = modelGrid?.bpm ?? result.beat?.bpm
             var refinedBPM = trackedBPM
@@ -1259,13 +1273,13 @@ struct HarmonyStage: AnalysisStageRunning {
             // Additive: detect the played bass line from the BASS stem (runs
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
-            stageProgress(0.82, "detecting bass")
+            stageProgress(0.30, "detecting bass")
             // The bass stem's own notes. Every instrument is its own source (Eric, 2026-10-07):
             // the bass is not filtered against the vocals nor rounded to the guitar's chords.
             let detectedBassNotes = detectBassNotes(context)
-            stageProgress(0.88, "detecting harmony notes")
+            stageProgress(0.38, "detecting harmony notes")
             let detectedVocalHarmonyNotes = await detectVocalHarmonies(context)
-            stageProgress(0.92, "aligning chord changes")
+            stageProgress(0.55, "aligning chord changes")
             // Attacks from the chord player's stem only: they license the decoder's cheaper
             // switches and are what change times snap to. Piano attacks under a guitar chord line
             // licensed changes the guitarist never made. A legacy stem set with no player keeps
