@@ -36,6 +36,44 @@ final class BucketNoteAnalyzerTests: XCTestCase {
         XCTAssertEqual(notes[0].coverage, 1)
     }
 
+    func testMonophonicTiesAreReproducibleAndGoToTheLowerNote() {
+        // Voice frames saturate at confidence 1, so equal votes are common. `Dictionary` order is
+        // randomly seeded: the verdict must not depend on it.
+        let clicks = (0...40).map(TimeInterval.init)
+        var frames: [PitchFrameEstimate] = []
+        for bucket in 0..<40 {
+            let notes = [60 + bucket % 7, 48 + bucket % 5, 70 - bucket % 3, 55]
+            for (offset, note) in notes.enumerated() {
+                frames.append(
+                    .init(
+                        time: Double(bucket) + 0.1 + 0.2 * Double(offset), midiNote: note,
+                        confidence: 1))
+            }
+        }
+        let first = BucketNoteAnalyzer.aggregateMonophonic(frames: frames, clickTimes: clicks)
+        XCTAssertEqual(first.map(\.midiNote), (0..<40).map { 48 + $0 % 5 })
+        XCTAssertEqual(
+            first, BucketNoteAnalyzer.aggregateMonophonic(frames: frames, clickTimes: clicks))
+    }
+
+    func testVoiceBucketNotesAreIdenticalRunToRun() {
+        // A sung line with a held two-note interval: equal-strength partials make tied votes.
+        let clicks = stride(from: 0.0, through: 4.0, by: 0.25).map { $0 }
+        let samples = (0..<Int(4 * sampleRate)).map { index -> Float in
+            let time = Double(index) / sampleRate
+            let segment = Int(time / 0.5)
+            let low = 220 * pow(2, Double(segment % 4) / 12)
+            return Float(0.4 * sin(2 * .pi * low * time) + 0.4 * sin(2 * .pi * low * 1.5 * time))
+        }
+        let analyzer = BucketNoteAnalyzer()
+        let first = analyzer.notes(
+            role: .voice, samples: samples, sampleRate: sampleRate, clickTimes: clicks)
+        let second = analyzer.notes(
+            role: .voice, samples: samples, sampleRate: sampleRate, clickTimes: clicks)
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertEqual(first, second)
+    }
+
     func testFramesOutsideTheGridAreIgnoredAndEdgesBelongToTheLaterBucket() {
         let clicks: [TimeInterval] = [1, 2]
         let frames: [PitchFrameEstimate] = [

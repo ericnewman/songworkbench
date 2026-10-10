@@ -187,10 +187,14 @@ struct BucketNoteAnalyzer: Sendable {
         var notes: [StemBucketNote] = []
         for bucket in 0..<bucketCount where total[bucket] > 0 {
             let coverage = Float(voiced[bucket]) / Float(total[bucket])
+            // Walk the votes in note order: `Dictionary` order is randomly seeded, and voice
+            // frames saturate at confidence 1, so tied notes and the float sum would otherwise
+            // change run to run. A tie goes to the lower note.
+            let ranked = votes[bucket].sorted { $0.key < $1.key }
             guard coverage >= minimumCoverage,
-                let winner = votes[bucket].max(by: { $0.value < $1.value })
+                let winner = ranked.max(by: { $0.value < $1.value })
             else { continue }
-            let mass = votes[bucket].values.reduce(0, +)
+            let mass = ranked.reduce(0) { $0 + $1.value }
             notes.append(
                 StemBucketNote(
                     bucketIndex: bucket,
