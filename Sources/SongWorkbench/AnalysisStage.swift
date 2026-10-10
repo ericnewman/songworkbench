@@ -336,6 +336,29 @@ struct VocalEvidence: Sendable {
     }
 }
 
+/// Stage progress for engine passes that may run at the same time: the mean of each pass's own
+/// 0...1, so concurrent lanes add up instead of the faster lane racing the bar ahead.
+final class PassProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fractions: [Double]
+    private let report: @Sendable (Double, String) -> Void
+
+    init(passCount: Int, report: @escaping @Sendable (Double, String) -> Void) {
+        fractions = Array(repeating: 0, count: max(passCount, 1))
+        self.report = report
+    }
+
+    func reporter(for pass: Int) -> @Sendable (Double, String) -> Void {
+        { [self] fraction, message in
+            let mean = lock.withLock {
+                fractions[pass] = max(fractions[pass], min(max(fraction, 0), 1))
+                return fractions.reduce(0, +) / Double(fractions.count)
+            }
+            report(mean, message)
+        }
+    }
+}
+
 struct MultiEngineTranscriptionStage: AnalysisStageRunning {
     let stage: SongAnalysisStage = .transcription
 
@@ -344,68 +367,71 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
         let others = LyricBlendRowBuilder.modeOrder.filter {
             $0 != requested && context.transcriptionEngineFactory.engine(for: $0) != nil
         }
-        // Each engine pass reports 0...1; give each its share of the stage so the bar keeps
-        // moving through the second and third engines instead of pinning at the first's 100%.
-        let mayBlend =
-            context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty && context.document.stems?.resolved().vocals != nil
-        let passCount = Double(mayBlend ? others.count + 1 : 1)
-        func pass(_ index: Int, _ passContext: AnalysisStageContext) -> AnalysisStageContext {
-            var ranged = passContext
-            let report = context.stageProgress
-            ranged.stageProgress = { fraction, message in
-                report((Double(index) + fraction) / passCount, message)
-            }
-            return ranged
-        }
         var shared = context
         shared.vocalEvidence = VocalEvidence(
             audioURL: context.document.stems?.resolved().vocals ?? context.request.sourceURL,
             hasStems: context.document.stems != nil)
-        let primary = await TranscriptionStage().run(pass(0, shared))
-        guard !primary.wasCancelled,
+        guard
             context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty,
-            let vocalsURL = context.document.stems?.resolved().vocals
-        else { return primary }
-        var primaryDocument = context.document
-        primary.apply(&primaryDocument)
-        guard primaryDocument.stageRecords[.transcription]?.state == .succeeded,
-            !primaryDocument.lyrics.isEmpty
-        else { return primary }
-        guard !others.isEmpty,
-            let logProbs = try? await Task.detached(
-                priority: .userInitiated,
-                operation: {
-                    try context.vocalPosteriorgram(vocalsURL)
-                }
-            ).value
-        else { return primary }
-        // One engine resident at a time: the requested mode's model is done.
-        await context.transcriptionEngineFactory.engine(for: requested)?.releaseResources()
+            let vocalsURL = context.document.stems?.resolved().vocals, !others.isEmpty
+        else { return await TranscriptionStage().run(shared) }
 
-        var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
-            requested: primaryDocument.lyrics
-        ]
-        for (offset, mode) in others.enumerated() {
-            guard !Task.isCancelled else { return primary }
+        // Whisper decodes on the CPU; Qwen (MLX) uses the GPU and Parakeet the Neural Engine. Run
+        // Whisper in its own lane beside the others instead of after them: each engine's output
+        // is unchanged, and a fresh 192 s song spent 62 of 99 s waiting on Whisper alone
+        // (Release, 2026-10-10). Within a lane, one engine is resident at a time. Both
+        // Parakeet profiles share FluidAudio, so they stay in one lane.
+        let modes = [requested] + others
+        let progress = PassProgress(passCount: modes.count, report: context.stageProgress)
+        func modeContext(_ mode: TranscriptionMode) -> AnalysisStageContext {
             var request = context.request
             request.transcriptionMode = mode
-            let modeContext = AnalysisStageContext(
+            var modeContext = AnalysisStageContext(
                 request: request, document: context.document, sourceDigest: context.sourceDigest,
                 digest: context.digest, cache: context.cache, stemEngine: context.stemEngine,
                 stemRefiners: context.stemRefiners,
                 transcriptionEngineFactory: context.transcriptionEngineFactory,
                 harmonyEngine: context.harmonyEngine, chordProBuilder: context.chordProBuilder,
                 chordProReplacementPolicy: context.chordProReplacementPolicy,
-                stageProgress: context.stageProgress,
+                stageProgress: progress.reporter(for: modes.firstIndex(of: mode)!),
                 measureWordTimes: context.measureWordTimes,
                 vocalPosteriorgram: context.vocalPosteriorgram)
-            var evidenceContext = modeContext
-            evidenceContext.vocalEvidence = shared.vocalEvidence
-            let outcome = await TranscriptionStage().run(pass(offset + 1, evidenceContext))
-            await context.transcriptionEngineFactory.engine(for: mode)?.releaseResources()
-            guard !outcome.wasCancelled else { return primary }
+            modeContext.vocalEvidence = shared.vocalEvidence
+            return modeContext
+        }
+        let factory = context.transcriptionEngineFactory
+        let whisperLane = modes.filter { $0 == .accuracy }
+        let otherLane = modes.filter { $0 != .accuracy }
+        let whisperContexts = whisperLane.map(modeContext)
+        let otherContexts = otherLane.map(modeContext)
+        async let whisperOutcomes = Self.runLane(
+            whisperLane, contexts: whisperContexts, factory: factory)
+        async let otherOutcomes = Self.runLane(
+            otherLane, contexts: otherContexts, factory: factory)
+        let posteriorgram = context.vocalPosteriorgram
+        async let logProbsTask = Task.detached(priority: .userInitiated) {
+            try? posteriorgram(vocalsURL)
+        }.value
+        let outcomes = (await whisperOutcomes).merging(await otherOutcomes) { first, _ in first }
+        let logProbs = await logProbsTask
+
+        guard let primary = outcomes[requested] else {
+            return AnalysisStageOutcome(wasCancelled: true) { _ in }
+        }
+        guard !primary.wasCancelled else { return primary }
+        var primaryDocument = context.document
+        primary.apply(&primaryDocument)
+        guard primaryDocument.stageRecords[.transcription]?.state == .succeeded,
+            !primaryDocument.lyrics.isEmpty, let logProbs,
+            !outcomes.values.contains(where: \.wasCancelled)
+        else { return primary }
+
+        var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
+            requested: primaryDocument.lyrics
+        ]
+        for mode in others {
+            guard let outcome = outcomes[mode] else { return primary }
             var modeDocument = context.document
             outcome.apply(&modeDocument)
             if modeDocument.stageRecords[.transcription]?.state == .succeeded {
@@ -434,6 +460,20 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
             document.lyrics = choice.lyrics
             document.lyricBlendRows = rows
         }
+    }
+
+    /// One lane's passes in order, each engine released before the next loads.
+    private static func runLane(
+        _ lane: [TranscriptionMode], contexts: [AnalysisStageContext],
+        factory: TranscriptionEngineFactory
+    ) async -> [TranscriptionMode: AnalysisStageOutcome] {
+        var outcomes: [TranscriptionMode: AnalysisStageOutcome] = [:]
+        for (mode, laneContext) in zip(lane, contexts) {
+            guard !Task.isCancelled else { break }
+            outcomes[mode] = await TranscriptionStage().run(laneContext)
+            await factory.engine(for: mode)?.releaseResources()
+        }
+        return outcomes
     }
 }
 

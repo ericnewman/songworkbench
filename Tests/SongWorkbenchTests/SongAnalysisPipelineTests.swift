@@ -186,9 +186,9 @@ final class SongAnalysisPipelineTests: XCTestCase {
             )
         ) { _ in }
 
-        let fastCallCount = await fastTranscription.callCount()
+        // The fast engine may also run, in the concurrent blend lane; its result is discarded
+        // here because the stub vocals have no alignment posteriorgram to blend with.
         let balancedCallCount = await balancedTranscription.callCount()
-        XCTAssertEqual(fastCallCount, 0)
         XCTAssertEqual(balancedCallCount, 1)
         XCTAssertEqual(
             result.document.stageRecords[.transcription]?.provenance?.engineIdentifier,
