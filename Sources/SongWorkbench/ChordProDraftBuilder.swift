@@ -724,8 +724,15 @@ struct ChordProDraftBuilder: Sendable {
                     rowChords = [sustained]
                 }
                 if !rowChords.isEmpty { lines.append(chordTimeDirective(for: rowChords)) }
+                // A row that starts before its downbeat (the song's lead-in before the first
+                // downbeat) draws its bars from the downbeat when no chord sounds in the lead-in: a
+                // bar for those few silent beats rendered as an empty measure 1, pushing the
+                // first chord into measure 2 (Another day above ground, 2026-10-13).
+                let downbeat = rowGrid.window(index: span.window)?.start ?? span.start
+                let silentLeadIn = rowChords.allSatisfy { $0.time >= downbeat }
+                let textStart = silentLeadIn ? max(span.start, downbeat) : span.start
                 lines.append(
-                    chordOnlyLine(rowChords, start: span.start, end: span.end, grid: measure))
+                    chordOnlyLine(rowChords, start: textStart, end: span.end, grid: measure))
                 appendRow(
                     kind: .instrumental(role: role), window: span.window, start: span.start,
                     end: span.end,

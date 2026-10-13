@@ -116,6 +116,9 @@ final class ChordProDraftBuilderTests: XCTestCase {
         let firstRow = result.timeline.rows.first
         XCTAssertEqual(firstRow?.chordTimes.first ?? -1, 0.54, accuracy: 1e-9)
         XCTAssertEqual(result.rowOrigins[1] ?? -1, 0.54, accuracy: 1e-9)
+        // No empty lead-in bar ahead of it: the app drew that as an empty measure 1.
+        let firstBars = result.source.split(separator: "\n").first { $0.hasPrefix("|") }
+        XCTAssertEqual(firstBars.map { $0.hasPrefix("| [E]") }, true, result.source)
     }
 
     /// A first chord a whole beat ahead of the downbeat is a played pickup, not jitter.
