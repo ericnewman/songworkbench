@@ -843,13 +843,16 @@ struct ChordProDraftBuilder: Sendable {
         return "{x_chord_times: \(pairs)}"
     }
 
-    /// Moves the song's first chord onto the downbeat it anticipates by less than one beat.
+    /// Moves the song's first chord onto the downbeat it anticipates by under three quarters of a
+    /// beat.
     ///
     /// Chord onsets come out of the recognizer a little early. With nothing sounding before it,
     /// an Eb measured 0.33 s ahead of the first downbeat (Wake Me Up When The Sun Goes Down,
     /// 2026-10-13) opened a pickup row and sat on its beat 4: "the chord should start the
     /// measure" (Eric). Only the first chord moves: later in a song, a push ahead of the beat is
-    /// played on purpose.
+    /// played on purpose. A chord a whole beat or more ahead stays: across the library those sit
+    /// at 0.96-1.02 and ~2 beats, a played pickup (or a bar phase off by a beat), not jitter;
+    /// the jitter cases measured 0.01-0.56 beat (2026-10-13).
     private static func firstChordOnDownbeat(
         _ chords: [RenderableChordEvent], input: ChordProDraftInput
     ) -> [RenderableChordEvent] {
@@ -863,7 +866,7 @@ struct ChordProDraftBuilder: Sendable {
             [beats[phase] - Double(beatsPerBar) * beatLength]
             + stride(from: phase, to: beats.count, by: beatsPerBar).map { beats[$0] }
         guard let downbeat = downbeats.first(where: { $0 >= first.time }),
-            downbeat - first.time < beatLength
+            downbeat - first.time < 0.75 * beatLength
         else { return chords }
         let moved = RenderableChordEvent(
             time: downbeat, label: first.label, confidence: first.confidence)

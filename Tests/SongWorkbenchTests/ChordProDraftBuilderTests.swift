@@ -118,6 +118,20 @@ final class ChordProDraftBuilderTests: XCTestCase {
         XCTAssertEqual(result.rowOrigins[1] ?? -1, 0.54, accuracy: 1e-9)
     }
 
+    /// A first chord a whole beat ahead of the downbeat is a played pickup, not jitter.
+    func testFirstChordAWholeBeatBeforeTheDownbeatKeepsItsTime() {
+        let beats = (0..<64).map { 1.14 + Double($0) * 0.6 }
+        let result = ChordProDraftBuilder().buildResult(
+            ChordProDraftInput(
+                title: "t", tempo: 100,
+                lyrics: [TimedLyricSegment(start: 10.74, end: 12, text: "hello there")],
+                chords: [EditableChordEvent(time: 0.55, chord: "E", confidence: 0.9)],
+                beatTimes: beats,
+                barGrid: SongBarGrid(
+                    beatsPerBar: 4, barPhase: 0, confidence: 0.6, phaseSource: .beatModel)))
+        XCTAssertTrue(result.source.contains("0.550:E"), result.source)
+    }
+
     func testNonRepeatingLineInsideAChorusDoesNotSplitItIntoAOneLineVerse() {
         let lyrics = [
             TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
