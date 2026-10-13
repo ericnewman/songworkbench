@@ -253,7 +253,7 @@ struct ChordProDraftBuilder: Sendable {
             if $0.time == $1.time { return $0.label < $1.label }
             return $0.time < $1.time
         }
-        let chords = includedChords
+        let chords = Self.firstChordOnDownbeat(includedChords, input: input)
 
         if lyrics.isEmpty, !chords.isEmpty {
             lines.append("{start_of_grid}")
@@ -841,6 +841,33 @@ struct ChordProDraftBuilder: Sendable {
             .map { "\(String(format: "%.3f", $0.time)):\($0.label)" }
             .joined(separator: ";")
         return "{x_chord_times: \(pairs)}"
+    }
+
+    /// Moves the song's first chord onto the downbeat it anticipates by less than one beat.
+    ///
+    /// Chord onsets come out of the recognizer a little early. With nothing sounding before it,
+    /// an Eb measured 0.33 s ahead of the first downbeat (Wake Me Up When The Sun Goes Down,
+    /// 2026-10-13) opened a pickup row and sat on its beat 4: "the chord should start the
+    /// measure" (Eric). Only the first chord moves: later in a song, a push ahead of the beat is
+    /// played on purpose.
+    private static func firstChordOnDownbeat(
+        _ chords: [RenderableChordEvent], input: ChordProDraftInput
+    ) -> [RenderableChordEvent] {
+        let beats = input.beatTimes
+        guard let first = chords.first, beats.count >= 2 else { return chords }
+        let beatsPerBar = max(input.barGrid?.beatsPerBar ?? 4, 1)
+        let phase = (input.barGrid?.barPhase ?? 0) % beatsPerBar
+        let beatLength = (beats[beats.count - 1] - beats[0]) / Double(beats.count - 1)
+        // Downbeats on the measured grid, extended one bar before the first beat.
+        let downbeats =
+            [beats[phase] - Double(beatsPerBar) * beatLength]
+            + stride(from: phase, to: beats.count, by: beatsPerBar).map { beats[$0] }
+        guard let downbeat = downbeats.first(where: { $0 >= first.time }),
+            downbeat - first.time < beatLength
+        else { return chords }
+        let moved = RenderableChordEvent(
+            time: downbeat, label: first.label, confidence: first.confidence)
+        return [moved] + chords.dropFirst()
     }
 
     private func directiveValue(_ value: String) -> String {

@@ -92,6 +92,32 @@ final class ChordProDraftBuilderTests: XCTestCase {
             SongStructureAnalyzer().vocalSections(for: lyrics).map(\.start), [0, 13, 32, 45])
     }
 
+    /// Wake Me Up When The Sun Goes Down: the first chord was measured 0.33 s ahead of the
+    /// first downbeat and landed on beat 4 of a pickup bar. It belongs on the downbeat.
+    func testFirstChordJustBeforeTheFirstDownbeatStartsTheMeasure() {
+        let beats = (0..<64).map { 0.54 + Double($0) * 0.6 }
+        let result = ChordProDraftBuilder().buildResult(
+            ChordProDraftInput(
+                title: "t", tempo: 100,
+                lyrics: [TimedLyricSegment(start: 10.14, end: 12, text: "hello there")],
+                chords: [
+                    EditableChordEvent(time: 0.21, chord: "E", confidence: 0.9),
+                    EditableChordEvent(time: 2.85, chord: "A", confidence: 0.9),
+                ],
+                beatTimes: beats,
+                barGrid: SongBarGrid(
+                    beatsPerBar: 4, barPhase: 0, confidence: 0.6, phaseSource: .beatModel)))
+
+        XCTAssertTrue(result.source.contains("0.540:E"), result.source)
+        XCTAssertFalse(result.source.contains("0.210:E"), result.source)
+        // A later chord ahead of its beat keeps its measured time.
+        XCTAssertTrue(result.source.contains("2.850:A"), result.source)
+        // The chart's first row: E on the downbeat that opens the row's first bar.
+        let firstRow = result.timeline.rows.first
+        XCTAssertEqual(firstRow?.chordTimes.first ?? -1, 0.54, accuracy: 1e-9)
+        XCTAssertEqual(result.rowOrigins[1] ?? -1, 0.54, accuracy: 1e-9)
+    }
+
     func testNonRepeatingLineInsideAChorusDoesNotSplitItIntoAOneLineVerse() {
         let lyrics = [
             TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
