@@ -5722,12 +5722,22 @@ private struct ChordProPreviewLineView: View {
         // the end of the shorter array silently fell through to a different axis. That fires on
         // almost every intro, outro, and break with a chord held longer than a bar.
         if isInstrumentalLine, rhythmicSpacing, lineDuration > 0,
-            rowChordTimes.count == line.chords.count,
-            rowChordTimes.indices.contains(index)
+            let anchors = line.instrumentalChordAnchors(times: rowChordTimes),
+            anchors.indices.contains(index)
         {
-            // Through the row ruler, same as a word on a sung row — a chord at time t sits at
-            // x(t), not at a fraction of the row width (which was a second, time-based axis).
-            return min(rowRuler.x(atTime: rowChordTimes[index]), instrumentalTimeWidth)
+            switch anchors[index] {
+            case .time(let time):
+                // Through the row ruler, same as a word on a sung row — a chord at time t sits
+                // at x(t), not at a fraction of the row width (a second, time-based axis).
+                return min(rowRuler.x(atTime: time), instrumentalTimeWidth)
+            case .bar(let bar):
+                // A held chord reprinted in a later bar sits on that bar's downbeat.
+                if let beatsPerBar = beatGrid?.beatsPerBar {
+                    return min(
+                        gutterPx + CGFloat(bar * beatsPerBar) * pixelsPerBeat,
+                        instrumentalTimeWidth)
+                }
+            }
         }
         guard isInstrumentalLine, lineDuration > 0, chordColumnExtent > 0 else {
             return CGFloat(chord.column) * characterWidth

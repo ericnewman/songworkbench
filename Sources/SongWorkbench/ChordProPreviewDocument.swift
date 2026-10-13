@@ -43,6 +43,37 @@ struct ChordProPreviewLine: Equatable, Sendable {
     var hasSungText: Bool {
         lyric.contains { !$0.isWhitespace && $0 != "|" && $0 != "." }
     }
+
+    /// Where each chord of a bar-grid instrumental row belongs: its real onset, or, for a held
+    /// chord the row reprints in a later bar (`| [C#] | [C#] |`), that bar's downbeat. `times`
+    /// carries only the real chord changes, so when a row holds a chord past a bar the counts
+    /// differ; pairing by index then failed and the row fell back to text-column positions,
+    /// which put the song's first chord mid-measure (Another day above ground, 2026-10-13). A
+    /// token naming the same chord as the token before it is the reprint. Nil when the tokens
+    /// still don't pair with `times`.
+    func instrumentalChordAnchors(times: [TimeInterval]) -> [InstrumentalChordAnchor]? {
+        if times.count == chords.count { return times.map { .time($0) } }
+        let characters = Array(lyric)
+        var anchors: [InstrumentalChordAnchor] = []
+        var nextTime = 0
+        for (index, chord) in chords.enumerated() {
+            if index > 0, chords[index - 1].name == chord.name {
+                let bars = characters.prefix(chord.column).filter { $0 == "|" }.count
+                anchors.append(.bar(max(bars - 1, 0)))
+            } else {
+                guard nextTime < times.count else { return nil }
+                anchors.append(.time(times[nextTime]))
+                nextTime += 1
+            }
+        }
+        return nextTime == times.count ? anchors : nil
+    }
+}
+
+enum InstrumentalChordAnchor: Equatable, Sendable {
+    case time(TimeInterval)
+    /// Bar index within the row, 0 = the row's first bar.
+    case bar(Int)
 }
 
 struct ChordProPreviewChord: Equatable, Sendable {
