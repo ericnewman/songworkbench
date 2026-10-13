@@ -1,4 +1,4 @@
-.PHONY: app-release build-release format format-check setup test verify
+.PHONY: app-release build-release format format-check install setup test verify
 
 setup:
 	git config core.hooksPath .githooks
@@ -9,6 +9,10 @@ setup:
 app-release:
 	xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench -configuration Release build \
 		DEVELOPMENT_TEAM=65FBMF6CMD CODE_SIGN_IDENTITY="Apple Development" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES
+
+# Build Release and install it to /Applications, the copy Eric launches.
+install: app-release
+	./scripts/install_app.sh
 
 build-release:
 	swift build -c release --jobs 1

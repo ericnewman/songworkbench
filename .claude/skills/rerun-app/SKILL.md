@@ -1,6 +1,6 @@
 ---
 name: rerun-app
-description: Rebuild the macOS SongWorkbench app from the latest code and relaunch it, replacing any running instance. Use when the user says "re-run the app", "restart the app", "run the latest code", or wants to see a change live in the real app.
+description: Rebuild the macOS SongWorkbench app from the latest code, install it to /Applications (the copy Eric launches), and relaunch it. Use when the user says "re-run the app", "restart the app", "run the latest code", or wants to see a change live in the real app.
 ---
 
 # Re-run SongWorkbench (macOS app)
@@ -19,46 +19,43 @@ bookmarks), then swaps the running instance for the fresh build.
 
 ## Steps
 
-Run these with the shell tool. From a surface with no shell (e.g. Claude
-Desktop), run the same commands via desktop-commander's `start_process`
-(use `read_process_output` to follow the build).
+Eric launches `/Applications/SongWorkbench.app`. A build that stays in `build/` never reaches him
+(2026-10-13: `/Applications` ran a 4-day-old build while every fix sat in `build/Release`). So the
+default is the optimized build, installed there.
 
-1. **Build** (run in the background — a cold build takes minutes, an
-   incremental one under a minute; wait for `** BUILD SUCCEEDED **`):
+Run these with the shell tool. From a surface with no shell (e.g. Claude Desktop), run the same
+commands via desktop-commander's `start_process` (use `read_process_output` to follow the build).
 
-   ```bash
-   cd "$(git rev-parse --show-toplevel)" && xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench -configuration Debug build 2>&1 | tail -5
-   ```
-
-2. **Relaunch** (kill the stale instance — whether launched by Xcode or a
-   previous re-run — then open the built bundle):
+1. **Build, install, relaunch** (run in the background; a cold build takes minutes):
 
    ```bash
-   pkill -f "SongWorkbench.app/Contents/MacOS/SongWorkbench"; APP="$(git rev-parse --show-toplevel)/build/Debug/SongWorkbench.app" && open "$APP" && echo "launched $APP"
+   cd "$(git rev-parse --show-toplevel)" && make install 2>&1 | grep -E "BUILD (SUCCEEDED|FAILED)|installed|busy|error"
    ```
 
-3. **Verify** it stayed up (a crash-on-launch dies within seconds):
+   `make install` builds Release (`make app-release`), then `scripts/install_app.sh` quits the
+   running app, keeps the replaced copy at `/Volumes/SSD/SongWorkbench-previous.app`, installs to
+   `/Applications` and relaunches. It refuses while the app is busy (over 20% CPU), because
+   quitting would lose an analysis in progress; say so and wait.
+
+2. **Verify** it stayed up and is the installed copy:
 
    ```bash
-   sleep 5; pgrep -fl "SongWorkbench.app/Contents/MacOS/SongWorkbench" || echo "NOT RUNNING - check crash logs: ls -t ~/Library/Logs/DiagnosticReports/SongWorkbench* | head -1"
+   sleep 5; pgrep -fl "MacOS/SongWorkbench" || echo "NOT RUNNING - check crash logs: ls -t ~/Library/Logs/DiagnosticReports/SongWorkbench* | head -1"
    ```
 
-## Optimized build for library runs
+   The path must start with `/Applications/`. Tell Eric which commit is installed (the script
+   prints it).
 
-The recipe above builds Debug (`-Onone`), which is right for debugging and wrong for analysing
-songs: measured 2026-09-19 on one 219 s song with warm caches, Debug took 120 s and Release 6 s
-with identical output. Before a multi-song re-analysis, build and launch the optimized app instead:
+## Debug build (debugging only)
+
+Debug (`-Onone`) is 20x slower at analysis (one 219 s song: 120 s Debug, 6 s Release,
+2026-09-19), so use it only when you need a debugger, and put the Release build back with
+`make install` afterwards:
 
 ```bash
-cd "$(git rev-parse --show-toplevel)" && make app-release 2>&1 | tail -3
+cd "$(git rev-parse --show-toplevel)" && xcodebuild -workspace SongWorkbench.xcworkspace -scheme SongWorkbench -configuration Debug build 2>&1 | tail -5
+pkill -f "SongWorkbench.app/Contents/MacOS/SongWorkbench"; open "$(git rev-parse --show-toplevel)/build/Debug/SongWorkbench.app"
 ```
-
-```bash
-pkill -f "SongWorkbench.app/Contents/MacOS/SongWorkbench"; APP="$(git rev-parse --show-toplevel)/build/Release/SongWorkbench.app" && open "$APP" && echo "launched $APP"
-```
-
-Launching the Release bundle as the GUI app was not verified on 2026-09-19 — only its headless
-`analyze` CLI was. It shares the bundle ID and team with Debug, so it uses the same container.
 
 ## Notes
 
