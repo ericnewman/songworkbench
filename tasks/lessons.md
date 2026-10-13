@@ -1122,3 +1122,14 @@ The JustChords export conversion (2026-10-10) was correct and tested, but Eric l
 **Rule:** before saying a user-facing fix is live, check which bundle is running
 (`pgrep -fl MacOS/SongWorkbench`). If it is `/Applications`, install the new build there (back up
 the old copy first) and say so.
+
+## 2026-10-13 — The first chord sat at the end of measure 1
+
+Three causes stacked: the recognizer puts a song's first chord a fraction of a beat early, which
+opened a pickup bar with the chord on beat 4; the row text floored the silent lead-in before the
+first downbeat to a whole empty bar; and the view, seeing a held chord reprinted per bar, dropped
+from time positions to text-column fractions. Fixing the data alone changed nothing on screen.
+
+**Rule:** check a chart fix in the app, not just in the chart text: the renderer has its own
+pairing of chord tokens to times. A first chord under 3/4 beat early is jitter; a whole beat or
+more is a played pickup (or a bar phase question for Eric), not something to snap.
