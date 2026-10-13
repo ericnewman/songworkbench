@@ -1112,3 +1112,13 @@ repetition classified it as chorus and both choruses started one bar early (vers
 lands on a 4-bar phrase from the verse's first line), and move a boundary only when every chorus
 opened by that line agrees. A per-chorus phrase test alone moved one chorus in three other songs
 and left their siblings behind; check a section rule against the whole library for one-off moves.
+
+## 2026-10-13 — A fix never reached the app Eric runs
+
+The JustChords export conversion (2026-10-10) was correct and tested, but Eric launches
+`/Applications/SongWorkbench.app`, which still dated from 2026-10-09. Every rebuild went to
+`build/Release`, so his JustChords imports kept showing `{x_chord_times}` and `|` rows.
+
+**Rule:** before saying a user-facing fix is live, check which bundle is running
+(`pgrep -fl MacOS/SongWorkbench`). If it is `/Applications`, install the new build there (back up
+the old copy first) and say so.
