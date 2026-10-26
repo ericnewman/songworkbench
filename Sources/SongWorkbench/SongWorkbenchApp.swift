@@ -27,6 +27,7 @@ struct SongWorkbenchApp: App {
                 .foregroundStyle(Color.swTextPrimary)
                 .tint(Color.swAccent)
                 .preferredColorScheme(.dark)
+                .font(.swDisplay(13))
                 .onReceive(
                     NotificationCenter.default.publisher(
                         for: PlatformLifecycle.willTerminateNotification)
@@ -46,6 +47,7 @@ struct SongWorkbenchApp: App {
             Window("About \(AboutInfo.appName)", id: "about") {
                 AboutView()
                     .preferredColorScheme(.dark)
+                    .font(.swDisplay(13))
             }
             .windowResizability(.contentSize)
             Settings {
@@ -58,10 +60,12 @@ struct SongWorkbenchApp: App {
                         .tabItem { Label("MIDI Instruments", systemImage: "pianokeys") }
                 }
                 .preferredColorScheme(.dark)
+                .font(.swDisplay(13))
             }
             Window("Lyric Blend", id: "lyricBlend") {
                 LyricBlendView(model: model)
                     .preferredColorScheme(.dark)
+                    .font(.swDisplay(13))
             }
             .defaultSize(width: 720, height: 640)
             .commands {

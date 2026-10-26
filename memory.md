@@ -512,3 +512,8 @@
 - The native six-stem separation model stays loaded for the app session
   (`ResidentSeparationEngine`, Eric 2026-10-10): saves ~6 s of Neural Engine compile per
   separated song for ~1.5 GB resident; memory-pressure warnings release it.
+- The app uses the Endogen brand (2026-10-26): `EndogenBrand.swift` tokens behind the `sw*`
+  names in `Theme.swift`; Space Grotesk and JetBrains Mono bundled in `Resources/Fonts` (OFL)
+  and registered at launch. Stem lanes and error coral are deliberate functional exceptions;
+  amber is the playback highlight. The chart measures columns with `PlatformFont.endogenMono`,
+  so a font change must change drawing and measurement together. Icon source: `tools/icon/`.
