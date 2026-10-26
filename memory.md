@@ -517,3 +517,5 @@
   and registered at launch. Stem lanes and error coral are deliberate functional exceptions;
   amber is the playback highlight. The chart measures columns with `PlatformFont.endogenMono`,
   so a font change must change drawing and measurement together. Icon source: `tools/icon/`.
+  Brand core rule 8: the app's own screens lead with `AppTitleBlock` (icon + name in h1);
+  Endogen is one Mist line ("by Endogen", or "© <year> Endogen LLC" in About), never the lockup.
