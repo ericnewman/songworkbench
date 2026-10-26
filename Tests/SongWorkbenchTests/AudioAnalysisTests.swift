@@ -2024,7 +2024,7 @@ final class GridOnsetDumpTests: XCTestCase {
         }
         let songs = URL(
             fileURLWithPath: NSHomeDirectory()
-                + "/Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+                + "/Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/songs"
         )
         var dump: [String: [String: [Double]]] = [:]
         for file in try FileManager.default.contentsOfDirectory(

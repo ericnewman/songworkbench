@@ -23,7 +23,7 @@ final class SoloTranscriptionDiagnosticTests: XCTestCase {
         }
         let match = ProcessInfo.processInfo.environment["SW_SOLO_DIAG_MATCH"]
         let store = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            "Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+            "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/songs"
         )
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: store.path) else {
             throw XCTSkip("No app store at \(store.path)")

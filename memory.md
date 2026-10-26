@@ -108,9 +108,11 @@
   file access, and network-client access. Release signing is automatic and
   driven by `SONGWORKBENCH_DEVELOPMENT_TEAM`; the bundle ID comes from
   `SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER`: Release (App Store / TestFlight) is
-  `com.endogenllc.songworkbench`, Debug deliberately stays `com.local.SongWorkbench`
-  so the dev sandbox container keeps its data. The two builds use separate
-  containers and the app has no cross-container migration. Tests are
+  `com.endogenllc.songworkbench`, Debug is `com.endogenllc.songworkbench.debug`
+  (was `com.local.SongWorkbench` until 2026-10-26; Eric's dev data was copied into
+  the new Debug container by hand, and the old container is left in place). The
+  builds use separate containers and the app has no cross-container migration;
+  tests and tools read the Debug container's path. Tests are
   `com.endogenllc.songworkbench.tests`; os_log subsystem is
   `com.endogenllc.songworkbench` in every configuration. The app icon family is
   `Resources/Assets.xcassets/AppIcon.appiconset`, generated

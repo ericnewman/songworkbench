@@ -21,7 +21,7 @@ final class LyricRetimingDiagnosticTests: XCTestCase {
     private var container: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
-                "Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench"
+                "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench"
             )
     }
 

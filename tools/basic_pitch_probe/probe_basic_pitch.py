@@ -21,7 +21,7 @@ import sys
 import time
 
 SONGS_DIR = os.path.expanduser(
-    "~/Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+    "~/Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/songs"
 )
 
 

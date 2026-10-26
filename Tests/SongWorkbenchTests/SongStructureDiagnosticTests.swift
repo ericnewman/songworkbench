@@ -23,7 +23,7 @@ final class SongStructureDiagnosticTests: XCTestCase {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [
             home.appendingPathComponent(
-                "Library/Containers/com.local.SongWorkbench/Data/Library/"
+                "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/"
                     + "Application Support/SongWorkbench/songs"),
             home.appendingPathComponent("Library/Application Support/SongWorkbench/songs"),
         ]

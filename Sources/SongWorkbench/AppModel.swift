@@ -2149,11 +2149,13 @@ final class AppModel: ObservableObject {
         supportDirectory.appendingPathComponent("Sources", isDirectory: true)
     }
 
-    /// Debug builds use `com.local.SongWorkbench`; Release (App Store) builds use
-    /// `com.endogenllc.songworkbench`. Each has its own sandbox container.
+    /// Debug builds use `com.endogenllc.songworkbench.debug`; Release (App Store) builds use
+    /// `com.endogenllc.songworkbench`. Each has its own sandbox container. `com.local.SongWorkbench`
+    /// is the Debug identity before 2026-10-26, kept so sources imported there can still be recovered.
     nonisolated private static let sandboxContainerBundleIdentifiers = [
-        "com.local.SongWorkbench",
+        "com.endogenllc.songworkbench.debug",
         "com.endogenllc.songworkbench",
+        "com.local.SongWorkbench",
     ]
 
     nonisolated private static func sandboxContainerSourcesDirectories() -> [URL] {

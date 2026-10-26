@@ -22,7 +22,7 @@ final class LineLengthConsistencyDiagnosticTests: XCTestCase {
             throw XCTSkip("Set SW_LINE_LENGTH_DIAG=1 to run this diagnostic")
         }
         let store = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            "Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+            "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/songs"
         )
         var report =
             "| song | bpm | P recut | fit occ. | P preview | lyric rows | rows ≈P | rows ≈2P | rows <P | rows >P (max, beats) | median row beats |\n|---|---|---|---|---|---|---|---|---|---|---|\n"

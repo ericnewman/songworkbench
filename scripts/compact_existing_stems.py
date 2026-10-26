@@ -13,7 +13,7 @@ import uuid
 import numpy as np
 
 STEMS = os.path.expanduser(
-    "~/Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/"
+    "~/Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/"
     "SongWorkbench/Analysis/Stems"
 )
 

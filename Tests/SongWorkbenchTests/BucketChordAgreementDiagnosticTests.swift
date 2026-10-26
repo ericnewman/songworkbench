@@ -108,7 +108,7 @@ final class BucketChordAgreementDiagnosticTests: XCTestCase {
             throw XCTSkip("Set SW_BUCKET_CHORD_DIAG=1 to run this diagnostic")
         }
         let store = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            "Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+            "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/songs"
         )
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: store.path) else {
             throw XCTSkip("No app store at \(store.path)")
@@ -154,7 +154,7 @@ final class BucketChordAgreementDiagnosticTests: XCTestCase {
             throw XCTSkip("Set SW_BUCKET_YIELD_SONG=<substring of source filename>")
         }
         let store = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
-            "Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+            "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/songs"
         )
         for file in try FileManager.default.contentsOfDirectory(atPath: store.path) {
             let data = try Data(contentsOf: store.appendingPathComponent(file))

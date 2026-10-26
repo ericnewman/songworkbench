@@ -44,21 +44,21 @@ final class ChordQualityStageAttributionTests: XCTestCase {
     private var containerCaches: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
-                "Library/Containers/com.local.SongWorkbench/Data/Library/Caches/SongWorkbench/Analysis"
+                "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Caches/SongWorkbench/Analysis"
             )
     }
 
     private var containerStems: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
-                "Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/Analysis/Stems"
+                "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/Analysis/Stems"
             )
     }
 
     private var containerSongs: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
-                "Library/Containers/com.local.SongWorkbench/Data/Library/Application Support/SongWorkbench/songs"
+                "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Application Support/SongWorkbench/songs"
             )
     }
 

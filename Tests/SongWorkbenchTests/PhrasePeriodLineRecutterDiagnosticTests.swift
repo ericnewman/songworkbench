@@ -43,7 +43,7 @@ final class PhrasePeriodLineRecutterDiagnosticTests: XCTestCase {
     private var songsDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
-                "Library/Containers/com.local.SongWorkbench/Data/Library/"
+                "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/"
                     + "Application Support/SongWorkbench/songs")
     }
 

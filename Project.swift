@@ -71,7 +71,7 @@ let project = Project(
             ],
             settings: .settings(base: [
                 "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-                "SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER": "com.local.SongWorkbench",
+                "SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER": "com.endogenllc.songworkbench.debug",
                 "CODE_SIGN_STYLE": "Automatic",
                 "CURRENT_PROJECT_VERSION": "1",
                 // The Copy Bundled CoreML Model phase rsyncs a whole .mlpackage directory; Xcode's
@@ -97,8 +97,8 @@ let project = Project(
                 "DEVELOPMENT_TEAM": "65FBMF6CMD",
                 "ENABLE_APP_SANDBOX": "YES",
             ], release: [
-                // App Store / TestFlight identity (Endogen LLC). Debug keeps com.local.SongWorkbench
-                // so the development sandbox container (models, projects) stays where it is.
+                // App Store / TestFlight identity (Endogen LLC). Debug is com.endogenllc.songworkbench.debug,
+                // its own sandbox container, so development data never mixes with a TestFlight install.
                 "SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER": "com.endogenllc.songworkbench",
                 "CODE_SIGNING_ALLOWED": "YES",
                 "CODE_SIGN_IDENTITY": "Apple Distribution",

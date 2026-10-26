@@ -49,7 +49,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.join(HERE, "LyricsAlignment-MTL")
 POLAR = os.path.join(HERE, "polarformer")
 CONTAINER = os.path.expanduser(
-    "~/Library/Containers/com.local.SongWorkbench/Data/Library/"
+    "~/Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/"
     "Application Support/SongWorkbench"
 )
 RESOLUTION = 256 / 22050 * 3

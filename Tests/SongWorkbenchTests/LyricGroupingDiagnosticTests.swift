@@ -32,7 +32,7 @@ final class LyricGroupingDiagnosticTests: XCTestCase {
     private var cacheDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
-                "Library/Containers/com.local.SongWorkbench/Data/Library/Caches/SongWorkbench/Analysis"
+                "Library/Containers/com.endogenllc.songworkbench.debug/Data/Library/Caches/SongWorkbench/Analysis"
             )
     }
 
