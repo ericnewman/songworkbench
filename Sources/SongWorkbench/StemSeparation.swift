@@ -7,7 +7,7 @@ import os
 
 enum AnalysisResourceLog {
     private static let logger = Logger(
-        subsystem: "com.local.SongWorkbench",
+        subsystem: "com.endogenllc.songworkbench",
         category: "analysis-performance"
     )
 

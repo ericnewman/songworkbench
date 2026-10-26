@@ -1331,7 +1331,7 @@
 					"$(inherited)",
 					"-L$(DT_TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.local.SongWorkbenchTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.endogenllc.songworkbench.tests;
 				PRODUCT_NAME = SongWorkbenchTests;
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
@@ -1472,7 +1472,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = SongWorkbench;
 				SDKROOT = macosx;
-				SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER = com.local.SongWorkbench;
+				SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER = com.endogenllc.songworkbench;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
@@ -1498,7 +1498,7 @@
 					"$(inherited)",
 					"-L$(DT_TOOLCHAIN_DIR)/usr/lib/swift/$(PLATFORM_NAME)",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.local.SongWorkbenchTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.endogenllc.songworkbench.tests;
 				PRODUCT_NAME = SongWorkbenchTests;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
