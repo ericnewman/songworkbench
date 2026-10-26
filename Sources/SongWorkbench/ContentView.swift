@@ -103,10 +103,10 @@ struct ContentView: View {
 /// What the main window shows at launch before a song is selected.
 struct LaunchEmptyState: View {
     var body: some View {
-        // The app is the hero (Endogen brand core rule 8): its icon and name, "by Endogen"
-        // beneath, then what to do next.
+        // The app is the hero (Endogen brand core rule 8): its icon and name, Endogen's logo
+        // beneath ("by" + the Endogen lockup), then what to do next.
         VStack(spacing: 20) {
-            AppTitleBlock(attribution: AboutInfo.byline, axis: .vertical)
+            AppTitleBlock(axis: .vertical)
             Text("No song selected. Import an audio file to begin.")
                 .font(.swDisplay(13))
                 .foregroundStyle(Color.swTextSecondary)
@@ -128,7 +128,7 @@ struct ModelOnboardingSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                AppTitleBlock(attribution: AboutInfo.byline)
+                AppTitleBlock()
                     .padding(.bottom, 6)
                 Text(
                     "Welcome. SongWorkbench analyzes songs on-device. Install the analysis models "

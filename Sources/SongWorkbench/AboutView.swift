@@ -7,11 +7,11 @@ enum AboutInfo {
     static let appName = "SongWorkbench"
     static let version = "1.0"
     static let author = "Eric Newman"
-    /// Endogen's one attribution line in the About box (brand core rule 8), current year.
+    /// The line under the Endogen logo at the foot of the About box (brand core rule 8), current year.
     static var copyright: String {
         "© \(Calendar.current.component(.year, from: Date())) Endogen LLC"
     }
-    /// Endogen's attribution on the welcome sheet and the launch view.
+    /// What VoiceOver reads for the "by" + Endogen lockup attribution.
     static let byline = "by Endogen"
     static let tagline =
         "A local-first macOS workbench for decoding a recording into lyrics, chords, bass lines, and stems."
@@ -108,6 +108,10 @@ struct AboutContent: View {
                     }
                 }
             }
+
+            // Endogen's attribution closes the About box: "by", the color lockup, the copyright.
+            Divider()
+            EndogenAttribution(copyright: AboutInfo.copyright)
         }
         .padding(28)
         .frame(width: 520, alignment: .leading)
@@ -115,7 +119,7 @@ struct AboutContent: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            AppTitleBlock(attribution: AboutInfo.copyright)
+            AppTitleBlock(showsEndogen: false)
             Text("Version \(AboutInfo.version)  ·  \(AboutInfo.author)")
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
@@ -155,12 +159,12 @@ struct AboutContent: View {
 }
 
 /// The app as the hero of its own screens (Endogen brand core rule 8): its icon and its name in
-/// the brand's `h1` style, with Endogen as one small Mist attribution line beneath. Shared by the
-/// About window, the first-run welcome sheet and the launch view, so the three stay alike.
+/// the brand's `h1` style, with Endogen's logo beneath as attribution. Shared by the About window,
+/// the first-run welcome sheet and the launch view, so the three stay alike. The About window
+/// passes `showsEndogen: false` and puts `EndogenAttribution` at its foot instead.
 struct AppTitleBlock: View {
-    /// "© <year> Endogen LLC" in About, "by Endogen" elsewhere.
-    let attribution: String
     var axis: Axis = .horizontal
+    var showsEndogen = true
 
     var body: some View {
         let layout =
@@ -169,14 +173,48 @@ struct AppTitleBlock: View {
             : AnyLayout(VStackLayout(alignment: .center, spacing: 12))
         layout {
             AppIconImage(size: axis == .horizontal ? 72 : 112)
-            VStack(alignment: axis == .horizontal ? .leading : .center, spacing: 4) {
+            VStack(alignment: axis == .horizontal ? .leading : .center, spacing: 6) {
                 Text(AboutInfo.appName)
                     .font(Font.Endogen.h1)
                     .tracking(-0.96)  // h1: -2%
                     .foregroundStyle(Color.swTextPrimary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
-                Text(attribution)
+                if showsEndogen {
+                    EndogenAttribution()
+                }
+            }
+        }
+    }
+}
+
+/// Endogen's attribution on an app screen (brand core rule 8): a small "by" in the `label` style,
+/// then the color Endogen lockup at 160 pt wide (rule: 140 to 180), and in About boxes the
+/// copyright line under it in `small` Mist. The app is dark only (`.preferredColorScheme(.dark)`),
+/// so the lockup is always the dark-background artwork, copied unaltered from the brand kit.
+struct EndogenAttribution: View {
+    var copyright: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 8) {
+                Text("by")
+                    .font(Font.Endogen.label)
+                    .textCase(.uppercase)
+                    .tracking(1.3)
+                    .foregroundStyle(Color.swTextSecondary)
+                Image("EndogenLockup")
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    // A fixed height too (the artwork is 600 x 246), so the logo never gives up
+                    // height to a stack that is laying out under a tight vertical proposal.
+                    .frame(width: 160, height: 160 * 246 / 600)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(AboutInfo.byline)
+            if let copyright {
+                Text(copyright)
                     .font(Font.Endogen.small)
                     .foregroundStyle(Color.swTextSecondary)
             }
