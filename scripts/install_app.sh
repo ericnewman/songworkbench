@@ -11,6 +11,12 @@ installed="/Applications/SongWorkbench.app"
 previous="/Volumes/SSD/SongWorkbench-previous.app"
 
 [[ -d "$built" ]] || { echo "no $built; run make app-release first" >&2; exit 1; }
+# The installed app must open Eric's library, which lives in the com.local.SongWorkbench container.
+bundle_id="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$built/Contents/Info.plist")"
+if [[ "$bundle_id" != "com.local.SongWorkbench" ]]; then
+  echo "refusing to install $bundle_id: it would open a different (empty) library container" >&2
+  exit 1
+fi
 
 running="$(pgrep -f 'SongWorkbench.app/Contents/MacOS/SongWorkbench$' || true)"
 if [[ -n "$running" ]]; then

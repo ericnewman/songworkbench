@@ -1133,3 +1133,13 @@ from time positions to text-column fractions. Fixing the data alone changed noth
 **Rule:** check a chart fix in the app, not just in the chart text: the renderer has its own
 pairing of chord tokens to times. A first chord under 3/4 beat early is jitter; a whole beat or
 more is a played pickup (or a bar phase question for Eric), not something to snap.
+
+## 2026-10-26 — The installed app opened an empty library
+
+Another session set Release's bundle ID to the App Store identity (`com.endogenllc.songworkbench`)
+for TestFlight. `make install` built Release, so the installed app ran in a new sandbox
+container: no songs, and 4.7 GB of freshly copied models. Eric's Re-analyze All touched nothing.
+
+**Rule:** a bundle ID is a container. Local installs build with `com.local.SongWorkbench`
+(`make app-release` pins it; `scripts/install_app.sh` refuses any other ID). After installing,
+check the library moved forward (song files' modification times), not just that the app launched.
