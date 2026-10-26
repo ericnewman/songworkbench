@@ -7,7 +7,12 @@ enum AboutInfo {
     static let appName = "SongWorkbench"
     static let version = "1.0"
     static let author = "Eric Newman"
-    static let copyright = "© 2026 Endogen LLC"
+    /// Endogen's one attribution line in the About box (brand core rule 8), current year.
+    static var copyright: String {
+        "© \(Calendar.current.component(.year, from: Date())) Endogen LLC"
+    }
+    /// Endogen's attribution on the welcome sheet and the launch view.
+    static let byline = "by Endogen"
     static let tagline =
         "A local-first macOS workbench for decoding a recording into lyrics, chords, bass lines, and stems."
 
@@ -72,69 +77,52 @@ enum AboutInfo {
 
 struct AboutView: View {
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                header
+        ScrollView { AboutContent() }
+            .background(Color.swCanvas)
+    }
+}
 
-                section("Open-source libraries", credits: AboutInfo.libraries)
-                section("Models", credits: AboutInfo.models)
+/// The About window's contents, apart from its scroll view (which offscreen renders can't draw).
+struct AboutContent: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            header
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Under the hood")
-                        .font(.swDisplay(13, weight: .semibold))
-                        .foregroundStyle(Color.swTextPrimary)
-                    ForEach(Array(AboutInfo.facts.enumerated()), id: \.offset) { _, fact in
-                        HStack(alignment: .top, spacing: 8) {
-                            Circle()
-                                .fill(Color.swMint)
-                                .frame(width: 5, height: 5)
-                                .padding(.top, 6)
-                            Text(fact)
-                                .font(.swDisplay(12))
-                                .foregroundStyle(Color.swTextSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+            section("Open-source libraries", credits: AboutInfo.libraries)
+            section("Models", credits: AboutInfo.models)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Under the hood")
+                    .font(.swDisplay(13, weight: .semibold))
+                    .foregroundStyle(Color.swTextPrimary)
+                ForEach(Array(AboutInfo.facts.enumerated()), id: \.offset) { _, fact in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle()
+                            .fill(Color.swMint)
+                            .frame(width: 5, height: 5)
+                            .padding(.top, 6)
+                        Text(fact)
+                            .font(.swDisplay(12))
+                            .foregroundStyle(Color.swTextSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-
-                // The Endogen lockup, unmodified (brand guidelines: never redrawn or recolored),
-                // above its 140 pt minimum, with the required clear space around it.
-                VStack(spacing: 10) {
-                    Image("EndogenLockup")
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .frame(width: 200)
-                        .padding(16)
-                        .accessibilityLabel("Endogen")
-                    Text(AboutInfo.copyright)
-                        .font(.swMono(11))
-                        .foregroundStyle(Color.swTextSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 4)
             }
-            .padding(28)
-            .frame(width: 520, alignment: .leading)
         }
-        .background(Color.swCanvas)
+        .padding(28)
+        .frame(width: 520, alignment: .leading)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(AboutInfo.appName)
-                    .font(.swDisplay(24, weight: .bold))
-                    .foregroundStyle(Color.swTextPrimary)
-                Text("Version \(AboutInfo.version)  ·  \(AboutInfo.author)")
-                    .font(.swMono(11))
-                    .foregroundStyle(Color.swTextSecondary)
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            AppTitleBlock(attribution: AboutInfo.copyright)
+            Text("Version \(AboutInfo.version)  ·  \(AboutInfo.author)")
+                .font(.swMono(11))
+                .foregroundStyle(Color.swTextSecondary)
             Text(AboutInfo.tagline)
                 .font(.swDisplay(12))
                 .foregroundStyle(Color.swTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 2)
         }
     }
 
@@ -163,5 +151,58 @@ struct AboutView: View {
                 }
             }
         }
+    }
+}
+
+/// The app as the hero of its own screens (Endogen brand core rule 8): its icon and its name in
+/// the brand's `h1` style, with Endogen as one small Mist attribution line beneath. Shared by the
+/// About window, the first-run welcome sheet and the launch view, so the three stay alike.
+struct AppTitleBlock: View {
+    /// "© <year> Endogen LLC" in About, "by Endogen" elsewhere.
+    let attribution: String
+    var axis: Axis = .horizontal
+
+    var body: some View {
+        let layout =
+            axis == .horizontal
+            ? AnyLayout(HStackLayout(alignment: .center, spacing: 16))
+            : AnyLayout(VStackLayout(alignment: .center, spacing: 12))
+        layout {
+            AppIconImage(size: axis == .horizontal ? 72 : 112)
+            VStack(alignment: axis == .horizontal ? .leading : .center, spacing: 4) {
+                Text(AboutInfo.appName)
+                    .font(Font.Endogen.h1)
+                    .tracking(-0.96)  // h1: -2%
+                    .foregroundStyle(Color.swTextPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(attribution)
+                    .font(Font.Endogen.small)
+                    .foregroundStyle(Color.swTextSecondary)
+            }
+        }
+    }
+}
+
+/// The app's own icon, rounded the way the system shows app icons (the asset is square).
+struct AppIconImage: View {
+    let size: CGFloat
+
+    var body: some View {
+        icon
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous))
+            .accessibilityHidden(true)
+    }
+
+    private var icon: Image {
+        #if os(macOS)
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+        #else
+            Image(systemName: "waveform")
+        #endif
     }
 }
