@@ -4862,3 +4862,19 @@ in Settings, with General MIDI drums for the drum pieces. Research on robust sin
   above MIDI 64 dropped as overtones.
 - Tests: 1244 run, 1 failure (`testAWalkingBassDoesNotChangeTheChordLine`, failing on `main` too).
 - Not yet checked on screen: the ♪ strip toggle, the MIDI Instruments Settings tab, listening.
+
+## 2026-10-26 — Adopt the Endogen brand
+
+Eric approved the plan and recommendations: `sw*` tokens stay as aliases onto `Color.Endogen` /
+`Font.Endogen`; stem lane colors and error coral stay as functional data colors; amber is the
+playback highlight only, so the vocals lane gets a new color; JetBrains Mono downloaded from the
+official JetBrains release (OFL) and added to the skill and the vault.
+
+- [ ] `EndogenBrand.swift` copied verbatim; `Theme.swift` drops its duplicate `Color.init(hex:)`
+- [ ] Space Grotesk + JetBrains Mono bundled with both OFL licenses, registered at launch
+- [ ] `Theme.swift` tokens point at the brand; bass lane keeps its own blue; vocals lane recolored
+- [ ] System fonts and raw palette colors at call sites replaced (mixer shading kept)
+- [ ] AccentColor = P31 Phosphor
+- [ ] About: name in Space Grotesk, Endogen lockup (unmodified PNG), © Endogen LLC
+- [ ] App icon replaced with the approved proposal (Scope, one P31 trace, one amber contact)
+- [ ] pbxproj registration; full suite green; installed and checked in the app

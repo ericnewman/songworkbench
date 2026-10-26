@@ -48,7 +48,7 @@ struct LyricBlendView: View {
                 "Pick the best line per row from every transcription mode, or type your own "
                     + "correction — an override always wins and survives re-analysis."
             )
-            .font(.callout)
+            .font(.swDisplay(12))
             .foregroundStyle(Color.swTextSecondary)
         }
     }
@@ -67,7 +67,7 @@ struct LyricBlendView: View {
             "No blend candidates yet — analyze a song with more than one transcription model "
                 + "installed to compare lines here."
         )
-        .font(.callout)
+        .font(.swDisplay(12))
         .foregroundStyle(Color.swTextSecondary)
         .padding(.top, 40)
     }
@@ -158,14 +158,14 @@ private struct LyricBlendRowView: View {
         HStack(spacing: 8) {
             if let displayLineNumber {
                 Text("Line \(displayLineNumber)")
-                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .font(.swDisplay(10, weight: .semibold).monospacedDigit())
                     .foregroundStyle(Color.swTextPrimary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Color.swSurface, in: Capsule())
             }
             Text(timeLabel)
-                .font(.caption.monospacedDigit())
+                .font(.swDisplay(10).monospacedDigit())
                 .foregroundStyle(Color.swTextSecondary)
             if candidatesAgree {
                 Spacer(minLength: 8)
@@ -200,18 +200,18 @@ private struct LyricBlendRowView: View {
             HStack(spacing: 8) {
                 if let displayLineNumber {
                     Text("Line \(displayLineNumber)")
-                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .font(.swDisplay(10, weight: .semibold).monospacedDigit())
                         .foregroundStyle(Color.swTextPrimary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
                         .background(Color.swSurface, in: Capsule())
                 }
                 Text(timeLabel)
-                    .font(.caption.monospacedDigit())
+                    .font(.swDisplay(10).monospacedDigit())
                     .foregroundStyle(Color.swTextSecondary)
                 Circle().fill(Color.swTextSecondary.opacity(0.5)).frame(width: 6, height: 6)
                 Text(row.candidates.first?.text ?? "")
-                    .font(.body)
+                    .font(.swDisplay(13))
                     .foregroundStyle(Color.swTextPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -240,7 +240,7 @@ private struct LyricBlendRowView: View {
             Circle().fill(Color.swMint).frame(width: 8, height: 8)
             TextField("Type a correction...", text: $overrideDraft)
                 .textFieldStyle(.plain)
-                .font(.body)
+                .font(.swDisplay(13))
                 .foregroundStyle(Color.swMint)
                 .onChange(of: overrideDraft) { _, newValue in
                     onOverrideChange(newValue)
@@ -276,7 +276,7 @@ private struct LyricBlendRowView: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Circle().fill(tint).frame(width: 8, height: 8)
                 Text(candidate.text)
-                    .font(.body)
+                    .font(.swDisplay(13))
                     .foregroundStyle(tint)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 8)

@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		66F903DC41613007D8588926 /* EndogenBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D094B10F05397669069568 /* EndogenBrand.swift */; };
+		FD44F325D4C63338FBFFAE29 /* JetBrainsMono[wght].ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7E47C0F3FBDAC8F14A01E071 /* JetBrainsMono[wght].ttf */; };
+		F47E265A7FF9B1E9B3D691E3 /* SpaceGrotesk[wght].ttf in Resources */ = {isa = PBXBuildFile; fileRef = E21A38BA7AB949E5B7DFD026 /* SpaceGrotesk[wght].ttf */; };
+		A5567E419253E0D55E78D1A5 /* OFL-JetBrainsMono.txt in Resources */ = {isa = PBXBuildFile; fileRef = EE24658EA77DAF9DD60F1B91 /* OFL-JetBrainsMono.txt */; };
+		982CF99DE71C55545D28EBDC /* OFL-SpaceGrotesk.txt in Resources */ = {isa = PBXBuildFile; fileRef = 523345B76FACB1173725348C /* OFL-SpaceGrotesk.txt */; };
 		001A18C2871F1913E68F692E /* ReferenceChartTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = F178E4621EB8C2643DE2798D /* ReferenceChartTiming.swift */; };
 		00BD7A477011B651057D8B88 /* BasicPitchNoteTranscriberTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2850895A30BBB22E832D7D34 /* BasicPitchNoteTranscriberTests.swift */; };
 		016BCA00EAD2A091DCC66C21 /* SongWorkbenchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FC80BFCBF9441BB2E39601B /* SongWorkbenchApp.swift */; };
@@ -290,6 +295,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		F6D094B10F05397669069568 /* EndogenBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndogenBrand.swift; sourceTree = "<group>"; };
+		7E47C0F3FBDAC8F14A01E071 /* JetBrainsMono[wght].ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "JetBrainsMono[wght].ttf"; path = "Fonts/JetBrainsMono[wght].ttf"; sourceTree = "<group>"; };
+		E21A38BA7AB949E5B7DFD026 /* SpaceGrotesk[wght].ttf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "SpaceGrotesk[wght].ttf"; path = "Fonts/SpaceGrotesk[wght].ttf"; sourceTree = "<group>"; };
+		EE24658EA77DAF9DD60F1B91 /* OFL-JetBrainsMono.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "OFL-JetBrainsMono.txt"; path = "Fonts/OFL-JetBrainsMono.txt"; sourceTree = "<group>"; };
+		523345B76FACB1173725348C /* OFL-SpaceGrotesk.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "OFL-SpaceGrotesk.txt"; path = "Fonts/OFL-SpaceGrotesk.txt"; sourceTree = "<group>"; };
 		00B489533DD2A53ADC6224C4 /* SeparationCachingPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeparationCachingPolicyTests.swift; sourceTree = "<group>"; };
 		01B543182F7E6FAE706DB09F /* ThemeContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeContrastTests.swift; sourceTree = "<group>"; };
 		025508D55BE4B501B7F672D7 /* OfflineAudioExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineAudioExporter.swift; sourceTree = "<group>"; };
@@ -574,6 +584,10 @@
 				2FE92A96D324F3F6F9C73721 /* BeatThis-LICENSE.txt */,
 				7682CD3A94ECD0590728EF40 /* cmudict_rhyme.tsv */,
 				B23340B3828AC79AC8CD2196 /* cmudict-arpabet.txt */,
+				7E47C0F3FBDAC8F14A01E071 /* JetBrainsMono[wght].ttf */,
+				E21A38BA7AB949E5B7DFD026 /* SpaceGrotesk[wght].ttf */,
+				EE24658EA77DAF9DD60F1B91 /* OFL-JetBrainsMono.txt */,
+				523345B76FACB1173725348C /* OFL-SpaceGrotesk.txt */,
 				1BD5F4D3D19CE265096BACC8 /* nmp.onnx */,
 			);
 			path = Resources;
@@ -718,6 +732,7 @@
 				49C72557949867ABB059D603 /* StemPlaybackService.swift */,
 				9B7B749E7E1F5CB21D36B750 /* StemSeparation.swift */,
 				AD6008AD76083592B6014F5A /* SyllableCounter.swift */,
+				F6D094B10F05397669069568 /* EndogenBrand.swift */,
 				635970BAB1ED7E639D3AEC37 /* Theme.swift */,
 				C988753BCB1FE231508B56F9 /* Transcription.swift */,
 				F42CA15FC77C0C4AF1EB66CF /* VocalHarmonyAnalysis.swift */,
@@ -1023,6 +1038,10 @@
 				2BA0B01BC2C97C394E6E50AD /* BeatThis-LICENSE.txt in Resources */,
 				2381402A16103672F64D9872 /* cmudict_rhyme.tsv in Resources */,
 				12A21FA8FAD7BA6B55E45B92 /* cmudict-arpabet.txt in Resources */,
+				FD44F325D4C63338FBFFAE29 /* JetBrainsMono[wght].ttf in Resources */,
+				F47E265A7FF9B1E9B3D691E3 /* SpaceGrotesk[wght].ttf in Resources */,
+				A5567E419253E0D55E78D1A5 /* OFL-JetBrainsMono.txt in Resources */,
+				982CF99DE71C55545D28EBDC /* OFL-SpaceGrotesk.txt in Resources */,
 				92D0B4B433E3C59C70CEB0AA /* nmp.onnx in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1167,6 +1186,7 @@
 				A5B0746BD932A47E97DE4862 /* StemPlaybackService.swift in Sources */,
 				6DA2600B01A7D50487BF2AB6 /* StemSeparation.swift in Sources */,
 				D478F10E922500E0D9F0FADA /* SyllableCounter.swift in Sources */,
+				66F903DC41613007D8588926 /* EndogenBrand.swift in Sources */,
 				074187EDCB53200A31EEE4C6 /* Theme.swift in Sources */,
 				B826B21A7B84403145708BDE /* Transcription.swift in Sources */,
 				1FC3586220D0E86B3BB83CCE /* VocalHarmonyAnalysis.swift in Sources */,

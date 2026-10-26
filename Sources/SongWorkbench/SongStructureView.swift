@@ -72,7 +72,7 @@ struct SongStructureView: View {
                         .foregroundStyle(Color.swTextPrimary)
                         .frame(width: 90, alignment: .leading)
                     Text(timeRange(section.start, section.end))
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.swMono(10))
                         .foregroundStyle(Color.swTextSecondary)
                 }
             }
@@ -123,11 +123,11 @@ struct SongStructureView: View {
     private func templateRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Text(label + ":")
-                .font(.system(.caption, design: .monospaced))
+                .font(.swMono(10))
                 .foregroundStyle(Color.swTextSecondary)
                 .frame(width: 100, alignment: .leading)
             Text(value)
-                .font(.system(.caption, design: .monospaced))
+                .font(.swMono(10))
                 .foregroundStyle(Color.swTextPrimary)
         }
     }

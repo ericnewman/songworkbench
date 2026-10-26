@@ -431,7 +431,7 @@ private struct SongSidebar: View {
             ? .swAccent
             : status.isComplete ? .swMint : status.hasAny ? .swAmber : .swTextSecondary.opacity(0.5)
         return Image(systemName: status.iconSystemName)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.swDisplay(11, weight: .semibold))
             .foregroundStyle(color)
             .frame(width: 14)
             .help(status.helpText)

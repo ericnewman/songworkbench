@@ -7,7 +7,7 @@ enum AboutInfo {
     static let appName = "SongWorkbench"
     static let version = "1.0"
     static let author = "Eric Newman"
-    static let copyright = "© 2026 Eric Newman"
+    static let copyright = "© 2026 Endogen LLC"
     static let tagline =
         "A local-first macOS workbench for decoding a recording into lyrics, chords, bass lines, and stems."
 
@@ -97,11 +97,22 @@ struct AboutView: View {
                     }
                 }
 
-                Text(AboutInfo.copyright)
-                    .font(.swMono(11))
-                    .foregroundStyle(Color.swTextSecondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 4)
+                // The Endogen lockup, unmodified (brand guidelines: never redrawn or recolored),
+                // above its 140 pt minimum, with the required clear space around it.
+                VStack(spacing: 10) {
+                    Image("EndogenLockup")
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 200)
+                        .padding(16)
+                        .accessibilityLabel("Endogen")
+                    Text(AboutInfo.copyright)
+                        .font(.swMono(11))
+                        .foregroundStyle(Color.swTextSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 4)
             }
             .padding(28)
             .frame(width: 520, alignment: .leading)
@@ -111,18 +122,13 @@ struct AboutView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                Image(systemName: "waveform.badge.magnifyingglass")
-                    .font(.system(size: 34))
-                    .foregroundStyle(Color.swAccent)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(AboutInfo.appName)
-                        .font(.swDisplay(24, weight: .semibold))
-                        .foregroundStyle(Color.swTextPrimary)
-                    Text("Version \(AboutInfo.version)  ·  \(AboutInfo.author)")
-                        .font(.swMono(11))
-                        .foregroundStyle(Color.swTextSecondary)
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(AboutInfo.appName)
+                    .font(.swDisplay(24, weight: .bold))
+                    .foregroundStyle(Color.swTextPrimary)
+                Text("Version \(AboutInfo.version)  ·  \(AboutInfo.author)")
+                    .font(.swMono(11))
+                    .foregroundStyle(Color.swTextSecondary)
             }
             Text(AboutInfo.tagline)
                 .font(.swDisplay(12))

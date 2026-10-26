@@ -9,6 +9,7 @@ struct SongWorkbenchApp: App {
         // iPadOS requires an AVAudioSession category before any AVAudioEngine render/IO
         // starts (silent output otherwise); this is a no-op on macOS.
         PlatformAudioSession.configureForPlayback()
+        EndogenFonts.registerBundled()
     }
 
     var body: some Scene {

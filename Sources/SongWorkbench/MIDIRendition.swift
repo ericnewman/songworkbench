@@ -320,11 +320,11 @@ struct MIDIInstrumentSettingsView: View {
                     "Switch a Stem Mix strip to MIDI with its ♪ button. Drum pieces need "
                         + "multi-track drums; pitched stems are transcribed the first time."
                 )
-                .font(.caption)
+                .font(.swDisplay(10))
                 .foregroundStyle(.secondary)
             }
             if let error = model.midiRenditionError {
-                Text(error).font(.caption).foregroundStyle(Color.swCoral)
+                Text(error).font(.swDisplay(10)).foregroundStyle(Color.swCoral)
             }
         }
         .formStyle(.grouped)

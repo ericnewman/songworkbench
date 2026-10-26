@@ -676,24 +676,25 @@ private struct LyricTimeField: View {
 }
 
 extension ChordConfidenceBand {
-    /// Red through amber to green. `manual` is deliberately outside that ramp — a hand-added
+    /// Coral through amber to phosphor. `manual` (neutral Mist, since the accent became phosphor
+    /// and would read as high confidence) is deliberately outside that ramp — a hand-added
     /// chord carries no confidence measurement, and colouring it red would read as "the detector
     /// is unsure" about a chord the user typed themselves.
     var fillColor: Color {
         switch self {
         case .low: Color.swCoral.opacity(0.28)
-        case .medium: Color.orange.opacity(0.26)
+        case .medium: Color.swAmber.opacity(0.26)
         case .high: Color.swMint.opacity(0.26)
-        case .manual: Color.swAccent.opacity(0.18)
+        case .manual: Color.swTextSecondary.opacity(0.18)
         }
     }
 
     var strokeColor: Color {
         switch self {
         case .low: Color.swCoral.opacity(0.75)
-        case .medium: Color.orange.opacity(0.7)
+        case .medium: Color.swAmber.opacity(0.7)
         case .high: Color.swMint.opacity(0.7)
-        case .manual: Color.swAccent.opacity(0.6)
+        case .manual: Color.swTextSecondary.opacity(0.6)
         }
     }
 }
@@ -1019,7 +1020,7 @@ private struct ChordTimelineEditor: View {
                     model.chordConfidenceThreshold = 0.5
                 } label: {
                     Label("ChordPro confidence", systemImage: "line.3.horizontal.decrease.circle")
-                        .font(.callout)
+                        .font(.swDisplay(12))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -2111,12 +2112,12 @@ struct ChordProTabEditor: View {
         switch config.secondaryMode {
         case .edit:
             TextEditor(text: $model.chordProSource)
-                .font(.system(.body, design: .monospaced))
+                .font(.swMono(13))
                 .border(.separator)
         case .source:
             ScrollView([.horizontal, .vertical]) {
                 Text(previewSource)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.swMono(13))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(8)
@@ -2706,10 +2707,10 @@ struct ChordProAppPreview: View {
         ForEach(items.filter { takesSpace($0.block) }, id: \.offset) { item in
             if case .title(let title) = item.block {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.title2.bold())
+                    Text(title).font(.swDisplay(17, weight: .bold))
                     if !metadata.isEmpty {
                         Text(metadata.joined(separator: "  ·  "))
-                            .font(.subheadline)
+                            .font(.swDisplay(11))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -4367,7 +4368,7 @@ private struct ChordProPreviewBlockView: View {
     /// across `instrumentalTimeWidth` (see `ChordProPreviewLineView.monospaceChordX`).
     var rowStartTime: TimeInterval = 0
     /// Color of this line's audio strip (matches the stem's lane color in the waveform panel).
-    var stripColor: Color = .swAmber
+    var stripColor: Color = .swVocalTeal
     /// The bar downbeat time this line resolves onto (shared metric grid origin); nil = no grid.
     var rowDownbeatSeconds: TimeInterval?
     /// Pickup gutter (seconds) to the left of the shared downbeat column.
@@ -4526,7 +4527,7 @@ private struct ChordProPreviewBlockView: View {
         switch block {
         case .title(let title):
             Text(title)
-                .font(.title2.bold())
+                .font(.swDisplay(17, weight: .bold))
                 .padding(.bottom, 2)
         case .metadata(let label, let value):
             HStack(spacing: 5) {
@@ -4534,15 +4535,15 @@ private struct ChordProPreviewBlockView: View {
                     .foregroundStyle(.secondary)
                 Text(value)
             }
-            .font(.subheadline)
+            .font(.swDisplay(11))
         case .section(let name):
             Text(name)
-                .font(.headline)
+                .font(.swDisplay(13, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.top, 8)
         case .comment(let comment):
             Text(comment)
-                .font(.callout.italic())
+                .font(.swDisplay(12).italic())
                 .foregroundStyle(.secondary)
         case .lyric(let line):
             VStack(alignment: .leading, spacing: 2) {
@@ -4594,7 +4595,7 @@ private struct ChordProPreviewBlockView: View {
         case .directive(let source):
             if showChordTimeLabels {
                 Text(source)
-                    .font(.caption.monospaced())
+                    .font(.swMono(10))
                     .foregroundStyle(.tertiary)
             }
         }
@@ -4654,7 +4655,7 @@ private struct ChordProPreviewBlockView: View {
                 }
             )
             .textFieldStyle(.plain)
-            .font(.system(.body, design: .monospaced))
+            .font(.swMono(13))
             .onExitCommandCompat { isEditingLyric = false }
         }
     }
@@ -4855,7 +4856,7 @@ private struct ChordProPreviewLineView: View {
     /// properties further down, which multiply by `scale.factor`. Nothing in this view may use a
     /// `base…` constant directly for layout: the horizontal axis and the glyph size have to move
     /// together or the collision nudge in `rhythmicWordXs` pushes words off their beat columns.
-    private static let baseLyricFont = PlatformFont.monospacedSystemFont(
+    private static let baseLyricFont = PlatformFont.endogenMono(
         ofSize: ChordProChartTypography.lyricSize, weight: .regular)
     private static let baseCharacterWidth = NSString(string: "M").size(
         withAttributes: [.font: baseLyricFont]
@@ -4911,7 +4912,7 @@ private struct ChordProPreviewLineView: View {
     /// by its fractional position in the bar-grid TEXT (see `monospaceChordX`).
     var rowStartTime: TimeInterval = 0
     /// Color of the audio strip — matches the source stem's lane color in the waveform panel.
-    var stripColor: Color = .swAmber
+    var stripColor: Color = .swVocalTeal
     /// The song time of the bar downbeat this line resolves onto. Pinned to `gutterSeconds` from
     /// the row's left edge, so on the shared constant-pixels-per-second scale every bar is the
     /// same width and beats line up vertically across rows — the song's repeating cadence.
@@ -6057,7 +6058,7 @@ private struct ChordProPreviewLineView: View {
                 // to LastResort), so it rendered as a "?" box (Eric: "what do these ?4
                 // symbols mean?").
                 Text("rest \(restBeats)")
-                    .font(.system(size: scale.scaled(10)))
+                    .font(.swDisplay(scale.scaled(10)))
                     .foregroundStyle(Color.swTextSecondary.opacity(0.75))
                     .offset(
                         x: lastX + rhythmicWordWidth(at: words.count - 1) + scale.scaled(10),
@@ -6090,7 +6091,7 @@ private struct ChordProPreviewLineView: View {
             }
             if let ball {
                 Circle()
-                    .fill(Color.white)
+                    .fill(Color.swTextPrimary)
                     .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
@@ -6339,7 +6340,7 @@ private struct ChordProPreviewLineView: View {
                 let closesFrame = phraseWidth.map { x >= gutterPx + $0 - 0.5 } ?? false
                 if number >= 1, !closesFrame {
                     Text("\(number)")
-                        .font(.system(size: scale.scaled(8), weight: .medium).monospacedDigit())
+                        .font(.swDisplay(scale.scaled(8), weight: .medium).monospacedDigit())
                         .foregroundStyle(Color.swTextSecondary.opacity(0.7))
                         .fixedSize()
                         .offset(x: x + scale.scaled(2), y: 0)
@@ -6664,7 +6665,7 @@ private struct ChordProPreviewLineView: View {
                 chordXs: line.chords.enumerated().map { monospaceChordX($1, at: $0) })
             if let ball = ballPosition {
                 Circle()
-                    .fill(Color.white)
+                    .fill(Color.swTextPrimary)
                     .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
@@ -7070,13 +7071,13 @@ struct StemMixSidebar: View {
             }
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swCoral)
             }
             sourcePicker
             if model.stemFiles == nil {
                 Text("Run Stems separation to enable the mix.")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
@@ -7085,7 +7086,7 @@ struct StemMixSidebar: View {
                         "Stems are stale — rerun Stems.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swCoral)
                 }
                 // Slim console: the SAME channel strips as the Stems editor (full-height
@@ -7301,7 +7302,7 @@ struct StemMixSidebar: View {
             // still lines up with the stem strips. Not a toggle: the beat click is always the
             // metronome now, so there is no second mode to switch to.
             Image(systemName: "metronome.fill")
-                .font(.system(size: 11, weight: .medium))
+                .font(.swDisplay(11, weight: .medium))
                 .foregroundStyle(Color.accentColor)
                 .frame(width: PanKnob.defaultSize, height: PanKnob.defaultSize)
                 .accessibilityLabel("Metronome")
@@ -7635,7 +7636,7 @@ private struct ScribbleStrip: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .font(.swDisplay(10, weight: .semibold))
             .foregroundStyle(Color.black.opacity(0.82))
             .lineLimit(1)
             .minimumScaleFactor(0.6)
