@@ -97,6 +97,9 @@ let project = Project(
                 "DEVELOPMENT_TEAM": "65FBMF6CMD",
                 "ENABLE_APP_SANDBOX": "YES",
             ], release: [
+                // App Store / TestFlight identity (Endogen LLC). Debug keeps com.local.SongWorkbench
+                // so the development sandbox container (models, projects) stays where it is.
+                "SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER": "com.endogenllc.songworkbench",
                 "CODE_SIGNING_ALLOWED": "YES",
                 "CODE_SIGN_IDENTITY": "Apple Distribution",
                 "DEVELOPMENT_TEAM": "$(SONGWORKBENCH_DEVELOPMENT_TEAM)",
@@ -108,7 +111,7 @@ let project = Project(
             name: "SongWorkbenchTests",
             destinations: .macOS,
             product: .unitTests,
-            bundleId: "com.local.SongWorkbenchTests",
+            bundleId: "com.endogenllc.songworkbench.tests",
             deploymentTargets: .macOS("14.0"),
             infoPlist: .default,
             sources: ["Tests/SongWorkbenchTests/**"],

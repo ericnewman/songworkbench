@@ -106,8 +106,13 @@
 - TestFlight prep lives in `RELEASE.md`. The app target uses
   `SongWorkbench.entitlements` with App Sandbox, user-selected read/write
   file access, and network-client access. Release signing is automatic and
-  driven by `SONGWORKBENCH_DEVELOPMENT_TEAM`; the bundle ID is overridden with
-  `SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER`. The app icon family is
+  driven by `SONGWORKBENCH_DEVELOPMENT_TEAM`; the bundle ID comes from
+  `SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER`: Release (App Store / TestFlight) is
+  `com.endogenllc.songworkbench`, Debug deliberately stays `com.local.SongWorkbench`
+  so the dev sandbox container keeps its data. The two builds use separate
+  containers and the app has no cross-container migration. Tests are
+  `com.endogenllc.songworkbench.tests`; os_log subsystem is
+  `com.endogenllc.songworkbench` in every configuration. The app icon family is
   `Resources/Assets.xcassets/AppIcon.appiconset`, generated
   from the supplied 512 px MP3/audio-workbench image, with `AccentColor` set to
   the cyan waveform color. Before upload, provide the registered bundle ID,

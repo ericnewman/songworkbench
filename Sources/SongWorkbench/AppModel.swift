@@ -117,8 +117,8 @@ enum SongTypeahead {
 @MainActor
 final class AppModel: ObservableObject {
     /// Import-pipeline diagnostic log (Console.app / `log stream --predicate 'subsystem ==
-    /// "com.local.SongWorkbench"'`) — added to make on-device import failures observable.
-    static let importLog = Logger(subsystem: "com.local.SongWorkbench", category: "import")
+    /// "com.endogenllc.songworkbench"'`) — added to make on-device import failures observable.
+    static let importLog = Logger(subsystem: "com.endogenllc.songworkbench", category: "import")
 
     @Published private(set) var songs: [Song] = []
     /// Files accepted by a drop that are still being copied into local storage, in the order they
@@ -2149,23 +2149,32 @@ final class AppModel: ObservableObject {
         supportDirectory.appendingPathComponent("Sources", isDirectory: true)
     }
 
-    nonisolated private static func sandboxContainerSourcesDirectory() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Containers", isDirectory: true)
-            .appendingPathComponent("com.local.SongWorkbench", isDirectory: true)
-            .appendingPathComponent("Data", isDirectory: true)
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("SongWorkbench", isDirectory: true)
-            .appendingPathComponent("Sources", isDirectory: true)
+    /// Debug builds use `com.local.SongWorkbench`; Release (App Store) builds use
+    /// `com.endogenllc.songworkbench`. Each has its own sandbox container.
+    nonisolated private static let sandboxContainerBundleIdentifiers = [
+        "com.local.SongWorkbench",
+        "com.endogenllc.songworkbench",
+    ]
+
+    nonisolated private static func sandboxContainerSourcesDirectories() -> [URL] {
+        sandboxContainerBundleIdentifiers.map { identifier in
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Containers", isDirectory: true)
+                .appendingPathComponent(identifier, isDirectory: true)
+                .appendingPathComponent("Data", isDirectory: true)
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+                .appendingPathComponent("SongWorkbench", isDirectory: true)
+                .appendingPathComponent("Sources", isDirectory: true)
+        }
     }
 
     nonisolated private static func sourceRecoverySearchDirectories(
         localSourcesDirectory: URL,
         additionalDirectories: [URL]?
     ) -> [URL] {
-        let defaultDirectories = [localSourcesDirectory, sandboxContainerSourcesDirectory()]
+        let defaultDirectories = [localSourcesDirectory] + sandboxContainerSourcesDirectories()
         var seen: Set<String> = []
         return (additionalDirectories ?? defaultDirectories).filter { url in
             let path = url.standardizedFileURL.path
