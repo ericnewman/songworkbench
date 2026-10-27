@@ -11,9 +11,10 @@ installed="/Applications/SongWorkbench.app"
 previous="/Volumes/SSD/SongWorkbench-previous.app"
 
 [[ -d "$built" ]] || { echo "no $built; run make app-release first" >&2; exit 1; }
-# The installed app must open Eric's library, which lives in the com.local.SongWorkbench container.
+# The installed app must open Eric's library, which lives in the com.endogenllc.songworkbench.debug
+# container (com.local.SongWorkbench until 2026-10-26).
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$built/Contents/Info.plist")"
-if [[ "$bundle_id" != "com.local.SongWorkbench" ]]; then
+if [[ "$bundle_id" != "com.endogenllc.songworkbench.debug" ]]; then
   echo "refusing to install $bundle_id: it would open a different (empty) library container" >&2
   exit 1
 fi
@@ -26,7 +27,9 @@ if [[ -n "$running" ]]; then
     echo "SongWorkbench is busy (${cpu}% CPU); finish or cancel the analysis, then rerun." >&2
     exit 1
   fi
-  osascript -e 'tell application id "com.local.SongWorkbench" to quit' >/dev/null 2>&1 || true
+  for id in com.endogenllc.songworkbench.debug com.local.SongWorkbench; do
+    osascript -e "tell application id \"$id\" to quit" >/dev/null 2>&1 || true
+  done
   for _ in {1..20}; do pgrep -f 'SongWorkbench.app/Contents/MacOS/SongWorkbench$' >/dev/null || break; sleep 0.5; done
   pkill -f 'SongWorkbench.app/Contents/MacOS/SongWorkbench$' || true
 fi
