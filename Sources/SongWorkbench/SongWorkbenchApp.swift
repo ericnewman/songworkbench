@@ -23,6 +23,7 @@ struct SongWorkbenchApp: App {
                 // pitch/speed sliders compressible, the content minimum is ~1,330; 1,380
                 // keeps a safety margin.
                 .frame(minWidth: 1_380, minHeight: 650)
+                .modifier(SplashOverlay(isReady: model.hasRestoredProjects))
                 .background(Color.swCanvas.ignoresSafeArea())
                 .foregroundStyle(Color.swTextPrimary)
                 .tint(Color.swAccent)

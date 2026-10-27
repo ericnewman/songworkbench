@@ -5,7 +5,16 @@ import SwiftUI
 /// so the About window is a thin presentation over it.
 enum AboutInfo {
     static let appName = "SongWorkbench"
-    static let version = "1.0"
+    /// The bundle's marketing version (`MARKETING_VERSION`), e.g. "1.0".
+    static var version: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    }
+    /// The bundle's build number (`CURRENT_PROJECT_VERSION`), when the bundle has one.
+    static var build: String? { Bundle.main.infoDictionary?["CFBundleVersion"] as? String }
+    /// "Version 1.0 (1)": the splash and the About box show the same string.
+    static var versionLabel: String {
+        "Version \(version)" + (build.map { " (\($0))" } ?? "")
+    }
     static let author = "Eric Newman"
     /// The line under the Endogen logo at the foot of the About box (brand core rule 8), current year.
     static var copyright: String {
@@ -120,7 +129,7 @@ struct AboutContent: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             AppTitleBlock(showsEndogen: false)
-            Text("Version \(AboutInfo.version)  ·  \(AboutInfo.author)")
+            Text("\(AboutInfo.versionLabel)  ·  \(AboutInfo.author)")
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
             Text(AboutInfo.tagline)
@@ -194,6 +203,8 @@ struct AppTitleBlock: View {
 /// so the lockup is always the dark-background artwork, copied unaltered from the brand kit.
 struct EndogenAttribution: View {
     var copyright: String?
+    /// Where the lockup artwork lives: the app bundle. Offscreen renders point it at a built app.
+    nonisolated(unsafe) static var assetBundle: Bundle? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -203,7 +214,7 @@ struct EndogenAttribution: View {
                     .textCase(.uppercase)
                     .tracking(1.3)
                     .foregroundStyle(Color.swTextSecondary)
-                Image("EndogenLockup")
+                Image("EndogenLockup", bundle: Self.assetBundle)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
@@ -219,6 +230,97 @@ struct EndogenAttribution: View {
                     .foregroundStyle(Color.swTextSecondary)
             }
         }
+    }
+}
+
+/// The launch splash (brand core rule 8): the app's icon and name as the title in the `display`
+/// style, its version as a mono label, Endogen's attribution beneath, over a faint graticule (the
+/// one instrument motif). `SplashOverlay` shows it over the main window while the library loads.
+struct SplashView: View {
+    var body: some View {
+        ZStack {
+            Color.swCanvas
+            Graticule()
+            VStack(spacing: 18) {
+                AppIconImage(size: 144)
+                Text(AboutInfo.appName)
+                    .font(Font.Endogen.display)
+                    .tracking(-2.16)  // display: -3%
+                    .foregroundStyle(Color.swTextPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                Text(AboutInfo.versionLabel)
+                    .font(Font.Endogen.label)
+                    .textCase(.uppercase)
+                    .tracking(1.3)
+                    .foregroundStyle(Color.swTextSecondary)
+                EndogenAttribution()
+                    .padding(.top, 10)
+            }
+            .padding(48)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The brand's graticule: a 40 pt grid of 1 pt Graticule lines, faint so it stays behind the
+/// title. No center axis: on the splash it ran straight through the app name.
+private struct Graticule: View {
+    var body: some View {
+        Canvas { context, size in
+            var grid = Path()
+            var x: CGFloat = size.width.truncatingRemainder(dividingBy: 40) / 2
+            while x < size.width {
+                grid.move(to: CGPoint(x: x, y: 0))
+                grid.addLine(to: CGPoint(x: x, y: size.height))
+                x += 40
+            }
+            var y: CGFloat = size.height.truncatingRemainder(dividingBy: 40) / 2
+            while y < size.height {
+                grid.move(to: CGPoint(x: 0, y: y))
+                grid.addLine(to: CGPoint(x: size.width, y: y))
+                y += 40
+            }
+            context.stroke(grid, with: .color(Color.Endogen.graticule.opacity(0.35)), lineWidth: 1)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Shows `SplashView` over its content at launch: at least `minimum`, until `isReady` (the
+/// library has loaded), and never longer than `maximum`; a click dismisses it early.
+struct SplashOverlay: ViewModifier {
+    let isReady: Bool
+    var minimum: Duration = .milliseconds(1_200)
+    var maximum: Duration = .seconds(4)
+    @State private var isShowing = true
+    @State private var minimumElapsed = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if isShowing {
+                    SplashView()
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                        .onTapGesture { dismiss() }
+                }
+            }
+            .task {
+                try? await Task.sleep(for: minimum)
+                minimumElapsed = true
+                if isReady { dismiss() }
+                try? await Task.sleep(for: maximum - minimum)
+                dismiss()
+            }
+            .onChange(of: isReady) { _, ready in
+                if ready, minimumElapsed { dismiss() }
+            }
+    }
+
+    private func dismiss() {
+        guard isShowing else { return }
+        withAnimation(.easeOut(duration: 0.35)) { isShowing = false }
     }
 }
 

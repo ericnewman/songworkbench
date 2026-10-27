@@ -843,7 +843,8 @@ final class AppModel: ObservableObject {
     private var currentExportID: UUID?
     private var isApplyingSettings = false
     private var isApplyingAnalysis = false
-    private var hasRestoredProjects = false
+    /// True once the library has loaded at launch (the splash waits for it).
+    @Published private(set) var hasRestoredProjects = false
     private var needsSaveAfterRestore = false
     private let sourceRecoveryDirectories: [URL]?
     /// `Application Support/SongWorkbench`, or `<storageRoot>/Support` when one was injected.
