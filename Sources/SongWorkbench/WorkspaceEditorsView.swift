@@ -676,24 +676,25 @@ private struct LyricTimeField: View {
 }
 
 extension ChordConfidenceBand {
-    /// Red through amber to green. `manual` is deliberately outside that ramp — a hand-added
+    /// Coral through amber to phosphor. `manual` (neutral Mist, since the accent became phosphor
+    /// and would read as high confidence) is deliberately outside that ramp — a hand-added
     /// chord carries no confidence measurement, and colouring it red would read as "the detector
     /// is unsure" about a chord the user typed themselves.
     var fillColor: Color {
         switch self {
         case .low: Color.swCoral.opacity(0.28)
-        case .medium: Color.orange.opacity(0.26)
+        case .medium: Color.swAmber.opacity(0.26)
         case .high: Color.swMint.opacity(0.26)
-        case .manual: Color.swAccent.opacity(0.18)
+        case .manual: Color.swTextSecondary.opacity(0.18)
         }
     }
 
     var strokeColor: Color {
         switch self {
         case .low: Color.swCoral.opacity(0.75)
-        case .medium: Color.orange.opacity(0.7)
+        case .medium: Color.swAmber.opacity(0.7)
         case .high: Color.swMint.opacity(0.7)
-        case .manual: Color.swAccent.opacity(0.6)
+        case .manual: Color.swTextSecondary.opacity(0.6)
         }
     }
 }
@@ -1019,7 +1020,7 @@ private struct ChordTimelineEditor: View {
                     model.chordConfidenceThreshold = 0.5
                 } label: {
                     Label("ChordPro confidence", systemImage: "line.3.horizontal.decrease.circle")
-                        .font(.callout)
+                        .font(.swDisplay(12))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1569,6 +1570,12 @@ struct ChordProTabEditor: View {
         Set(shownTabStemsStorage.split(separator: ",").map { StemID(rawValue: String($0)) })
     }
 
+    private func ensureGuitarTabNotes() {
+        for stemID in shownTabStems where NoteTabFormatter.instrument(for: stemID) == .guitar {
+            model.ensureNoteEvents(for: stemID)
+        }
+    }
+
     private func instrumentTabToggle(_ stemID: StemID) -> some View {
         Toggle(
             model.noteTranscriptionsInProgress.contains(stemID) ? "Tab…" : "Tab",
@@ -1935,6 +1942,13 @@ struct ChordProTabEditor: View {
             // overlays, so it belongs on both surfaces (Eric: the slider goes in both tabs).
             fontSizeControl
                 .onChange(of: beatsPerRow) { _, _ in model.chartBeatsPerRowChanged() }
+                // The Tab switches carry across songs, but guitar tab reads Basic Pitch notes
+                // that each song transcribes once: start it whenever a song opens with guitar
+                // tab on, or its guitar tab silently never appears.
+                .onChange(of: model.selectedSongID, initial: true) { _, _ in
+                    ensureGuitarTabNotes()
+                }
+                .onChange(of: model.stemSet?.assets.map(\.id)) { _, _ in ensureGuitarTabNotes() }
             if config.showsPlaybackControls {
                 if model.isChartLyricsStale {
                     Text(
@@ -2098,12 +2112,12 @@ struct ChordProTabEditor: View {
         switch config.secondaryMode {
         case .edit:
             TextEditor(text: $model.chordProSource)
-                .font(.system(.body, design: .monospaced))
+                .font(.swMono(13))
                 .border(.separator)
         case .source:
             ScrollView([.horizontal, .vertical]) {
                 Text(previewSource)
-                    .font(.system(.body, design: .monospaced))
+                    .font(.swMono(13))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(8)
@@ -2418,25 +2432,28 @@ struct ChordProTabEditor: View {
                     rowNumber: row.number
                 )
             case .instrumental:
-                guard !row.chordTimes.isEmpty else { return nil }
+                // Intros and solos: the lyric ball waits at the next sung line instead of
+                // bouncing across the instrumental row (Eric, 2026-10-08); the chord ball still
+                // tracks the chords. The chart keeps the playing row in view.
+                guard let next = timeline.nextLyricRow(after: now) else { return nil }
                 return BeatBallInput(
                     currentTime: now,
                     ordinal: -1,
                     windowStart: row.start,
-                    windowEnd: row.end,
+                    windowEnd: next.start,
                     words: [],
                     bpm: bpm,
                     beatTimes: beatTimes,
                     isWaiting: true,
-                    chordTimes: row.chordTimes,
-                    rowNumber: row.number
+                    rowNumber: next.number,
+                    scrollRowNumber: row.number
                 )
             }
         }
         // Before the first row (a short intro that has no chord-only row of its own):
-        // park a waiting ball at the first row when the wait is noticeable.
+        // park a waiting ball at the first sung row when the wait is noticeable.
         guard
-            let next = timeline.nextRow(after: now),
+            let next = timeline.nextLyricRow(after: now),
             next.start - now > 0, next.start >= Self.waitingBallMinimumGap
         else { return nil }
         return BeatBallInput(
@@ -2448,7 +2465,8 @@ struct ChordProTabEditor: View {
             bpm: bpm,
             beatTimes: beatTimes,
             isWaiting: true,
-            rowNumber: next.number
+            rowNumber: next.number,
+            scrollRowNumber: timeline.nextRow(after: now)?.number
         )
     }
 
@@ -2650,6 +2668,9 @@ struct BeatBallInput: Equatable {
     /// this ball belongs to. Non-nil only on the proven-aligned timeline path; the preview
     /// then matches rows by number instead of walking blocks with adjacency heuristics.
     var rowNumber: Int? = nil
+    /// The row the chart keeps in view while the ball waits elsewhere (a solo's own row, while
+    /// the ball waits at the next sung line). nil = `rowNumber`.
+    var scrollRowNumber: Int? = nil
 }
 
 // Internal (not private) so the headless pixel-render audit can instantiate the REAL preview.
@@ -2686,10 +2707,10 @@ struct ChordProAppPreview: View {
         ForEach(items.filter { takesSpace($0.block) }, id: \.offset) { item in
             if case .title(let title) = item.block {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.title2.bold())
+                    Text(title).font(.swDisplay(17, weight: .bold))
                     if !metadata.isEmpty {
                         Text(metadata.joined(separator: "  ·  "))
-                            .font(.subheadline)
+                            .font(.swDisplay(11))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -3014,14 +3035,16 @@ struct ChordProAppPreview: View {
         .compactMap { stemID in
             // Guitar tab carries the guitar's own chords; bass has no chord track, so bass tab
             // carries the chord line it plays under.
-            let chords =
+            // Each lane is drawn in the color of the stem its chords came from.
+            let ownTrack =
                 NoteTabFormatter.instrument(for: stemID) == .guitar
-                ? instrumentChords?.tracks.first { $0.stemID == stemID }?.chords ?? chordEvents
-                : chordEvents
+                ? instrumentChords?.tracks.first { $0.stemID == stemID } : nil
+            let chords = ownTrack?.chords ?? chordEvents
+            let chordStemID = ownTrack?.stemID ?? chordLineInstrument.map { StemID($0) }
             return NoteTabFormatter.block(
                 for: stemID, bucketNotes: tabBucketGrid, noteEvents: noteEvents,
-                chords: chords.sorted { $0.time < $1.time }, inWindow: window,
-                transposedBy: transpose, fretOffset: tabFretOffset)
+                chords: chords.sorted { $0.time < $1.time }, chordStemID: chordStemID,
+                inWindow: window, transposedBy: transpose, fretOffset: tabFretOffset)
         }
     }
 
@@ -3700,7 +3723,9 @@ struct ChordProAppPreview: View {
     }
     private var waitingTarget: WaitingScrollTarget? {
         guard let beatBall, beatBall.isWaiting else { return nil }
-        if let rowNumber = beatBall.rowNumber { return .displayLine(rowNumber) }
+        if let rowNumber = beatBall.scrollRowNumber ?? beatBall.rowNumber {
+            return .displayLine(rowNumber)
+        }
         return .lyricOrdinal(beatBall.ordinal)
     }
 
@@ -4343,7 +4368,7 @@ private struct ChordProPreviewBlockView: View {
     /// across `instrumentalTimeWidth` (see `ChordProPreviewLineView.monospaceChordX`).
     var rowStartTime: TimeInterval = 0
     /// Color of this line's audio strip (matches the stem's lane color in the waveform panel).
-    var stripColor: Color = .swAmber
+    var stripColor: Color = .swVocalTeal
     /// The bar downbeat time this line resolves onto (shared metric grid origin); nil = no grid.
     var rowDownbeatSeconds: TimeInterval?
     /// Pickup gutter (seconds) to the left of the shared downbeat column.
@@ -4502,7 +4527,7 @@ private struct ChordProPreviewBlockView: View {
         switch block {
         case .title(let title):
             Text(title)
-                .font(.title2.bold())
+                .font(.swDisplay(17, weight: .bold))
                 .padding(.bottom, 2)
         case .metadata(let label, let value):
             HStack(spacing: 5) {
@@ -4510,15 +4535,15 @@ private struct ChordProPreviewBlockView: View {
                     .foregroundStyle(.secondary)
                 Text(value)
             }
-            .font(.subheadline)
+            .font(.swDisplay(11))
         case .section(let name):
             Text(name)
-                .font(.headline)
+                .font(.swDisplay(13, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.top, 8)
         case .comment(let comment):
             Text(comment)
-                .font(.callout.italic())
+                .font(.swDisplay(12).italic())
                 .foregroundStyle(.secondary)
         case .lyric(let line):
             VStack(alignment: .leading, spacing: 2) {
@@ -4570,7 +4595,7 @@ private struct ChordProPreviewBlockView: View {
         case .directive(let source):
             if showChordTimeLabels {
                 Text(source)
-                    .font(.caption.monospaced())
+                    .font(.swMono(10))
                     .foregroundStyle(.tertiary)
             }
         }
@@ -4630,7 +4655,7 @@ private struct ChordProPreviewBlockView: View {
                 }
             )
             .textFieldStyle(.plain)
-            .font(.system(.body, design: .monospaced))
+            .font(.swMono(13))
             .onExitCommandCompat { isEditingLyric = false }
         }
     }
@@ -4831,7 +4856,7 @@ private struct ChordProPreviewLineView: View {
     /// properties further down, which multiply by `scale.factor`. Nothing in this view may use a
     /// `base…` constant directly for layout: the horizontal axis and the glyph size have to move
     /// together or the collision nudge in `rhythmicWordXs` pushes words off their beat columns.
-    private static let baseLyricFont = PlatformFont.monospacedSystemFont(
+    private static let baseLyricFont = PlatformFont.endogenMono(
         ofSize: ChordProChartTypography.lyricSize, weight: .regular)
     private static let baseCharacterWidth = NSString(string: "M").size(
         withAttributes: [.font: baseLyricFont]
@@ -4887,7 +4912,7 @@ private struct ChordProPreviewLineView: View {
     /// by its fractional position in the bar-grid TEXT (see `monospaceChordX`).
     var rowStartTime: TimeInterval = 0
     /// Color of the audio strip — matches the source stem's lane color in the waveform panel.
-    var stripColor: Color = .swAmber
+    var stripColor: Color = .swVocalTeal
     /// The song time of the bar downbeat this line resolves onto. Pinned to `gutterSeconds` from
     /// the row's left edge, so on the shared constant-pixels-per-second scale every bar is the
     /// same width and beats line up vertically across rows — the song's repeating cadence.
@@ -5024,7 +5049,17 @@ private struct ChordProPreviewLineView: View {
     private var rhythmicBucketRows: [(row: BucketNoteRow, xs: [CGFloat])] {
         guard !rowBucketRows.isEmpty, hasRowRuler else { return [] }
         return rowBucketRows.map { row in
-            (row: row, xs: row.cells.map { rhythmicX(forTime: $0.time) })
+            let xs = row.cells.map { rhythmicX(forTime: $0.time) }
+            // As for tab: cells left of the row label's reserve all draw at its edge and print
+            // over each other ("B#" over "B"); only the last of them is kept.
+            guard let lastPinned = xs.lastIndex(where: { $0 <= bucketRowLabelReserve }),
+                lastPinned > 0
+            else {
+                return (row: row, xs: xs)
+            }
+            var trimmed = row
+            trimmed.cells = Array(row.cells[lastPinned...])
+            return (row: trimmed, xs: Array(xs[lastPinned...]))
         }
     }
 
@@ -5034,7 +5069,15 @@ private struct ChordProPreviewLineView: View {
     private var rhythmicSoloBlocks: [(block: SoloTabBlock, xs: [CGFloat])] {
         guard !rowSoloBlocks.isEmpty, hasRowRuler else { return [] }
         return rowSoloBlocks.map { block in
-            (block: block, xs: block.columns.map { rhythmicX(forTime: $0.time) })
+            let xs = block.columns.map { rhythmicX(forTime: $0.time) }
+            // Columns before the row's drawable edge are all pinned to x = 0 and printed on top
+            // of each other; only the last of them (what is sounding at the edge) is kept.
+            guard let lastPinned = xs.lastIndex(where: { $0 <= 0.5 }), lastPinned > 0 else {
+                return (block: block, xs: xs)
+            }
+            var trimmed = block
+            trimmed.columns = Array(block.columns[lastPinned...])
+            return (block: trimmed, xs: Array(xs[lastPinned...]))
         }
     }
 
@@ -5044,6 +5087,9 @@ private struct ChordProPreviewLineView: View {
     private var hasRowRuler: Bool {
         !rhythmicWords.isEmpty || (rhythmicSpacing && lineDuration > 0)
     }
+
+    /// Room for a bucket row's label ("Bs", "PnC") at its left edge; cells start past it.
+    private var bucketRowLabelReserve: CGFloat { scale.scaled(26) }
 
     /// Height the bucket rows and solo blocks take together.
     private func stemRowsReserve(bucketRowCount: Int, soloBlocks: [SoloTabBlock]) -> CGFloat {
@@ -5068,7 +5114,7 @@ private struct ChordProPreviewLineView: View {
             // The label sits at x = 0, and so does any cell at the row's first instant — every
             // chord row's dimmed "still sounding from the row before" cell among them — which
             // printed one on top of the other ("D" over "GtC"). A colliding cell clears the label.
-            let labelReserve = scale.scaled(26)
+            let labelReserve = bucketRowLabelReserve
             ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
                 Text(cell.text)
                     .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
@@ -5090,7 +5136,10 @@ private struct ChordProPreviewLineView: View {
                 ForEach(Array(entry.block.chords.enumerated()), id: \.offset) { _, chord in
                     Text(chord.label)
                         .font(ChordProChartTypography.chord(size: scale.chordSize * 0.8))
-                        .foregroundStyle(tabColor.opacity(chord.isHeld ? 0.45 : 1))
+                        .foregroundStyle(
+                            (entry.block.chordStemID?.laneColor ?? tabColor)
+                                .opacity(chord.isHeld ? 0.45 : 1)
+                        )
                         .offset(
                             x: max(rhythmicX(forTime: chord.time), scale.scaled(12)), y: laneTop)
                 }
@@ -5098,10 +5147,12 @@ private struct ChordProPreviewLineView: View {
             let stringsTop = laneTop + (entry.block.chords.isEmpty ? 0 : tabChordLaneReserve)
             ForEach(Array(entry.block.stringLabels.enumerated()), id: \.offset) { row, label in
                 let rowY = stringsTop + soloStringReserve * CGFloat(row)
+                // In the margin left of the row, so no fret ever sits on a label: a row's first
+                // columns are real beats (the pickup gutter), not label space.
                 Text(label)
                     .font(.swDisplay(scale.scaled(8), weight: .semibold))
                     .foregroundStyle(tabColor.opacity(0.85))
-                    .offset(x: 0, y: rowY)
+                    .offset(x: -tabLabelWidth, y: rowY)
                 // The string as a real line, broken around each fret number (Eric, 2026-10-07:
                 // "instead of dashes, could we draw real lines").
                 let gaps = entry.block.columns.indices.compactMap {
@@ -5109,30 +5160,38 @@ private struct ChordProPreviewLineView: View {
                     let cell = entry.block.columns[index].cells[row]
                     guard cell != SoloTabRowFormatter.rest else { return nil }
                     let digits = CGFloat(cell.filter(\.isNumber).count)
+                    let x = entry.xs[index]
                     return
-                        (entry.xs[index] - scale.scaled(1.5))...(entry.xs[index]
-                        + digits * scale.scaled(5.6) + scale.scaled(1.5))
+                        (x - scale.scaled(1.5))...(x + digits * tabFretFontSize * 0.62
+                        + scale.scaled(1.5))
                 }
                 ForEach(
                     Array(
-                        tabStringSegments(from: scale.scaled(12), to: lineEnd, gaps: gaps)
-                            .enumerated()),
+                        tabStringSegments(
+                            from: 0, to: lineEnd, gaps: gaps
+                        )
+                        .enumerated()),
                     id: \.offset
                 ) { _, segment in
+                    // Whole-pixel lines: a 0.75 pt line at a fractional y split across two pixel
+                    // rows and all but vanished (only two of a bass tab's four strings showed).
                     Rectangle()
-                        .fill(tabColor.opacity(0.35))
-                        .frame(width: segment.upperBound - segment.lowerBound, height: 0.75)
-                        .offset(x: segment.lowerBound, y: rowY + soloStringReserve / 2)
+                        .fill(tabColor.opacity(0.55))
+                        .frame(width: segment.upperBound - segment.lowerBound, height: 1)
+                        .offset(
+                            x: segment.lowerBound,
+                            y: (rowY + soloStringReserve / 2).rounded())
                 }
             }
             ForEach(Array(entry.block.columns.enumerated()), id: \.offset) { index, column in
                 ForEach(Array(column.cells.enumerated()), id: \.offset) { row, cell in
                     if cell != SoloTabRowFormatter.rest {
                         Text(cell.filter(\.isNumber))
-                            .font(ChordProChartTypography.lyric(size: scale.scaled(9)))
+                            .font(ChordProChartTypography.lyric(size: tabFretFontSize))
                             .foregroundStyle(tabColor)
                             .offset(
-                                x: entry.xs[index], y: stringsTop + soloStringReserve * CGFloat(row)
+                                x: entry.xs[index],
+                                y: stringsTop + soloStringReserve * CGFloat(row)
                             )
                     }
                 }
@@ -5156,14 +5215,21 @@ private struct ChordProPreviewLineView: View {
         blocks.isEmpty ? 0 : blocks.reduce(0) { $0 + tabBlockHeight($1) } + tabRuleReserve
     }
 
-    private var tabRuleReserve: CGFloat { scale.scaled(7) }
+    private var tabRuleReserve: CGFloat { scale.scaled(12) }
+
+    /// A fret's x, kept clear of the string labels at the row's left edge.
+    /// Fret numbers: a little larger than the 9 pt they started at (Eric, 2026-10-09).
+    private var tabFretFontSize: CGFloat { scale.scaled(10.5) }
+
+    /// How far left of the row the string labels (e B G D A E) sit.
+    private var tabLabelWidth: CGFloat { scale.scaled(9) }
     private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
 
     private func tabRule(at y: CGFloat, width: CGFloat) -> some View {
         Rectangle()
-            .fill(Color.swTextSecondary.opacity(0.3))
+            .fill(Color.swTextSecondary.opacity(0.5))
             .frame(width: max(width, 0), height: 1)
-            .offset(x: 0, y: y)
+            .offset(x: 0, y: y.rounded())
     }
 
     /// `start...end` with the `gaps` cut out, as the line pieces to draw.
@@ -5276,16 +5342,33 @@ private struct ChordProPreviewLineView: View {
     /// Decays rather than switching off so the eye reads it as an attack (matching how the click
     /// itself is an exponentially-decaying sample), and so two chords a beat apart never both sit
     /// at full brightness.
+    ///
+    /// The chord sounding now is boxed in its player's color for as long as it sounds (Eric,
+    /// 2026-10-08: "draw a box around the chords that sound"), and the onset glow is that color
+    /// too, never amber: amber is the vocals' color.
     @ViewBuilder
     private func chordOnsetGlow(at index: Int) -> some View {
         let intensity = chordOnsetIntensity(at: index)
-        if intensity > 0 {
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(Color.swAmber.opacity(0.35 * intensity))
-                .padding(-scale.scaled(2))
-                .shadow(color: .swAmber.opacity(0.9 * intensity), radius: 5 * intensity)
-                .allowsHitTesting(false)
+        let color = chordPlayerColor
+        ZStack {
+            if intensity > 0 {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(color.opacity(0.3 * intensity))
+                    .shadow(color: color.opacity(0.9 * intensity), radius: 5 * intensity)
+            }
+            if isChordSounding(at: index) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(color, lineWidth: 1.5)
+            }
         }
+        .padding(-scale.scaled(2))
+        .allowsHitTesting(false)
+    }
+
+    /// The chord line's player's color (`chordLineInstrument`), primary text before the harmony
+    /// stage has recorded who plays.
+    private var chordPlayerColor: Color {
+        chordLineInstrument?.laneColor ?? .swTextPrimary
     }
 
     /// Index of the chord SOUNDING at the playhead on THIS row, or nil: the latest onset at or
@@ -5314,8 +5397,8 @@ private struct ChordProPreviewLineView: View {
         soundingChordIndex == index
     }
 
-    /// Foreground for a chord label: amber while sounding, otherwise the color of the player the
-    /// chord line's chords were detected on (`chordLineInstrument`).
+    /// Foreground for a chord label: the color of the player the chord line's chords were
+    /// detected on (`chordLineInstrument`), brightest while it sounds.
     private func chordLabelStyle(at index: Int) -> AnyShapeStyle {
         AnyShapeStyle(chordLabelColor(at: index))
     }
@@ -5325,15 +5408,15 @@ private struct ChordProPreviewLineView: View {
     /// expect to be seeing any blue notes"). A label with no event behind it is the chart
     /// RESTATING a chord that is still held — a continuation, drawn dim, not an arrival.
     private func chordLabelColor(at index: Int) -> Color {
-        if isChordSounding(at: index) { return .swAmber }
         // Every chord on the line is the one player's (guitar, or the instrument that does play):
-        // drawn in that player's color (Eric, 2026-09-27). Primary text before the harmony stage
-        // has recorded the player.
-        let color = chordLineInstrument?.laneColor ?? .swTextPrimary
+        // drawn in that player's color (Eric, 2026-09-27). The sounding chord is that color at
+        // full strength; while one sounds the others dim slightly (Eric, 2026-10-08).
+        let color = chordPlayerColor
+        if isChordSounding(at: index) { return color }
         guard rowChordEvents.indices.contains(index), rowChordEvents[index] != nil else {
-            return color.opacity(0.6)
+            return color.opacity(0.5)
         }
-        return color
+        return soundingChordIndex == nil ? color : color.opacity(0.75)
     }
 
     /// Scale for a chord label at the playhead: pops to 1.3× exactly AT the onset and settles
@@ -5367,7 +5450,7 @@ private struct ChordProPreviewLineView: View {
                 CGFloat(max(line.chords[index].name.count, 1)) * characterWidth / 2
             let lift = chordOnsetIntensity(at: index)
             Circle()
-                .fill(Color.swAmber)
+                .fill(chordPlayerColor)
                 .frame(width: ballDiameter, height: ballDiameter)
                 .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                 .opacity(0.95)
@@ -5640,12 +5723,22 @@ private struct ChordProPreviewLineView: View {
         // the end of the shorter array silently fell through to a different axis. That fires on
         // almost every intro, outro, and break with a chord held longer than a bar.
         if isInstrumentalLine, rhythmicSpacing, lineDuration > 0,
-            rowChordTimes.count == line.chords.count,
-            rowChordTimes.indices.contains(index)
+            let anchors = line.instrumentalChordAnchors(times: rowChordTimes),
+            anchors.indices.contains(index)
         {
-            // Through the row ruler, same as a word on a sung row — a chord at time t sits at
-            // x(t), not at a fraction of the row width (which was a second, time-based axis).
-            return min(rowRuler.x(atTime: rowChordTimes[index]), instrumentalTimeWidth)
+            switch anchors[index] {
+            case .time(let time):
+                // Through the row ruler, same as a word on a sung row — a chord at time t sits
+                // at x(t), not at a fraction of the row width (a second, time-based axis).
+                return min(rowRuler.x(atTime: time), instrumentalTimeWidth)
+            case .bar(let bar):
+                // A held chord reprinted in a later bar sits on that bar's downbeat.
+                if let beatsPerBar = beatGrid?.beatsPerBar {
+                    return min(
+                        gutterPx + CGFloat(bar * beatsPerBar) * pixelsPerBeat,
+                        instrumentalTimeWidth)
+                }
+            }
         }
         guard isInstrumentalLine, lineDuration > 0, chordColumnExtent > 0 else {
             return CGFloat(chord.column) * characterWidth
@@ -5965,7 +6058,7 @@ private struct ChordProPreviewLineView: View {
                 // to LastResort), so it rendered as a "?" box (Eric: "what do these ?4
                 // symbols mean?").
                 Text("rest \(restBeats)")
-                    .font(.system(size: scale.scaled(10)))
+                    .font(.swDisplay(scale.scaled(10)))
                     .foregroundStyle(Color.swTextSecondary.opacity(0.75))
                     .offset(
                         x: lastX + rhythmicWordWidth(at: words.count - 1) + scale.scaled(10),
@@ -5990,7 +6083,7 @@ private struct ChordProPreviewLineView: View {
             soundingChordBall(chordXs: chordXs)
             if let chordBall {
                 Circle()
-                    .fill(Color.swAmber)
+                    .fill(chordPlayerColor)
                     .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
@@ -5998,7 +6091,7 @@ private struct ChordProPreviewLineView: View {
             }
             if let ball {
                 Circle()
-                    .fill(Color.white)
+                    .fill(Color.swTextPrimary)
                     .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
@@ -6247,7 +6340,7 @@ private struct ChordProPreviewLineView: View {
                 let closesFrame = phraseWidth.map { x >= gutterPx + $0 - 0.5 } ?? false
                 if number >= 1, !closesFrame {
                     Text("\(number)")
-                        .font(.system(size: scale.scaled(8), weight: .medium).monospacedDigit())
+                        .font(.swDisplay(scale.scaled(8), weight: .medium).monospacedDigit())
                         .foregroundStyle(Color.swTextSecondary.opacity(0.7))
                         .fixedSize()
                         .offset(x: x + scale.scaled(2), y: 0)
@@ -6572,7 +6665,7 @@ private struct ChordProPreviewLineView: View {
                 chordXs: line.chords.enumerated().map { monospaceChordX($1, at: $0) })
             if let ball = ballPosition {
                 Circle()
-                    .fill(Color.white)
+                    .fill(Color.swTextPrimary)
                     .frame(width: ballDiameter, height: ballDiameter)
                     .shadow(color: .black.opacity(0.35), radius: 2, x: 0, y: 1)
                     .opacity(0.95)
@@ -6978,13 +7071,13 @@ struct StemMixSidebar: View {
             }
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swCoral)
             }
             sourcePicker
             if model.stemFiles == nil {
                 Text("Run Stems separation to enable the mix.")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
@@ -6993,7 +7086,7 @@ struct StemMixSidebar: View {
                         "Stems are stale — rerun Stems.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swCoral)
                 }
                 // Slim console: the SAME channel strips as the Stems editor (full-height
@@ -7209,7 +7302,7 @@ struct StemMixSidebar: View {
             // still lines up with the stem strips. Not a toggle: the beat click is always the
             // metronome now, so there is no second mode to switch to.
             Image(systemName: "metronome.fill")
-                .font(.system(size: 11, weight: .medium))
+                .font(.swDisplay(11, weight: .medium))
                 .foregroundStyle(Color.accentColor)
                 .frame(width: PanKnob.defaultSize, height: PanKnob.defaultSize)
                 .accessibilityLabel("Metronome")
@@ -7543,7 +7636,7 @@ private struct ScribbleStrip: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .font(.swDisplay(10, weight: .semibold))
             .foregroundStyle(Color.black.opacity(0.82))
             .lineLimit(1)
             .minimumScaleFactor(0.6)

@@ -30,7 +30,7 @@ struct AnalysisWorkspaceView: View {
             #endif
 
             Label(model.estimatedAnalysisSummary, systemImage: "clock")
-                .font(.caption)
+                .font(.swDisplay(10))
                 .foregroundStyle(.secondary)
                 .help(
                     "Wall-clock estimate for the options above, scaled from measured pass "
@@ -199,7 +199,7 @@ struct ReferenceLyricsSheet: View {
                     + "are aligned to the audio using the detected timings — the most accurate "
                     + "lyrics when you know them. Leave empty to use the raw transcription."
             )
-            .font(.caption)
+            .font(.swDisplay(10))
             .foregroundStyle(.secondary)
             HStack {
                 Button("Fill from current transcription", systemImage: "arrow.down.doc") {
@@ -281,7 +281,7 @@ struct AnalysisProgressSheet: View {
 
             HStack {
                 Text("This window closes when analysis finishes.")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel", role: .cancel) {
@@ -327,7 +327,7 @@ struct AnalysisProgressSheet: View {
         var body: some View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Stem separation")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(.secondary)
                 Toggle(
                     isOn: Binding(
@@ -337,9 +337,9 @@ struct AnalysisProgressSheet: View {
                 ) {
                     Text("Lead / backing vocals")
                         + Text("  \(model.vocalVoiceSeparationCostSummary)")
-                        .font(.caption2).foregroundColor(.secondary)
+                        .font(.swDisplay(10)).foregroundColor(.secondary)
                 }
-                .font(.caption)
+                .font(.swDisplay(10))
                 .help(
                     "Splits the vocals stem into lead and backing so each voice is playable and "
                         + "harmony rows can tell the singers apart. The slowest step in analysis."
@@ -352,13 +352,13 @@ struct AnalysisProgressSheet: View {
                 ) {
                     Text("Drum pieces")
                         + Text("  \(model.drumPieceSeparationCostSummary)")
-                        .font(.caption2).foregroundColor(.secondary)
+                        .font(.swDisplay(10)).foregroundColor(.secondary)
                 }
-                .font(.caption)
+                .font(.swDisplay(10))
                 .help("Splits the drums stem into kick, snare, toms and cymbals.")
                 if !model.advancedStemRefinementEnabled {
                     Text("Analysis runs the six base stems only — the fastest setting.")
-                        .font(.caption2)
+                        .font(.swDisplay(10))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -414,14 +414,14 @@ private struct ModelPackagesView: View {
                     Text(
                         "\(descriptor.purpose) • v\(descriptor.version) • \(descriptor.license.name)"
                     )
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
                 modelActions(descriptor)
             }
             Text(descriptor.license.attribution)
-                .font(.caption2)
+                .font(.swDisplay(10))
                 .foregroundStyle(.secondary)
             if let progress = model.modelInstallProgress[descriptor.id] {
                 ProgressView(value: progress) {

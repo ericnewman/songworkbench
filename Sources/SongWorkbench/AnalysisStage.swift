@@ -41,7 +41,10 @@ struct AnalysisStageContext: Sendable {
     let harmonyEngine: any SongHarmonyAnalyzing
     let chordProBuilder: ChordProDraftBuilder
     let chordProReplacementPolicy: ChordProReplacementPolicy
-    let stageProgress: @Sendable (Double, String) -> Void
+    var stageProgress: @Sendable (Double, String) -> Void
+    /// The vocals stem's activity, onset and pitch evidence, shared by every transcription
+    /// engine pass on the same file (see `VocalEvidence`).
+    var vocalEvidence: VocalEvidence? = nil
     /// See `SongAnalysisPipeline.measureWordTimes`.
     var measureWordTimes: WordTimeMeasurer = MeasuredLyricTiming.measuredWithBundledModel
     /// See `SongAnalysisPipeline.vocalPosteriorgram`.
@@ -299,56 +302,136 @@ extension AnalysisStageContext {
 /// Measured on Doc Holiday against a reference lyric (2026-09-28, word recall / precision):
 /// Whisper alone 0.647 / 0.605 with one line looped 7 times; stretch choice across Whisper and
 /// both Parakeet profiles 0.738 / 0.746 with the reference's own three repeats.
+/// What the transcription stage measures on its input audio around decoding. It depends on the
+/// audio file only, so the engine passes share one copy: computing it per pass cost 36 s of the
+/// 45 s each cached engine took on a 192 s song, Debug build (pitch salience 26.7 s, 2026-10-10).
+struct VocalEvidence: Sendable {
+    let audioURL: URL
+    /// Strict VAD: the decode-collapse check and the tail gates.
+    let strictVoiced: [ClosedRange<TimeInterval>]
+    let vocalOnset: TimeInterval?
+    /// Sung evidence for the wordless-gap rescue and the untranscribed-region flags. On the
+    /// vocals stem it is PITCH salience, not energy — the energy-only strict VAD both flagged
+    /// loud-section bleed as unsung vocals (phantom "vocals — not transcribed" on true
+    /// instrumentals) and missed soft melodic vocals entirely (Settle Down's doo-doo intro,
+    /// below the peak-relative gate). Full-mix fallback keeps strict VAD: on a mix, everything
+    /// is pitched.
+    let sungEvidence: [ClosedRange<TimeInterval>]
+    /// Vocal-stem onsets: the decode-loop guard's acoustic check and the final onset snap.
+    let stemOnsets: [TimeInterval]
+
+    init(audioURL: URL, hasStems: Bool) {
+        self.audioURL = audioURL
+        let strictVoiced =
+            (try? VocalActivityEnvelope.voicedIntervals(
+                url: audioURL, configuration: .strictVocalPresence)) ?? []
+        self.strictVoiced = strictVoiced
+        vocalOnset = hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
+        sungEvidence =
+            hasStems
+            ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
+            : strictVoiced
+        stemOnsets =
+            hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
+    }
+}
+
+/// Stage progress for engine passes that may run at the same time: the mean of each pass's own
+/// 0...1, so concurrent lanes add up instead of the faster lane racing the bar ahead.
+final class PassProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fractions: [Double]
+    private let report: @Sendable (Double, String) -> Void
+
+    init(passCount: Int, report: @escaping @Sendable (Double, String) -> Void) {
+        fractions = Array(repeating: 0, count: max(passCount, 1))
+        self.report = report
+    }
+
+    func reporter(for pass: Int) -> @Sendable (Double, String) -> Void {
+        { [self] fraction, message in
+            let mean = lock.withLock {
+                fractions[pass] = max(fractions[pass], min(max(fraction, 0), 1))
+                return fractions.reduce(0, +) / Double(fractions.count)
+            }
+            report(mean, message)
+        }
+    }
+}
+
 struct MultiEngineTranscriptionStage: AnalysisStageRunning {
     let stage: SongAnalysisStage = .transcription
 
     func run(_ context: AnalysisStageContext) async -> AnalysisStageOutcome {
-        let primary = await TranscriptionStage().run(context)
         let requested = context.request.transcriptionMode
-        guard !primary.wasCancelled,
-            context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
-                .isEmpty,
-            let vocalsURL = context.document.stems?.resolved().vocals
-        else { return primary }
-        var primaryDocument = context.document
-        primary.apply(&primaryDocument)
-        guard primaryDocument.stageRecords[.transcription]?.state == .succeeded,
-            !primaryDocument.lyrics.isEmpty
-        else { return primary }
         let others = LyricBlendRowBuilder.modeOrder.filter {
             $0 != requested && context.transcriptionEngineFactory.engine(for: $0) != nil
         }
-        guard !others.isEmpty,
-            let logProbs = try? await Task.detached(
-                priority: .userInitiated,
-                operation: {
-                    try context.vocalPosteriorgram(vocalsURL)
-                }
-            ).value
-        else { return primary }
-        // One engine resident at a time: the requested mode's model is done.
-        await context.transcriptionEngineFactory.engine(for: requested)?.releaseResources()
+        var shared = context
+        shared.vocalEvidence = VocalEvidence(
+            audioURL: context.document.stems?.resolved().vocals ?? context.request.sourceURL,
+            hasStems: context.document.stems != nil)
+        guard
+            context.document.referenceLyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty,
+            let vocalsURL = context.document.stems?.resolved().vocals, !others.isEmpty
+        else { return await TranscriptionStage().run(shared) }
 
-        var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
-            requested: primaryDocument.lyrics
-        ]
-        for mode in others {
-            guard !Task.isCancelled else { return primary }
+        // Whisper decodes on the CPU; Qwen (MLX) uses the GPU and Parakeet the Neural Engine. Run
+        // Whisper in its own lane beside the others instead of after them: each engine's output
+        // is unchanged, and a fresh 192 s song spent 62 of 99 s waiting on Whisper alone
+        // (Release, 2026-10-10). Within a lane, one engine is resident at a time. Both
+        // Parakeet profiles share FluidAudio, so they stay in one lane.
+        let modes = [requested] + others
+        let progress = PassProgress(passCount: modes.count, report: context.stageProgress)
+        func modeContext(_ mode: TranscriptionMode) -> AnalysisStageContext {
             var request = context.request
             request.transcriptionMode = mode
-            let modeContext = AnalysisStageContext(
+            var modeContext = AnalysisStageContext(
                 request: request, document: context.document, sourceDigest: context.sourceDigest,
                 digest: context.digest, cache: context.cache, stemEngine: context.stemEngine,
                 stemRefiners: context.stemRefiners,
                 transcriptionEngineFactory: context.transcriptionEngineFactory,
                 harmonyEngine: context.harmonyEngine, chordProBuilder: context.chordProBuilder,
                 chordProReplacementPolicy: context.chordProReplacementPolicy,
-                stageProgress: context.stageProgress,
+                stageProgress: progress.reporter(for: modes.firstIndex(of: mode)!),
                 measureWordTimes: context.measureWordTimes,
                 vocalPosteriorgram: context.vocalPosteriorgram)
-            let outcome = await TranscriptionStage().run(modeContext)
-            await context.transcriptionEngineFactory.engine(for: mode)?.releaseResources()
-            guard !outcome.wasCancelled else { return primary }
+            modeContext.vocalEvidence = shared.vocalEvidence
+            return modeContext
+        }
+        let factory = context.transcriptionEngineFactory
+        let whisperLane = modes.filter { $0 == .accuracy }
+        let otherLane = modes.filter { $0 != .accuracy }
+        let whisperContexts = whisperLane.map(modeContext)
+        let otherContexts = otherLane.map(modeContext)
+        async let whisperOutcomes = Self.runLane(
+            whisperLane, contexts: whisperContexts, factory: factory)
+        async let otherOutcomes = Self.runLane(
+            otherLane, contexts: otherContexts, factory: factory)
+        let posteriorgram = context.vocalPosteriorgram
+        async let logProbsTask = Task.detached(priority: .userInitiated) {
+            try? posteriorgram(vocalsURL)
+        }.value
+        let outcomes = (await whisperOutcomes).merging(await otherOutcomes) { first, _ in first }
+        let logProbs = await logProbsTask
+
+        guard let primary = outcomes[requested] else {
+            return AnalysisStageOutcome(wasCancelled: true) { _ in }
+        }
+        guard !primary.wasCancelled else { return primary }
+        var primaryDocument = context.document
+        primary.apply(&primaryDocument)
+        guard primaryDocument.stageRecords[.transcription]?.state == .succeeded,
+            !primaryDocument.lyrics.isEmpty, let logProbs,
+            !outcomes.values.contains(where: \.wasCancelled)
+        else { return primary }
+
+        var lyricsByMode: [TranscriptionMode: [TimedLyricSegment]] = [
+            requested: primaryDocument.lyrics
+        ]
+        for mode in others {
+            guard let outcome = outcomes[mode] else { return primary }
             var modeDocument = context.document
             outcome.apply(&modeDocument)
             if modeDocument.stageRecords[.transcription]?.state == .succeeded {
@@ -377,6 +460,20 @@ struct MultiEngineTranscriptionStage: AnalysisStageRunning {
             document.lyrics = choice.lyrics
             document.lyricBlendRows = rows
         }
+    }
+
+    /// One lane's passes in order, each engine released before the next loads.
+    private static func runLane(
+        _ lane: [TranscriptionMode], contexts: [AnalysisStageContext],
+        factory: TranscriptionEngineFactory
+    ) async -> [TranscriptionMode: AnalysisStageOutcome] {
+        var outcomes: [TranscriptionMode: AnalysisStageOutcome] = [:]
+        for (mode, laneContext) in zip(lane, contexts) {
+            guard !Task.isCancelled else { break }
+            outcomes[mode] = await TranscriptionStage().run(laneContext)
+            await factory.engine(for: mode)?.releaseResources()
+        }
+        return outcomes
     }
 }
 
@@ -422,27 +519,14 @@ struct TranscriptionStage: AnalysisStageRunning {
                     request.transcriptionLanguage.map { "language-\($0)" } ?? "auto",
                 ].joined(separator: "|")
             )
-            // Strict VAD is needed both for the decode-collapse check below and for the tail
-            // gates further down — computed once here.
-            let strictVAD = VocalActivityEnvelope.Configuration.strictVocalPresence
-            let strictVoiced =
-                (try? VocalActivityEnvelope.voicedIntervals(
-                    url: audioURL, configuration: strictVAD)) ?? []
-            let vocalOnset: TimeInterval? =
-                hasStems ? (try? VocalOnsetDetector.firstOnset(url: audioURL)) : nil
-            // Sung evidence for the wordless-gap rescue and the untranscribed-region flags below.
-            // On the vocals stem it is PITCH salience, not energy — the energy-only strict VAD
-            // both flagged loud-section bleed as unsung vocals (phantom "vocals — not
-            // transcribed" on true instrumentals) and missed soft melodic vocals entirely
-            // (Settle Down's doo-doo intro, below the peak-relative gate). Full-mix fallback
-            // keeps strict VAD: on a mix, everything is pitched.
-            let sungEvidence =
-                hasStems
-                ? ((try? VocalPitchSalience.sungIntervals(url: audioURL)) ?? strictVoiced)
-                : strictVoiced
-            // Vocal-stem onsets: the decode-loop guard's acoustic check and the final onset snap.
-            let stemOnsets: [TimeInterval] =
-                hasStems ? ((try? InstrumentOnsetDetector.onsets(url: audioURL)) ?? []) : []
+            // Shared across engine passes when the multi-engine stage computed it already.
+            let evidence =
+                context.vocalEvidence.flatMap { $0.audioURL == audioURL ? $0 : nil }
+                ?? VocalEvidence(audioURL: audioURL, hasStems: hasStems)
+            let strictVoiced = evidence.strictVoiced
+            let vocalOnset = evidence.vocalOnset
+            let sungEvidence = evidence.sungEvidence
+            let stemOnsets = evidence.stemOnsets
 
             /// One transcription pass at `rate` (slow-rendering a temp copy when < 1.0), with
             /// timestamps mapped back to the real timeline.
@@ -964,7 +1048,7 @@ struct HarmonyStage: AnalysisStageRunning {
         // or cancelled) degrades to the whole-vocals path below, same as no refiner at all.
         var refinedManifest: StemSetManifest?
         if let awaitRefined = context.awaitRefinedStemSet {
-            context.stageProgress(0.88, "waiting for voice stems")
+            context.stageProgress(0.40, "waiting for voice stems")
             refinedManifest = await awaitRefined()
         }
         let vocalSources = vocalHarmonySources(
@@ -1104,7 +1188,7 @@ struct HarmonyStage: AnalysisStageRunning {
                     harmonicChangePoints: rawResult.harmonicChangePoints)
             }()
             try Task.checkCancellation()
-            stageProgress(0.75, "reducing chords")
+            stageProgress(0.10, "reducing chords")
             let record = AnalysisStageRecordFactory.successfulRecord(
                 sourceDigest: sourceDigest,
                 sourceKind: source.kind,
@@ -1217,7 +1301,7 @@ struct HarmonyStage: AnalysisStageRunning {
             )
             // The bundled beat model on the whole recording, when the pipeline has it (the app
             // always does; tests have no bundle and keep the autocorrelation tracker below).
-            stageProgress(0.80, "tracking beats")
+            stageProgress(0.12, "tracking beats")
             let modelGrid = try context.measureBeatGrid.map { try $0(context.request.sourceURL) }
             let trackedBPM: Double? = modelGrid?.bpm ?? result.beat?.bpm
             var refinedBPM = trackedBPM
@@ -1259,13 +1343,13 @@ struct HarmonyStage: AnalysisStageRunning {
             // Additive: detect the played bass line from the BASS stem (runs
             // whether or not the harmony chord result was a cache hit). A `nil`
             // result (no stem / failure) leaves existing bassNotes untouched.
-            stageProgress(0.82, "detecting bass")
+            stageProgress(0.30, "detecting bass")
             // The bass stem's own notes. Every instrument is its own source (Eric, 2026-10-07):
             // the bass is not filtered against the vocals nor rounded to the guitar's chords.
             let detectedBassNotes = detectBassNotes(context)
-            stageProgress(0.88, "detecting harmony notes")
+            stageProgress(0.38, "detecting harmony notes")
             let detectedVocalHarmonyNotes = await detectVocalHarmonies(context)
-            stageProgress(0.92, "aligning chord changes")
+            stageProgress(0.55, "aligning chord changes")
             // Attacks from the chord player's stem only: they license the decoder's cheaper
             // switches and are what change times snap to. Piano attacks under a guitar chord line
             // licensed changes the guitarist never made. A legacy stem set with no player keeps

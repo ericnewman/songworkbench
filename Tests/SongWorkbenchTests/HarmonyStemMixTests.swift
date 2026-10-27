@@ -37,7 +37,8 @@ final class HarmonyStemMixTests: XCTestCase {
 final class InstrumentChordPassTests: XCTestCase {
     func testEveryStemHasItsOwnColorAndPianoIsNoLongerTextColored() {
         XCTAssertEqual(Set(StemKind.allCases.map(\.laneColor)).count, StemKind.allCases.count)
-        XCTAssertEqual(StemKind.piano.laneColor, .swTeal)
+        // Pink since 2026-10-08: teal sat too close to the bass blue (Eric).
+        XCTAssertEqual(StemKind.piano.laneColor, .swPink)
     }
 
     func testAChordNoPlayerHasIsOmittedAndASkewedOneIsKept() {

@@ -100,7 +100,22 @@ struct ContentView: View {
 /// popover (`AppModel.installModelPackage` & friends) — this is a gate in front of it, not a
 /// second implementation. Lives in ContentView.swift deliberately: adding a new Swift file
 /// requires a `tuist generate` round-trip.
-private struct ModelOnboardingSheet: View {
+/// What the main window shows at launch before a song is selected.
+struct LaunchEmptyState: View {
+    var body: some View {
+        // The app is the hero (Endogen brand core rule 8): its icon and name, Endogen's logo
+        // beneath ("by" + the Endogen lockup), then what to do next.
+        VStack(spacing: 20) {
+            AppTitleBlock(axis: .vertical)
+            Text("No song selected. Import an audio file to begin.")
+                .font(.swDisplay(13))
+                .foregroundStyle(Color.swTextSecondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct ModelOnboardingSheet: View {
     @ObservedObject var model: AppModel
 
     private var descriptors: [ModelPackageDescriptor] {
@@ -113,11 +128,10 @@ private struct ModelOnboardingSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Welcome to SongWorkbench")
-                    .font(.swDisplay(22, weight: .semibold))
-                    .foregroundStyle(Color.swTextPrimary)
+                AppTitleBlock()
+                    .padding(.bottom, 6)
                 Text(
-                    "SongWorkbench analyzes songs on-device. Install the analysis models "
+                    "Welcome. SongWorkbench analyzes songs on-device. Install the analysis models "
                         + "below to get started — everything unlocks once they finish."
                 )
                 .font(.swDisplay(13))
@@ -431,7 +445,7 @@ private struct SongSidebar: View {
             ? .swAccent
             : status.isComplete ? .swMint : status.hasAny ? .swAmber : .swTextSecondary.opacity(0.5)
         return Image(systemName: status.iconSystemName)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.swDisplay(11, weight: .semibold))
             .foregroundStyle(color)
             .frame(width: 14)
             .help(status.helpText)
@@ -707,11 +721,7 @@ private struct PlayerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
                     VStack(spacing: 12) {
-                        ContentUnavailableView(
-                            "No Song Selected",
-                            systemImage: "music.note.list",
-                            description: Text("Import an audio file to begin.")
-                        )
+                        LaunchEmptyState()
                         // Import failures must be visible HERE too: with no song selected the
                         // editor pane (and its error label) doesn't exist, so a failed first
                         // import on a fresh library used to fail completely silently.

@@ -286,8 +286,11 @@ struct SongAnalysisPipelineProgress: Equatable, Sendable {
     let totalStages: Int
     let stageFraction: Double
     let message: String
+    /// Whole-run fraction from `AnalysisProgressMeter`; when nil, stages count equally.
+    var overallFraction: Double? = nil
 
     var fractionCompleted: Double {
+        if let overallFraction { return overallFraction }
         guard totalStages > 0 else { return 1 }
         let boundedStageFraction = min(max(stageFraction, 0), 1)
         return min(
@@ -536,9 +539,16 @@ struct SongAnalysisPipeline: Sendable {
 
     func run(
         _ request: SongAnalysisPipelineRequest,
-        progress: @escaping @Sendable (SongAnalysisPipelineProgress) -> Void
+        progress report: @escaping @Sendable (SongAnalysisPipelineProgress) -> Void
     ) async throws -> SongAnalysisPipelineResult {
         let stages = stagesIncludingGeneratedDependents(for: request)
+        let meter = AnalysisProgressMeter(stages: stages)
+        let progress: @Sendable (SongAnalysisPipelineProgress) -> Void = { value in
+            report(meter.stamped(value))
+        }
+        let derivedProgress: @Sendable (Double, String) -> Void = { fraction, message in
+            report(meter.derivedPasses(fraction: fraction, message: message))
+        }
         let orderedStages = SongAnalysisStage.allCases.filter(stages.contains)
         let totalStages = orderedStages.count
         let digestMemo = DigestMemo { url in try self.digest(of: url) }
@@ -702,7 +712,7 @@ struct SongAnalysisPipeline: Sendable {
                 harmony.apply(&document)
                 // Timing post-passes run HERE — where the data was made — so the ChordPro
                 // stage and the persisted document see the same lyrics/beats the app displays.
-                applyDerivedPasses(to: &document, force: true)
+                applyDerivedPasses(to: &document, force: true, progress: derivedProgress)
 
                 completedStages += 1
                 progress(
@@ -865,7 +875,8 @@ struct SongAnalysisPipeline: Sendable {
             if stage == .transcription || stage == .harmony,
                 document.stageRecords[stage]?.state == .succeeded
             {
-                applyDerivedPasses(to: &document, force: stage == .harmony)
+                applyDerivedPasses(
+                    to: &document, force: stage == .harmony, progress: derivedProgress)
                 VoiceTrackPass.apply(to: &document)
             }
 
@@ -881,22 +892,39 @@ struct SongAnalysisPipeline: Sendable {
             index += 1
         }
 
+        // Slots that never ran (derived passes after a failed stage) must not hold the bar short.
+        if !wasCancelled { report(meter.completed()) }
         return SongAnalysisPipelineResult(document: document, wasCancelled: wasCancelled)
     }
 
     /// The timing post-passes, then the note and chord passes cut on the grid they settle (so the
     /// order is fixed). Each is timed: together they were a 60–300 s stretch per song that no
     /// `analysis-performance` line accounted for (2026-09-19).
-    private func applyDerivedPasses(to document: inout SongAnalysisDocument, force: Bool) {
-        func timed(_ name: String, _ pass: (inout SongAnalysisDocument) -> Void) {
+    private func applyDerivedPasses(
+        to document: inout SongAnalysisDocument, force: Bool,
+        progress: @Sendable (Double, String) -> Void
+    ) {
+        // `through` is the share of the passes' time done once that pass finishes, measured on
+        // Beach Weather, Debug build (2026-10-10): 0.2 s, 16.5 s, 21.6 s, 12.5 s.
+        var reached = 0.0
+        func timed(
+            _ name: String, through: Double, _ pass: (inout SongAnalysisDocument) -> Void
+        ) {
+            progress(reached, name)
             let startedAt = ContinuousClock.now
             pass(&document)
             AnalysisResourceLog.checkpoint(stage: name, event: "finished", startedAt: startedAt)
+            progress(through, name)
+            reached = through
         }
-        timed("timing-post-passes") { AnalysisTimingPostPasses.apply(to: &$0) }
-        timed("bucket-notes") { BucketNotePass.apply(to: &$0, force: force) }
-        timed("solo-transcription") { SoloTranscriptionPass.apply(to: &$0, force: force) }
-        timed("instrument-chords") { InstrumentChordPass.apply(to: &$0, force: force) }
+        timed("timing-post-passes", through: 0.01) { AnalysisTimingPostPasses.apply(to: &$0) }
+        timed("bucket-notes", through: 0.33) { BucketNotePass.apply(to: &$0, force: force) }
+        timed("solo-transcription", through: 0.75) {
+            SoloTranscriptionPass.apply(to: &$0, force: force)
+        }
+        timed("instrument-chords", through: 1) {
+            InstrumentChordPass.apply(to: &$0, force: force)
+        }
     }
 
     private func runStage(
@@ -1055,6 +1083,90 @@ enum SongAnalysisPipelineError: LocalizedError, Equatable {
         case .chordProReplacementRequiresConfirmation:
             "Confirm replacement before overwriting reviewed or manually imported ChordPro."
         }
+    }
+}
+
+/// Turns per-stage progress into one whole-run fraction that moves in proportion to time.
+///
+/// Stages used to count equally (25% each), so a re-analysis whose separation and transcription
+/// load from cache sat at 50% within seconds and then stalled through harmony and the derived
+/// passes, which reported nothing. Here each stage weighs its measured duration, concurrent
+/// stages add up instead of overwriting each other, and work served from cache ("loadedFromCache")
+/// leaves both sides of the ratio, so the bar spans only the work that actually runs.
+final class AnalysisProgressMeter: @unchecked Sendable {
+    enum Slot: Hashable {
+        case stage(SongAnalysisStage)
+        case derivedPasses
+    }
+
+    /// Seconds per slot, Beach Weather (192 s), Debug build, 2026-10-10. Only ratios matter.
+    static let weights: [Slot: Double] = [
+        .stage(.separation): 95, .stage(.transcription): 290, .stage(.harmony): 34,
+        .derivedPasses: 51, .stage(.chordPro): 1,
+    ]
+
+    private let lock = NSLock()
+    private let slots: [Slot]
+    private var done: [Slot: Double] = [:]
+    private var cached: [Slot: Double] = [:]
+    private var highest = 0.0
+
+    init(stages: Set<SongAnalysisStage>) {
+        var slots = stages.map(Slot.stage)
+        if stages.contains(.transcription) || stages.contains(.harmony) {
+            slots.append(.derivedPasses)
+        }
+        self.slots = slots
+    }
+
+    func stamped(_ value: SongAnalysisPipelineProgress) -> SongAnalysisPipelineProgress {
+        var stamped = value
+        stamped.overallFraction = lock.withLock {
+            if let stage = value.stage {
+                let fraction = value.message.hasPrefix("Finished ") ? 1 : value.stageFraction
+                record(.stage(stage), fraction, fromCache: value.message == "loadedFromCache")
+            }
+            return overall()
+        }
+        return stamped
+    }
+
+    func derivedPasses(fraction: Double, message: String) -> SongAnalysisPipelineProgress {
+        lock.withLock {
+            record(.derivedPasses, fraction, fromCache: false)
+            return SongAnalysisPipelineProgress(
+                stage: .harmony, completedStages: 0, totalStages: slots.count,
+                stageFraction: fraction, message: message, overallFraction: overall())
+        }
+    }
+
+    func completed() -> SongAnalysisPipelineProgress {
+        lock.withLock { highest = 1 }
+        return SongAnalysisPipelineProgress(
+            stage: nil, completedStages: slots.count, totalStages: slots.count,
+            stageFraction: 1, message: "Finished analysis", overallFraction: 1)
+    }
+
+    /// Caller holds `lock`.
+    private func record(_ slot: Slot, _ fraction: Double, fromCache: Bool) {
+        let previous = done[slot] ?? 0
+        let next = max(previous, min(max(fraction, 0), 1))
+        done[slot] = next
+        if fromCache { cached[slot, default: 0] += next - previous }
+    }
+
+    /// Caller holds `lock`.
+    private func overall() -> Double {
+        var work = 0.0
+        var total = 0.0
+        for slot in slots {
+            let weight = Self.weights[slot] ?? 1
+            let skipped = cached[slot] ?? 0
+            work += weight * ((done[slot] ?? 0) - skipped)
+            total += weight * (1 - skipped)
+        }
+        if total > 0 { highest = max(highest, min(work / total, 1)) }
+        return highest
     }
 }
 

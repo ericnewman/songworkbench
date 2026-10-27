@@ -241,7 +241,9 @@ struct SongStructureOverviewBuilder: Sendable {
         // The lyrics editor suppresses a lone "Verse 1" header as visual noise, but the
         // arrangement overview requires complete timeline coverage. Add every analyzer-defined
         // vocal start that the shared marker derivation intentionally omitted.
-        for section in SongStructureAnalyzer().vocalSections(for: bodyLyrics)
+        for section in SongStructureAnalyzer().vocalSections(
+            for: bodyLyrics, beatTimes: input.beatTimes,
+            beatsPerBar: input.barGrid?.beatsPerBar ?? 4)
         where !markers.contains(where: {
             if case .vocal = $0.kind {
                 return abs($0.start - section.start) <= 0.001

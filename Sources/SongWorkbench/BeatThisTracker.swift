@@ -39,7 +39,7 @@ enum BeatThisTracker {
     @Sendable
     static func measuredWithBundledModel(_ recordingURL: URL) throws -> ModelBeatGrid {
         guard let url = bundledURL,
-            let model = try? MLModel(contentsOf: MLModel.compileModel(at: url))
+            let model = try? MLModel(contentsOf: CompiledModelStore.url(for: url))
         else { throw SongAnalysisPipelineError.missingBundledModel(resourceName) }
         let samples = try MeasuredLyricTiming.monoSamples(
             at: recordingURL, sampleRate: BeatThisMel.sampleRate)

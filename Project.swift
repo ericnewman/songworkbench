@@ -2,7 +2,7 @@ import ProjectDescription
 
 let project = Project(
     name: "SongWorkbench",
-    organizationName: "CCS",
+    organizationName: "Endogen LLC",
     packages: [
         .remote(
             url: "https://github.com/FluidInference/FluidAudio.git",
@@ -31,6 +31,9 @@ let project = Project(
                     "SongWorkbench uses audio input for music analysis.",
                 "NSAppleMusicUsageDescription":
                     "SongWorkbench reads your Music library so you can open and analyze local tracks.",
+                "NSHumanReadableCopyright": "Copyright © 2026 Endogen LLC. All rights reserved.",
+                // HTTPS model downloads and SHA256 hashing only: exempt, so no per-build question.
+                "ITSAppUsesNonExemptEncryption": false,
             ]),
             sources: ["Sources/SongWorkbench/**"],
             resources: ["Resources/**"],
@@ -101,8 +104,10 @@ let project = Project(
                 // its own sandbox container, so development data never mixes with a TestFlight install.
                 "SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER": "com.endogenllc.songworkbench",
                 "CODE_SIGNING_ALLOWED": "YES",
-                "CODE_SIGN_IDENTITY": "Apple Distribution",
-                "DEVELOPMENT_TEAM": "$(SONGWORKBENCH_DEVELOPMENT_TEAM)",
+                // Automatic signing archives with Apple Development; Organizer / -exportArchive
+                // re-signs with Apple Distribution. A manual "Apple Distribution" here fails archive.
+                "CODE_SIGN_IDENTITY": "Apple Development",
+                "DEVELOPMENT_TEAM": "65FBMF6CMD",
                 "ENABLE_APP_SANDBOX": "YES",
                 "ENABLE_HARDENED_RUNTIME": "YES",
             ])

@@ -4862,3 +4862,31 @@ in Settings, with General MIDI drums for the drum pieces. Research on robust sin
   above MIDI 64 dropped as overtones.
 - Tests: 1244 run, 1 failure (`testAWalkingBassDoesNotChangeTheChordLine`, failing on `main` too).
 - Not yet checked on screen: the ♪ strip toggle, the MIDI Instruments Settings tab, listening.
+
+## 2026-10-26 — Adopt the Endogen brand
+
+Eric approved the plan and recommendations: `sw*` tokens stay as aliases onto `Color.Endogen` /
+`Font.Endogen`; stem lane colors and error coral stay as functional data colors; amber is the
+playback highlight only, so the vocals lane gets a new color; JetBrains Mono downloaded from the
+official JetBrains release (OFL) and added to the skill and the vault.
+
+- [x] `EndogenBrand.swift` copied verbatim; `Theme.swift` drops its duplicate `Color.init(hex:)`
+- [x] Space Grotesk + JetBrains Mono bundled with both OFL licenses, registered at launch
+- [x] `Theme.swift` tokens point at the brand; bass lane keeps its own blue; vocals lane recolored
+- [x] System fonts and raw palette colors at call sites replaced (mixer shading kept)
+- [x] AccentColor = P31 Phosphor
+- [x] About: name in Space Grotesk, Endogen lockup (unmodified PNG), © Endogen LLC
+- [x] App icon replaced with the approved proposal (Scope, one P31 trace, one amber contact)
+- [x] pbxproj registration; full suite green; installed and checked in the app
+
+### Review
+
+- Full suite: 1266 tests, 0 failures. Installed `/Applications` build, fonts and OFL licenses in
+  the bundle. Offscreen render: Space Grotesk and JetBrains Mono load; chart measurement font is
+  JetBrains Mono (9.0 pt/char at 15 pt); prominent button Night on phosphor; five stem lanes
+  distinct.
+- Not seen on screen: Claude lacks macOS Screen Recording / Accessibility permission, so the
+  running app, About window and Dock icon were not screenshotted.
+- Another session's uncommitted work (regenerated pbxproj, PrivacyInfo, Project.swift,
+  RELEASE.md, Float16 archive fix) was left uncommitted; the brand commit applies its project
+  entries to the committed pbxproj only.

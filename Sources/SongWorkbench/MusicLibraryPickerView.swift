@@ -34,7 +34,7 @@ struct MusicLibraryPickerView: View {
 
             if let notice = model.musicLibraryNotice {
                 Label(notice, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swCoral)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -86,13 +86,13 @@ struct MusicLibraryPickerView: View {
                     .foregroundStyle(openable ? Color.swTextPrimary : Color.swTextSecondary)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
-                        .font(.caption)
+                        .font(.swDisplay(10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 if let reason = item.unopenableReason {
                     Label(reason, systemImage: "lock.fill")
-                        .font(.caption2)
+                        .font(.swDisplay(10))
                         .foregroundStyle(Color.swCoral)
                         .lineLimit(2)
                 }

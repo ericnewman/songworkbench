@@ -83,6 +83,11 @@ struct SongTimeline: Equatable, Codable, Sendable {
     func nextRow(after time: TimeInterval) -> Row? {
         rows.first { $0.start > time }
     }
+
+    /// The first sung row starting after `time`.
+    func nextLyricRow(after time: TimeInterval) -> Row? {
+        rows.first { $0.start > time && $0.isLyric }
+    }
 }
 
 /// The chart layout a generated ChordPro draft was built with, persisted beside it (the

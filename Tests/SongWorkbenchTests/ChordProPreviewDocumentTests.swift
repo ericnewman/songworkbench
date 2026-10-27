@@ -163,4 +163,21 @@ final class ChordProPreviewDocumentTests: XCTestCase {
             XCTAssertEqual(result.position, 0)
         }
     }
+
+    /// `| [C#] | [C#] |` carries one real chord time: the bar-2 reprint is a held chord that
+    /// belongs on bar 2's downbeat, not a reason to drop to text-column positions.
+    func testHeldChordReprintAnchorsToItsBarAndTheRealChordToItsTime() {
+        let line = ChordProPreviewLine(
+            lyric: "|  |  |",
+            chords: [
+                ChordProPreviewChord(name: "C#", column: 2),
+                ChordProPreviewChord(name: "C#", column: 5),
+            ])
+        XCTAssertEqual(line.instrumentalChordAnchors(times: [0.16]), [.time(0.16), .bar(1)])
+        // Counts that already match pair by index, as before.
+        XCTAssertEqual(
+            line.instrumentalChordAnchors(times: [0.16, 2.9]), [.time(0.16), .time(2.9)])
+        // Still unpairable: nil, and the view keeps its fallback.
+        XCTAssertNil(line.instrumentalChordAnchors(times: []))
+    }
 }

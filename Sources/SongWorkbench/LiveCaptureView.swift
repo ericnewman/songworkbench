@@ -17,7 +17,7 @@ struct LiveCaptureSheet: View {
                     .foregroundStyle(Color.swTextPrimary)
                 Spacer()
                 Text("Detecting chords only — lyrics are a later phase")
-                    .font(.caption)
+                    .font(.swDisplay(10))
                     .foregroundStyle(.secondary)
             }
 
@@ -30,7 +30,7 @@ struct LiveCaptureSheet: View {
             .disabled(session.isCapturing)
 
             Text(sourceHint(session.sourceKind))
-                .font(.caption)
+                .font(.swDisplay(10))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -38,13 +38,13 @@ struct LiveCaptureSheet: View {
 
             if case .muted = session.phase {
                 Label(LiveCaptureSession.mutedMessage, systemImage: "speaker.slash.fill")
-                    .font(.callout)
+                    .font(.swDisplay(12))
                     .foregroundStyle(Color.swCoral)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if case .failed(let message) = session.phase {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
+                    .font(.swDisplay(12))
                     .foregroundStyle(Color.swCoral)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -55,13 +55,13 @@ struct LiveCaptureSheet: View {
                 "Audio is not saved — only the detected chord chart is.",
                 systemImage: "lock.shield"
             )
-            .font(.caption)
+            .font(.swDisplay(10))
             .foregroundStyle(.secondary)
 
             HStack {
                 if model.selectedSong == nil {
                     Text("Select a song first — the chart attaches to it.")
-                        .font(.caption)
+                        .font(.swDisplay(10))
                         .foregroundStyle(Color.swCoral)
                 }
                 Spacer()

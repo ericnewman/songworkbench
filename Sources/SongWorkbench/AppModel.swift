@@ -3201,7 +3201,8 @@ final class AppModel: ObservableObject {
             if accessing { url.stopAccessingSecurityScopedResource() }
         }
         let document = try ChordProDocument(parsing: chordProSource)
-        try document.transposed(by: semitones).export().write(
+        let exported = document.transposed(by: semitones).export()
+        try ChordProDocument.externalExport(exported).write(
             to: url,
             atomically: true,
             encoding: .utf8

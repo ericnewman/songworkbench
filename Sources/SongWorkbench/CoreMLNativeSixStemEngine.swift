@@ -20,7 +20,7 @@ struct CoreMLNativeSixStemSeparationEngine: StemSeparationEngine, Sendable {
     private let engine: CoreMLStemSeparationEngine
     let metadata: StemSeparationEngineMetadata
 
-    init(modelURL: URL) async throws {
+    init(modelURL: URL, keepsModelLoaded: Bool = false) async throws {
         metadata = Self.metadata
         let predictor = try await CoreMLSixStemChunkPredictor(modelURL: modelURL)
         engine = CoreMLStemSeparationEngine(
@@ -30,6 +30,7 @@ struct CoreMLNativeSixStemSeparationEngine: StemSeparationEngine, Sendable {
             segmentFrames: ONNXSixStemSeparationEngine.defaultSegmentFrames,
             overlapFrames: ONNXSixStemSeparationEngine.defaultSegmentFrames / 4,
             normalizesAudio: true,
+            releasesModelAfterSeparation: !keepsModelLoaded,
             metadata: Self.metadata
         )
     }
@@ -39,6 +40,76 @@ struct CoreMLNativeSixStemSeparationEngine: StemSeparationEngine, Sendable {
         progress: @escaping @Sendable (StemSeparationProgress) -> Void
     ) async throws -> StemSeparationResult {
         try await engine.separate(request: request, progress: progress)
+    }
+}
+
+/// Compiled `.mlmodelc` copies of bundled `.mlpackage`s, one per model, in the app's Caches.
+///
+/// `MLModel.compileModel(at:)` writes a NEW directory under tmp on every call and never removes
+/// it. The word-timing, beat and chord models were compiled per use: 2026-10-10 the app's tmp
+/// held 1,133 LyricsAlignmentMTL copies (27 GB) and 173 BeatThis copies (7 GB) on a nearly
+/// full disk. Compiling takes under 0.1 s, so this is about disk, not speed.
+enum CompiledModelStore {
+    static func url(for modelURL: URL) throws -> URL {
+        if modelURL.pathExtension == "mlmodelc" { return modelURL }
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SongWorkbench", isDirectory: true)
+            .appendingPathComponent("CompiledModels", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cached = directory.appendingPathComponent(
+            modelURL.deletingPathExtension().lastPathComponent + ".mlmodelc", isDirectory: true)
+        func modified(_ url: URL) -> Date? {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+        }
+        if let source = modified(modelURL), let compiled = modified(cached), compiled >= source {
+            return cached
+        }
+        let fresh = try MLModel.compileModel(at: modelURL)
+        // Concurrent callers may race here; whoever loses keeps the winner's copy.
+        if FileManager.default.fileExists(atPath: cached.path) {
+            _ = try? FileManager.default.replaceItemAt(cached, withItemAt: fresh)
+        } else if (try? FileManager.default.moveItem(at: fresh, to: cached)) == nil {
+            try? FileManager.default.removeItem(at: fresh)
+        }
+        try? FileManager.default.removeItem(at: fresh)
+        return cached
+    }
+}
+
+/// Keeps the native six-stem engine loaded for the app session (Eric, 2026-10-10). Loading it
+/// costs ~6 s per song, mostly Neural Engine compilation that Core ML repeats on every load;
+/// resident, it holds ~1.5 GB while the later stages run. Memory-pressure warnings drop it, and
+/// the next song loads it again.
+actor ResidentSeparationEngine {
+    static let shared = ResidentSeparationEngine()
+
+    private var engine: CoreMLNativeSixStemSeparationEngine?
+    private var modelURL: URL?
+    private var pressureSource: DispatchSourceMemoryPressure?
+
+    func engine(modelURL: URL) async throws -> CoreMLNativeSixStemSeparationEngine {
+        if let engine, self.modelURL == modelURL { return engine }
+        let loaded = try await CoreMLNativeSixStemSeparationEngine(
+            modelURL: modelURL, keepsModelLoaded: true)
+        engine = loaded
+        self.modelURL = modelURL
+        watchMemoryPressure()
+        return loaded
+    }
+
+    func release() {
+        engine = nil
+        modelURL = nil
+        AnalysisResourceLog.checkpoint(stage: "separation-model", event: "resident-released")
+    }
+
+    private func watchMemoryPressure() {
+        guard pressureSource == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical])
+        source.setEventHandler { Task { await ResidentSeparationEngine.shared.release() } }
+        source.resume()
+        pressureSource = source
     }
 }
 
@@ -70,29 +141,8 @@ actor CoreMLSixStemChunkPredictor: StemChunkPredicting {
         )
     }
 
-    /// Compiling the 172 MB mlpackage takes seconds; cache the .mlmodelc beside the app's other
-    /// caches and reuse it while it is newer than its source.
     private static func compiledModelURL(for modelURL: URL) async throws -> URL {
-        if modelURL.pathExtension == "mlmodelc" { return modelURL }
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("SongWorkbench", isDirectory: true)
-            .appendingPathComponent("CompiledModels", isDirectory: true)
-        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
-        let cached = caches.appendingPathComponent(
-            modelURL.deletingPathExtension().lastPathComponent + ".mlmodelc", isDirectory: true)
-        let sourceDate =
-            (try? modelURL.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate
-        let cachedDate =
-            (try? cached.resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate
-        if let sourceDate, let cachedDate, cachedDate >= sourceDate {
-            return cached
-        }
-        let compiled = try await MLModel.compileModel(at: modelURL)
-        try? FileManager.default.removeItem(at: cached)
-        try FileManager.default.moveItem(at: compiled, to: cached)
-        return cached
+        try CompiledModelStore.url(for: modelURL)
     }
 
     func predict(_ chunk: StereoAudioChunk) async throws -> StemChunkPrediction {
@@ -152,10 +202,12 @@ actor CoreMLSixStemChunkPredictor: StemChunkPredicting {
                         samples[frame] = pointer[base + frame * strides[3]]
                     }
                 case .float16:
+                    // Raw half bits: Swift Float16 is unavailable in the x86_64 slice of archives.
                     let pointer = array.dataPointer.bindMemory(
-                        to: Float16.self, capacity: base + frameCount * strides[3])
+                        to: UInt16.self, capacity: base + frameCount * strides[3])
                     for frame in 0..<frameCount {
-                        samples[frame] = Float(pointer[base + frame * strides[3]])
+                        samples[frame] = CoreMLStemChunkPredictor.halfPrecisionFloatValue(
+                            bitPattern: pointer[base + frame * strides[3]])
                     }
                 default:
                     return [:]

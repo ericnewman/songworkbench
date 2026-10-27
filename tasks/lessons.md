@@ -1101,3 +1101,45 @@ the row before. Eric chose to move a line's opening pickup onto its line's row.
 that downbeat's row, drawn in its gutter, and the row (ball and highlight together) starts at the
 pickup while its downbeat stays in `rowOrigins`. A pickup inside a line still stays where it
 sounds. Chart geometry tests measure rows downbeat to downbeat, not start to start.
+
+## 2026-10-09 — A verse's last line opened the chorus a bar early
+
+Beach Weather: each verse ends on a short hook line that also recurs mid-chorus, so word-set
+repetition classified it as chorus and both choruses started one bar early (verse 7 bars, chorus
+13). Text cannot separate "verse tail" from "chorus opener" when the line repeats in both places.
+
+**Rule:** settle a chorus boundary that text leaves ambiguous with the bar grid (the real opener
+lands on a 4-bar phrase from the verse's first line), and move a boundary only when every chorus
+opened by that line agrees. A per-chorus phrase test alone moved one chorus in three other songs
+and left their siblings behind; check a section rule against the whole library for one-off moves.
+
+## 2026-10-13 — A fix never reached the app Eric runs
+
+The JustChords export conversion (2026-10-10) was correct and tested, but Eric launches
+`/Applications/SongWorkbench.app`, which still dated from 2026-10-09. Every rebuild went to
+`build/Release`, so his JustChords imports kept showing `{x_chord_times}` and `|` rows.
+
+**Rule:** before saying a user-facing fix is live, check which bundle is running
+(`pgrep -fl MacOS/SongWorkbench`). If it is `/Applications`, install the new build there (back up
+the old copy first) and say so.
+
+## 2026-10-13 — The first chord sat at the end of measure 1
+
+Three causes stacked: the recognizer puts a song's first chord a fraction of a beat early, which
+opened a pickup bar with the chord on beat 4; the row text floored the silent lead-in before the
+first downbeat to a whole empty bar; and the view, seeing a held chord reprinted per bar, dropped
+from time positions to text-column fractions. Fixing the data alone changed nothing on screen.
+
+**Rule:** check a chart fix in the app, not just in the chart text: the renderer has its own
+pairing of chord tokens to times. A first chord under 3/4 beat early is jitter; a whole beat or
+more is a played pickup (or a bar phase question for Eric), not something to snap.
+
+## 2026-10-26 — The installed app opened an empty library
+
+Another session set Release's bundle ID to the App Store identity (`com.endogenllc.songworkbench`)
+for TestFlight. `make install` built Release, so the installed app ran in a new sandbox
+container: no songs, and 4.7 GB of freshly copied models. Eric's Re-analyze All touched nothing.
+
+**Rule:** a bundle ID is a container. Local installs build with `com.local.SongWorkbench`
+(`make app-release` pins it; `scripts/install_app.sh` refuses any other ID). After installing,
+check the library moved forward (song files' modification times), not just that the app launched.

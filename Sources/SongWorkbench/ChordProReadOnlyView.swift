@@ -25,22 +25,22 @@ enum ChordProChartTypography {
     /// ("bass note names should be the same size as chords"), so they grow with it.
     static let chordSize: CGFloat = 16.25
 
-    static let lyric = Font.system(size: lyricSize, design: .monospaced)
+    static let lyric = Font.swMono(lyricSize)
 
     static func lyric(weight: Font.Weight) -> Font {
-        .system(size: lyricSize, weight: weight, design: .monospaced)
+        .swMono(lyricSize, weight: weight)
     }
 
     static func lyric(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        .swMono(size, weight: weight)
     }
 
     static func chord(weight: Font.Weight = .semibold) -> Font {
-        .system(size: chordSize, weight: weight, design: .monospaced)
+        .swMono(chordSize, weight: weight)
     }
 
     static func chord(size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        .swMono(size, weight: weight)
     }
 
     /// Chord row for COLUMN-ALIGNED rendering (`ChordProReadOnlyView`), where the chord row is a
@@ -48,11 +48,10 @@ enum ChordProChartTypography {
     /// the alignment is character advances, so a smaller chord row would slide out of register
     /// with the words it names. Weight is safe to vary — a monospaced face keeps one advance
     /// width across weights.
-    static let columnAlignedChord = Font.system(
-        size: lyricSize, weight: .semibold, design: .monospaced)
+    static let columnAlignedChord = Font.swMono(lyricSize, weight: .semibold)
 
     static func columnAlignedChord(size: CGFloat) -> Font {
-        .system(size: size, weight: .semibold, design: .monospaced)
+        .swMono(size, weight: .semibold)
     }
 }
 
@@ -235,28 +234,28 @@ struct ChordProReadOnlyView: View {
         switch block {
         case .title(let title):
             Text(title)
-                .font(.title2.bold())
+                .font(.swDisplay(17, weight: .bold))
                 .padding(.bottom, 2)
         case .metadata(let label, let value):
             HStack(spacing: 5) {
                 Text(label + ":").foregroundStyle(.secondary)
                 Text(value)
             }
-            .font(.subheadline)
+            .font(.swDisplay(11))
         case .section(let name):
             Text(name)
-                .font(.headline)
+                .font(.swDisplay(13, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.top, 8)
         case .comment(let comment):
             Text(comment)
-                .font(.callout.italic())
+                .font(.swDisplay(12).italic())
                 .foregroundStyle(.secondary)
         case .lyric(let line):
             lyricLineView(line)
         case .directive(let directiveSource):
             Text(directiveSource)
-                .font(.caption.monospaced())
+                .font(.swMono(10))
                 .foregroundStyle(.tertiary)
         }
     }
@@ -421,7 +420,7 @@ struct BucketNoteRowCell: Equatable, Sendable {
 struct BucketNoteRow: Equatable, Sendable {
     let stemID: StemID
     let label: String
-    let cells: [BucketNoteRowCell]
+    var cells: [BucketNoteRowCell]
 }
 
 /// Names the chord an exact set of pitch classes spells, for the bucket rows' "(Am)" suffix.
@@ -592,11 +591,14 @@ struct SoloTabChord: Equatable, Sendable {
 struct SoloTabBlock: Equatable, Sendable {
     let stemID: StemID
     let label: String
-    let columns: [SoloTabColumn]
+    var columns: [SoloTabColumn]
     /// Top string first: a guitar's six by default, a bass's four for bass tab.
     var stringLabels: [String] = SoloTabRowFormatter.stringLabels
     /// Chord names drawn on a lane above the strings (bass and guitar tab); empty for solo tab.
     var chords: [SoloTabChord] = []
+    /// The stem those chords were heard on, whose color they are drawn in: the guitar on guitar
+    /// tab, the chord line's player on bass tab (Eric, 2026-10-08: use the stem colors).
+    var chordStemID: StemID?
 
     /// The tab strings as text (top string first) — the monospace rendering and what tests read.
     var lines: [String] {

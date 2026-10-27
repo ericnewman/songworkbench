@@ -3,9 +3,10 @@ import XCTest
 @testable import SongWorkbench
 
 final class ThemeContrastTests: XCTestCase {
-    func testProminentControlTintMeetsNormalTextContrastAgainstWhite() {
+    func testProminentControlLabelMeetsNormalTextContrastOnItsFill() {
         XCTAssertGreaterThanOrEqual(
-            SWColorPalette.prominentControlTint.contrastRatio(against: .white),
+            SWColorPalette.prominentControlTint.contrastRatio(
+                against: SWColorPalette.prominentControlLabel),
             4.5
         )
     }

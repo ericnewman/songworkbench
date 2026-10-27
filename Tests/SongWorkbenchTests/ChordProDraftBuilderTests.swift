@@ -60,6 +60,81 @@ final class ChordProDraftBuilderTests: XCTestCase {
     /// a mis-transcribed word. Classified per line, that line reads as a verse and used to split
     /// the chorus into Chorus / Verse(1 line) / Chorus. Measured on the real library, 40 of 130
     /// sections held one line or fewer before this smoothing pass.
+    /// Beach Weather shape: each verse ends on a hook line that also recurs mid-chorus, so text
+    /// alone calls it the chorus opener. The bar grid puts the next line on the 8-bar phrase.
+    func testVerseTailHookThatRecursMidChorusStaysInTheVerseWhenTheNextLineIsOnThePhrase() {
+        let lyrics = [
+            TimedLyricSegment(start: 0, end: 2, text: "Morning tide rolls slowly in"),
+            TimedLyricSegment(start: 4, end: 6, text: "Gulls are circling overhead"),
+            TimedLyricSegment(start: 8, end: 10, text: "Sandals left beside the pier"),
+            TimedLyricSegment(start: 13, end: 15, text: "High in low places"),
+            TimedLyricSegment(start: 16, end: 18, text: "Turn the radio up loud"),
+            TimedLyricSegment(start: 20, end: 22, text: "Dancing barefoot on the deck"),
+            TimedLyricSegment(start: 24, end: 26, text: "High in low places"),
+            TimedLyricSegment(start: 28, end: 30, text: "Sunshine pouring like wine"),
+            TimedLyricSegment(start: 32, end: 34, text: "Evening lanterns start to glow"),
+            TimedLyricSegment(start: 36, end: 38, text: "Neighbors gather round the fire"),
+            TimedLyricSegment(start: 40, end: 42, text: "Stories older than the sea"),
+            TimedLyricSegment(start: 45, end: 47, text: "High in low places"),
+            TimedLyricSegment(start: 48, end: 50, text: "Turn the radio up loud"),
+            TimedLyricSegment(start: 52, end: 54, text: "Dancing barefoot on the deck"),
+            TimedLyricSegment(start: 56, end: 58, text: "High in low places"),
+            TimedLyricSegment(start: 60, end: 62, text: "Sunshine pouring like wine"),
+        ]
+        let beats = stride(from: 0.0, to: 64, by: 0.5).map { $0 }
+
+        let sections = SongStructureAnalyzer().vocalSections(for: lyrics, beatTimes: beats)
+        XCTAssertEqual(sections.map(\.label), ["Verse 1", "Chorus", "Verse 2", "Chorus"])
+        XCTAssertEqual(sections.map(\.start), [0, 16, 32, 48])
+
+        // Without a beat grid there is no evidence to move the boundary.
+        XCTAssertEqual(
+            SongStructureAnalyzer().vocalSections(for: lyrics).map(\.start), [0, 13, 32, 45])
+    }
+
+    /// Wake Me Up When The Sun Goes Down: the first chord was measured 0.33 s ahead of the
+    /// first downbeat and landed on beat 4 of a pickup bar. It belongs on the downbeat.
+    func testFirstChordJustBeforeTheFirstDownbeatStartsTheMeasure() {
+        let beats = (0..<64).map { 0.54 + Double($0) * 0.6 }
+        let result = ChordProDraftBuilder().buildResult(
+            ChordProDraftInput(
+                title: "t", tempo: 100,
+                lyrics: [TimedLyricSegment(start: 10.14, end: 12, text: "hello there")],
+                chords: [
+                    EditableChordEvent(time: 0.21, chord: "E", confidence: 0.9),
+                    EditableChordEvent(time: 2.85, chord: "A", confidence: 0.9),
+                ],
+                beatTimes: beats,
+                barGrid: SongBarGrid(
+                    beatsPerBar: 4, barPhase: 0, confidence: 0.6, phaseSource: .beatModel)))
+
+        XCTAssertTrue(result.source.contains("0.540:E"), result.source)
+        XCTAssertFalse(result.source.contains("0.210:E"), result.source)
+        // A later chord ahead of its beat keeps its measured time.
+        XCTAssertTrue(result.source.contains("2.850:A"), result.source)
+        // The chart's first row: E on the downbeat that opens the row's first bar.
+        let firstRow = result.timeline.rows.first
+        XCTAssertEqual(firstRow?.chordTimes.first ?? -1, 0.54, accuracy: 1e-9)
+        XCTAssertEqual(result.rowOrigins[1] ?? -1, 0.54, accuracy: 1e-9)
+        // No empty lead-in bar ahead of it: the app drew that as an empty measure 1.
+        let firstBars = result.source.split(separator: "\n").first { $0.hasPrefix("|") }
+        XCTAssertEqual(firstBars.map { $0.hasPrefix("| [E]") }, true, result.source)
+    }
+
+    /// A first chord a whole beat ahead of the downbeat is a played pickup, not jitter.
+    func testFirstChordAWholeBeatBeforeTheDownbeatKeepsItsTime() {
+        let beats = (0..<64).map { 1.14 + Double($0) * 0.6 }
+        let result = ChordProDraftBuilder().buildResult(
+            ChordProDraftInput(
+                title: "t", tempo: 100,
+                lyrics: [TimedLyricSegment(start: 10.74, end: 12, text: "hello there")],
+                chords: [EditableChordEvent(time: 0.55, chord: "E", confidence: 0.9)],
+                beatTimes: beats,
+                barGrid: SongBarGrid(
+                    beatsPerBar: 4, barPhase: 0, confidence: 0.6, phaseSource: .beatModel)))
+        XCTAssertTrue(result.source.contains("0.550:E"), result.source)
+    }
+
     func testNonRepeatingLineInsideAChorusDoesNotSplitItIntoAOneLineVerse() {
         let lyrics = [
             TimedLyricSegment(start: 0, end: 2, text: "Friday night is coming"),
