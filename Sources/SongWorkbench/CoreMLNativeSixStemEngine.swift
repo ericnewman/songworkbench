@@ -202,10 +202,12 @@ actor CoreMLSixStemChunkPredictor: StemChunkPredicting {
                         samples[frame] = pointer[base + frame * strides[3]]
                     }
                 case .float16:
+                    // Raw half bits: Swift Float16 is unavailable in the x86_64 slice of archives.
                     let pointer = array.dataPointer.bindMemory(
-                        to: Float16.self, capacity: base + frameCount * strides[3])
+                        to: UInt16.self, capacity: base + frameCount * strides[3])
                     for frame in 0..<frameCount {
-                        samples[frame] = Float(pointer[base + frame * strides[3]])
+                        samples[frame] = CoreMLStemChunkPredictor.halfPrecisionFloatValue(
+                            bitPattern: pointer[base + frame * strides[3]])
                     }
                 default:
                     return [:]

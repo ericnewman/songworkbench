@@ -5,9 +5,14 @@ App Store Connect from an Xcode archive.
 
 ## Values to set before upload
 
-- Register the final bundle ID in Apple Developer / App Store Connect.
-- Set `SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER` to that registered bundle ID.
-- Set `SONGWORKBENCH_DEVELOPMENT_TEAM` to the Apple Developer Team ID.
+- Release is set in `Project.swift`: bundle ID `com.endogenllc.songworkbench`,
+  team `65FBMF6CMD`, copyright Endogen LLC, `ITSAppUsesNonExemptEncryption = NO`,
+  and `Resources/PrivacyInfo.xcprivacy`. Debug keeps `com.local.SongWorkbench` so
+  the development sandbox container doesn't move.
+- Register `com.endogenllc.songworkbench` in Apple Developer and create the
+  App Store Connect record (metadata draft: `AppStore.md`).
+- A Release build installed locally uses a new, empty sandbox container. Copy
+  data from `~/Library/Containers/com.local.SongWorkbench` if needed.
 - Complete App Store Connect privacy answers for local audio files, downloaded
   model packages, and any network requests used to install models.
 
@@ -43,7 +48,7 @@ xcodebuild archive \
 
 ## Signed TestFlight archive
 
-After the bundle ID and Team ID are configured:
+Signing values come from `Project.swift`:
 
 ```sh
 xcodebuild archive \
@@ -51,9 +56,7 @@ xcodebuild archive \
   -scheme SongWorkbench \
   -configuration Release \
   -destination 'generic/platform=macOS' \
-  -archivePath /tmp/SongWorkbench.xcarchive \
-  SONGWORKBENCH_PRODUCT_BUNDLE_IDENTIFIER='com.example.SongWorkbench' \
-  SONGWORKBENCH_DEVELOPMENT_TEAM='TEAMID1234'
+  -archivePath /tmp/SongWorkbench.xcarchive
 ```
 
 Open the archive in Xcode Organizer and use Distribute App for App Store
