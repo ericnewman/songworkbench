@@ -362,4 +362,15 @@ enum ChordConfidenceBand: String, Equatable, Sendable, CaseIterable {
         case .manual: "Added manually"
         }
     }
+
+    /// The band as a shape, for Differentiate Without Color: the fill and stroke alone are
+    /// coral / amber / phosphor / Mist.
+    var symbolName: String {
+        switch self {
+        case .low: "exclamationmark.triangle.fill"
+        case .medium: "questionmark.circle"
+        case .high: "checkmark.circle"
+        case .manual: "hand.point.up.left"
+        }
+    }
 }

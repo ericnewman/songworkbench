@@ -114,6 +114,7 @@
 		6969115ACA49C51D6651F6AC /* VoiceTrackSeparation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F79822670B5FB5C120514875 /* VoiceTrackSeparation.swift */; };
 		6999C398658717F59DD7CE62 /* SongTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39E6EA54A858FB1613E0A7DA /* SongTimeline.swift */; };
 		6A0AA03102FC89CC4613879A /* MetricalLevelReconciler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B2582B5D352CB2C6F2EDCC /* MetricalLevelReconciler.swift */; };
+		6D22C4C961A8086C98F8A866 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = CEF42A7ABBF847C6CE5223C2 /* Localizable.xcstrings */; };
 		6DA2600B01A7D50487BF2AB6 /* StemSeparation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B7B749E7E1F5CB21D36B750 /* StemSeparation.swift */; };
 		6E2EF2BCC61A37ABE0B8997D /* SoloTranscriptionAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = B528598B10B39B05840EEE0C /* SoloTranscriptionAnalysis.swift */; };
 		6F696CC54185209E704FECE9 /* PitchShift.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A980220D81309AA47143134 /* PitchShift.swift */; };
@@ -498,6 +499,7 @@
 		CB79182F8D11F568912423B2 /* OFL-JetBrainsMono.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-JetBrainsMono.txt"; sourceTree = "<group>"; };
 		CB957DDE6EA07222359DF406 /* ModelPackageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPackageManager.swift; sourceTree = "<group>"; };
 		CE9E6908871F1267E8568DC8 /* ChordProParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChordProParsingTests.swift; sourceTree = "<group>"; };
+		CEF42A7ABBF847C6CE5223C2 /* Localizable.xcstrings */ = {isa = PBXFileReference; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		CFAA2DCA1E1D72145BB4338A /* BeatTrackingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatTrackingTests.swift; sourceTree = "<group>"; };
 		D085D63771094E8D13D81451 /* LyricPhonemizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricPhonemizerTests.swift; sourceTree = "<group>"; };
 		D0A7475FE7FEFE48AD29CB89 /* SongWorkbench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SongWorkbench.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -690,6 +692,7 @@
 				9CA5CB47E8A9B6021E645661 /* KeyAwareChordFiltering.swift */,
 				A7DF81C66633761377D62A71 /* LiveCapture.swift */,
 				FB83073E59E9F4FBC358C68F /* LiveCaptureView.swift */,
+				CEF42A7ABBF847C6CE5223C2 /* Localizable.xcstrings */,
 				0C4C3D74E9AA41189464B86D /* LyricBlendRowBuilder.swift */,
 				A5CE52474ED325A9820D1655 /* LyricBlendView.swift */,
 				5C06CC42A09AA9B00FFED64A /* LyricConfidencePlaceholder.swift */,
@@ -1057,6 +1060,7 @@
 				F009C11AEA117A95908960C2 /* cmudict-arpabet.txt in Resources */,
 				2381402A16103672F64D9872 /* cmudict_rhyme.tsv in Resources */,
 				92D0B4B433E3C59C70CEB0AA /* nmp.onnx in Resources */,
+				6D22C4C961A8086C98F8A866 /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

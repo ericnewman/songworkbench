@@ -222,9 +222,10 @@ enum ChordEvidenceAudit {
                 """
         }
         guard result.unsupportedCount > 0 else { return nil }
-        return
-            "Removed \(result.unsupportedCount) chord marker(s) (\(percent)%) with no instrument "
-            + "attack or harmonic change in the audio."
+        return String(
+            localized:
+                "Removed \(result.unsupportedCount) chord markers (\(percent)%) with no instrument attack or harmonic change in the audio.",
+            bundle: .swStrings)
     }
 
     /// Whether the frame-level chord label at `time` differs from the label just before it AND the

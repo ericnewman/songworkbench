@@ -35,11 +35,19 @@ enum CaptureError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .sourceUnavailable(let kind):
-            return "Capture source \(kind.rawValue) is not available on this system."
+            return String(
+                localized: "Capture source \(kind.rawValue) is not available on this Mac.",
+                bundle: .swStrings)
         case .permissionDenied(let kind):
-            return "Permission to capture from \(kind.rawValue) was denied."
-        case .requiresOnDeviceValidation(let kind):
-            return "Capture source \(kind.rawValue) needs on-device validation (Phase 0 spike)."
+            return String(
+                localized: "Permission to capture from \(kind.rawValue) was denied.",
+                bundle: .swStrings)
+        case .requiresOnDeviceValidation:
+            // Shown when "Another app" is picked: that path isn't built yet.
+            return String(
+                localized:
+                    "Capturing another app's audio isn't available yet. Use Loopback or Microphone.",
+                bundle: .swStrings)
         }
     }
 }

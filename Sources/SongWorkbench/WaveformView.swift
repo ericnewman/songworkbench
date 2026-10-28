@@ -32,6 +32,8 @@ struct WaveformView: View {
             .gesture(dragGesture(width: geometry.size.width))
             .accessibilityLabel("Song waveform")
             .accessibilityValue(accessibilityValue)
+            // Audio Graphs: VoiceOver can play and describe the loudness over time.
+            .accessibilityChartDescriptor(WaveformChartDescriptor(envelope: envelope))
         }
         // No intrinsic min-height: the caller sizes each lane (the mix lane is 64pt). A min-height
         // taller than the lane made the Canvas render oversized and clip its top/bottom peaks.
@@ -148,8 +150,81 @@ struct WaveformView: View {
     }
 
     private var accessibilityValue: String {
-        guard let loopRegion else { return "No loop selected" }
-        return "Loop from \(loopRegion.start.formatted()) to \(loopRegion.end.formatted()) seconds"
+        let playhead = Self.clock(currentTime)
+        guard let loopRegion else {
+            return String(
+                localized: """
+                    Playhead at \(playhead), no loop selected
+                    """, bundle: .swStrings)
+        }
+        return String(
+            localized:
+                "Playhead at \(playhead), loop from \(Self.clock(loopRegion.start)) to \(Self.clock(loopRegion.end))",
+            bundle: .swStrings)
+    }
+
+    static func clock(_ seconds: TimeInterval) -> String {
+        Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond))
+    }
+}
+
+/// The song waveform as an Audio Graph: loudness (peak, 0–100 %) over time, downsampled to at
+/// most 120 points so VoiceOver's sonification stays a few seconds long.
+struct WaveformChartDescriptor: AXChartDescriptorRepresentable {
+    let envelope: WaveformEnvelope
+
+    func makeChartDescriptor() -> AXChartDescriptor {
+        let points = Self.points(for: envelope)
+        let xAxis = AXNumericDataAxisDescriptor(
+            title: String(localized: "Time", bundle: .swStrings),
+            range: 0...max(envelope.duration, 1),
+            gridlinePositions: []
+        ) { seconds in
+            Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond))
+        }
+        let yAxis = AXNumericDataAxisDescriptor(
+            title: String(localized: "Loudness", bundle: .swStrings),
+            range: 0...1,
+            gridlinePositions: []
+        ) { value in
+            value.formatted(.percent.precision(.fractionLength(0)))
+        }
+        let series = AXDataSeriesDescriptor(
+            name: String(localized: "Waveform", bundle: .swStrings),
+            isContinuous: true,
+            dataPoints: points.map { AXDataPoint(x: $0.time, y: $0.peak) }
+        )
+        return AXChartDescriptor(
+            title: String(localized: "Song waveform", bundle: .swStrings),
+            summary: String(
+                localized:
+                    "Peak loudness across the song. The loudest point is at \(Self.loudestTimeLabel(points)).",
+                bundle: .swStrings),
+            xAxis: xAxis,
+            yAxis: yAxis,
+            additionalAxes: [],
+            series: [series]
+        )
+    }
+
+    static func points(for envelope: WaveformEnvelope, maximumCount: Int = 120)
+        -> [(time: Double, peak: Double)]
+    {
+        guard !envelope.peaks.isEmpty, envelope.duration > 0 else { return [] }
+        let bucketCount = min(maximumCount, envelope.peaks.count)
+        let perBucket = Double(envelope.peaks.count) / Double(bucketCount)
+        return (0..<bucketCount).map { bucket in
+            let start = Int((Double(bucket) * perBucket).rounded(.down))
+            let end = max(start + 1, Int((Double(bucket + 1) * perBucket).rounded(.down)))
+            let peak = envelope.peaks[start..<min(end, envelope.peaks.count)].max() ?? 0
+            let time = (Double(bucket) + 0.5) / Double(bucketCount) * envelope.duration
+            return (time, Double(min(max(peak, 0), 1)))
+        }
+    }
+
+    private static func loudestTimeLabel(_ points: [(time: Double, peak: Double)]) -> String {
+        let loudest = points.max { $0.peak < $1.peak }?.time ?? 0
+        return Duration.seconds(loudest).formatted(.time(pattern: .minuteSecond))
     }
 }
 

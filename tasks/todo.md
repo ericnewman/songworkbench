@@ -1,3 +1,27 @@
+# Apple UI standards: resolve the open review items (2026-10-28)
+
+Eric approved applying the reviewer's proposals in
+`/Volumes/SSD/Claude Storage/Projects/Apple Release/UI Reviews/SongWorkbench.md` (items 1–14).
+
+- [x] App text size (`SWTextScale`): Settings › Text, View › Bigger/Smaller/Actual Text Size. The
+      chart takes it as zoom through `ChordProChartScale`; chart fonts use `swChartMono` /
+      `swChartDisplay` so glyphs are not double-scaled.
+- [x] Sub-10 pt text raised (pitch/speed captions, M/S letters, confidence badge, chart labels).
+- [x] Contrast: solid Mist for dimmed text; held chords italic Mist; solid lane-color labels.
+- [x] Increase Contrast: `swTextSecondary` swaps to Text `C3CCD6`; `swDimmed` drops opacity.
+- [x] Differentiate Without Color: confidence glyphs on the chord grid, legend and chart badge.
+- [x] 28 pt targets: mixer M/S/MIDI, pan knob, group triangle, fader grab, `.swIcon` buttons.
+- [x] `Localizable.xcstrings` with plural variants; status/error strings via
+      `String(localized:bundle: .swStrings)`; concatenated sentences rewritten.
+- [x] Mic purpose string, in-context mic request, denied route to System Settings.
+- [x] "Detects chords." copy; dark-only `a11y-exception`; waveform Audio Graph; meter values.
+- [x] Bouncing balls default off under Reduce Motion (saved choice wins).
+- [x] Minimum window width 1,080 (stem rail becomes a popover below 1,380).
+
+Review: `swift build`, `swift build --build-tests`, full `swift test`, and an Xcode Debug build
+(`CODE_SIGNING_ALLOWED=NO`) — results in the review report. Not run in the live app: Increase
+Contrast, Differentiate Without Color, VoiceOver, hit-target sizes and the compact-width popover.
+
 # Stem Separation Speed + Richer Stems (2026-08-13)
 
 Eric observed stem separation feeling slower than comparable products, suspected parallel stem

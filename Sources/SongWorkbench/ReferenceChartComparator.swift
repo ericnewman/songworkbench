@@ -46,8 +46,7 @@ struct ReferenceChartComparison: Equatable, Sendable {
         if let semitones = detectedTransposition {
             findings.append(
                 "Generated chart is transposed \(semitones > 0 ? "+" : "")\(semitones) "
-                    + "semitones relative to the reference — likely a key/capo difference, "
-                    + "not a detection error."
+                    + "semitones relative to the reference — likely a key/capo difference, not a detection error."
             )
         }
         if densityRatio > 1.4 {
@@ -63,22 +62,19 @@ struct ReferenceChartComparison: Equatable, Sendable {
         }
         if rootAgreement < 0.6, !lineDiffs.isEmpty {
             findings.append(
-                "Root agreement is \(Int((rootAgreement * 100).rounded()))% — the detected "
-                    + "harmony disagrees with the reference beyond chart-granularity noise."
+                "Root agreement is \(Int((rootAgreement * 100).rounded()))% — the detected harmony disagrees with the reference beyond chart-granularity noise."
             )
         }
         for mismatch in qualityMismatches.prefix(3) where mismatch.count >= 3 {
             let from = mismatch.referenceSuffix.isEmpty ? "major" : mismatch.referenceSuffix
             let to = mismatch.generatedSuffix.isEmpty ? "major" : mismatch.generatedSuffix
             findings.append(
-                "Systematic quality shift: reference \(from) detected as \(to) "
-                    + "(\(mismatch.count)×)."
+                "Systematic quality shift: reference \(from) detected as \(to) (\(mismatch.count)×)."
             )
         }
         if !unmatchedReferenceLines.isEmpty {
             findings.append(
-                "\(unmatchedReferenceLines.count) reference lines matched no generated line — "
-                    + "check lyric segmentation."
+                "\(unmatchedReferenceLines.count) reference lines matched no generated line — check lyric segmentation."
             )
         }
         return findings

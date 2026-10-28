@@ -131,8 +131,7 @@ struct ModelOnboardingSheet: View {
                 AppTitleBlock()
                     .padding(.bottom, 6)
                 Text(
-                    "Welcome. SongWorkbench analyzes songs on-device. Install the analysis models "
-                        + "below to get started — everything unlocks once they finish."
+                    "Welcome. SongWorkbench analyzes songs on-device. Install the analysis models below to get started — everything unlocks once they finish."
                 )
                 .font(.swDisplay(13))
                 .foregroundStyle(Color.swTextSecondary)
@@ -306,7 +305,7 @@ private struct SongSidebar: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.swDisplay(11, weight: .semibold))
                         .foregroundStyle(Color.swTextSecondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     Text("Songs")
@@ -315,7 +314,7 @@ private struct SongSidebar: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.swIcon)
             .help(isExpanded ? "Collapse song list" : "Expand song list")
             // `BackgroundStatusBar` used to sit right here, between the "Songs" disclosure and
             // the library buttons. Its text changes length constantly, which shoved this row's
@@ -326,14 +325,12 @@ private struct SongSidebar: View {
             Button("Import Songs", systemImage: "plus") {
                 model.isImporterPresented = true
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.swIcon)
             .help("Import audio files")
             Button("Open from Music", systemImage: "music.note") {
                 model.isMusicLibraryPickerPresented = true
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.swIcon)
             .help("Open a track from your Music library")
         }
         .padding(.horizontal, 16)
@@ -359,8 +356,7 @@ private struct SongSidebar: View {
                     Button("Remove Song", systemImage: "trash") {
                         model.removeSong(song)
                     }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.swIcon)
                     .foregroundStyle(Color.swCoral)
                 }
                 .contextMenu {
@@ -408,7 +404,7 @@ private struct SongSidebar: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "music.note")
-                    .font(.callout)
+                    .font(.swDisplay(12))
                     .foregroundStyle(Color.swTextSecondary)
                 Text(model.selectedSong?.title ?? "No song selected")
                     .font(.swDisplay(13))
@@ -443,11 +439,11 @@ private struct SongSidebar: View {
         let color: Color =
             status.isActive
             ? .swAccent
-            : status.isComplete ? .swMint : status.hasAny ? .swAmber : .swTextSecondary.opacity(0.5)
+            : status.isComplete ? .swMint : status.hasAny ? .swAmber : .swTextSecondary
         return Image(systemName: status.iconSystemName)
             .font(.swDisplay(11, weight: .semibold))
             .foregroundStyle(color)
-            .frame(width: 14)
+            .frame(width: swScaled(14))
             .help(status.helpText)
             .accessibilityLabel(status.helpText)
     }
@@ -499,7 +495,7 @@ private struct BackgroundStatusBar: View {
             }
             Spacer(minLength: 0)
         }
-        .frame(height: Self.rowHeight)
+        .frame(height: swScaled(Self.rowHeight))
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -613,6 +609,12 @@ private struct PlayerView: View {
     /// Mirrors `SongSidebar`'s own collapse state (same key) so the OUTER frame shrinks too —
     /// otherwise a collapsed one-row list would still reserve a 150pt-minimum column.
     @AppStorage("songSidebarExpanded") private var songSidebarExpanded = true
+    /// The window is narrower than the three full columns need (`compactWidthThreshold`): the
+    /// stem rail collapses to its 44 pt strip and opens the console in a popover instead, so the
+    /// window can go down to a 13-inch display's width.
+    @State private var isCompactWidth = false
+    /// Below this content width the 360 pt stem rail no longer fits beside the editor.
+    static let compactWidthThreshold: CGFloat = 1_380
     /// Height of the collapsed single-song row: header + one compact row, no list chrome.
     private static let collapsedSongListHeight: CGFloat = 76
 
@@ -711,12 +713,12 @@ private struct PlayerView: View {
                         // Stem Mix now takes only the top half of the rail's height, leaving
                         // room below for a planned future panel (reserved, not yet built).
                         VStack(spacing: 12) {
-                            StemMixSidebar(model: model)
-                            if stemRailExpanded {
+                            StemMixSidebar(model: model, isCompact: isCompactWidth)
+                            if stemRailExpanded && !isCompactWidth {
                                 stemMixReservedPanel
                             }
                         }
-                        .frame(width: stemRailExpanded ? 360 : 44)
+                        .frame(width: stemRailExpanded && !isCompactWidth ? 360 : 44)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 } else {
@@ -739,6 +741,11 @@ private struct PlayerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .padding(16)
+        .onGeometryChange(for: Bool.self) { proxy in
+            proxy.size.width < Self.compactWidthThreshold
+        } action: { compact in
+            isCompactWidth = compact
+        }
     }
 
     /// Bottom half of the stem-mix rail, intentionally empty — just holding the layout split
@@ -811,13 +818,13 @@ private struct PlayerView: View {
                     Text("Zoom")
                         .font(.swDisplay(11))
                         .foregroundStyle(Color.swTextSecondary)
-                        .frame(width: 38, alignment: .leading)
+                        .frame(width: swScaled(38), alignment: .leading)
                     Slider(value: $waveformZoom, in: 1...8, step: 0.5)
                         .frame(maxWidth: .infinity)
                     Text("\(waveformZoom, format: .number.precision(.fractionLength(1)))x")
                         .font(.swMono(11))
                         .foregroundStyle(Color.swTextSecondary)
-                        .frame(width: 32, alignment: .trailing)
+                        .frame(width: swScaled(32), alignment: .trailing)
                 }
 
                 if let progress = model.waveformStemProgress {
@@ -914,7 +921,7 @@ private struct PlayerView: View {
                     .font(.swMono(11))
                     .foregroundStyle(Color.swTextSecondary)
                     .monospacedDigit()
-                    .frame(width: 34, alignment: .trailing)
+                    .frame(width: swScaled(34), alignment: .trailing)
             }
         }
         .padding(.horizontal, 8)

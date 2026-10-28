@@ -100,7 +100,7 @@ final class ChordQualityAuditTests: XCTestCase {
         XCTAssertEqual(result.audit.findings[0].verdict, .ambiguousThird)
         XCTAssertEqual(result.audit.correctedCount, 0)
         XCTAssertTrue(
-            ChordQualityAudit.warning(for: result.audit)?.contains("power chords") ?? false)
+            ChordQualityAudit.warning(for: result.audit)?.contains("power chord") ?? false)
     }
 
     func testFramesForADifferentRootAreNotEvidenceAboutThisChord() {

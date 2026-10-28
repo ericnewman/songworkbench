@@ -143,7 +143,7 @@ struct PlaybackTransportCard: View {
                     )
                     .controlSize(.mini)
                     Text("Pitch \(compactPitchLabel)")
-                        .font(.swDisplay(9))
+                        .font(.swDisplay(10))
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
@@ -152,7 +152,7 @@ struct PlaybackTransportCard: View {
                     Slider(value: $model.tempoRate, in: 0.5...1.5, step: 0.05)
                         .controlSize(.mini)
                     Text("Speed \(Int((model.tempoRate * 100).rounded()))%")
-                        .font(.swDisplay(9))
+                        .font(.swDisplay(10))
                         .foregroundStyle(Color.swTextSecondary)
                         .lineLimit(1)
                 }
@@ -223,9 +223,9 @@ struct PlaybackTransportCard: View {
         .overlay(alignment: .bottomTrailing) {
             if let symbolVariant {
                 Image(systemName: symbolVariant)
-                    .font(.callout.weight(.bold))
+                    .font(.swDisplay(12, weight: .bold))
                     .foregroundStyle(
-                        disabled ? Color.swTextSecondary.opacity(0.5) : Color.swTextSecondary
+                        disabled ? Color.swTextSecondary.swDimmed(0.5) : Color.swTextSecondary
                     )
                     .offset(x: 3, y: 2)
             }
@@ -438,8 +438,8 @@ private struct TimedLyricsEditor: View {
                 .labelStyle(.iconOnly)
                 .disabled(model.lyricSegments.isEmpty || showPlainText)
                 .help(
-                    "Show/hide review flags on lines that look like mis-splits (short/long vs the "
-                        + "typical line, or inconsistent with a repeated section). Off by default.")
+                    "Show/hide review flags on lines that look like mis-splits (short/long vs the typical line, or inconsistent with a repeated section). Off by default."
+                )
                 Button("Mark Reviewed", systemImage: "checkmark.seal") {
                     model.markLyricsReviewed()
                 }
@@ -448,9 +448,8 @@ private struct TimedLyricsEditor: View {
                     model.addLyricSegment()
                 }
                 .help(
-                    "Inserts an empty lyric line at the current playback time (the playhead in the "
-                        + "waveform above). Play or scrub to the moment, click Add Line, then type "
-                        + "the words. You can also edit the start/end times directly.")
+                    "Inserts an empty lyric line at the current playback time (the playhead in the waveform above). Play or scrub to the moment, click Add Line, then type the words. You can also edit the start/end times directly."
+                )
             }
             if showPlainText {
                 ScrollView {
@@ -481,7 +480,7 @@ private struct TimedLyricsEditor: View {
                                         Text(lyricLineNumbers[segmentID].map(String.init) ?? "")
                                             .font(.swMono(10))
                                             .foregroundStyle(Color.swTextSecondary)
-                                            .frame(width: 24, alignment: .trailing)
+                                            .frame(width: swScaled(24), alignment: .trailing)
                                         LyricTimeField(seconds: $model.lyricSegments[index].start)
                                             .frame(width: 70)
                                         LyricTimeField(seconds: $model.lyricSegments[index].end)
@@ -497,8 +496,7 @@ private struct TimedLyricsEditor: View {
                                         Button("Split line", systemImage: "scissors") {
                                             model.splitLyricSegment(segmentID)
                                         }
-                                        .labelStyle(.iconOnly)
-                                        .buttonStyle(.borderless)
+                                        .buttonStyle(.swIcon)
                                         .help("Split this line at its largest internal gap")
                                         .disabled(model.lyricSegments[index].words.count < 2)
                                         Button(
@@ -507,13 +505,12 @@ private struct TimedLyricsEditor: View {
                                         ) {
                                             model.mergeLyricSegmentWithNext(segmentID)
                                         }
-                                        .labelStyle(.iconOnly)
-                                        .buttonStyle(.borderless)
+                                        .buttonStyle(.swIcon)
                                         .help("Merge this line into the next")
                                         Button("Remove", systemImage: "trash", role: .destructive) {
                                             model.lyricSegments.removeAll { $0.id == segmentID }
                                         }
-                                        .labelStyle(.iconOnly)
+                                        .buttonStyle(.swIcon)
                                     }
                                     .id(segmentID)
                                     .listRowBackground(
@@ -537,8 +534,8 @@ private struct TimedLyricsEditor: View {
                             "No Timed Lyrics",
                             systemImage: "text.quote",
                             description: Text(
-                                "Analyze the song, or play to a spot and click Add Line to enter "
-                                    + "lyrics by hand.")
+                                "Analyze the song, or play to a spot and click Add Line to enter lyrics by hand."
+                            )
                         )
                     }
                 }
@@ -616,7 +613,7 @@ private struct LyricSectionHeaderRow: View {
             Spacer()
             Text(formattedTime(section.start))
                 .font(.swMono(11))
-                .foregroundStyle(Color.swTextSecondary.opacity(0.8))
+                .foregroundStyle(Color.swTextSecondary)
         }
         .listRowBackground(Color.clear)
         .accessibilityElement(children: .combine)
@@ -694,7 +691,7 @@ extension ChordConfidenceBand {
         case .low: Color.swCoral.opacity(0.75)
         case .medium: Color.swAmber.opacity(0.7)
         case .high: Color.swMint.opacity(0.7)
-        case .manual: Color.swTextSecondary.opacity(0.6)
+        case .manual: Color.swTextSecondary.swDimmed(0.6)
         }
     }
 }
@@ -763,7 +760,8 @@ private struct ChordGridRowView: View {
                     // the grid must too — an omitted row would misalign every row beneath it.
                     Text("—")
                         .font(.swMono(12))
-                        .foregroundStyle(Color.swTextSecondary.opacity(0.5))
+                        .foregroundStyle(Color.swTextSecondary)
+                        .accessibilityLabel("No chord change")
                 }
             }
             .frame(height: 24)
@@ -839,6 +837,9 @@ private struct ChordGridCell: View {
     @Binding var selectedEventID: EditableChordEvent.ID?
     let remove: () -> Void
 
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private var band: ChordConfidenceBand {
         ChordConfidenceBand.band(for: event.confidence)
     }
@@ -847,31 +848,41 @@ private struct ChordGridCell: View {
         Button {
             selectedEventID = isSelected ? nil : event.id
         } label: {
-            Text(event.chord.isEmpty ? "—" : event.chord)
-                .font(.swMono(13, weight: .semibold))
-                .foregroundStyle(Color.swTextPrimary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .frame(minWidth: 40)
-                .background(
-                    isSounding ? Color.swAccent.opacity(0.55) : band.fillColor,
-                    in: RoundedRectangle(cornerRadius: 5)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(
-                            isSelected ? Color.swTextPrimary : band.strokeColor,
-                            lineWidth: isSelected ? 2 : 1)
-                )
-                .scaleEffect(isSounding ? 1.08 : 1)
-                .animation(.easeOut(duration: 0.12), value: isSounding)
-                // Excluded chords stay visible but recede: they are still real detections, and
-                // hiding them would make the confidence slider's effect invisible here.
-                .opacity(isIncluded ? 1 : 0.45)
-                .contentShape(Rectangle())
+            HStack(spacing: 3) {
+                // Differentiate Without Color: the band's shape beside the chord, since its fill
+                // and stroke are otherwise the only cue.
+                if differentiateWithoutColor {
+                    Image(systemName: band.symbolName)
+                        .font(.swDisplay(10, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                Text(event.chord.isEmpty ? "—" : event.chord)
+                    .font(.swMono(13, weight: .semibold))
+                    // Excluded chords recede by tone and a strikethrough-free Mist label, not by
+                    // fading the whole cell (0.45 opacity measured under 3:1).
+                    .foregroundStyle(isIncluded ? Color.swTextPrimary : Color.swTextSecondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(minWidth: 40)
+            .background(
+                isSounding ? Color.swAccent.opacity(0.55) : band.fillColor,
+                in: RoundedRectangle(cornerRadius: 5)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(
+                        isSelected ? Color.swTextPrimary : band.strokeColor,
+                        lineWidth: isSelected ? 2 : 1)
+            )
+            .scaleEffect(isSounding && !reduceMotion ? 1.08 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSounding)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("\(band.label) — click for timing and detection details")
+        .accessibilityLabel(event.chord.isEmpty ? "No chord" : event.chord)
+        .accessibilityValue(isIncluded ? band.label : "\(band.label), excluded")
         .popover(
             isPresented: Binding(
                 get: { isSelected },
@@ -894,7 +905,7 @@ private struct ChordGridDetailPopover: View {
             HStack {
                 TextField("Chord", text: $event.chord)
                     .font(.swMono(13, weight: .semibold))
-                    .frame(width: 90)
+                    .frame(width: swScaled(90))
                 Spacer()
                 Button("Remove", systemImage: "trash", role: .destructive, action: remove)
                     .labelStyle(.iconOnly)
@@ -917,8 +928,8 @@ private struct ChordGridDetailPopover: View {
             }
             Toggle("Hidden", isOn: $event.hidden)
                 .help(
-                    "A hidden chord stays in this list but leaves the chart, the click, and "
-                        + "the included count — same switch the Review chart's popup sets.")
+                    "A hidden chord stays in this list but leaves the chart, the click, and the included count — same switch the Review chart's popup sets."
+                )
             LabeledContent("ChordPro") {
                 Text(event.hidden ? "Hidden" : isIncluded ? "Included" : "Below threshold")
                     .font(.swDisplay(11))
@@ -950,6 +961,7 @@ private struct ChordGridDetailPopover: View {
 private struct ChordTimelineEditor: View {
     @ObservedObject var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     // Observe playback directly, exactly as `TimedLyricsEditor` does. `AppModel` reads the clock
     // through `activeClock` but does NOT republish its ticks, so a view that observes only the
     // model never re-renders while audio plays — which is why the chord highlight sat frozen.
@@ -1007,8 +1019,8 @@ private struct ChordTimelineEditor: View {
                     model.addChordEvent()
                 }
                 .help(
-                    "Adds a chord at the current playback time (the playhead in the waveform). "
-                        + "Then type the chord name, e.g. Ab, and adjust its time if needed.")
+                    "Adds a chord at the current playback time (the playhead in the waveform). Then type the chord name, e.g. Ab, and adjust its time if needed."
+                )
             }
             if let progress = model.analysisJobSnapshot?.progress, isAnalysisRunning {
                 ProgressView(
@@ -1038,18 +1050,17 @@ private struct ChordTimelineEditor: View {
                 Text(model.chordConfidenceThreshold, format: .percent.precision(.fractionLength(0)))
                     .font(.swMono(12))
                     .foregroundStyle(Color.swTextSecondary)
-                    .frame(width: 42, alignment: .trailing)
+                    .frame(width: swScaled(42), alignment: .trailing)
                 Text("\(model.includedChordEventCount) of \(model.chordEvents.count) included")
                     .font(.swMono(11))
                     .foregroundStyle(Color.swTextSecondary)
-                    .frame(minWidth: 96, alignment: .trailing)
+                    .frame(minWidth: swScaled(96), alignment: .trailing)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .swSurfacePanel(cornerRadius: 8)
             .help(
-                "Detected chords below this confidence are omitted from generated ChordPro. "
-                    + "Manual chords are always included."
+                "Detected chords below this confidence are omitted from generated ChordPro. Manual chords are always included."
             )
             chordConfidenceLegend
             ScrollViewReader { scroller in
@@ -1138,7 +1149,18 @@ private struct ChordTimelineEditor: View {
                         .frame(width: 12, height: 12)
                         .overlay(
                             RoundedRectangle(cornerRadius: 3)
-                                .strokeBorder(band.strokeColor, lineWidth: 1))
+                                .strokeBorder(band.strokeColor, lineWidth: 1)
+                        )
+                        .overlay {
+                            if differentiateWithoutColor {
+                                // a11y-exception: an 8 pt glyph inside the 12 pt swatch, hidden from
+                                // VoiceOver; the band's name is the 10 pt label beside it.
+                                Image(systemName: band.symbolName)
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(Color.swTextPrimary)
+                            }
+                        }
+                        .accessibilityHidden(true)
                     Text(band.label)
                         .font(.swDisplay(10))
                         .foregroundStyle(Color.swTextSecondary)
@@ -1276,8 +1298,7 @@ struct ChordProTabConfig: Sendable {
         supportsMarkReviewed: false,
         showsSecondaryMode: true,
         footerNote:
-            "Bass notes are detected from the separated bass stem when available; "
-            + "otherwise they fall back to chord roots (slash-bass first, else the chord root)."
+            "Bass notes are detected from the separated bass stem when available; otherwise they fall back to chord roots (slash-bass first, else the chord root)."
     )
 }
 
@@ -1294,11 +1315,11 @@ struct ChordProTabEditor: View {
     /// The white word-tracking ball: bounces along the lyric, landing on each word as it is sung.
     /// Switched off on 2026-08-20 and back on on 2026-08-21, so it is a stored preference now
     /// rather than a compile-time `let` — the machinery it gates never went anywhere.
-    @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = true
+    @AppStorage("bouncingBallEnabled") private var bouncingBallEnabled = MotionDefaults.ballsDefault
     /// The amber ball travelling chord onset to chord onset along the row.
-    @AppStorage("chordBallEnabled") private var chordBallEnabled = true
+    @AppStorage("chordBallEnabled") private var chordBallEnabled = MotionDefaults.ballsDefault
     /// The amber ball parked over the sounding chord, popping at each onset.
-    @AppStorage("chordPopBallEnabled") private var chordPopBallEnabled = true
+    @AppStorage("chordPopBallEnabled") private var chordPopBallEnabled = MotionDefaults.ballsDefault
     private var ballVisibility: BouncingBallVisibility {
         BouncingBallVisibility(
             word: bouncingBallEnabled, chord: chordBallEnabled, chordPop: chordPopBallEnabled)
@@ -1413,8 +1434,8 @@ struct ChordProTabEditor: View {
             .toggleStyle(.checkbox)
             .fixedSize()
             .help(
-                "Chord names read a half step up, as the shapes a band tuned to Eb plays; "
-                    + "tab is fretted for the lowered tuning.")
+                "Chord names read a half step up, as the shapes a band tuned to Eb plays; tab is fretted for the lowered tuning."
+            )
     }
 
     /// Everything the chart can show, as one small panel of checkboxes (Eric, 2026-10-07: "a small
@@ -1615,7 +1636,9 @@ struct ChordProTabEditor: View {
 
     /// The chart's proportional zoom, resolved from the stored point size.
     private var chartScale: ChordProChartScale {
-        ChordProChartScale(fontSize: CGFloat(chordProFontSize))
+        // The app text size (`SWTextScale`) enters the chart as zoom, so glyphs, the measured
+        // character advance and the time axis all scale together (`ChordProChartScale`).
+        ChordProChartScale(fontSize: CGFloat(chordProFontSize) * SWTextScale.shared.factor)
     }
 
     /// Lyric segments sorted into the order the highlight/ball ordinals use (so ordinal N indexes
@@ -1965,8 +1988,7 @@ struct ChordProTabEditor: View {
                 }
                 Button("Display", systemImage: "eye") { showDisplayOptions = true }
                     .help(
-                        "Choose what the chart shows: each instrument's chords and notes, the "
-                            + "bouncing balls, the grid and the waveform"
+                        "Choose what the chart shows: each instrument's chords and notes, the bouncing balls, the grid and the waveform"
                     )
                     .popover(isPresented: $showDisplayOptions, arrowEdge: .bottom) {
                         displayOptionsPanel
@@ -1987,10 +2009,8 @@ struct ChordProTabEditor: View {
                 .pickerStyle(.segmented)
                 .fixedSize()
                 .help(
-                    "Audition where chord changes are placed. Switch between these while the "
-                        + "song plays and watch the chord highlight and ball against the recording "
-                        + "— whichever lands with it is the better anchor. Auditioning never edits "
-                        + "the chart.")
+                    "Audition where chord changes are placed. Switch between these while the song plays and watch the chord highlight and ball against the recording — whichever lands with it is the better anchor. Auditioning never edits the chart."
+                )
                 Button("Chord Shading Legend", systemImage: "questionmark.circle") {
                     showConfidenceLegend = true
                 }
@@ -2068,12 +2088,11 @@ struct ChordProTabEditor: View {
             Text(String(format: "%.1f×", zoom))
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
-                .frame(width: 38, alignment: .leading)
+                .frame(width: swScaled(38), alignment: .leading)
         }
         .help(
-            "Chart zoom. The slider's centre is 1.0×, which fits one phrase to the window width; "
-                + "right magnifies the whole chart proportionally — text, spacing and the beat "
-                + "grid together — and left shrinks it to fit more on screen.")
+            "Chart zoom. The slider's centre is 1.0×, which fits one phrase to the window width; right magnifies the whole chart proportionally — text, spacing and the beat grid together — and left shrinks it to fit more on screen."
+        )
     }
 
     /// Small popover explaining the shaded backgrounds behind chord names: reuses
@@ -2098,7 +2117,7 @@ struct ChordProTabEditor: View {
             // `chordConfidenceOutline(at:)`): tier color as a thin box, no fill.
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .strokeBorder(
-                    outlined ? Color.swTextSecondary.opacity(0.4) : color.opacity(0.9),
+                    outlined ? Color.swTextSecondary.swDimmed(0.4) : color.opacity(0.9),
                     lineWidth: 1
                 )
                 .frame(width: 20, height: 14)
@@ -2182,7 +2201,10 @@ struct ChordProTabEditor: View {
                 errorMessage = error.localizedDescription
             }
         #else
-            errorMessage = "Importing isn\u{2019}t available on iPad yet."
+            errorMessage = String(
+                localized: """
+                    Importing isn\u{2019}t available on iPad yet.
+                    """, bundle: .swStrings)
         #endif
     }
 
@@ -2203,7 +2225,10 @@ struct ChordProTabEditor: View {
                 errorMessage = error.localizedDescription
             }
         #else
-            errorMessage = "Importing isn\u{2019}t available on iPad yet."
+            errorMessage = String(
+                localized: """
+                    Importing isn\u{2019}t available on iPad yet.
+                    """, bundle: .swStrings)
         #endif
     }
 
@@ -2225,7 +2250,10 @@ struct ChordProTabEditor: View {
                 errorMessage = error.localizedDescription
             }
         #else
-            errorMessage = "Exporting isn\u{2019}t available on iPad yet."
+            errorMessage = String(
+                localized: """
+                    Exporting isn\u{2019}t available on iPad yet.
+                    """, bundle: .swStrings)
         #endif
     }
 
@@ -2239,11 +2267,17 @@ struct ChordProTabEditor: View {
             do {
                 try model.exportChordPro(to: fileURL, transposedBy: model.chordDisplayTranspose)
             } catch {
-                errorMessage = "Could not prepare the chart: \(error.localizedDescription)"
+                errorMessage = String(
+                    localized: """
+                        Could not prepare the chart: \(error.localizedDescription)
+                        """, bundle: .swStrings)
                 return
             }
             guard let appURL = Self.justChordsApplicationURL() else {
-                errorMessage = "JustChords wasn’t found in Applications."
+                errorMessage = String(
+                    localized: """
+                        JustChords wasn’t found in Applications.
+                        """, bundle: .swStrings)
                 return
             }
             let openConfig = NSWorkspace.OpenConfiguration()
@@ -2252,12 +2286,18 @@ struct ChordProTabEditor: View {
                 _, error in
                 if let error {
                     DispatchQueue.main.async {
-                        errorMessage = "Could not open JustChords: \(error.localizedDescription)"
+                        errorMessage = String(
+                            localized: """
+                                Could not open JustChords: \(error.localizedDescription)
+                                """, bundle: .swStrings)
                     }
                 }
             }
         #else
-            errorMessage = "Opening in JustChords isn\u{2019}t available on iPad."
+            errorMessage = String(
+                localized: """
+                    Opening in JustChords isn\u{2019}t available on iPad.
+                    """, bundle: .swStrings)
         #endif
     }
 
@@ -2335,12 +2375,12 @@ struct ChordProTabEditor: View {
                     .fixedSize()
             }
             .help(
-                "Minimum chord confidence for the chart and click — same threshold as the "
-                    + "Chords page. Chords below it are dropped from the generated chart.")
+                "Minimum chord confidence for the chart and click — same threshold as the Chords page. Chords below it are dropped from the generated chart."
+            )
             Text(model.chordConfidenceThreshold, format: .percent.precision(.fractionLength(0)))
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
-                .frame(width: 34, alignment: .trailing)
+                .frame(width: swScaled(34), alignment: .trailing)
         }
     }
 
@@ -2363,8 +2403,8 @@ struct ChordProTabEditor: View {
                     .fixedSize()
             }
             .help(
-                "Shift the highlight and chord indicator earlier/later relative to playback "
-                    + "(render only; does not change audio). Reset to remove the offset.")
+                "Shift the highlight and chord indicator earlier/later relative to playback (render only; does not change audio). Reset to remove the offset."
+            )
             Button("Reset") { model.chordProTimingOffsetMS = 0 }
                 .font(.swDisplay(11))
                 .buttonStyle(.plain)
@@ -2377,7 +2417,7 @@ struct ChordProTabEditor: View {
                 .font(.swDisplay(11).monospacedDigit())
                 .foregroundStyle(Color.swTextSecondary)
                 .fixedSize()
-                .frame(width: 52, alignment: .leading)
+                .frame(width: swScaled(52), alignment: .leading)
         }
     }
 
@@ -4492,7 +4532,7 @@ private struct ChordProPreviewBlockView: View {
         // the beat-dot / ball reserve at the top of the block.
         HStack(alignment: .bottom, spacing: 8) {
             Text(lineNumber.map(String.init) ?? "")
-                .font(.swMono(scale.scaled(10)))
+                .font(.swChartMono(scale.scaled(10)))
                 .foregroundStyle(Color.swTextSecondary)
                 .frame(width: scale.scaled(22), alignment: .trailing)
                 .padding(.bottom, 3)
@@ -4520,8 +4560,8 @@ private struct ChordProPreviewBlockView: View {
                     .font(.swDisplay(10))
                     .foregroundStyle(Color.swAmber)
                     .help(
-                        "The audio here contains singing the transcription missed — "
-                            + "re-run Analyze (Accuracy) or add reference lyrics.")
+                        "The audio here contains singing the transcription missed — re-run Analyze (Accuracy) or add reference lyrics."
+                    )
                 }
             }
         }
@@ -4600,7 +4640,7 @@ private struct ChordProPreviewBlockView: View {
             if showChordTimeLabels {
                 Text(source)
                     .font(.swMono(10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.swTextSecondary)
             }
         }
     }
@@ -4617,7 +4657,7 @@ private struct ChordProPreviewBlockView: View {
             } label: {
                 Image(systemName: segment.accepted ? "checkmark.circle.fill" : "circle")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.swIcon)
             .foregroundStyle(segment.accepted ? Color.swMint : Color.swTextSecondary)
             .help(segment.accepted ? "Accepted — click to un-accept" : "Accept this line")
             .accessibilityLabel("Accept line")
@@ -4630,7 +4670,7 @@ private struct ChordProPreviewBlockView: View {
                 } label: {
                     Image(systemName: "pencil")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.swIcon)
                 .foregroundStyle(Color.swTextSecondary)
                 .help("Correct this line's text")
                 .accessibilityLabel("Edit line text")
@@ -4862,6 +4902,8 @@ private struct ChordProPreviewLineView: View {
     /// Reduce Motion drops the chord-onset size pop; the glow and the ball still mark the onset.
     /// Not private, so the memberwise init stays callable from the chart.
     @Environment(\.accessibilityReduceMotion) var reduceMotion
+    /// Differentiate Without Color adds the confidence tier's glyph beside its tint.
+    @Environment(\.accessibilityDifferentiateWithoutColor) var differentiateWithoutColor
     /// Every constant below is authored at 1× (a 15 pt body) and read through the instance
     /// properties further down, which multiply by `scale.factor`. Nothing in this view may use a
     /// `base…` constant directly for layout: the horizontal axis and the glyph size have to move
@@ -5118,17 +5160,22 @@ private struct ChordProPreviewLineView: View {
             let rowY = baseY + bucketRowReserve * CGFloat(rowIndex)
             let rowColor = entry.row.stemID.laneColor
             Text(entry.row.label)
-                .font(.swDisplay(scale.scaled(9), weight: .semibold))
-                .foregroundStyle(rowColor.opacity(0.85))
+                .font(.swChartDisplay(scale.scaled(10), weight: .semibold))
+                .foregroundStyle(rowColor)
                 .offset(x: 0, y: rowY)
             // The label sits at x = 0, and so does any cell at the row's first instant — every
             // chord row's dimmed "still sounding from the row before" cell among them — which
             // printed one on top of the other ("D" over "GtC"). A colliding cell clears the label.
             let labelReserve = bucketRowLabelReserve
             ForEach(Array(entry.row.cells.enumerated()), id: \.offset) { index, cell in
+                // A chord still sounding from the row before reads as held by shape and tone, not
+                // by fading: italic, in solid Mist (6.3:1 on Night). The 0.45-opacity dim it
+                // replaced measured 2.0–2.7:1.
                 Text(cell.text)
                     .font(ChordProChartTypography.chord(size: scale.chordSize * 0.85))
-                    .foregroundStyle(rowColor.opacity(cell.isDim ? 0.45 : 1))
+                    .italic(cell.isDim)
+                    .foregroundStyle(cell.isDim ? Color.swTextSecondary : rowColor)
+                    .accessibilityLabel(cell.isDim ? "\(cell.text), held" : cell.text)
                     .offset(x: max(entry.xs[index], labelReserve), y: rowY)
             }
         }
@@ -5146,10 +5193,13 @@ private struct ChordProPreviewLineView: View {
                 ForEach(Array(entry.block.chords.enumerated()), id: \.offset) { _, chord in
                     Text(chord.label)
                         .font(ChordProChartTypography.chord(size: scale.chordSize * 0.8))
+                        .italic(chord.isHeld)
                         .foregroundStyle(
-                            (entry.block.chordStemID?.laneColor ?? tabColor)
-                                .opacity(chord.isHeld ? 0.45 : 1)
+                            chord.isHeld
+                                ? Color.swTextSecondary
+                                : (entry.block.chordStemID?.laneColor ?? tabColor)
                         )
+                        .accessibilityLabel(chord.isHeld ? "\(chord.label), held" : chord.label)
                         .offset(
                             x: max(rhythmicX(forTime: chord.time), scale.scaled(12)), y: laneTop)
                 }
@@ -5160,8 +5210,8 @@ private struct ChordProPreviewLineView: View {
                 // In the margin left of the row, so no fret ever sits on a label: a row's first
                 // columns are real beats (the pickup gutter), not label space.
                 Text(label)
-                    .font(.swDisplay(scale.scaled(8), weight: .semibold))
-                    .foregroundStyle(tabColor.opacity(0.85))
+                    .font(.swChartDisplay(scale.scaled(10), weight: .semibold))
+                    .foregroundStyle(tabColor)
                     .offset(x: -tabLabelWidth, y: rowY)
                 // The string as a real line, broken around each fret number (Eric, 2026-10-07:
                 // "instead of dashes, could we draw real lines").
@@ -5232,12 +5282,12 @@ private struct ChordProPreviewLineView: View {
     private var tabFretFontSize: CGFloat { scale.scaled(10.5) }
 
     /// How far left of the row the string labels (e B G D A E) sit.
-    private var tabLabelWidth: CGFloat { scale.scaled(9) }
+    private var tabLabelWidth: CGFloat { scale.scaled(11) }
     private var tabChordLaneReserve: CGFloat { scale.chordSize * 1.1 }
 
     private func tabRule(at y: CGFloat, width: CGFloat) -> some View {
         Rectangle()
-            .fill(Color.swTextSecondary.opacity(0.5))
+            .fill(Color.swTextSecondary.swDimmed(0.5))
             .frame(width: max(width, 0), height: 1)
             .offset(x: 0, y: y.rounded())
     }
@@ -5336,11 +5386,20 @@ private struct ChordProPreviewLineView: View {
         {
             let tier = ReviewConfidenceTier(confidence)
             if tier.tint != Color.clear {
-                Text(confidence, format: .percent.precision(.fractionLength(0)))
-                    .font(.swMono(8, weight: .medium))
-                    .foregroundStyle(tier.tint)
-                    .fixedSize()
-                    .offset(y: -scale.scaled(10))
+                HStack(spacing: 2) {
+                    // Differentiate Without Color: the tier's shape, since coral vs amber is
+                    // otherwise the only thing telling low from uncertain.
+                    if differentiateWithoutColor, let symbol = tier.symbolName {
+                        Image(systemName: symbol)
+                    }
+                    Text(confidence, format: .percent.precision(.fractionLength(0)))
+                }
+                .font(.swChartMono(scale.scaled(10), weight: .medium))
+                .foregroundStyle(tier.tint)
+                .fixedSize()
+                .offset(y: -scale.scaled(12))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(tier.label ?? "")
             }
         }
     }
@@ -5610,7 +5669,7 @@ private struct ChordProPreviewLineView: View {
         .overlay(alignment: .topLeading) {
             if let playheadX {
                 Rectangle()
-                    .fill(Color.swTextPrimary.opacity(0.6))
+                    .fill(Color.swTextPrimary.swDimmed(0.6))
                     .frame(width: 1)
                     .offset(x: playheadX)
                     .allowsHitTesting(false)
@@ -5950,7 +6009,7 @@ private struct ChordProPreviewLineView: View {
             }
             ForEach(Array(phraseBoundaryXs.enumerated()), id: \.offset) { _, x in
                 Rectangle()
-                    .fill(Color.swTextSecondary.opacity(0.38))
+                    .fill(Color.swTextSecondary.swDimmed(0.38))
                     .frame(width: 1, height: contentHeight)
                     .position(x: x, y: contentHeight / 2)
             }
@@ -5963,7 +6022,7 @@ private struct ChordProPreviewLineView: View {
             measureNumbers
             ForEach(Array(dots.enumerated()), id: \.offset) { _, x in
                 Circle()
-                    .fill(Color.swTextSecondary.opacity(0.55))
+                    .fill(Color.swTextSecondary.swDimmed(0.55))
                     .frame(width: dotSize, height: dotSize)
                     .position(x: x, y: scale.scaled(4))
             }
@@ -5978,8 +6037,8 @@ private struct ChordProPreviewLineView: View {
                 bucketRows: bucketRows, soloBlocks: soloBlocks, baseY: topReserve + harmonyReserve)
             ForEach(Array(harmonyRows.enumerated()), id: \.offset) { rowIndex, row in
                 Text(row.part.displayName)
-                    .font(.swDisplay(scale.scaled(9), weight: .semibold))
-                    .foregroundStyle(StemKind.vocals.laneColor.opacity(0.85))
+                    .font(.swChartDisplay(scale.scaled(10), weight: .semibold))
+                    .foregroundStyle(StemKind.vocals.laneColor)
                     .offset(
                         x: 0,
                         y: topReserve + harmonyRowReserve * CGFloat(rowIndex))
@@ -6017,7 +6076,7 @@ private struct ChordProPreviewLineView: View {
             }
             ForEach(Array(holdLines.enumerated()), id: \.offset) { _, hold in
                 Rectangle()
-                    .fill(Color.swTextSecondary.opacity(0.7))
+                    .fill(Color.swTextSecondary.swDimmed(0.7))
                     .frame(width: hold.width, height: max(1, scale.scaled(1.2)))
                     .offset(
                         x: hold.x,
@@ -6069,8 +6128,8 @@ private struct ChordProPreviewLineView: View {
                 // to LastResort), so it rendered as a "?" box (Eric: "what do these ?4
                 // symbols mean?").
                 Text("rest \(restBeats)")
-                    .font(.swDisplay(scale.scaled(10)))
-                    .foregroundStyle(Color.swTextSecondary.opacity(0.75))
+                    .font(.swChartDisplay(scale.scaled(10)))
+                    .foregroundStyle(Color.swTextSecondary)
                     .offset(
                         x: lastX + rhythmicWordWidth(at: words.count - 1) + scale.scaled(10),
                         y: lyricBandOffset + topReserve + harmonyReserve + bucketReserve
@@ -6351,8 +6410,8 @@ private struct ChordProPreviewLineView: View {
                 let closesFrame = phraseWidth.map { x >= gutterPx + $0 - 0.5 } ?? false
                 if number >= 1, !closesFrame {
                     Text("\(number)")
-                        .font(.swDisplay(scale.scaled(8), weight: .medium).monospacedDigit())
-                        .foregroundStyle(Color.swTextSecondary.opacity(0.7))
+                        .font(.swChartDisplay(scale.scaled(10), weight: .medium).monospacedDigit())
+                        .foregroundStyle(Color.swTextSecondary)
                         .fixedSize()
                         .offset(x: x + scale.scaled(2), y: 0)
                         .accessibilityLabel("Bar \(number)")
@@ -6623,7 +6682,7 @@ private struct ChordProPreviewLineView: View {
             measureNumbers
             ForEach(Array(beatDotPositions.enumerated()), id: \.offset) { _, x in
                 Circle()
-                    .fill(Color.swTextSecondary.opacity(0.55))
+                    .fill(Color.swTextSecondary.swDimmed(0.55))
                     .frame(width: dotSize, height: dotSize)
                     .position(x: x, y: scale.scaled(4))
             }
@@ -6971,6 +7030,10 @@ struct StemMixSidebar: View {
     /// rail's width when collapsed, reclaiming the space for the editor.
     @AppStorage(StemMixSidebar.expansionDefaultsKey) private var isExpanded = true
     static let expansionDefaultsKey = "stemMixRailExpanded"
+    /// True when the window is too narrow for the 360 pt rail (`PlayerView`). The rail then stays
+    /// collapsed whatever the saved state, and its button opens the console in a popover.
+    var isCompact = false
+    @State private var isPopoverPresented = false
     @State private var errorMessage: String?
     /// Which refined stems are showing their parts. Starts empty — groups open COLLAPSED
     /// (Eric, 2026-08-26): the console reads as the familiar six stems first, and the triangle
@@ -6978,8 +7041,9 @@ struct StemMixSidebar: View {
     /// group while collapsed, so nothing is lost until you want the per-part controls.
     @State private var expandedStemGroups: Set<StemID> = []
 
-    init(model: AppModel) {
+    init(model: AppModel, isCompact: Bool = false) {
         self.model = model
+        self.isCompact = isCompact
         stemPlayback = model.stemPlayback
     }
 
@@ -6997,7 +7061,10 @@ struct StemMixSidebar: View {
                 errorMessage = error.localizedDescription
             }
         #else
-            errorMessage = "Loading stem folders isn\u{2019}t available on iPad yet."
+            errorMessage = String(
+                localized: """
+                    Loading stem folders isn\u{2019}t available on iPad yet.
+                    """, bundle: .swStrings)
         #endif
     }
 
@@ -7013,29 +7080,43 @@ struct StemMixSidebar: View {
 
     var body: some View {
         Group {
-            if isExpanded {
+            if isExpanded && !isCompact {
                 expandedContent
             } else {
                 Button {
-                    withAnimation(.snappy) { isExpanded = true }
+                    if isCompact {
+                        isPopoverPresented = true
+                    } else {
+                        withAnimation(.snappy) { isExpanded = true }
+                    }
                 } label: {
                     VStack(spacing: 8) {
                         Image(systemName: "chevron.left")
-                            .font(.caption.weight(.semibold))
+                            .font(.swDisplay(10, weight: .semibold))
                         Image(systemName: "slider.horizontal.3")
-                            .font(.body)
+                            .font(.swDisplay(13))
                     }
                     .foregroundStyle(Color.swTextSecondary)
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Expand Stem Mix")
-                .accessibilityLabel("Expand Stem Mix")
+                .help(isCompact ? "Show Stem Mix" : "Expand Stem Mix")
+                .accessibilityLabel(isCompact ? "Show Stem Mix" : "Expand Stem Mix")
+                .popover(isPresented: $isPopoverPresented, arrowEdge: .leading) {
+                    expandedContent
+                        .padding(10)
+                        .frame(width: 340, height: 480)
+                        .background(Color.swSurfaceRaised)
+                        .preferredColorScheme(.dark)
+                }
             }
         }
-        .padding(isExpanded ? 10 : 8)
-        .frame(maxWidth: .infinity, maxHeight: isExpanded ? .infinity : nil, alignment: .top)
+        .padding(isExpanded && !isCompact ? 10 : 8)
+        .frame(
+            maxWidth: .infinity, maxHeight: isExpanded && !isCompact ? .infinity : nil,
+            alignment: .top
+        )
         // Slightly lighter than the standard `swSurface` panels around it (Eric: "a slighty
         // lighter background to the mixer") — also gives the now-3D controls below somewhere
         // visibly darker (the old `swSurface`) to sit on/cast shadows onto.
@@ -7050,13 +7131,14 @@ struct StemMixSidebar: View {
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
+                            .font(.swDisplay(10, weight: .semibold))
                             .foregroundStyle(Color.swTextSecondary)
                             .rotationEffect(.degrees(90))
                         Label("Stem Mix", systemImage: "slider.horizontal.3")
                             .font(.swDisplay(13, weight: .semibold))
                             .foregroundStyle(Color.swTextPrimary)
                     }
+                    .frame(minHeight: SWHitTarget.minimum)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -7065,8 +7147,7 @@ struct StemMixSidebar: View {
                 Button("Reset Levels", systemImage: "arrow.counterclockwise") {
                     model.resetStemMixer()
                 }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+                .buttonStyle(.swIcon)
                 .disabled(!model.isStemMixerModified)
                 .help("Reset all stem levels, mutes, solos, and the master fader")
                 // Load/Export moved here from the removed Stems editor tab.
@@ -7080,6 +7161,8 @@ struct StemMixSidebar: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .frame(minWidth: SWHitTarget.minimum, minHeight: SWHitTarget.minimum)
+                .contentShape(Rectangle())
                 .help("Load a stem folder or export the current mix")
             }
             if let errorMessage {
@@ -7162,6 +7245,7 @@ struct StemMixSidebar: View {
             // stereo input meter (post-fader, post-pan).
             HorizontalLRMeter(level: stemPlayback.stemStereoLevels[channel.id] ?? .zero)
                 .help("\(channel.displayName) left/right signal level")
+                .accessibilityLabel("\(channel.displayName) left and right level")
 
             PanKnob(
                 value: Binding(
@@ -7184,12 +7268,14 @@ struct StemMixSidebar: View {
                     accessibilityName: "\(channel.displayName) volume"
                 )
                 SegmentedLevelMeter(
-                    level: stemPlayback.stemLevels[channel.id] ?? 0, meterWidth: 7)
+                    level: stemPlayback.stemLevels[channel.id] ?? 0, meterWidth: 7
+                )
+                .accessibilityLabel("\(channel.displayName) level")
             }
             .frame(maxHeight: .infinity)
             .help("\(channel.displayName): \(Int((state.gain * 100).rounded()))%")
 
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 miniToggle(
                     "M", isOn: state.isMuted, tint: Color.swCoral,
                     accessibilityLabel: "Mute \(channel.displayName)"
@@ -7227,8 +7313,9 @@ struct StemMixSidebar: View {
     /// through those children (see `StemMixerModel.effectiveGain(for:activeIDs:parentByID:)`).
 
     private func midiHelp(for channel: StemMixerChannel) -> String {
+        let name = channel.displayName
         if model.midiRenditionsInProgress.contains(channel.id) {
-            return "Preparing \(channel.displayName) as MIDI…"
+            return String(localized: "Preparing \(name) as MIDI…", bundle: .swStrings)
         }
         let instrument =
             MIDIInstrumentCategory.category(for: channel.id).map {
@@ -7236,8 +7323,10 @@ struct StemMixSidebar: View {
                     program: MIDIInstrumentPreferences.program(for: $0), drums: $0.isDrumKit)
             } ?? ""
         return model.stemMixer[channel.id].playsMIDI
-            ? "Playing \(channel.displayName) as MIDI (\(instrument)); click for its audio"
-            : "Play \(channel.displayName) as MIDI (\(instrument))"
+            ? String(
+                localized: "Playing \(name) as MIDI (\(instrument)). Click for its audio.",
+                bundle: .swStrings)
+            : String(localized: "Play \(name) as MIDI (\(instrument))", bundle: .swStrings)
     }
 
     private func groupStrip(_ channel: StemMixerChannel) -> some View {
@@ -7245,6 +7334,12 @@ struct StemMixSidebar: View {
         let isExpanded = expandedStemGroups.contains(channel.id)
         let partNames = channel.children.map(\.displayName).joined(separator: ", ")
         return VStack(spacing: 4) {
+            // Stand-in for the L/R meter: a group bus has no meter of its own.
+            Color.clear.frame(height: HorizontalLRMeter.totalHeight)
+
+            // The show/hide-parts triangle sits in the pan-knob slot (a bus has no pan pot:
+            // panning it would overwrite the pan its children carry), which gives it the 28 pt
+            // hit target the 7 pt meter row could not.
             Button {
                 withAnimation(.snappy) {
                     if isExpanded {
@@ -7255,10 +7350,10 @@ struct StemMixSidebar: View {
                 }
             } label: {
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+                    .font(.swDisplay(10, weight: .semibold))
                     .foregroundStyle(Color.swTextSecondary)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(height: HorizontalLRMeter.totalHeight)
+                    .frame(width: PanKnob.slotSize, height: PanKnob.slotSize)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -7269,10 +7364,6 @@ struct StemMixSidebar: View {
             )
             .accessibilityLabel("\(channel.displayName) parts")
             .accessibilityValue(isExpanded ? "Shown" : "Hidden")
-
-            // No pan pot: panning a bus that has no node of its own would have to be pushed onto
-            // the children, silently overwriting the pan they each already carry.
-            Color.clear.frame(height: PanKnob.defaultSize)
 
             HStack(spacing: 2) {
                 VerticalFader(
@@ -7289,11 +7380,10 @@ struct StemMixSidebar: View {
             }
             .frame(maxHeight: .infinity)
             .help(
-                "\(channel.displayName) group: \(Int((state.gain * 100).rounded()))% — scales "
-                    + partNames
+                "\(channel.displayName) group: \(Int((state.gain * 100).rounded()))%. Scales \(partNames)."
             )
 
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 miniToggle(
                     "M", isOn: state.isMuted, tint: Color.swCoral,
                     accessibilityLabel: "Mute \(channel.displayName)"
@@ -7313,14 +7403,21 @@ struct StemMixSidebar: View {
         .frame(maxWidth: 38)
     }
 
+    /// The pan position as a phrase ("center", "40% left"), one catalog entry per direction so
+    /// no direction word is spliced into a sentence.
+    static func panPosition(_ pan: Double) -> String {
+        let percent = Int((abs(pan) * 100).rounded())
+        if abs(pan) < 0.01 { return String(localized: "center", bundle: .swStrings) }
+        return pan < 0
+            ? String(localized: "\(percent)% left", bundle: .swStrings)
+            : String(localized: "\(percent)% right", bundle: .swStrings)
+    }
+
     private func panHelp(for pan: Float, name: String) -> String {
-        let position: String
-        if abs(pan) < 0.01 {
-            position = "center"
-        } else {
-            position = "\(Int((abs(pan) * 100).rounded()))% \(pan < 0 ? "left" : "right")"
-        }
-        return "\(name) pan: \(position) — drag to move, double-click to center"
+        String(
+            localized:
+                "\(name) pan: \(Self.panPosition(Double(pan))). Drag to move; double-click to center.",
+            bundle: .swStrings)
     }
 
     private var slimClickStrip: some View {
@@ -7334,11 +7431,10 @@ struct StemMixSidebar: View {
             Image(systemName: "metronome.fill")
                 .font(.swDisplay(11, weight: .medium))
                 .foregroundStyle(Color.accentColor)
-                .frame(width: PanKnob.defaultSize, height: PanKnob.defaultSize)
+                .frame(width: PanKnob.slotSize, height: PanKnob.slotSize)
                 .accessibilityLabel("Metronome")
                 .help(
-                    "Rigid click at the detected tempo, locked to beat 1 — the reference the "
-                        + "detected beats are judged against."
+                    "Rigid click at the detected tempo, locked to beat 1 — the reference the detected beats are judged against."
                 )
 
             HStack(spacing: 2) {
@@ -7359,7 +7455,7 @@ struct StemMixSidebar: View {
             .help("Metronome volume; 0% is off")
 
             // Stand-in for the M/S buttons so the scribble strips align.
-            Color.clear.frame(height: 14 * 2 + 2)
+            Color.clear.frame(height: SWHitTarget.minimum * 2)
 
             ScribbleStrip(text: "Met")
         }
@@ -7374,7 +7470,7 @@ struct StemMixSidebar: View {
             // Stand-ins for the L/R meter + pan knob so the master fader aligns with the
             // other strips — there's no per-stem meter or pan for the overall bus.
             Color.clear.frame(height: HorizontalLRMeter.totalHeight)
-            Color.clear.frame(height: PanKnob.defaultSize)
+            Color.clear.frame(height: PanKnob.slotSize)
 
             HStack(spacing: 2) {
                 VerticalFader(
@@ -7394,7 +7490,7 @@ struct StemMixSidebar: View {
             .help("Master: \(Int((model.stemMixer.masterGain * 100).rounded()))%")
 
             // Stand-in for the M/S buttons so the scribble strips align.
-            Color.clear.frame(height: 14 * 2 + 2)
+            Color.clear.frame(height: SWHitTarget.minimum * 2)
 
             ScribbleStrip(text: "Mst")
         }
@@ -7433,9 +7529,12 @@ struct StemMixSidebar: View {
         Button {
             set(!isOn)
         } label: {
+            // a11y-exception: the M / S / ♪ key letters stay 10 pt at every text size, because
+            // the 38 pt console strip cannot widen; VoiceOver reads "Mute Bass" / "Solo Bass" /
+            // "Play Bass as MIDI" with the on state, and the tooltip names the action.
             Text(label)
-                .font(.swMono(9, weight: .bold))
-                .frame(width: 18, height: 14)
+                .font(.swChartMono(10, weight: .bold))
+                .frame(width: 22, height: 16)
                 .foregroundStyle(isOn ? Color.black : Color.swTextSecondary)
                 .background(
                     // Off: a subtle raised-button gradient (light top edge, dark bottom) so it
@@ -7456,6 +7555,9 @@ struct StemMixSidebar: View {
                         )
                         .shadow(color: isOn ? tint.opacity(0.65) : .clear, radius: 2)
                 )
+                // The key stays console-sized; its clickable frame is the 28 pt macOS minimum.
+                .frame(width: SWHitTarget.minimum, height: SWHitTarget.minimum)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(label == "M" ? "Mute" : label == "S" ? "Solo" : "")
@@ -7477,6 +7579,14 @@ private struct HorizontalLRMeter: View {
             bar(fraction: level.right)
         }
         .frame(height: Self.totalHeight)
+        // A live reading, available on demand (never announced): the caller sets the label.
+        .accessibilityElement()
+        .accessibilityValue(
+            "Left \(Self.percent(level.left)), right \(Self.percent(level.right))")
+    }
+
+    static func percent(_ fraction: Float) -> String {
+        Double(min(max(fraction, 0), 1)).formatted(.percent.precision(.fractionLength(0)))
     }
 
     private func bar(fraction: Float) -> some View {
@@ -7510,6 +7620,8 @@ private struct HorizontalLRMeter: View {
 private struct PanKnob: View {
     @Binding var value: Double
     static let defaultSize: CGFloat = 20
+    /// The knob's layout slot: the 28 pt macOS minimum hit target around the 20 pt knob.
+    static let slotSize: CGFloat = SWHitTarget.minimum
     var size: CGFloat = PanKnob.defaultSize
     /// What VoiceOver calls this knob ("Bass pan").
     var accessibilityName = "Pan"
@@ -7536,7 +7648,8 @@ private struct PanKnob: View {
         }
         .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
         .frame(width: size, height: size)
-        .contentShape(Circle())
+        .frame(width: max(size, Self.slotSize), height: max(size, Self.slotSize))
+        .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { gesture in
@@ -7551,11 +7664,7 @@ private struct PanKnob: View {
         .simultaneousGesture(TapGesture(count: 2).onEnded { value = 0 })
         .accessibilityElement()
         .accessibilityLabel(accessibilityName)
-        .accessibilityValue(
-            abs(value) < 0.01
-                ? "Center"
-                : "\(Int((abs(value) * 100).rounded()))% \(value < 0 ? "left" : "right")"
-        )
+        .accessibilityValue(StemMixSidebar.panPosition(value))
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: value = min(value + 0.1, 1)
@@ -7620,7 +7729,9 @@ private struct VerticalFader: View {
                     .offset(y: -fraction * travel)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .contentShape(Rectangle())
+            // The slim rail draws a 15 pt fader; its grab area widens to the 28 pt macOS
+            // minimum, over the (non-interactive) level meter beside it.
+            .contentShape(SWWidenedHitShape(minimumWidth: SWHitTarget.minimum))
             .gesture(
                 DragGesture(minimumDistance: 0).onChanged { drag in
                     let clampedY = min(max(drag.location.y, 0), height)
@@ -7681,6 +7792,9 @@ private struct SegmentedLevelMeter: View {
         .frame(width: meterWidth)
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 3).fill(Color.black.opacity(0.3)))
+        // A live reading, available on demand (never announced): the caller sets the label.
+        .accessibilityElement()
+        .accessibilityValue(HorizontalLRMeter.percent(clamped))
         .animation(.linear(duration: 0.08), value: clamped)
     }
 
@@ -7732,7 +7846,7 @@ private struct ReviewChordPopover: View {
             HStack(spacing: 8) {
                 TextField("Chord", text: $name)
                     .font(.swMono(13, weight: .semibold))
-                    .frame(width: 90)
+                    .frame(width: swScaled(90))
                     .onSubmit {
                         rename(name)
                         dismiss()
@@ -7765,8 +7879,8 @@ private struct ReviewChordPopover: View {
                     dismiss()
                 }
                 .help(
-                    "Removes this chord from the chart and the click without deleting it — "
-                        + "un-hide it from the Chords page.")
+                    "Removes this chord from the chart and the click without deleting it — un-hide it from the Chords page."
+                )
             }
         }
         .padding(12)

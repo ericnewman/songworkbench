@@ -20,13 +20,20 @@ struct SongWorkbenchApp: App {
                 // old fixed widths pushed the content minimum past the 1,540 default and the
                 // window opened with the song sidebar and stem rail cut off). After moving
                 // the editor tab picker into the middle pane and making the scrubber and
-                // pitch/speed sliders compressible, the content minimum is ~1,330; 1,380
-                // keeps a safety margin.
-                .frame(minWidth: 1_380, minHeight: 650)
+                // pitch/speed sliders compressible, the content minimum is ~1,330 with the
+                // 360 pt stem rail open. Below `PlayerView.compactWidthThreshold` (1,380) the
+                // rail collapses to its 44 pt strip and opens as a popover, which takes ~316 pt
+                // off that minimum; 1,080 keeps a margin and fits a 1,280 pt display.
+                .frame(minWidth: 1_080, minHeight: 650)
                 .modifier(SplashOverlay(isReady: model.hasRestoredProjects))
                 .background(Color.swCanvas.ignoresSafeArea())
                 .foregroundStyle(Color.swTextPrimary)
                 .tint(Color.swAccent)
+                // a11y-exception: dark-only by design (the Endogen Night/phosphor brand; a
+                // scope-style tool used on stage and in dim rooms). Compensation: every text and
+                // UI color is checked against the dark grounds only (`ThemeContrastTests`),
+                // and Increase Contrast swaps Mist for Text and drops opacity dimming
+                // (`Color.swHighContrastAware`, `Color.swDimmed`).
                 .preferredColorScheme(.dark)
                 .font(.swDisplay(13))
                 .onReceive(
@@ -59,6 +66,8 @@ struct SongWorkbenchApp: App {
                         }
                     MIDIInstrumentSettingsView(model: model)
                         .tabItem { Label("MIDI Instruments", systemImage: "pianokeys") }
+                    TextSizeSettingsView()
+                        .tabItem { Label("Text", systemImage: "textformat.size") }
                 }
                 .preferredColorScheme(.dark)
                 .font(.swDisplay(13))
@@ -79,6 +88,11 @@ struct SongWorkbenchApp: App {
                     }
                     .keyboardShortcut("o")
                 }
+                CommandGroup(before: .toolbar) {
+                    TextSizeCommands()
+                    Divider()
+                }
+
                 CommandMenu("Playback") {
                     // No `.keyboardShortcut(.space, ...)` here: AppKit checks the main menu's
                     // key equivalents BEFORE the responder chain, even for unmodified keys, so
@@ -186,3 +200,54 @@ private struct AboutCommandButton: View {
 // open the Lyric Blend window — have an icon light up instead"). `model.lyricBlendReadySongID`
 // now drives the glowing indicator on `SongActionsCard`'s Lyric Blend button, and is cleared
 // when the user opens the window from there.
+
+/// View › Bigger Text / Smaller Text / Actual Text Size. macOS has no system Dynamic Type for
+/// SwiftUI, so the app scales its own text (`SWTextScale`).
+private struct TextSizeCommands: View {
+    private var textScale = SWTextScale.shared
+
+    var body: some View {
+        Button("Bigger Text") { textScale.increase() }
+            .keyboardShortcut("+", modifiers: [.command])
+            .disabled(!textScale.canIncrease)
+        Button("Smaller Text") { textScale.decrease() }
+            .keyboardShortcut("-", modifiers: [.command])
+            .disabled(!textScale.canDecrease)
+        // ⌥⌘0, not ⌘0: ⌘0 is Playback › Original Pitch and Tempo.
+        Button("Actual Text Size") { textScale.reset() }
+            .keyboardShortcut("0", modifiers: [.command, .option])
+            .disabled(textScale.factor == 1)
+    }
+}
+
+/// Settings › Text: the app-wide text size.
+struct TextSizeSettingsView: View {
+    private var textScale = SWTextScale.shared
+
+    var body: some View {
+        Form {
+            Picker(
+                "Text size",
+                selection: Binding(
+                    get: { textScale.factor },
+                    set: { textScale.factor = $0 }
+                )
+            ) {
+                ForEach(SWTextScale.steps, id: \.self) { step in
+                    Text(step, format: .percent.precision(.fractionLength(0))).tag(step)
+                }
+            }
+            Text(
+                "Scales the text throughout SongWorkbench, including the chord chart. Use View › Bigger Text (⌘+) and Smaller Text (⌘−) to change it from anywhere."
+            )
+            .font(.swDisplay(11))
+            .foregroundStyle(Color.swTextSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Text("Sample: Verse 1 · G  D/F#  Em  C")
+                .font(.swDisplay(13))
+        }
+        .formStyle(.grouped)
+        .frame(width: 460)
+        .padding()
+    }
+}

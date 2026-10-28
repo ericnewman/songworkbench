@@ -184,14 +184,15 @@ enum ReferenceChartAudioValidation {
     /// A sentence for the comparison report, or `nil` when there is nothing to say.
     static func summary(for result: Result) -> String? {
         guard result.verdict != .inconclusive else {
-            return "Not enough audio evidence kept for this song to judge the uploaded chart — "
-                + "re-analyse it to record onsets and harmonic change-points."
+            return """
+                Not enough audio evidence kept for this song to judge the uploaded chart — \
+                re-analyse it to record onsets and harmonic change-points.
+                """
         }
         let referencePercent = Int(((result.reference.supportedShare ?? 0) * 100).rounded())
         let generatedPercent = Int(((result.generated.supportedShare ?? 0) * 100).rounded())
         let base =
-            "The audio supports \(referencePercent)% of the uploaded chart's chords and "
-            + "\(generatedPercent)% of the generated chart's."
+            "The audio supports \(referencePercent)% of the uploaded chart's chords and \(generatedPercent)% of the generated chart's."
         var sentences = [base]
         // Quality is reported alongside placement rather than folded into it: "the chord is in
         // the right place but named wrong" and "there is no chord here at all" are different
@@ -200,9 +201,8 @@ enum ReferenceChartAudioValidation {
             let generatedQuality = result.generated.qualityAgreementShare
         {
             sentences.append(
-                "On chord quality, the audio agrees with "
-                    + "\(Int((referenceQuality * 100).rounded()))% of the uploaded chart's thirds "
-                    + "and \(Int((generatedQuality * 100).rounded()))% of the generated chart's.")
+                "On chord quality, the audio agrees with \(Int((referenceQuality * 100).rounded()))% of the uploaded chart's thirds and \(Int((generatedQuality * 100).rounded()))% of the generated chart's."
+            )
         }
         switch result.verdict {
         case .referenceBetter:

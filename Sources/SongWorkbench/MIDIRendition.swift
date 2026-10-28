@@ -317,8 +317,7 @@ struct MIDIInstrumentSettingsView: View {
                 }
             } footer: {
                 Text(
-                    "Switch a Stem Mix strip to MIDI with its ♪ button. Drum pieces need "
-                        + "multi-track drums; pitched stems are transcribed the first time."
+                    "Switch a Stem Mix strip to MIDI with its ♪ button. Drum pieces need multi-track drums; pitched stems are transcribed the first time."
                 )
                 .font(.swDisplay(10))
                 .foregroundStyle(.secondary)

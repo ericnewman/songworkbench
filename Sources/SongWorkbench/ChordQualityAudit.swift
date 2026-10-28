@@ -196,19 +196,24 @@ enum ChordQualityAudit {
 
     /// A user-facing sentence, or `nil` when nothing needed saying.
     static func warning(for result: Result) -> String? {
-        var parts: [String] = []
+        // Whole sentences with catalog plural variants, not fragments joined with "; ".
+        var sentences: [String] = []
         if result.correctedCount > 0 {
-            parts.append(
-                "corrected \(result.correctedCount) chord quality(ies) the key prior had "
-                    + "overridden")
+            sentences.append(
+                String(
+                    localized:
+                        "Corrected \(result.correctedCount) chord qualities the key prior had overridden.",
+                    bundle: .swStrings))
         }
         if result.ambiguousCount > 0 {
-            parts.append(
-                "\(result.ambiguousCount) chord(s) have no clear third in the audio (possible "
-                    + "power chords)")
+            sentences.append(
+                String(
+                    localized:
+                        "\(result.ambiguousCount) chords have no clear third in the audio (possible power chords).",
+                    bundle: .swStrings))
         }
-        guard !parts.isEmpty else { return nil }
-        return parts.joined(separator: "; ") + "."
+        guard !sentences.isEmpty else { return nil }
+        return sentences.joined(separator: " ")
     }
 
     // MARK: - Chord names

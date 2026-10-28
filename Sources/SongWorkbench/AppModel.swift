@@ -340,7 +340,7 @@ final class AppModel: ObservableObject {
     func moveBulkStorage(to destination: URL) {
         guard canMoveBulkStorage else { return }
         stopPlaybackForAnalysis()
-        storageMoveStatus = "Moving models and stems…"
+        storageMoveStatus = String(localized: "Moving models and stems…", bundle: .swStrings)
         Task.detached { [weak self] in
             do {
                 try BulkStorageLocation.move(to: destination) { status in
@@ -354,7 +354,10 @@ final class AppModel: ObservableObject {
                 await MainActor.run {
                     self?.storageMoveStatus = nil
                     self?.projectErrorMessage =
-                        "Models and stems weren't moved: \(error.localizedDescription)"
+                        String(
+                            localized: """
+                                Models and stems weren't moved: \(error.localizedDescription)
+                                """, bundle: .swStrings)
                 }
             }
         }
@@ -462,7 +465,7 @@ final class AppModel: ObservableObject {
     ) -> WaveformStemProgress? {
         if selectedSongIsQueued, selectedSongID != currentAnalyzedSongID {
             return WaveformStemProgress(
-                message: "Waiting to analyze this song",
+                message: String(localized: "Waiting to analyze this song", bundle: .swStrings),
                 fractionCompleted: 0,
                 isIndeterminate: true
             )
@@ -473,14 +476,14 @@ final class AppModel: ObservableObject {
             let title = batch?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let suffix = title.isEmpty ? "" : " · \(title)"
             return WaveformStemProgress(
-                message: "Analyzing in background\(suffix)",
+                message: String(localized: "Analyzing in background\(suffix)", bundle: .swStrings),
                 fractionCompleted: fraction,
                 isIndeterminate: progress == nil
             )
         }
         guard let progress else {
             return WaveformStemProgress(
-                message: "Analyzing this song",
+                message: String(localized: "Analyzing this song", bundle: .swStrings),
                 fractionCompleted: 0,
                 isIndeterminate: true
             )
@@ -1153,7 +1156,10 @@ final class AppModel: ObservableObject {
             } catch {
                 modelInstallProgress[descriptor.id] = nil
                 projectErrorMessage =
-                    "Could not install \(descriptor.displayName): \(error.localizedDescription)"
+                    String(
+                        localized: """
+                            Could not install \(descriptor.displayName): \(error.localizedDescription)
+                            """, bundle: .swStrings)
             }
             modelInstallTasks[descriptor.id] = nil
         }
@@ -1172,7 +1178,10 @@ final class AppModel: ObservableObject {
                 projectErrorMessage = nil
             } catch {
                 projectErrorMessage =
-                    "Could not remove \(descriptor.displayName): \(error.localizedDescription)"
+                    String(
+                        localized: """
+                            Could not remove \(descriptor.displayName): \(error.localizedDescription)
+                            """, bundle: .swStrings)
             }
         }
     }
@@ -1195,9 +1204,15 @@ final class AppModel: ObservableObject {
                 projectErrorMessage = nil
             case .available:
                 projectErrorMessage =
-                    "\(descriptor.displayName) is not installed."
+                    String(
+                        localized: """
+                            \(descriptor.displayName) is not installed.
+                            """, bundle: .swStrings)
             case .invalid(let reason):
-                projectErrorMessage = "\(descriptor.displayName) failed verification: \(reason)"
+                projectErrorMessage = String(
+                    localized: """
+                        \(descriptor.displayName) failed verification: \(reason)
+                        """, bundle: .swStrings)
             }
         }
     }
@@ -1327,10 +1342,21 @@ final class AppModel: ObservableObject {
         }
 
         var helpText: String {
-            if isActive { return "Analyzing…" }
-            func mark(_ has: Bool) -> String { has ? "✓" : "—" }
-            return "Stems \(mark(hasStems)) · Lyrics \(mark(hasLyrics)) · "
-                + "Chords \(mark(hasChords)) · Chart \(mark(hasChart))"
+            if isActive { return String(localized: "Analyzing…", bundle: .swStrings) }
+            // One phrase per artifact, so VoiceOver reads "Stems done", not "Stems check mark".
+            func item(
+                _ has: Bool, done: String.LocalizationValue, missing: String.LocalizationValue
+            )
+                -> String
+            {
+                String(localized: has ? done : missing, bundle: .swStrings)
+            }
+            return [
+                item(hasStems, done: "Stems done", missing: "No stems"),
+                item(hasLyrics, done: "Lyrics done", missing: "No lyrics"),
+                item(hasChords, done: "Chords done", missing: "No chords"),
+                item(hasChart, done: "Chart done", missing: "No chart"),
+            ].formatted(.list(type: .and, width: .narrow))
         }
     }
 
@@ -1440,7 +1466,8 @@ final class AppModel: ObservableObject {
         currentAnalyzedSongID = song.id
         songAnalysisProgress = SongAnalysisPipelineProgress(
             stage: nil, completedStages: 0, totalStages: stages.count,
-            stageFraction: 0, message: "Checking source file")
+            stageFraction: 0, message: String(localized: "Checking source file", bundle: .swStrings)
+        )
         let sourceURL = song.url
         let sourceRecoveryDirectories = sourceRecoveryDirectories
         let localSources = AppModel.localSourcesDirectory(in: supportDirectory)
@@ -1510,8 +1537,8 @@ final class AppModel: ObservableObject {
             if values.ubiquitousItemDownloadingStatus != .current {
                 try? FileManager.default.startDownloadingUbiquitousItem(at: url)
                 return .unavailable(
-                    "“\(name)” is stored in iCloud and isn’t downloaded yet. I’ve started "
-                        + "downloading it — once it finishes, run Analyze again.")
+                    "“\(name)” is stored in iCloud and isn’t downloaded yet. I’ve started downloading it — once it finishes, run Analyze again."
+                )
             }
         }
         let accessing = url.startAccessingSecurityScopedResource()
@@ -1529,13 +1556,12 @@ final class AppModel: ObservableObject {
                     && nsError.code == NSFileReadNoPermissionError)
             if isPermission {
                 return .unavailable(
-                    "“\(name)” couldn’t be opened (operation not permitted). It looks like it’s on "
-                        + "a cloud or removable volume that isn’t available right now. Make it "
-                        + "available offline (or copy it to a local folder) and try Analyze again.")
+                    "“\(name)” couldn’t be opened (operation not permitted). It looks like it’s on a cloud or removable volume that isn’t available right now. Make it available offline (or copy it to a local folder) and try Analyze again."
+                )
             }
             return .unavailable(
-                "“\(name)” couldn’t be read: \(error.localizedDescription) Make sure the file is "
-                    + "available locally and try Analyze again.")
+                "“\(name)” couldn’t be read: \(error.localizedDescription) Make sure the file is available locally and try Analyze again."
+            )
         }
     }
 
@@ -1560,7 +1586,7 @@ final class AppModel: ObservableObject {
             completedStages: 0,
             totalStages: stages.count,
             stageFraction: 0,
-            message: "Preparing analysis"
+            message: String(localized: "Preparing analysis", bundle: .swStrings)
         )
         let request = SongAnalysisPipelineRequest(
             sourceURL: sourceURL ?? song.url,
@@ -1660,7 +1686,10 @@ final class AppModel: ObservableObject {
                     cancelled = error is CancellationError
                     if !(error is CancellationError) {
                         projectErrorMessage =
-                            "Could not analyze song: \(error.localizedDescription)"
+                            String(
+                                localized: """
+                                    Could not analyze song: \(error.localizedDescription)
+                                    """, bundle: .swStrings)
                     }
                 }
                 completion?(cancelled)
@@ -1950,7 +1979,10 @@ final class AppModel: ObservableObject {
             "importSongs: received \(urls.count) url(s), accessed \(accessedURLs.count), expanded \(candidates.count), accepted \(imported.count)"
         )
         if imported.isEmpty, !urls.isEmpty {
-            projectErrorMessage = "No supported audio files were found."
+            projectErrorMessage = String(
+                localized: """
+                    No supported audio files were found.
+                    """, bundle: .swStrings)
             for url in accessedURLs { url.stopAccessingSecurityScopedResource() }
             return
         }
@@ -2094,17 +2126,20 @@ final class AppModel: ObservableObject {
             }
             // End-of-batch summary on the status line ("Added 11 songs · 1 duplicate skipped"),
             // held a few seconds so a bulk drop always answers "what actually happened".
+            // Plurals come from the String Catalog's variants (`Localizable.xcstrings`).
             var summaryParts: [String] = [
                 newSongs.isEmpty
-                    ? "No new songs added"
-                    : "Added \(newSongs.count) song\(newSongs.count == 1 ? "" : "s")"
+                    ? String(localized: "No new songs added", bundle: .swStrings)
+                    : String(localized: "Added \(newSongs.count) songs", bundle: .swStrings)
             ]
             if skippedDuplicates > 0 {
                 summaryParts.append(
-                    "\(skippedDuplicates) duplicate\(skippedDuplicates == 1 ? "" : "s") skipped")
+                    String(localized: "\(skippedDuplicates) duplicates skipped", bundle: .swStrings)
+                )
             }
             if unsupportedCount > 0 {
-                summaryParts.append("\(unsupportedCount) unsupported")
+                summaryParts.append(
+                    String(localized: "\(unsupportedCount) unsupported", bundle: .swStrings))
             }
             let summary = summaryParts.joined(separator: " · ")
             self.importStatus = summary
@@ -2314,8 +2349,8 @@ final class AppModel: ObservableObject {
             return .success(destination, refreshed: false)
         } catch {
             return .failure(
-                "“\(name)” couldn’t be copied to local storage: \(error.localizedDescription) "
-                    + "If it’s in iCloud or Google Drive, make it available offline and re-import.")
+                "“\(name)” couldn’t be copied to local storage: \(error.localizedDescription) If it’s in iCloud or Google Drive, make it available offline and re-import."
+            )
         }
     }
 
@@ -2408,7 +2443,10 @@ final class AppModel: ObservableObject {
         case .failure(let error as CocoaError) where error.code == .userCancelled:
             return
         case .failure(let error):
-            projectErrorMessage = "Could not import songs: \(error.localizedDescription)"
+            projectErrorMessage = String(
+                localized: """
+                    Could not import songs: \(error.localizedDescription)
+                    """, bundle: .swStrings)
         }
     }
 
@@ -2659,7 +2697,10 @@ final class AppModel: ObservableObject {
                 guard currentExportID == exportID else { return }
                 isExporting = false
                 currentExportID = nil
-                projectErrorMessage = "Could not export audio: \(error.localizedDescription)"
+                projectErrorMessage = String(
+                    localized: """
+                        Could not export audio: \(error.localizedDescription)
+                        """, bundle: .swStrings)
             }
         }
     }
@@ -2710,7 +2751,7 @@ final class AppModel: ObservableObject {
                         BackgroundJobProgress(
                             completedUnits: 0,
                             totalUnits: 3,
-                            message: "Hashing source"
+                            message: String(localized: "Hashing source", bundle: .swStrings)
                         ))
                     let accessing = sourceURL.startAccessingSecurityScopedResource()
                     defer {
@@ -2731,7 +2772,8 @@ final class AppModel: ObservableObject {
                             BackgroundJobProgress(
                                 completedUnits: 2,
                                 totalUnits: 3,
-                                message: "Loaded cached analysis"
+                                message: String(
+                                    localized: "Loaded cached analysis", bundle: .swStrings)
                             ))
                     } else {
                         loadedFromCache = false
@@ -2739,7 +2781,8 @@ final class AppModel: ObservableObject {
                             BackgroundJobProgress(
                                 completedUnits: 1,
                                 totalUnits: 3,
-                                message: "Analyzing beat and harmony"
+                                message: String(
+                                    localized: "Analyzing beat and harmony", bundle: .swStrings)
                             ))
                         result = try await audioAnalysisService.analyze(url: sourceURL)
                         try await analysisCache.store(result, for: sourceData, engine: engine)
@@ -2760,7 +2803,7 @@ final class AppModel: ObservableObject {
                         BackgroundJobProgress(
                             completedUnits: 3,
                             totalUnits: 3,
-                            message: "Analysis complete"
+                            message: String(localized: "Analysis complete", bundle: .swStrings)
                         ))
                 }
                 currentAnalysisJobID = jobID
@@ -2768,7 +2811,10 @@ final class AppModel: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                projectErrorMessage = "Could not start analysis: \(error.localizedDescription)"
+                projectErrorMessage = String(
+                    localized: """
+                        Could not start analysis: \(error.localizedDescription)
+                        """, bundle: .swStrings)
             }
         }
     }
@@ -3055,7 +3101,10 @@ final class AppModel: ObservableObject {
                 guard currentExportID == exportID else { return }
                 isExporting = false
                 currentExportID = nil
-                projectErrorMessage = "Could not export stem mix: \(error.localizedDescription)"
+                projectErrorMessage = String(
+                    localized: """
+                        Could not export stem mix: \(error.localizedDescription)
+                        """, bundle: .swStrings)
             }
         }
     }
@@ -3286,7 +3335,10 @@ final class AppModel: ObservableObject {
             projectErrorMessage = nil
         } catch {
             hasRestoredProjects = true
-            projectErrorMessage = "Could not restore projects: \(error.localizedDescription)"
+            projectErrorMessage = String(
+                localized: """
+                    Could not restore projects: \(error.localizedDescription)
+                    """, bundle: .swStrings)
         }
     }
 
@@ -3295,7 +3347,10 @@ final class AppModel: ObservableObject {
             try await store.save(makeDocument())
             projectErrorMessage = nil
         } catch {
-            projectErrorMessage = "Could not save projects: \(error.localizedDescription)"
+            projectErrorMessage = String(
+                localized: """
+                    Could not save projects: \(error.localizedDescription)
+                    """, bundle: .swStrings)
         }
     }
 
@@ -3747,8 +3802,7 @@ final class AppModel: ObservableObject {
     /// with a different `algN-` prefix marks the chart as built by an algorithm that no longer
     /// exists in this app version.
     private var chordProConfigurationIdentifier: String {
-        "\(ChordProDraftBuilder.algorithmTag)-"
-            + "confidence-\(Int((chordConfidenceThreshold * 100).rounded()))"
+        "\(ChordProDraftBuilder.algorithmTag)-confidence-\(Int((chordConfidenceThreshold * 100).rounded()))"
     }
 
     private func makeDocument() -> ProjectLibraryDocument {
@@ -3818,8 +3872,11 @@ final class AppModel: ObservableObject {
             // the stem panel will be empty for a reason the user can't otherwise see.
             if analysisBySongID[song.id]?.stageRecords[.separation]?.state == .succeeded {
                 projectErrorMessage =
-                    "Separation succeeded but its stem files aren’t linked to this song "
-                    + "(no stem references). Re-run Analyze to regenerate them."
+                    String(
+                        localized: """
+                            Separation succeeded but its stem files aren’t linked to this song (no \
+                            stem references). Re-run Analyze to regenerate them.
+                            """, bundle: .swStrings)
             }
             return
         }
@@ -3858,7 +3915,10 @@ final class AppModel: ObservableObject {
             // Diagnostic: stems are referenced but none could be read (e.g. the files are
             // missing/unreadable). Surface why instead of silently showing an empty panel.
             if lanes.isEmpty, let firstFailure {
-                projectErrorMessage = "Stem waveforms couldn’t be read — \(firstFailure)"
+                projectErrorMessage = String(
+                    localized: """
+                        Stem waveforms couldn’t be read — \(firstFailure)
+                        """, bundle: .swStrings)
             }
         }
     }
@@ -3903,7 +3963,10 @@ final class AppModel: ObservableObject {
             } catch {
                 guard selectedSongID == song.id else { return }
                 isLoadingWaveform = false
-                projectErrorMessage = "Could not generate waveform: \(error.localizedDescription)"
+                projectErrorMessage = String(
+                    localized: """
+                        Could not generate waveform: \(error.localizedDescription)
+                        """, bundle: .swStrings)
             }
         }
     }
@@ -4013,7 +4076,8 @@ final class AppModel: ObservableObject {
                 analysisJobSnapshot = snapshot
                 if snapshot?.state.isTerminal == true {
                     if case .failed(let message) = snapshot?.state {
-                        projectErrorMessage = "Analysis failed: \(message)"
+                        projectErrorMessage = String(
+                            localized: "Analysis failed: \(message)", bundle: .swStrings)
                     }
                     await analysisJobs.discard(id)
                     if currentAnalysisJobID == id {

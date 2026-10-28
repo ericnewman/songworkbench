@@ -118,7 +118,7 @@ actor FluidAudioTranscriptionEngine: TranscriptionEngine {
                 phase: .finalizing,
                 completedUnits: 1,
                 totalUnits: 1,
-                message: "Finalizing transcription"
+                message: String(localized: "Finalizing transcription", bundle: .swStrings)
             ))
 
         let tokens = FluidAudioWordTokenGrouper.group(transcript.tokens).map {

@@ -33,9 +33,7 @@ struct AnalysisWorkspaceView: View {
                 .font(.swDisplay(10))
                 .foregroundStyle(.secondary)
                 .help(
-                    "Wall-clock estimate for the options above, scaled from measured pass "
-                        + "times on an 8-core Mac. It updates as you change them; your "
-                        + "machine and other load will move it."
+                    "Wall-clock estimate for the options above, scaled from measured pass times on an 8-core Mac. It updates as you change them; your machine and other load will move it."
                 )
 
             Divider()
@@ -195,9 +193,7 @@ struct ReferenceLyricsSheet: View {
                 .font(.swDisplay(15, weight: .semibold))
                 .foregroundStyle(Color.swTextPrimary)
             Text(
-                "Paste the song's real lyrics, one line per line. These exact words and line breaks "
-                    + "are aligned to the audio using the detected timings — the most accurate "
-                    + "lyrics when you know them. Leave empty to use the raw transcription."
+                "Paste the song's real lyrics, one line per line. These exact words and line breaks are aligned to the audio using the detected timings — the most accurate lyrics when you know them. Leave empty to use the raw transcription."
             )
             .font(.swDisplay(10))
             .foregroundStyle(.secondary)
@@ -207,8 +203,8 @@ struct ReferenceLyricsSheet: View {
                 }
                 .disabled(model.lyricSegments.isEmpty)
                 .help(
-                    "Copy the current lyric lines here — e.g. run Accuracy first, then reuse its "
-                        + "clean line breaks so Fast/Balanced align to the same lines.")
+                    "Copy the current lyric lines here — e.g. run Accuracy first, then reuse its clean line breaks so Fast/Balanced align to the same lines."
+                )
                 Spacer()
             }
             TextEditor(text: $draft)
@@ -341,8 +337,7 @@ struct AnalysisProgressSheet: View {
                 }
                 .font(.swDisplay(10))
                 .help(
-                    "Splits the vocals stem into lead and backing so each voice is playable and "
-                        + "harmony rows can tell the singers apart. The slowest step in analysis."
+                    "Splits the vocals stem into lead and backing so each voice is playable and harmony rows can tell the singers apart. The slowest step in analysis."
                 )
                 Toggle(
                     isOn: Binding(

@@ -5,6 +5,11 @@ import SwiftUI
 /// individual disagreements can be inspected. "Adopt Reference" is the explicit, only path by
 /// which an uploaded reference ever replaces the generated chart.
 struct ReferenceComparisonReportView: View {
+    /// The findings named after a sentence's colon: a comma-separated list of chord @ time.
+    static func findingList(_ items: [String]) -> String {
+        items.joined(separator: ", ")
+    }
+
     let comparison: ReferenceChartComparison
     /// How well the RECORDING backs each chart. `nil` when the song has no persisted audio
     /// evidence (analysed before it was recorded) — the section is then omitted rather than
@@ -20,8 +25,7 @@ struct ReferenceComparisonReportView: View {
                     .font(.swDisplay(15, weight: .semibold))
                 Spacer()
                 Text(
-                    "Root agreement \(Int((comparison.rootAgreement * 100).rounded()))% · "
-                        + "density \(String(format: "%.2f", comparison.densityRatio))×"
+                    "Root agreement \(Int((comparison.rootAgreement * 100).rounded()))% · density \(String(format: "%.2f", comparison.densityRatio))×"
                 )
                 .font(.swMono(11))
                 .foregroundStyle(Color.swTextSecondary)
@@ -42,13 +46,8 @@ struct ReferenceComparisonReportView: View {
                                 ? Color.swMint : Color.swTextPrimary)
                     if !audioValidation.unsupportedFindings.isEmpty {
                         Text(
-                            "\(audioValidation.unsupportedFindings.count) uploaded chord(s) have "
-                                + "no attack or harmonic change in the audio: "
-                                + audioValidation.unsupportedFindings.prefix(6)
-                                .map {
-                                    "\($0.chord) @ \(String(format: "%.1f", $0.time))s"
-                                }
-                                .joined(separator: ", ")
+                            "\(audioValidation.unsupportedFindings.count) uploaded chords have no attack or harmonic change in the audio: \(Self.findingList(audioValidation.unsupportedFindings.prefix(6).map { "\($0.chord) @ \(String(format: "%.1f", $0.time))s" }))",
+                            bundle: .swStrings
                         )
                         .font(.swMono(11))
                         .foregroundStyle(Color.swAmber)
@@ -59,8 +58,7 @@ struct ReferenceComparisonReportView: View {
                         // disk can compare placement but not quality. Say so rather than
                         // silently omitting half the comparison.
                         Text(
-                            "Chord quality was not compared — re-analyse this song to compare "
-                                + "thirds against the recording."
+                            "Chord quality was not compared — re-analyse this song to compare thirds against the recording."
                         )
                         .font(.swDisplay(11))
                         .foregroundStyle(Color.swTextSecondary)
@@ -70,22 +68,16 @@ struct ReferenceComparisonReportView: View {
                         // chord in the right place with the wrong quality is a different fix
                         // from a chord that should not be there at all.
                         Text(
-                            "\(audioValidation.wrongQualityFindings.count) uploaded chord(s) "
-                                + "name the wrong third: "
-                                + audioValidation.wrongQualityFindings.prefix(6)
-                                .map {
-                                    "\($0.chord)→\($0.suggestedChord ?? "?") "
-                                        + "@ \(String(format: "%.1f", $0.time))s"
-                                }
-                                .joined(separator: ", ")
+                            "\(audioValidation.wrongQualityFindings.count) uploaded chords name the wrong third: \(Self.findingList(audioValidation.wrongQualityFindings.prefix(6).map { "\($0.chord)→\($0.suggestedChord ?? "?") @ \(String(format: "%.1f", $0.time))s" }))",
+                            bundle: .swStrings
                         )
                         .font(.swMono(11))
                         .foregroundStyle(Color.swCoral)
                     }
                     if audioValidation.untimedChordCount > 0 {
                         Text(
-                            "\(audioValidation.untimedChordCount) uploaded chord(s) sit on lines "
-                                + "we never transcribed, so they could not be judged."
+                            "\(audioValidation.untimedChordCount) uploaded chords sit on lines we never transcribed, so they could not be judged.",
+                            bundle: .swStrings
                         )
                         .font(.swDisplay(11))
                         .foregroundStyle(Color.swTextSecondary)
@@ -149,8 +141,8 @@ struct ReferenceComparisonReportView: View {
             HStack {
                 Button("Adopt Reference as Chart", role: .destructive) { onAdopt() }
                     .help(
-                        "Replace the generated chart with the uploaded reference "
-                            + "(the generated one can be rebuilt by re-analysis)")
+                        "Replace the generated chart with the uploaded reference (the generated one can be rebuilt by re-analysis)"
+                    )
                 Spacer()
                 Button("Close") { dismiss() }
                     .keyboardShortcut(.defaultAction)

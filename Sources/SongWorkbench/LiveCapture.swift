@@ -154,6 +154,8 @@ final class LiveCaptureSession: ObservableObject {
         case stopped
         /// Sustained silence with no usable signal (e.g. FairPlay-muted Apple Music). No chart.
         case muted
+        /// Microphone access is denied or restricted in System Settings › Privacy & Security.
+        case microphoneDenied
         case failed(String)
     }
 
@@ -165,10 +167,10 @@ final class LiveCaptureSession: ObservableObject {
         case empty
     }
 
-    static let mutedMessage =
-        "No audio detected from this source — protected or streaming audio (e.g. Apple Music) "
-        + "can't be analyzed. Try a local file played in another app, a loopback device, or the "
-        + "microphone."
+    static let mutedMessage = String(
+        localized:
+            "No audio detected from this source — protected or streaming audio (e.g. Apple Music) can't be analyzed. Try a local file played in another app, a loopback device, or the microphone.",
+        bundle: .swStrings)
 
     @Published private(set) var phase: Phase = .idle
     @Published var sourceKind: CaptureSourceKind = .loopbackDevice
@@ -196,6 +198,29 @@ final class LiveCaptureSession: ObservableObject {
 
     /// Selectable kinds for the UI source picker.
     var selectableKinds: [CaptureSourceKind] { CaptureSourceCatalog.selectableKinds }
+
+    /// Asks for microphone access in context (only for the sources that need it), then starts.
+    /// A denial leaves the sheet usable and shows the route to System Settings.
+    func requestAccessAndStart() {
+        guard sourceKind == .microphone || sourceKind == .loopbackDevice else {
+            start()
+            return
+        }
+        switch AudioInputAuthorization.status {
+        case .authorized:
+            start()
+        case .notDetermined:
+            Task { @MainActor in
+                if await AudioInputAuthorization.request() {
+                    start()
+                } else {
+                    phase = .microphoneDenied
+                }
+            }
+        default:
+            phase = .microphoneDenied
+        }
+    }
 
     func start() {
         guard phase != .capturing else { return }

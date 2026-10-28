@@ -28,7 +28,7 @@ let project = Project(
                 "LSApplicationCategoryType": "public.app-category.music",
                 "NSHighResolutionCapable": true,
                 "NSMicrophoneUsageDescription":
-                    "SongWorkbench uses audio input for music analysis.",
+                    "SongWorkbench listens to a microphone or loopback input during Live Capture to detect chords in real time. No audio is saved.",
                 "NSAppleMusicUsageDescription":
                     "SongWorkbench reads your Music library so you can open and analyze local tracks.",
                 "NSHumanReadableCopyright": "Copyright © 2026 Endogen LLC. All rights reserved.",
@@ -36,7 +36,7 @@ let project = Project(
                 "ITSAppUsesNonExemptEncryption": false,
             ]),
             sources: ["Sources/SongWorkbench/**"],
-            resources: ["Resources/**"],
+            resources: ["Resources/**", "Sources/SongWorkbench/Localizable.xcstrings"],
             entitlements: .file(path: "SongWorkbench.entitlements"),
             scripts: [
                 // The bundled Core ML models are gitignored (172 MB), so they can't be declared

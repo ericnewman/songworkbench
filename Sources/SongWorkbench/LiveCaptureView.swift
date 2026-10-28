@@ -16,7 +16,7 @@ struct LiveCaptureSheet: View {
                     .font(.swDisplay(16, weight: .semibold))
                     .foregroundStyle(Color.swTextPrimary)
                 Spacer()
-                Text("Detecting chords only — lyrics are a later phase")
+                Text("Detects chords.")
                     .font(.swDisplay(10))
                     .foregroundStyle(.secondary)
             }
@@ -41,6 +41,25 @@ struct LiveCaptureSheet: View {
                     .font(.swDisplay(12))
                     .foregroundStyle(Color.swCoral)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .microphoneDenied = session.phase {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(
+                        "SongWorkbench doesn't have access to the microphone. Turn on SongWorkbench in System Settings › Privacy & Security › Microphone, then start again.",
+                        systemImage: "mic.slash.fill"
+                    )
+                    .font(.swDisplay(12))
+                    .foregroundStyle(Color.swCoral)
+                    .fixedSize(horizontal: false, vertical: true)
+                    Button("Open Microphone Settings") {
+                        if let url = URL(
+                            string:
+                                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+                        ) {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
             }
             if case .failed(let message) = session.phase {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -78,7 +97,7 @@ struct LiveCaptureSheet: View {
                     .swProminentButtonStyle()
                 } else {
                     Button("Start", systemImage: "record.circle") {
-                        session.start()
+                        session.requestAccessAndStart()
                     }
                     .swProminentButtonStyle()
                     .disabled(model.selectedSong == nil)
@@ -156,9 +175,12 @@ struct LiveCaptureSheet: View {
 
     private var signalText: String {
         switch session.signalState {
-        case .live: "Signal"
-        case .pending: session.isCapturing ? "Waiting for signal…" : "Idle"
-        case .silent: "No audio"
+        case .live: String(localized: "Signal", bundle: .swStrings)
+        case .pending:
+            session.isCapturing
+                ? String(localized: "Waiting for signal…", bundle: .swStrings)
+                : String(localized: "Idle", bundle: .swStrings)
+        case .silent: String(localized: "No audio", bundle: .swStrings)
         }
     }
 
@@ -169,23 +191,34 @@ struct LiveCaptureSheet: View {
 
     private func sourceLabel(_ kind: CaptureSourceKind) -> String {
         switch kind {
-        case .systemAudio: "Another app"
-        case .loopbackDevice: "Loopback"
-        case .microphone: "Microphone"
-        case .synthetic: "Synthetic"
+        case .systemAudio: String(localized: "Another app", bundle: .swStrings)
+        case .loopbackDevice: String(localized: "Loopback", bundle: .swStrings)
+        case .microphone: String(localized: "Microphone", bundle: .swStrings)
+        case .synthetic: String(localized: "Synthetic", bundle: .swStrings)
         }
     }
 
     private func sourceHint(_ kind: CaptureSourceKind) -> String {
         switch kind {
         case .systemAudio:
-            "Captures another app's output (needs Screen & System Audio Recording). Apple Music and "
-                + "other protected audio may be muted by macOS — that's expected and can't be bypassed."
+            String(
+                localized: """
+                    Captures another app's output (needs Screen & System Audio Recording). Apple \
+                    Music and other protected audio may be muted by macOS — that's expected and can't \
+                    be bypassed.
+                    """, bundle: .swStrings)
         case .loopbackDevice:
-            "Routes an app through a virtual device (BlackHole/Loopback). Most reliable for "
-                + "unprotected app audio."
+            String(
+                localized: """
+                    Routes an app through a virtual device (BlackHole/Loopback). Most reliable for \
+                    unprotected app audio.
+                    """, bundle: .swStrings)
         case .microphone:
-            "Captures the room through the mic. Usable for sketching; room noise degrades accuracy."
+            String(
+                localized: """
+                    Captures the room through the mic. Usable for sketching; room noise degrades \
+                    accuracy.
+                    """, bundle: .swStrings)
         case .synthetic:
             ""
         }

@@ -526,3 +526,13 @@
   so a font change must change drawing and measurement together. Icon source: `tools/icon/`.
   Brand core rule 8: the app's own screens lead with `AppTitleBlock` (icon + name in h1);
   Endogen is one Mist line ("by Endogen", or "© <year> Endogen LLC" in About), never the lockup.
+- App text size (2026-10-28): macOS ignores `dynamicTypeSize`, so `SWTextScale` (Theme.swift,
+  `UserDefaults` key `textScale`) multiplies every `Font.swDisplay`/`swMono`; fixed widths beside
+  text use `swScaled(_:)`. The ChordPro chart takes the factor as zoom
+  (`chordProFontSize × factor` → `ChordProChartScale`) and draws with `swChartMono` /
+  `swChartDisplay`, which do not scale again — a chart font routed through `swMono` would
+  double-scale and break column alignment.
+- Strings: `Sources/SongWorkbench/Localizable.xcstrings` (SwiftPM resource and Tuist resource).
+  Use `String(localized: …, bundle: .swStrings)` — `.module` under SwiftPM so tests resolve plural
+  variants, `.main` in the app. Refresh the catalog by building with
+  `-Xswiftc -emit-localized-strings` and `xcrun xcstringstool sync`.

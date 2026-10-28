@@ -1,0 +1,852 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "": {},
+    " ": {},
+    "  %@": {},
+    "%@  ·  %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@  ·  %2$@"
+          }
+        }
+      }
+    },
+    "%@ / %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ / %2$@"
+          }
+        }
+      }
+    },
+    "%@ BPM": {},
+    "%@ SECTIONS": {},
+    "%@ Switch to Edit to correct it.": {},
+    "%@ TEMPLATE": {},
+    "%@ at %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ at %2$@"
+          }
+        }
+      }
+    },
+    "%@ energy": {},
+    "%@ failed verification: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ failed verification: %2$@"
+          }
+        }
+      }
+    },
+    "%@ group: %lld%%. Scales %@.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ group: %2$lld%%. Scales %3$@."
+          }
+        }
+      }
+    },
+    "%@ is not installed.": {},
+    "%@ left and right level": {},
+    "%@ left/right signal level": {},
+    "%@ level": {},
+    "%@ pan: %@. Drag to move; double-click to center.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ pan: %2$@. Drag to move; double-click to center."
+          }
+        }
+      }
+    },
+    "%@ parts": {},
+    "%@ — click for timing and detection details": {},
+    "%@ • v%@ • %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ • v%2$@ • %3$@"
+          }
+        }
+      }
+    },
+    "%@%lld ms": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@%2$lld ms"
+          }
+        }
+      }
+    },
+    "%@, importing": {},
+    "%@: %lld%%": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@: %2$lld%%"
+          }
+        }
+      }
+    },
+    "%@x": {},
+    "%lld": {},
+    "%lld chords have no clear third in the audio (possible power chords).": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld chord has no clear third in the audio (possible power chord)."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld chords have no clear third in the audio (possible power chords)."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld duplicates skipped": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld duplicate skipped"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld duplicates skipped"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld of %lld included": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld of %2$lld included"
+          }
+        }
+      }
+    },
+    "%lld unsupported": {},
+    "%lld uploaded chords have no attack or harmonic change in the audio: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@chords@ no attack or harmonic change in the audio: %2$@"
+          },
+          "substitutions": {
+            "chords": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg uploaded chord has"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg uploaded chords have"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld uploaded chords name the wrong third: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@chords@ the wrong third: %2$@"
+          },
+          "substitutions": {
+            "chords": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg uploaded chord names"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg uploaded chords name"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld uploaded chords sit on lines we never transcribed, so they could not be judged.": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld uploaded chord sits on a line we never transcribed, so it could not be judged."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld uploaded chords sit on lines we never transcribed, so they could not be judged."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld%%": {},
+    "%lld%% left": {},
+    "%lld%% right": {},
+    "%lld-beat rest: the voice stops here before the next line": {},
+    "%lld. %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld. %2$@"
+          }
+        }
+      }
+    },
+    "%lld/%lld roots": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld/%2$lld roots"
+          }
+        }
+      }
+    },
+    "0.00": {},
+    "16": {},
+    "2": {},
+    "3": {},
+    "4": {},
+    "8": {},
+    "A hidden chord stays in this list but leaves the chart, the click, and the included count — same switch the Review chart's popup sets.": {},
+    "About %@": {},
+    "Accept": {},
+    "Accept line": {},
+    "Accept this line": {},
+    "Accepted": {},
+    "Accepted — click to un-accept": {},
+    "Actual Text Size": {},
+    "Add Chord": {},
+    "Add Line": {},
+    "Add a chord at the current playhead position.": {},
+    "Added %lld songs": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Added %lld song"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Added %lld songs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Added manually": {},
+    "Adds a chord at the current playback time (the playhead in the waveform). Then type the chord name, e.g. Ab, and adjust its time if needed.": {},
+    "Adopt Reference as Chart": {},
+    "Align to Audio": {},
+    "All %lld transcription modes agree — click to review or add a correction": {},
+    "Analysis": {},
+    "Analysis Models": {},
+    "Analysis complete": {},
+    "Analysis failed: %@": {},
+    "Analysis options": {},
+    "Analysis runs the six base stems only — the fastest setting.": {},
+    "Analyze Accompaniment": {},
+    "Analyze Selected Song": {},
+    "Analyze Song": {},
+    "Analyze the song, or play to a spot and click Add Line to enter lyrics by hand.": {},
+    "Analyzing beat and harmony": {},
+    "Analyzing in background%@": {},
+    "Analyzing this song": {},
+    "Analyzing…": {},
+    "Another app": {},
+    "App Preview": {},
+    "Apply": {},
+    "Approximate": {},
+    "As saved": {},
+    "Audio is not saved — only the detected chord chart is.": {},
+    "Audition where chord changes are placed. Switch between these while the song plays and watch the chord highlight and ball against the recording — whichever lands with it is the better anchor. Auditioning never edits the chart.": {},
+    "Auto": {},
+    "Back 10 Seconds": {},
+    "Back 10 seconds": {},
+    "Background activity": {},
+    "Background analysis progress": {},
+    "Bar %lld": {},
+    "Bass line (detected notes)": {},
+    "Bass tab from the bass note row": {},
+    "Beat dots": {},
+    "Beats per row": {},
+    "Below threshold": {},
+    "Bigger Text": {},
+    "Bouncing balls": {},
+    "Bridge/Solo classification and the Melody phrase pattern are heuristic approximations, not measured from real pitch/melody analysis.": {},
+    "Cancel": {},
+    "Capture source %@ is not available on this Mac.": {},
+    "Captures another app's output (needs Screen & System Audio Recording). Apple Music and other protected audio may be muted by macOS — that's expected and can't be bypassed.": {},
+    "Captures the room through the mic. Usable for sketching; room noise degrades accuracy.": {},
+    "Capturing another app's audio isn't available yet. Use Loopback or Microphone.": {},
+    "Chart done": {},
+    "Chart shown": {},
+    "Chart zoom. The slider's centre is 1.0×, which fits one phrase to the window width; right magnifies the whole chart proportionally — text, spacing and the beat grid together — and left shrinks it to fit more on screen.": {},
+    "Checking source file": {},
+    "Choose what the chart shows: each instrument's chords and notes, the bouncing balls, the grid and the waveform": {},
+    "Chord": {},
+    "Chord Placement": {},
+    "Chord Shading": {},
+    "Chord Shading Legend": {},
+    "Chord Timeline": {},
+    "Chord ball": {},
+    "Chord names read a half step up, as the shapes a band tuned to Eb plays; tab is fretted for the lowered tuning.": {},
+    "Chord pop": {},
+    "Chord quality was not compared — re-analyse this song to compare thirds against the recording.": {},
+    "Chord time labels": {},
+    "ChordPro": {},
+    "ChordPro Preview Unavailable": {},
+    "ChordPro Unavailable": {},
+    "ChordPro confidence": {},
+    "Chords": {},
+    "Chords done": {},
+    "Chords…": {},
+    "Clear": {},
+    "Clear Loop": {},
+    "Clear the loop region": {},
+    "Click a chord for its timing and detection details": {},
+    "Click to reset the confidence threshold to its default (50%)": {},
+    "Close": {},
+    "Collapse Stem Mix": {},
+    "Collapse line": {},
+    "Collapse song list": {},
+    "Collapse this line": {},
+    "Combined": {},
+    "Comparison Report": {},
+    "Compute": {},
+    "Compute each instrument's chords": {},
+    "Compute each instrument's notes": {},
+    "Compute the solo tab": {},
+    "Confidence": {},
+    "Copy the current lyric lines here — e.g. run Accuracy first, then reuse its clean line breaks so Fast/Balanced align to the same lines.": {},
+    "Copying into the library…": {},
+    "Correct this line's text": {},
+    "Corrected %lld chord qualities the key prior had overridden.": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Corrected %lld chord quality the key prior had overridden."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Corrected %lld chord qualities the key prior had overridden."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Could not analyze song: %@": {},
+    "Could not export audio: %@": {},
+    "Could not export stem mix: %@": {},
+    "Could not generate waveform: %@": {},
+    "Could not import songs: %@": {},
+    "Could not install %@: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Could not install %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Could not open %@: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Could not open %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Could not open JustChords: %@": {},
+    "Could not prepare the chart: %@": {},
+    "Could not remove %@: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Could not remove %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Could not restore projects: %@": {},
+    "Could not save projects: %@": {},
+    "Could not start analysis: %@": {},
+    "Detect chords in real time from a loopback device, mic, or another app.": {},
+    "Detected chords": {},
+    "Detected chords below this confidence are omitted from generated ChordPro. Manual chords are always included.": {},
+    "Detects chords.": {},
+    "Display": {},
+    "Done": {},
+    "Downloading %@": {},
+    "Dragged to": {},
+    "Drop audio files or folders to add": {},
+    "Drum pieces": {},
+    "Edit line text": {},
+    "Edited": {},
+    "Editor": {},
+    "Expand Stem Mix": {},
+    "Expand song list": {},
+    "Export Mix…": {},
+    "Export the chart to a ChordPro file": {},
+    "Export the current chart and open it in the JustChords app.": {},
+    "Export...": {},
+    "FORM": {},
+    "Fill from current transcription": {},
+    "Finalizing accuracy transcript": {},
+    "Finalizing transcription": {},
+    "Finished %@": {},
+    "Finished analysis": {},
+    "Forward 10 Seconds": {},
+    "Forward 10 seconds": {},
+    "Generated": {},
+    "Generating waveform...": {},
+    "Grid and waveform": {},
+    "Guitar tab from the stem's transcribed notes (transcribed the first time)": {},
+    "Guitar tuned down a half step": {},
+    "Harmony voices": {},
+    "Hashing source": {},
+    "Hidden": {},
+    "Hide %@ parts (%@)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Hide %1$@ parts (%2$@)"
+          }
+        }
+      }
+    },
+    "Hide Chord": {},
+    "Idle": {},
+    "Import Songs": {},
+    "Import Songs...": {},
+    "Import a ChordPro file": {},
+    "Import audio files": {},
+    "Import...": {},
+    "Included": {},
+    "Inserts an empty lyric line at the current playback time (the playhead in the waveform above). Play or scrub to the moment, click Add Line, then type the words. You can also edit the start/end times directly.": {},
+    "Install": {},
+    "Install (%@)": {},
+    "Install All": {},
+    "Installed": {},
+    "Instrument energy": {},
+    "Instruments": {},
+    "Invalid": {},
+    "JustChords": {},
+    "JustChords wasn’t found in Applications.": {},
+    "Layout": {},
+    "Lead / backing vocals": {},
+    "Left %@, right %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Left %1$@, right %2$@"
+          }
+        }
+      }
+    },
+    "Line %lld": {},
+    "Line text": {},
+    "Listening…": {},
+    "Live Capture": {},
+    "Load Stem Folder…": {},
+    "Load a stem folder or export the current mix": {},
+    "Loaded cached analysis": {},
+    "Loading accuracy model": {},
+    "Loads this track for analysis": {},
+    "Loopback": {},
+    "Loudness": {},
+    "Lyric": {},
+    "Lyric Blend": {},
+    "Lyrics are aligned to your reference text — click to edit it": {},
+    "Lyrics changed since this chart was built. Regenerate it to time the words.": {},
+    "Lyrics done": {},
+    "MIDI Instruments": {},
+    "Manual install required — artifact not hosted yet": {},
+    "Mark Reviewed": {},
+    "Mark the chart reviewed": {},
+    "Master: %lld%%": {},
+    "Measure numbers": {},
+    "Merge this line into the next": {},
+    "Merge with next line": {},
+    "Metronome": {},
+    "Metronome volume; 0% is off": {},
+    "Microphone": {},
+    "Minimum ChordPro chord confidence": {},
+    "Minimum chord confidence for the chart and click — same threshold as the Chords page. Chords below it are dropped from the generated chart.": {},
+    "Models": {},
+    "Models and stems weren't moved: %@": {},
+    "Move Models and Stems…": {},
+    "Moving models and stems…": {},
+    "Music Library Unavailable": {},
+    "Mute": {},
+    "New Lyric Blend results are ready — click to review": {},
+    "No Bass Notes": {},
+    "No ChordPro": {},
+    "No ChordPro Yet": {},
+    "No Chords": {},
+    "No Matches": {},
+    "No Recent Songs": {},
+    "No Songs": {},
+    "No Structure Yet": {},
+    "No Timed Lyrics": {},
+    "No audio": {},
+    "No audio detected from this source — protected or streaming audio (e.g. Apple Music) can't be analyzed. Try a local file played in another app, a loopback device, or the microphone.": {},
+    "No blend candidates yet — analyze a song with more than one transcription model installed to compare lines here.": {},
+    "No chart": {},
+    "No chord change": {},
+    "No chords": {},
+    "No chords yet.": {},
+    "No lyrics": {},
+    "No new songs added": {},
+    "No song selected. Import an audio file to begin.": {},
+    "No songs were found in your Music library.": {},
+    "No stems": {},
+    "No supported audio files were found.": {},
+    "No systemic issues — disagreements below are chart-granularity noise.": {},
+    "No tracks match “%@”.": {},
+    "Not accepted": {},
+    "Notes": {},
+    "Notes…": {},
+    "Open": {},
+    "Open Microphone Settings": {},
+    "Open a track from your Music library": {},
+    "Open from Music": {},
+    "Open the Lyric Blend window": {},
+    "Original": {},
+    "Original Pitch and Tempo": {},
+    "Paragraphs": {},
+    "Paste the real lyrics to align words and line breaks exactly.": {},
+    "Paste the song's real lyrics, one line per line. These exact words and line breaks are aligned to the audio using the detected timings — the most accurate lyrics when you know them. Leave empty to use the raw transcription.": {},
+    "Pause": {},
+    "Peak loudness across the song. The loudest point is at %@.": {},
+    "Per instrument": {},
+    "Permission to capture from %@ was denied.": {},
+    "Pick the best line per row from every transcription mode, or type your own correction — an override always wins and survives re-analysis.": {},
+    "Pitch %@": {},
+    "Pitch shift (semitones); playback speed is unaffected": {},
+    "Placing words on the vocals": {},
+    "Play": {},
+    "Play %@ as MIDI (%@)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Play %1$@ as MIDI (%2$@)"
+          }
+        }
+      }
+    },
+    "Play Loop": {},
+    "Play the original recording or the separated stem mix": {},
+    "Play the selected loop region (repeats until stopped)": {},
+    "Playback": {},
+    "Playback Source": {},
+    "Playback failed: %@": {},
+    "Playback speed (pitch preserved)": {},
+    "Playhead at %@, loop from %@ to %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Playhead at %1$@, loop from %2$@ to %3$@"
+          }
+        }
+      }
+    },
+    "Playhead at %@, no loop selected": {},
+    "Playing %@ as MIDI (%@). Click for its audio.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Playing %1$@ as MIDI (%2$@). Click for its audio."
+          }
+        }
+      }
+    },
+    "Possible mis-split line": {},
+    "Preparing %@ as MIDI…": {},
+    "Preparing analysis": {},
+    "Re-analyze All Songs": {},
+    "Reading your Music library…": {},
+    "Ready": {},
+    "Recent Songs": {},
+    "Recompute each instrument's chords": {},
+    "Recompute each instrument's notes": {},
+    "Recompute the solo tab": {},
+    "Reference Comparison": {},
+    "Reference Lyrics": {},
+    "Reference chart uploaded — click to replace it, or reopen the report": {},
+    "Reference lines with no generated match": {},
+    "Remove": {},
+    "Remove Song": {},
+    "Remove the selected song from the library (the file is kept)": {},
+    "Removed %lld chord markers (%lld%%) with no instrument attack or harmonic change in the audio.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed %#@markers@ (%2$lld%%) with no instrument attack or harmonic change in the audio."
+          },
+          "substitutions": {
+            "markers": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg chord marker"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg chord markers"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Removes this chord from the chart and the click without deleting it — un-hide it from the Chords page.": {},
+    "Replace": {},
+    "Replace Existing ChordPro?": {},
+    "Replace the generated chart with the uploaded reference (the generated one can be rebuilt by re-analysis)": {},
+    "Requires the separated accompaniment stem.": {},
+    "Reset": {},
+    "Reset Levels": {},
+    "Reset Pitch and Speed": {},
+    "Reset all stem levels, mutes, solos, and the master fader": {},
+    "Reset pitch and speed": {},
+    "Reset timing offset to 0 ms": {},
+    "Retry": {},
+    "Review Flags": {},
+    "Rewind to Start": {},
+    "Rewind to the start": {},
+    "Rigid click at the detected tempo, locked to beat 1 — the reference the detected beats are judged against.": {},
+    "Root agreement %lld%% · density %@×": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Root agreement %1$lld%% · density %2$@×"
+          }
+        }
+      }
+    },
+    "Routes an app through a virtual device (BlackHole/Loopback). Most reliable for unprotected app audio.": {},
+    "Run Stems separation to enable stem mix playback": {},
+    "Run Stems separation to enable the mix.": {},
+    "Run Tempo & Chords and Transcribe to generate a chart.": {},
+    "Run Tempo & Chords and Transcribe to see the song's form.": {},
+    "Run Tempo & Chords or add chord events first.": {},
+    "Run the full analysis pipeline on the selected song": {},
+    "Sample: Verse 1 · G  D/F#  Em  C": {},
+    "Scales the text throughout SongWorkbench, including the chord chart. Use View › Bigger Text (⌘+) and Smaller Text (⌘−) to change it from anywhere.": {},
+    "Search Music library": {},
+    "Search by title or artist": {},
+    "Select a song first — the chart attaches to it.": {},
+    "Separation succeeded but its stem files aren’t linked to this song (no stem references). Re-run Analyze to regenerate them.": {},
+    "Shift the highlight and chord indicator earlier/later relative to playback (render only; does not change audio). Reset to remove the offset.": {},
+    "Show %@": {},
+    "Show %@ parts (%@)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Show %1$@ parts (%2$@)"
+          }
+        }
+      }
+    },
+    "Show Stem Mix": {},
+    "Show the reference-vs-generated comparison report": {},
+    "Show/hide review flags on lines that look like mis-splits (short/long vs the typical line, or inconsistent with a repeated section). Off by default.": {},
+    "Shown": {},
+    "Signal": {},
+    "Smaller Text": {},
+    "Solo": {},
+    "Solo tab": {},
+    "Solo tab…": {},
+    "Song %lld of %lld: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Song %1$lld of %2$lld: %3$@"
+          }
+        }
+      }
+    },
+    "Song Analysis": {},
+    "Song analysis progress": {},
+    "Song waveform": {},
+    "SongWorkbench doesn't have access to the microphone. Turn on SongWorkbench in System Settings › Privacy & Security › Microphone, then start again.": {},
+    "Songs": {},
+    "Source": {},
+    "Speed %lld%%": {},
+    "Split line": {},
+    "Split this line at its largest internal gap": {},
+    "Splits the drums stem into kick, snare, toms and cymbals.": {},
+    "Splits the vocals stem into lead and backing so each voice is playable and harmony rows can tell the singers apart. The slowest step in analysis.": {},
+    "Stages · %@": {},
+    "Stages · no song selected": {},
+    "Start": {},
+    "Starting %@": {},
+    "Stem Mix": {},
+    "Stem separation": {},
+    "Stem waveforms couldn’t be read — %@": {},
+    "Stems": {},
+    "Stems are stale — rerun Stems.": {},
+    "Stems done": {},
+    "Stop & Save": {},
+    "Stop Loop": {},
+    "Stop loop playback": {},
+    "Switch a Stem Mix strip to MIDI with its ♪ button. Drum pieces need multi-track drums; pitched stems are transcribed the first time.": {},
+    "Switch between the generated chart and the uploaded one (view only)": {},
+    "Switch to Edit to enter or import a chart.": {},
+    "Synthetic": {},
+    "Tab": {},
+    "Tab…": {},
+    "Text": {},
+    "Text size": {},
+    "The audio here contains singing the transcription missed — re-run Analyze (Accuracy) or add reference lyrics.": {},
+    "The current ChordPro was reviewed or imported manually. Replacement creates a new draft.": {},
+    "This instrument's chords are the chart's chord line": {},
+    "This line continues on the next row": {},
+    "This window closes when analysis finishes.": {},
+    "Time": {},
+    "Timestamped Lyrics": {},
+    "Timestamps": {},
+    "Timing": {},
+    "Toggle between the editable timestamped list and a plain paragraph view.": {},
+    "Total download: %@": {},
+    "Track can't be opened": {},
+    "Transcribing with Qwen3-ASR": {},
+    "Transcribing with no previous-text context": {},
+    "Transpose %lld": {},
+    "Try Again": {},
+    "Type a correction...": {},
+    "Un-accept": {},
+    "Under the hood": {},
+    "Upload Reference...": {},
+    "Upload a reference ChordPro chart to validate the generated one": {},
+    "Uploaded": {},
+    "Verify": {},
+    "Vocal harmonies": {},
+    "Waiting for signal…": {},
+    "Waiting to analyze this song": {},
+    "Wall-clock estimate for the options above, scaled from measured pass times on an 8-core Mac. It updates as you change them; your machine and other load will move it.": {},
+    "Waveform": {},
+    "Waveform Unavailable": {},
+    "Welcome. SongWorkbench analyzes songs on-device. Install the analysis models below to get started — everything unlocks once they finish.": {},
+    "What the shaded backgrounds behind chord names mean": {},
+    "Word ball": {},
+    "Zoom": {},
+    "by": {},
+    "center": {},
+    "rest %lld": {},
+    "vocals — not transcribed": {},
+    "· %lld vocal regions": {},
+    "—": {},
+    "→": {}
+  },
+  "version": "1.0"
+}

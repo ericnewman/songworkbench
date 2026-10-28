@@ -54,8 +54,7 @@ struct SongStructureView: View {
                 .padding(.vertical, 2)
                 .background(Color.swSurface, in: Capsule())
                 .help(
-                    "Bridge/Solo classification and the Melody phrase pattern are heuristic "
-                        + "approximations, not measured from real pitch/melody analysis."
+                    "Bridge/Solo classification and the Melody phrase pattern are heuristic approximations, not measured from real pitch/melody analysis."
                 )
         }
     }
@@ -70,7 +69,7 @@ struct SongStructureView: View {
                     Text(section.label)
                         .font(.swDisplay(13))
                         .foregroundStyle(Color.swTextPrimary)
-                        .frame(width: 90, alignment: .leading)
+                        .frame(width: swScaled(90), alignment: .leading)
                     Text(timeRange(section.start, section.end))
                         .font(.swMono(10))
                         .foregroundStyle(Color.swTextSecondary)
@@ -125,7 +124,7 @@ struct SongStructureView: View {
             Text(label + ":")
                 .font(.swMono(10))
                 .foregroundStyle(Color.swTextSecondary)
-                .frame(width: 100, alignment: .leading)
+                .frame(width: swScaled(100), alignment: .leading)
             Text(value)
                 .font(.swMono(10))
                 .foregroundStyle(Color.swTextPrimary)

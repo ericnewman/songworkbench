@@ -563,7 +563,7 @@ struct SongAnalysisPipeline: Sendable {
                 completedStages: 0,
                 totalStages: totalStages,
                 stageFraction: 0,
-                message: "Preparing analysis"
+                message: String(localized: "Preparing analysis", bundle: .swStrings)
             ))
 
         // Deferred refinement: when the vocal/drum refiners are enabled, the separation stage
@@ -593,7 +593,10 @@ struct SongAnalysisPipeline: Sendable {
                         completedStages: completedStages,
                         totalStages: totalStages,
                         stageFraction: 0,
-                        message: "Starting \(SongAnalysisStage.transcription.rawValue)"
+                        message: String(
+                            localized: """
+                                Starting \(SongAnalysisStage.transcription.rawValue)
+                                """, bundle: .swStrings)
                     ))
                 progress(
                     SongAnalysisPipelineProgress(
@@ -601,7 +604,10 @@ struct SongAnalysisPipeline: Sendable {
                         completedStages: completedStages,
                         totalStages: totalStages,
                         stageFraction: 0,
-                        message: "Starting \(SongAnalysisStage.harmony.rawValue)"
+                        message: String(
+                            localized: """
+                                Starting \(SongAnalysisStage.harmony.rawValue)
+                                """, bundle: .swStrings)
                     ))
 
                 // Precompute every digest both stages will need on THIS task and
@@ -721,7 +727,10 @@ struct SongAnalysisPipeline: Sendable {
                         completedStages: completedStages,
                         totalStages: totalStages,
                         stageFraction: 0,
-                        message: "Finished \(SongAnalysisStage.transcription.rawValue)"
+                        message: String(
+                            localized: """
+                                Finished \(SongAnalysisStage.transcription.rawValue)
+                                """, bundle: .swStrings)
                     ))
                 completedStages += 1
                 progress(
@@ -730,7 +739,10 @@ struct SongAnalysisPipeline: Sendable {
                         completedStages: completedStages,
                         totalStages: totalStages,
                         stageFraction: 0,
-                        message: "Finished \(SongAnalysisStage.harmony.rawValue)"
+                        message: String(
+                            localized: """
+                                Finished \(SongAnalysisStage.harmony.rawValue)
+                                """, bundle: .swStrings)
                     ))
 
                 if wasCancelled { break stageLoop }
@@ -793,7 +805,7 @@ struct SongAnalysisPipeline: Sendable {
                     completedStages: completedStages,
                     totalStages: totalStages,
                     stageFraction: 0,
-                    message: "Starting \(stage.rawValue)"
+                    message: String(localized: "Starting \(stage.rawValue)", bundle: .swStrings)
                 ))
 
             // The digest memo is used only here, on this single (non-concurrent)
@@ -887,7 +899,7 @@ struct SongAnalysisPipeline: Sendable {
                     completedStages: completedStages,
                     totalStages: totalStages,
                     stageFraction: 0,
-                    message: "Finished \(stage.rawValue)"
+                    message: String(localized: "Finished \(stage.rawValue)", bundle: .swStrings)
                 ))
             index += 1
         }
@@ -1072,8 +1084,7 @@ enum SongAnalysisPipelineError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .missingBundledModel(let name):
-            "SongWorkbench is missing its bundled \(name) model and cannot analyze. Rebuild the "
-                + "app with BundledModels/ present."
+            "SongWorkbench is missing its bundled \(name) model and cannot analyze. Rebuild the app with BundledModels/ present."
         case .noVocalsStemToMeasureLyrics:
             "Separate the stems first: lyric timing is measured on the vocals stem."
         case .missingStemEngine:
@@ -1144,7 +1155,8 @@ final class AnalysisProgressMeter: @unchecked Sendable {
         lock.withLock { highest = 1 }
         return SongAnalysisPipelineProgress(
             stage: nil, completedStages: slots.count, totalStages: slots.count,
-            stageFraction: 1, message: "Finished analysis", overallFraction: 1)
+            stageFraction: 1, message: String(localized: "Finished analysis", bundle: .swStrings),
+            overallFraction: 1)
     }
 
     /// Caller holds `lock`.

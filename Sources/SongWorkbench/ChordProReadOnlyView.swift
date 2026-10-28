@@ -25,22 +25,22 @@ enum ChordProChartTypography {
     /// ("bass note names should be the same size as chords"), so they grow with it.
     static let chordSize: CGFloat = 16.25
 
-    static let lyric = Font.swMono(lyricSize)
+    static let lyric = Font.swChartMono(lyricSize)
 
     static func lyric(weight: Font.Weight) -> Font {
-        .swMono(lyricSize, weight: weight)
+        .swChartMono(lyricSize, weight: weight)
     }
 
     static func lyric(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .swMono(size, weight: weight)
+        .swChartMono(size, weight: weight)
     }
 
     static func chord(weight: Font.Weight = .semibold) -> Font {
-        .swMono(chordSize, weight: weight)
+        .swChartMono(chordSize, weight: weight)
     }
 
     static func chord(size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-        .swMono(size, weight: weight)
+        .swChartMono(size, weight: weight)
     }
 
     /// Chord row for COLUMN-ALIGNED rendering (`ChordProReadOnlyView`), where the chord row is a
@@ -48,10 +48,10 @@ enum ChordProChartTypography {
     /// the alignment is character advances, so a smaller chord row would slide out of register
     /// with the words it names. Weight is safe to vary — a monospaced face keeps one advance
     /// width across weights.
-    static let columnAlignedChord = Font.swMono(lyricSize, weight: .semibold)
+    static let columnAlignedChord = Font.swChartMono(lyricSize, weight: .semibold)
 
     static func columnAlignedChord(size: CGFloat) -> Font {
-        .swMono(size, weight: .semibold)
+        .swChartMono(size, weight: .semibold)
     }
 }
 
@@ -256,7 +256,7 @@ struct ChordProReadOnlyView: View {
         case .directive(let directiveSource):
             Text(directiveSource)
                 .font(.swMono(10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.swTextSecondary)
         }
     }
 
@@ -712,6 +712,15 @@ enum ReviewConfidenceTier {
         case .low: "Low confidence"
         case .medium: "Uncertain"
         case .high: nil
+        }
+    }
+
+    /// The tier as a shape, shown beside the tint under Differentiate Without Color.
+    var symbolName: String? {
+        switch self {
+        case .unknown, .high: nil
+        case .low: "exclamationmark.triangle.fill"
+        case .medium: "questionmark.circle.fill"
         }
     }
 }

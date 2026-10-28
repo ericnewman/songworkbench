@@ -4,6 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "SongWorkbench",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "SongWorkbench", targets: ["SongWorkbench"])
@@ -31,7 +32,10 @@ let package = Package(
                 ),
                 "WhisperFramework",
                 .product(name: "MLXAudioQwen3", package: "MLXAudioQwen3"),
-            ]
+            ],
+            // The String Catalog, so `swift build` / `swift test` resolve its plural variants
+            // through `Bundle.module` (`Bundle.swStrings`). The Tuist app bundles it too.
+            resources: [.process("Localizable.xcstrings")]
         ),
         .testTarget(
             name: "SongWorkbenchTests",

@@ -64,7 +64,7 @@ actor Qwen3ASRTranscriptionEngine: TranscriptionEngine {
         progress(
             TranscriptionProgress(
                 phase: .transcribing, completedUnits: 0, totalUnits: 1,
-                message: "Transcribing with Qwen3-ASR"))
+                message: String(localized: "Transcribing with Qwen3-ASR", bundle: .swStrings)))
         let language = request.localeIdentifier.flatMap(Self.languageName(for:))
         let task = Task { [runtime] in
             try await runtime.transcribe(audioURL: request.audioURL, language: language)
@@ -81,7 +81,7 @@ actor Qwen3ASRTranscriptionEngine: TranscriptionEngine {
         progress(
             TranscriptionProgress(
                 phase: .finalizing, completedUnits: 1, totalUnits: 1,
-                message: "Placing words on the vocals"))
+                message: String(localized: "Placing words on the vocals", bundle: .swStrings)))
         let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
         let aligned = words.isEmpty ? [] : try timeWords(words, request.audioURL)
         let tokens = Self.tokens(for: aligned)

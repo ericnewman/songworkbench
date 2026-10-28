@@ -61,7 +61,10 @@ final class AudioPlaybackService: ObservableObject, PlaybackClock {
             audioFile = nil
             loadedURL = nil
             duration = 0
-            errorMessage = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+            errorMessage = String(
+                localized: """
+                    Could not open \(url.lastPathComponent): \(error.localizedDescription)
+                    """, bundle: .swStrings)
             releaseSecurityScopedResource()
         }
     }
@@ -98,7 +101,10 @@ final class AudioPlaybackService: ObservableObject, PlaybackClock {
             errorMessage = nil
         } catch {
             isPlaying = false
-            errorMessage = "Playback failed: \(error.localizedDescription)"
+            errorMessage = String(
+                localized: """
+                    Playback failed: \(error.localizedDescription)
+                    """, bundle: .swStrings)
         }
     }
 

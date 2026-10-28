@@ -92,8 +92,10 @@ extension Color {
     static let swVocalTeal = Color(hex: 0x20C997)
     /// Primary text.
     static let swTextPrimary = Color.Endogen.frost
-    /// Secondary / muted text.
-    static let swTextSecondary = Color.Endogen.mist
+    /// Secondary / muted text: Mist (6.3:1 on Night), or Text `C3CCD6` (11.7:1) when Increase
+    /// Contrast is on.
+    static let swTextSecondary = Color.swHighContrastAware(
+        normal: 0x8B96A3, increased: 0xC3CCD6)
     /// Borders and grid lines.
     static let swGraticule = Color.Endogen.graticule
 }
@@ -125,22 +127,174 @@ extension StemID {
     }
 }
 
+// MARK: - Localization
+
+extension Bundle {
+    /// Where `Localizable.xcstrings` compiles to: the SwiftPM resource bundle under `swift build`
+    /// and `swift test` (so plural variants resolve in tests), the app bundle under Xcode/Tuist.
+    static var swStrings: Bundle {
+        #if SWIFT_PACKAGE
+            .module
+        #else
+            .main
+        #endif
+    }
+}
+
+// MARK: - Increase Contrast
+
+#if os(macOS)
+    import AppKit
+
+    extension NSAppearance {
+        /// True under System Settings › Accessibility › Display › Increase contrast. The app
+        /// forces dark, so the appearance is `darkAqua` or its high-contrast twin.
+        var swIsHighContrast: Bool {
+            // The window's forced dark appearance may not carry the high-contrast variant, so
+            // the system flag decides too.
+            NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+                || bestMatch(from: [
+                    .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua,
+                    .darkAqua, .aqua,
+                ]) == .accessibilityHighContrastDarkAqua
+                || bestMatch(from: [.accessibilityHighContrastAqua, .aqua])
+                    == .accessibilityHighContrastAqua
+        }
+    }
+#endif
+
+extension Color {
+    /// A color that resolves to `increased` when Increase Contrast is on. Resolved by AppKit per
+    /// drawing appearance, so every existing `.foregroundStyle(Color.sw…)` site follows the
+    /// setting without reading the environment.
+    static func swHighContrastAware(normal: UInt32, increased: UInt32) -> Color {
+        #if os(macOS)
+            Color(
+                nsColor: NSColor(name: nil) { appearance in
+                    NSColor(Color(hex: appearance.swIsHighContrast ? increased : normal))
+                })
+        #else
+            Color(hex: normal)
+        #endif
+    }
+
+    /// `opacity(alpha)`, except under Increase Contrast, where the dimming drops and the color
+    /// draws solid. Use for de-emphasis that would otherwise cost text or icon contrast.
+    func swDimmed(_ alpha: Double) -> Color {
+        #if os(macOS)
+            let base = NSColor(self)
+            return Color(
+                nsColor: NSColor(name: nil) { appearance in
+                    var resolved = base
+                    appearance.performAsCurrentDrawingAppearance {
+                        resolved = base.usingColorSpace(.sRGB) ?? base
+                    }
+                    return appearance.swIsHighContrast
+                        ? resolved : resolved.withAlphaComponent(resolved.alphaComponent * alpha)
+                })
+        #else
+            return opacity(alpha)
+        #endif
+    }
+}
+
 // MARK: - Typography
 //
 // The brand faces, bundled under `Resources/Fonts` (SIL OFL) and registered at launch by
 // `EndogenFonts.registerBundled()`. Sizes stay the app's own: the brand's type scale (body 17)
 // is sized for the web and too large for this dense tool UI.
 
-extension Font {
-    /// Display / label font: Space Grotesk.
-    static func swDisplay(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        Font.Endogen.sans(size, weight)
+/// The app-wide text size (Settings › Text, View › Bigger / Smaller Text, ⌘+ / ⌘−).
+///
+/// macOS has no system Dynamic Type: SwiftUI ignores `dynamicTypeSize` and text styles render
+/// at fixed sizes (checked 2026-10-28: `.body` measures the same at `.large` and
+/// `.accessibility5`). So the app scales its own text. Every `Font.swDisplay` / `Font.swMono`
+/// call multiplies its authored size by `factor`; because the read goes through an
+/// `ObservationRegistrar`, any view body that builds one of those fonts re-renders when the
+/// factor changes, with no `.id` reset of view state.
+///
+/// The ChordPro chart is the exception: its glyphs and its horizontal time axis must scale
+/// together, so it takes the factor through `ChordProChartScale` (see `Font.swChartMono`).
+final class SWTextScale: Observable, @unchecked Sendable {
+    static let shared = SWTextScale()
+
+    /// The `UserDefaults` key the factor persists under.
+    static let defaultsKey = "textScale"
+    /// The steps ⌘+ / ⌘− walk through. 1 is the authored size; 2 roughly matches the jump from
+    /// macOS's default to its largest "Text size" setting in system apps.
+    static let steps: [CGFloat] = [0.85, 1, 1.15, 1.3, 1.5, 1.75, 2]
+
+    private let registrar = ObservationRegistrar()
+    private let lock = NSLock()
+    private var storedFactor: CGFloat
+
+    init(defaults: UserDefaults = .standard) {
+        let saved = defaults.double(forKey: Self.defaultsKey)
+        storedFactor = Self.clamped(saved > 0 ? CGFloat(saved) : 1)
     }
 
-    /// Monospaced font for numeric / technical data and the column-aligned chart text:
-    /// JetBrains Mono.
+    var factor: CGFloat {
+        get {
+            registrar.access(self, keyPath: \.factor)
+            return lock.withLock { storedFactor }
+        }
+        set {
+            let value = Self.clamped(newValue)
+            registrar.withMutation(of: self, keyPath: \.factor) {
+                lock.withLock { storedFactor = value }
+            }
+            UserDefaults.standard.set(Double(value), forKey: Self.defaultsKey)
+        }
+    }
+
+    var canIncrease: Bool { factor < (Self.steps.last ?? 1) - 0.001 }
+    var canDecrease: Bool { factor > (Self.steps.first ?? 1) + 0.001 }
+
+    func increase() {
+        if let next = Self.steps.first(where: { $0 > factor + 0.001 }) { factor = next }
+    }
+
+    func decrease() {
+        if let previous = Self.steps.last(where: { $0 < factor - 0.001 }) { factor = previous }
+    }
+
+    func reset() { factor = 1 }
+
+    static func clamped(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite else { return 1 }
+        return min(max(value, steps.first ?? 1), steps.last ?? 1)
+    }
+}
+
+/// A length that sits beside text (a fixed label column, a status row's height) at the app text
+/// size, so the text it holds does not clip when the user makes text bigger.
+func swScaled(_ length: CGFloat) -> CGFloat {
+    length * SWTextScale.shared.factor
+}
+
+extension Font {
+    /// Display / label font: Space Grotesk, at `size` × the app text size (`SWTextScale`).
+    static func swDisplay(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        Font.Endogen.sans(size * SWTextScale.shared.factor, weight)
+    }
+
+    /// Monospaced font for numeric / technical data: JetBrains Mono, at `size` × the app text
+    /// size (`SWTextScale`).
     static func swMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        Font.Endogen.mono(size * SWTextScale.shared.factor, weight)
+    }
+
+    /// JetBrains Mono at exactly `size`, for the ChordPro chart only. The chart already folds the
+    /// app text size into `ChordProChartScale` (so the glyphs, the measured character advance and
+    /// the time axis grow together); multiplying again here would double-scale the glyphs and push
+    /// words off their beat columns.
+    static func swChartMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         Font.Endogen.mono(size, weight)
+    }
+
+    /// Space Grotesk at exactly `size`, for chart labels sized from `ChordProChartScale`.
+    static func swChartDisplay(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        Font.Endogen.sans(size, weight)
     }
 }
 
@@ -186,6 +340,65 @@ enum EndogenFonts {
             CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
     }
+}
+
+// MARK: - Reduce Motion defaults
+
+enum MotionDefaults {
+    /// Default for the chart's bouncing balls (lyric, chord, chord-pop) when the user has never
+    /// toggled them: on, unless Reduce Motion is on. A saved choice always wins, because
+    /// `@AppStorage` only falls back to this when its key is absent.
+    static var ballsDefault: Bool {
+        #if os(macOS)
+            !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        #else
+            !UIAccessibility.isReduceMotionEnabled
+        #endif
+    }
+}
+
+// MARK: - Hit targets
+
+/// macOS minimum hit target (Apple UI Standards §4: 28 × 28 pt).
+enum SWHitTarget {
+    static let minimum: CGFloat = 28
+}
+
+/// A hit-test shape at least `minimumWidth` wide, centred on the view, for slim controls (the
+/// mixer faders) whose drawn width must stay narrow.
+struct SWWidenedHitShape: Shape {
+    var minimumWidth: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let extra = max(minimumWidth - rect.width, 0) / 2
+        return Path(rect.insetBy(dx: -extra, dy: 0))
+    }
+}
+
+/// Button style for small icon-only buttons (chevrons, trash, accept/edit): the label keeps its
+/// look, and its clickable frame grows to at least 28 × 28 pt.
+struct SWIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SWIconButtonBody(configuration: configuration)
+    }
+
+    private struct SWIconButtonBody: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .labelStyle(.iconOnly)
+                .frame(minWidth: SWHitTarget.minimum, minHeight: SWHitTarget.minimum)
+                .contentShape(Rectangle())
+                .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
+        }
+    }
+}
+
+extension ButtonStyle where Self == SWIconButtonStyle {
+    /// Icon-only button with a 28 × 28 pt minimum hit target.
+    static var swIcon: SWIconButtonStyle { SWIconButtonStyle() }
 }
 
 // MARK: - Reusable Panel Modifiers

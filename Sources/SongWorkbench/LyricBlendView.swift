@@ -45,8 +45,7 @@ struct LyricBlendView: View {
                 .font(.swDisplay(20, weight: .semibold))
                 .lineLimit(1)
             Text(
-                "Pick the best line per row from every transcription mode, or type your own "
-                    + "correction — an override always wins and survives re-analysis."
+                "Pick the best line per row from every transcription mode, or type your own correction — an override always wins and survives re-analysis."
             )
             .font(.swDisplay(12))
             .foregroundStyle(Color.swTextSecondary)
@@ -64,8 +63,7 @@ struct LyricBlendView: View {
 
     private var emptyState: some View {
         Text(
-            "No blend candidates yet — analyze a song with more than one transcription model "
-                + "installed to compare lines here."
+            "No blend candidates yet — analyze a song with more than one transcription model installed to compare lines here."
         )
         .font(.swDisplay(12))
         .foregroundStyle(Color.swTextSecondary)
@@ -182,10 +180,10 @@ private struct LyricBlendRowView: View {
             withAnimation(.snappy) { isExpanded = false }
         } label: {
             Image(systemName: "chevron.up")
-                .font(.caption2)
+                .font(.swDisplay(10))
                 .foregroundStyle(Color.swTextSecondary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.swIcon)
         .help("Collapse this line")
         .accessibilityLabel("Collapse line")
     }
@@ -210,7 +208,7 @@ private struct LyricBlendRowView: View {
                 Text(timeLabel)
                     .font(.swDisplay(10).monospacedDigit())
                     .foregroundStyle(Color.swTextSecondary)
-                Circle().fill(Color.swTextSecondary.opacity(0.5)).frame(width: 6, height: 6)
+                Circle().fill(Color.swTextSecondary.swDimmed(0.5)).frame(width: 6, height: 6)
                 Text(row.candidates.first?.text ?? "")
                     .font(.swDisplay(13))
                     .foregroundStyle(Color.swTextPrimary)
@@ -218,7 +216,7 @@ private struct LyricBlendRowView: View {
                     .truncationMode(.tail)
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.down")
-                    .font(.caption2)
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swTextSecondary)
             }
             .padding(.vertical, 6)
@@ -228,8 +226,8 @@ private struct LyricBlendRowView: View {
         .buttonStyle(.plain)
         .swAccentHoverBorder(cornerRadius: 8)
         .help(
-            "All \(row.candidates.count) transcription modes agree — "
-                + "click to review or add a correction")
+            "All \(row.candidates.count) transcription modes agree — click to review or add a correction"
+        )
     }
 
     /// The "4th candidate": a free-text field for a correction that isn't tied to any

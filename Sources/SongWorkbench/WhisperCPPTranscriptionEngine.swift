@@ -93,7 +93,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 phase: .loadingModel,
                 completedUnits: 0,
                 totalUnits: 3,
-                message: "Loading accuracy model"
+                message: String(localized: "Loading accuracy model", bundle: .swStrings)
             ))
         let cancellation = WhisperCPPCancellationToken()
         let task = Task { [runtime] in
@@ -111,7 +111,10 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 phase: .transcribing,
                 completedUnits: 1,
                 totalUnits: 3,
-                message: "Transcribing with no previous-text context"
+                message: String(
+                    localized: """
+                        Transcribing with no previous-text context
+                        """, bundle: .swStrings)
             ))
 
         let rawTranscript = try await withTaskCancellationHandler {
@@ -130,7 +133,7 @@ actor WhisperCPPTranscriptionEngine: TranscriptionEngine {
                 phase: .finalizing,
                 completedUnits: 3,
                 totalUnits: 3,
-                message: "Finalizing accuracy transcript"
+                message: String(localized: "Finalizing accuracy transcript", bundle: .swStrings)
             ))
 
         let segments = transcript.segments.map { segment in

@@ -572,9 +572,7 @@ enum StructureAlignmentDiagnostics {
             guard section.lines.count == template.lineCount else {
                 if let first = section.lines.first {
                     result[first.id] =
-                        "Line count (\(section.lines.count)) differs from the established "
-                        + "\(section.label) shape (\(template.lineCount) lines) — a line may "
-                        + "have been merged or split incorrectly."
+                        "Line count (\(section.lines.count)) differs from the established \(section.label) shape (\(template.lineCount) lines) — a line may have been merged or split incorrectly."
                 }
                 continue
             }
@@ -597,8 +595,7 @@ enum StructureAlignmentDiagnostics {
                 guard meterDeviates, rhymeDeviates else { continue }
 
                 var reason =
-                    "Off the \(section.label) pattern — \(actualSyllables) syllables "
-                    + "(expected ~\(expectedSyllables)) and breaks the established rhyme."
+                    "Off the \(section.label) pattern — \(actualSyllables) syllables (expected ~\(expectedSyllables)) and breaks the established rhyme."
                 if index < template.chordCountPattern.count {
                     let expectedChords = template.chordCountPattern[index]
                     let actualChords = collapsedChordCount(
