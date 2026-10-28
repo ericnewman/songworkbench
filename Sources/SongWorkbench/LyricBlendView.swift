@@ -187,6 +187,7 @@ private struct LyricBlendRowView: View {
         }
         .buttonStyle(.plain)
         .help("Collapse this line")
+        .accessibilityLabel("Collapse line")
     }
 
     /// One agreeing row, collapsed to a single line: line number, time, the shared text, and a

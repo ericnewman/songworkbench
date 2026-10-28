@@ -223,7 +223,7 @@ struct PlaybackTransportCard: View {
         .overlay(alignment: .bottomTrailing) {
             if let symbolVariant {
                 Image(systemName: symbolVariant)
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.callout.weight(.bold))
                     .foregroundStyle(
                         disabled ? Color.swTextSecondary.opacity(0.5) : Color.swTextSecondary
                     )
@@ -949,6 +949,7 @@ private struct ChordGridDetailPopover: View {
 
 private struct ChordTimelineEditor: View {
     @ObservedObject var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // Observe playback directly, exactly as `TimedLyricsEditor` does. `AppModel` reads the clock
     // through `activeClock` but does NOT republish its ticks, so a view that observes only the
     // model never re-renders while audio plays — which is why the chord highlight sat frozen.
@@ -1075,7 +1076,7 @@ private struct ChordTimelineEditor: View {
                     guard let newValue,
                         let row = gridRows.first(where: { $0.eventIDs.contains(newValue) })
                     else { return }
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
                         scroller.scrollTo(row.id, anchor: .center)
                     }
                 }
@@ -2675,6 +2676,9 @@ struct BeatBallInput: Equatable {
 
 // Internal (not private) so the headless pixel-render audit can instantiate the REAL preview.
 struct ChordProAppPreview: View {
+    // Not private: a private stored property would make the memberwise init private, and the
+    // render-audit test builds this view.
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
     /// The song's ONE bar grid (`SongBarGrid`), estimated once by the harmony stage. Passed in
     /// rather than re-derived here: this view used to estimate its own bar phase from the display
     /// waveform envelopes — a third opinion, alongside the decoder's and the ChordPro builder's —
@@ -3388,7 +3392,7 @@ struct ChordProAppPreview: View {
                                 guard playing, playheadTime < firstRowEndTime,
                                     let top = indexedBlocks(for: document).first?.offset
                                 else { return }
-                                withAnimation(Self.autoScrollGlide) {
+                                withAnimation(reduceMotion ? nil : Self.autoScrollGlide) {
                                     scrollProxy.scrollTo(top, anchor: .top)
                                 }
                             }
@@ -3406,7 +3410,7 @@ struct ChordProAppPreview: View {
                                 // clamped by the ScrollView itself, so the chart naturally
                                 // stays put until enough lines have played for the active one
                                 // to reach the middle of the viewport.
-                                withAnimation(Self.autoScrollGlide) {
+                                withAnimation(reduceMotion ? nil : Self.autoScrollGlide) {
                                     scrollProxy.scrollTo(offset, anchor: .center)
                                 }
                             }
@@ -3423,7 +3427,7 @@ struct ChordProAppPreview: View {
                                     offset = nil
                                 }
                                 guard let offset else { return }
-                                withAnimation(Self.autoScrollGlide) {
+                                withAnimation(reduceMotion ? nil : Self.autoScrollGlide) {
                                     scrollProxy.scrollTo(offset, anchor: .center)
                                 }
                             }
@@ -4513,7 +4517,7 @@ private struct ChordProPreviewBlockView: View {
                         "vocals — not transcribed",
                         systemImage: "waveform.badge.exclamationmark"
                     )
-                    .font(.swDisplay(9))
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swAmber)
                     .help(
                         "The audio here contains singing the transcription missed — "
@@ -4616,6 +4620,8 @@ private struct ChordProPreviewBlockView: View {
             .buttonStyle(.plain)
             .foregroundStyle(segment.accepted ? Color.swMint : Color.swTextSecondary)
             .help(segment.accepted ? "Accepted — click to un-accept" : "Accept this line")
+            .accessibilityLabel("Accept line")
+            .accessibilityValue(segment.accepted ? "Accepted" : "Not accepted")
 
             if canEditLyric {
                 Button {
@@ -4627,16 +4633,17 @@ private struct ChordProPreviewBlockView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.swTextSecondary)
                 .help("Correct this line's text")
+                .accessibilityLabel("Edit line text")
             }
 
             if !segment.accepted, let label = tier.label {
                 Text(label)
-                    .font(.swDisplay(9))
+                    .font(.swDisplay(10))
                     .foregroundStyle(tier.tint)
             }
             if segment.overrideText != nil {
                 Text("Edited")
-                    .font(.swDisplay(9))
+                    .font(.swDisplay(10))
                     .foregroundStyle(Color.swTextSecondary)
             }
         }
@@ -4852,6 +4859,9 @@ struct ChordProRowEnergySeries: Equatable {
 }
 
 private struct ChordProPreviewLineView: View {
+    /// Reduce Motion drops the chord-onset size pop; the glow and the ball still mark the onset.
+    /// Not private, so the memberwise init stays callable from the chart.
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
     /// Every constant below is authored at 1× (a 15 pt body) and read through the instance
     /// properties further down, which multiply by `scale.factor`. Nothing in this view may use a
     /// `base…` constant directly for layout: the horizontal axis and the glyph size have to move
@@ -5425,7 +5435,7 @@ private struct ChordProPreviewLineView: View {
     /// to the chord onset. Helpful to a guitar player to understand the rhythmic emphasis"),
     /// but it fires ON the hit instead of travelling ahead of it.
     private func chordOnsetScale(at index: Int) -> CGFloat {
-        1 + 0.3 * chordOnsetIntensity(at: index)
+        reduceMotion ? 1 : 1 + 0.3 * chordOnsetIntensity(at: index)
     }
 
     /// 1 exactly at a chord's onset, decaying to 0 over one beat — the attack transient the
@@ -5644,6 +5654,7 @@ private struct ChordProPreviewLineView: View {
                         guard showsReviewAffordances, chordEvent(at: index) != nil else { return }
                         editedChordIndex = index
                     }
+                    .accessibilityAddTraits(showsReviewAffordances ? .isButton : [])
                     .overlay(alignment: .top) { chordConfidenceBadge(at: index) }
                     .popover(isPresented: chordPopoverBinding(index)) { chordPopover(at: index) }
             }
@@ -6652,6 +6663,7 @@ private struct ChordProPreviewLineView: View {
                             else { return }
                             editedChordIndex = index
                         }
+                        .accessibilityAddTraits(showsReviewAffordances ? .isButton : [])
                         .overlay(alignment: .top) { chordConfidenceBadge(at: index) }
                         .popover(isPresented: chordPopoverBinding(index)) {
                             chordPopover(at: index)
@@ -7009,9 +7021,9 @@ struct StemMixSidebar: View {
                 } label: {
                     VStack(spacing: 8) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.caption.weight(.semibold))
                         Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 13))
+                            .font(.body)
                     }
                     .foregroundStyle(Color.swTextSecondary)
                     .frame(maxWidth: .infinity)
@@ -7019,6 +7031,7 @@ struct StemMixSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .help("Expand Stem Mix")
+                .accessibilityLabel("Expand Stem Mix")
             }
         }
         .padding(isExpanded ? 10 : 8)
@@ -7037,7 +7050,7 @@ struct StemMixSidebar: View {
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(Color.swTextSecondary)
                             .rotationEffect(.degrees(90))
                         Label("Stem Mix", systemImage: "slider.horizontal.3")
@@ -7154,7 +7167,8 @@ struct StemMixSidebar: View {
                 value: Binding(
                     get: { Double(model.stemMixer[channel.id].pan) },
                     set: { model.setStemPan(Float($0), for: channel.id) }
-                )
+                ),
+                accessibilityName: "\(channel.displayName) pan"
             )
             .help(panHelp(for: state.pan, name: channel.displayName))
 
@@ -7166,7 +7180,8 @@ struct StemMixSidebar: View {
                     ),
                     range: 0...Double(StemMixState.maximumGain),
                     thumbWidth: 14,
-                    controlWidth: 15
+                    controlWidth: 15,
+                    accessibilityName: "\(channel.displayName) volume"
                 )
                 SegmentedLevelMeter(
                     level: stemPlayback.stemLevels[channel.id] ?? 0, meterWidth: 7)
@@ -7175,10 +7190,16 @@ struct StemMixSidebar: View {
             .help("\(channel.displayName): \(Int((state.gain * 100).rounded()))%")
 
             VStack(spacing: 2) {
-                miniToggle("M", isOn: state.isMuted, tint: Color.swCoral) {
+                miniToggle(
+                    "M", isOn: state.isMuted, tint: Color.swCoral,
+                    accessibilityLabel: "Mute \(channel.displayName)"
+                ) {
                     model.setStemMuted($0, for: channel.id)
                 }
-                miniToggle("S", isOn: state.isSoloed, tint: Color.swAccent) {
+                miniToggle(
+                    "S", isOn: state.isSoloed, tint: Color.swAccent,
+                    accessibilityLabel: "Solo \(channel.displayName)"
+                ) {
                     model.setStemSoloed($0, for: channel.id)
                 }
                 // Audio or MIDI rendition, per strip (Eric, 2026-10-07); the instrument is chosen
@@ -7186,7 +7207,8 @@ struct StemMixSidebar: View {
                 if model.canPlayAsMIDI(channel.id) {
                     miniToggle(
                         model.midiRenditionsInProgress.contains(channel.id) ? "…" : "♪",
-                        isOn: state.playsMIDI, tint: Color.swMint
+                        isOn: state.playsMIDI, tint: Color.swMint,
+                        accessibilityLabel: "Play \(channel.displayName) as MIDI"
                     ) {
                         model.setStemPlaysMIDI($0, for: channel.id)
                     }
@@ -7233,7 +7255,7 @@ struct StemMixSidebar: View {
                 }
             } label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.swTextSecondary)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .frame(height: HorizontalLRMeter.totalHeight)
@@ -7246,6 +7268,7 @@ struct StemMixSidebar: View {
                     : "Show \(channel.displayName) parts (\(partNames))"
             )
             .accessibilityLabel("\(channel.displayName) parts")
+            .accessibilityValue(isExpanded ? "Shown" : "Hidden")
 
             // No pan pot: panning a bus that has no node of its own would have to be pushed onto
             // the children, silently overwriting the pan they each already carry.
@@ -7259,7 +7282,8 @@ struct StemMixSidebar: View {
                     ),
                     range: 0...Double(StemMixState.maximumGain),
                     thumbWidth: 14,
-                    controlWidth: 15
+                    controlWidth: 15,
+                    accessibilityName: "\(channel.displayName) volume"
                 )
                 Color.clear.frame(width: 11)
             }
@@ -7270,10 +7294,16 @@ struct StemMixSidebar: View {
             )
 
             VStack(spacing: 2) {
-                miniToggle("M", isOn: state.isMuted, tint: Color.swCoral) {
+                miniToggle(
+                    "M", isOn: state.isMuted, tint: Color.swCoral,
+                    accessibilityLabel: "Mute \(channel.displayName)"
+                ) {
                     model.setStemMuted($0, for: channel.id)
                 }
-                miniToggle("S", isOn: state.isSoloed, tint: Color.swAccent) {
+                miniToggle(
+                    "S", isOn: state.isSoloed, tint: Color.swAccent,
+                    accessibilityLabel: "Solo \(channel.displayName)"
+                ) {
                     model.setStemSoloed($0, for: channel.id)
                 }
             }
@@ -7319,7 +7349,8 @@ struct StemMixSidebar: View {
                     ),
                     range: 0...Double(StemMixState.maximumGain),
                     thumbWidth: 14,
-                    controlWidth: 15
+                    controlWidth: 15,
+                    accessibilityName: "Metronome volume"
                 )
                 // Width stand-in for the meter so the fader aligns with the stem strips.
                 Color.clear.frame(width: 11)
@@ -7353,7 +7384,8 @@ struct StemMixSidebar: View {
                     ),
                     range: 0...Double(StemMixerModel.maximumMasterGain),
                     thumbWidth: 14,
-                    controlWidth: 15
+                    controlWidth: 15,
+                    accessibilityName: "Master volume"
                 )
                 // Width stand-in for the meter so the fader aligns with the other strips.
                 Color.clear.frame(width: 11)
@@ -7395,7 +7427,8 @@ struct StemMixSidebar: View {
     }
 
     private func miniToggle(
-        _ label: String, isOn: Bool, tint: Color, set: @escaping (Bool) -> Void
+        _ label: String, isOn: Bool, tint: Color, accessibilityLabel: String,
+        set: @escaping (Bool) -> Void
     ) -> some View {
         Button {
             set(!isOn)
@@ -7426,6 +7459,8 @@ struct StemMixSidebar: View {
         }
         .buttonStyle(.plain)
         .help(label == "M" ? "Mute" : label == "S" ? "Solo" : "")
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }
 
@@ -7476,6 +7511,8 @@ private struct PanKnob: View {
     @Binding var value: Double
     static let defaultSize: CGFloat = 20
     var size: CGFloat = PanKnob.defaultSize
+    /// What VoiceOver calls this knob ("Bass pan").
+    var accessibilityName = "Pan"
     @State private var dragStartValue: Double?
 
     var body: some View {
@@ -7512,8 +7549,20 @@ private struct PanKnob: View {
                 .onEnded { _ in dragStartValue = nil }
         )
         .simultaneousGesture(TapGesture(count: 2).onEnded { value = 0 })
-        .accessibilityLabel("Pan")
-        .accessibilityValue(String(format: "%.2f", value))
+        .accessibilityElement()
+        .accessibilityLabel(accessibilityName)
+        .accessibilityValue(
+            abs(value) < 0.01
+                ? "Center"
+                : "\(Int((abs(value) * 100).rounded()))% \(value < 0 ? "left" : "right")"
+        )
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: value = min(value + 0.1, 1)
+            case .decrement: value = max(value - 0.1, -1)
+            @unknown default: break
+            }
+        }
     }
 }
 
@@ -7525,6 +7574,8 @@ private struct VerticalFader: View {
     /// exact fader at a narrower footprint (defaults match the Stems editor).
     var thumbWidth: CGFloat = 26
     var controlWidth: CGFloat = 30
+    /// What VoiceOver calls this fader ("Bass volume").
+    var accessibilityName = "Volume"
     private let thumbHeight: CGFloat = 14
     private let trackWidth: CGFloat = 5
 
@@ -7579,6 +7630,17 @@ private struct VerticalFader: View {
             )
         }
         .frame(width: controlWidth)
+        .accessibilityElement()
+        .accessibilityLabel(accessibilityName)
+        .accessibilityValue("\(Int((value * 100).rounded()))%")
+        .accessibilityAdjustableAction { direction in
+            let step = (range.upperBound - range.lowerBound) / 20
+            switch direction {
+            case .increment: value = min(value + step, range.upperBound)
+            case .decrement: value = max(value - step, range.lowerBound)
+            @unknown default: break
+            }
+        }
     }
 }
 

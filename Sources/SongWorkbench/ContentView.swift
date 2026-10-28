@@ -306,7 +306,7 @@ private struct SongSidebar: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color.swTextSecondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     Text("Songs")
@@ -408,7 +408,7 @@ private struct SongSidebar: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "music.note")
-                    .font(.system(size: 12))
+                    .font(.callout)
                     .foregroundStyle(Color.swTextSecondary)
                 Text(model.selectedSong?.title ?? "No song selected")
                     .font(.swDisplay(13))

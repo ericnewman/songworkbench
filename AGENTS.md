@@ -32,3 +32,8 @@ Use the canonical local status vocabulary. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 This is a single-context repository. See `docs/agents/domain.md`.
+
+
+## Apple UI standards
+
+UI changes must meet `/Volumes/SSD/Claude Storage/Projects/Apple Release/Apple UI Standards.md` (Apple HIG, accessibility, Dynamic Type, contrast, platform conventions). Run the `apple-ui-reviewer` agent on the app before a build goes to testers beyond Eric or to App Review. Mark intentional deviations with `// a11y-exception: <reason and compensation>`.
