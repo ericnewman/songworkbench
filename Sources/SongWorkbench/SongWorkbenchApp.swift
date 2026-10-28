@@ -28,7 +28,9 @@ struct SongWorkbenchApp: App {
                 .modifier(SplashOverlay(isReady: model.hasRestoredProjects))
                 .background(Color.swCanvas.ignoresSafeArea())
                 .foregroundStyle(Color.swTextPrimary)
-                .tint(Color.swAccent)
+                // Controls fill with the tint (checked checkboxes, default and prominent
+                // buttons), so it is Deep Phosphor: no text or icon on a Phosphor fill.
+                .tint(Color.Endogen.actionFill)
                 // a11y-exception: dark-only by design (the Endogen Night/phosphor brand; a
                 // scope-style tool used on stage and in dim rooms). Compensation: every text and
                 // UI color is checked against the dark grounds only (`ThemeContrastTests`),

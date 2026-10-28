@@ -466,11 +466,13 @@ private struct TimedLyricsEditor: View {
                         ForEach(timestampedRows) { row in
                             switch row {
                             case .section(let section):
-                                LyricSectionHeaderRow(section: section)
-                                    .listRowBackground(
-                                        section.id == activeSectionID
-                                            ? Color.swAccent.opacity(0.18)
-                                            : Color.swSurface.opacity(0.35))
+                                LyricSectionHeaderRow(
+                                    section: section, isActive: section.id == activeSectionID
+                                )
+                                .listRowBackground(
+                                    section.id == activeSectionID
+                                        ? Color.Endogen.actionFill
+                                        : Color.swSurface.opacity(0.35))
                             case .lyric(let segmentID):
                                 if let index = model.lyricSegments.firstIndex(where: {
                                     $0.id == segmentID
@@ -601,19 +603,22 @@ private enum LyricsEditorRow: Identifiable {
 
 private struct LyricSectionHeaderRow: View {
     let section: LyricTimelineSection
+    /// The section under the playhead. Its row fills with Deep Phosphor (the caller's
+    /// `listRowBackground`), so its text and icon turn white (5.5:1).
+    var isActive = false
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: iconName)
-                .foregroundStyle(Color.swAccent)
+                .foregroundStyle(isActive ? Color.Endogen.onActionFill : Color.swAccent)
                 .frame(width: 70, alignment: .trailing)
             Text(section.label)
                 .font(.swDisplay(13, weight: .semibold))
-                .foregroundStyle(Color.swTextSecondary)
+                .foregroundStyle(isActive ? Color.Endogen.onActionFill : Color.swTextSecondary)
             Spacer()
             Text(formattedTime(section.start))
                 .font(.swMono(11))
-                .foregroundStyle(Color.swTextSecondary)
+                .foregroundStyle(isActive ? Color.Endogen.onActionFill : Color.swTextSecondary)
         }
         .listRowBackground(Color.clear)
         .accessibilityElement(children: .combine)
@@ -858,15 +863,19 @@ private struct ChordGridCell: View {
                 }
                 Text(event.chord.isEmpty ? "—" : event.chord)
                     .font(.swMono(13, weight: .semibold))
-                    // Excluded chords recede by tone and a strikethrough-free Mist label, not by
-                    // fading the whole cell (0.45 opacity measured under 3:1).
-                    .foregroundStyle(isIncluded ? Color.swTextPrimary : Color.swTextSecondary)
+                    // Excluded chords recede by shape (italic), not by fading the cell or a Mist
+                    // label: Mist on the high band's green tint measured 2.6–3.5:1.
+                    .italic(!isIncluded)
+                    .foregroundStyle(
+                        isSounding ? Color.Endogen.onActionFill : Color.swTextPrimary)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .frame(minWidth: 40)
             .background(
-                isSounding ? Color.swAccent.opacity(0.55) : band.fillColor,
+                // The sounding chord fills Deep Phosphor with a white label (5.5:1); the 0.55
+                // Phosphor tint it replaced left Frost at 3.0–3.5:1.
+                isSounding ? Color.Endogen.actionFill : band.fillColor,
                 in: RoundedRectangle(cornerRadius: 5)
             )
             .overlay(
@@ -7430,7 +7439,7 @@ struct StemMixSidebar: View {
             // metronome now, so there is no second mode to switch to.
             Image(systemName: "metronome.fill")
                 .font(.swDisplay(11, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Color.swAccent)
                 .frame(width: PanKnob.slotSize, height: PanKnob.slotSize)
                 .accessibilityLabel("Metronome")
                 .help(
@@ -7522,11 +7531,21 @@ struct StemMixSidebar: View {
         }
     }
 
+    /// A console key. A green key (Solo, MIDI) lights as Deep Phosphor with a white letter and a
+    /// 1 px Phosphor edge, because the brand allows no text on a Phosphor fill (2026-10-28);
+    /// the glow stays Phosphor. Mute stays coral with a black letter.
     private func miniToggle(
         _ label: String, isOn: Bool, tint: Color, accessibilityLabel: String,
         set: @escaping (Bool) -> Void
     ) -> some View {
-        Button {
+        let isGreen = tint == Color.swAccent || tint == Color.swMint
+        let fill = isGreen ? Color.Endogen.actionFill : tint
+        let letter = isGreen ? Color.Endogen.onActionFill : Color.black
+        // Deep Phosphor's own edge is 2.8:1 on the raised mixer panel, so a lit green key
+        // carries a Phosphor outline (11.4:1).
+        let edge = isOn && isGreen ? Color.swAccent : Color.black.opacity(0.35)
+        let edgeWidth: CGFloat = isOn && isGreen ? 1 : 0.5
+        return Button {
             set(!isOn)
         } label: {
             // a11y-exception: the M / S / ♪ key letters stay 10 pt at every text size, because
@@ -7535,7 +7554,7 @@ struct StemMixSidebar: View {
             Text(label)
                 .font(.swChartMono(10, weight: .bold))
                 .frame(width: 22, height: 16)
-                .foregroundStyle(isOn ? Color.black : Color.swTextSecondary)
+                .foregroundStyle(isOn ? letter : Color.swTextSecondary)
                 .background(
                     // Off: a subtle raised-button gradient (light top edge, dark bottom) so it
                     // reads as a physical key. On: a bright top-to-bottom tint gradient plus a
@@ -7544,14 +7563,14 @@ struct StemMixSidebar: View {
                         .fill(
                             LinearGradient(
                                 colors: isOn
-                                    ? [tint, tint.opacity(0.8)]
+                                    ? [fill, fill.opacity(0.8)]
                                     : [Color.white.opacity(0.08), Color.black.opacity(0.28)],
                                 startPoint: .top, endPoint: .bottom
                             )
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 3)
-                                .strokeBorder(Color.black.opacity(0.35), lineWidth: 0.5)
+                                .strokeBorder(edge, lineWidth: edgeWidth)
                         )
                         .shadow(color: isOn ? tint.opacity(0.65) : .clear, radius: 2)
                 )

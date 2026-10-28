@@ -38,10 +38,11 @@ struct SWRGBColor: Equatable, Sendable {
 }
 
 enum SWColorPalette {
-    /// P31 Phosphor fill for prominent commands; its label is Night, not white (1.1:1 on
-    /// phosphor). Kept as RGB so the contrast test can measure the pair.
-    static let prominentControlTint = SWRGBColor(hex: 0x33FF33)
-    static let prominentControlLabel = SWRGBColor(hex: 0x0D1117)
+    /// Deep Phosphor fill for prominent commands, with a white label (5.5:1). Brand rule
+    /// (2026-10-28): no text on a P31 Phosphor fill. Kept as RGB so the contrast test can measure
+    /// the pair.
+    static let prominentControlTint = SWRGBColor(hex: 0x0E7A24)
+    static let prominentControlLabel = SWRGBColor.white
 }
 
 // MARK: - Color Palette
@@ -66,10 +67,11 @@ extension Color {
     static let swSurfaceRaised = Color.Endogen.grid
     /// Primary accent: active selection / focus.
     static let swAccent = Color.Endogen.phosphor
-    /// Filled command controls: phosphor with a Night label (14.0:1).
-    static let swProminentControl = Color.Endogen.phosphor
-    /// Label on `swProminentControl`.
-    static let swProminentControlLabel = Color.Endogen.night
+    /// Filled command controls and any green fill behind text or icons: Deep Phosphor
+    /// (`actionFill`), never Phosphor (brand rule, 2026-10-28).
+    static let swProminentControl = Color.Endogen.actionFill
+    /// Label on `swProminentControl`: white (5.5:1).
+    static let swProminentControlLabel = Color.Endogen.onActionFill
     /// Secondary accent: errors / alerts ONLY. A functional color outside the brand palette.
     static let swCoral = Color(hex: 0xFF6B6B)
     /// Data highlight: waveform peaks / data values.
@@ -457,7 +459,7 @@ private struct SWAccentHoverBorder: ViewModifier {
 }
 
 extension View {
-    /// Filled primary command: phosphor fill, Night label (WCAG AAA).
+    /// Filled primary command: Deep Phosphor fill, white label (5.5:1).
     func swProminentButtonStyle() -> some View {
         buttonStyle(.borderedProminent)
             .tint(Color.swProminentControl)

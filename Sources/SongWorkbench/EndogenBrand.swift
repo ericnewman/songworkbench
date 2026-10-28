@@ -22,6 +22,10 @@ extension Color {
         public static let ink = Color(hex: 0x0D1117)
         public static let slate = Color(hex: 0x5B6573)
         public static let deepPhosphor = Color(hex: 0x0E7A24)
+        /// Filled-button fill and any green fill behind text; never fill with `phosphor`.
+        public static let actionFill = deepPhosphor
+        /// Text and icons on `actionFill` (5.5:1).
+        public static let onActionFill = Color.white
     }
 
     public init(hex: UInt32) {
